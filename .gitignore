@@ -1,0 +1,16 @@
+node_modules/
+dist/
+backend/target/
+
+*.log
+*.err.log
+
+tmp/
+server/data/
+
+.env
+.env.*
+!.env.example
+
+backend/start-dev.ps1
+

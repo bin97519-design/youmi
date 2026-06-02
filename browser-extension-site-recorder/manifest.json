@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "Youmi Site Structure Recorder",
+  "description": "Record frontend structure, navigation, user actions, and network summaries for site reconstruction research.",
+  "version": "0.1.0",
+  "permissions": ["storage", "tabs", "downloads"],
+  "host_permissions": [
+    "https://youqianai.com/*",
+    "https://*.youqianai.com/*",
+    "https://api.youqianai.com/*",
+    "https://detail.tmall.com/*",
+    "http://127.0.0.1:5173/*",
+    "http://localhost:5173/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "action": {
+    "default_popup": "src/popup.html",
+    "default_title": "Site Recorder"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://youqianai.com/*",
+        "https://*.youqianai.com/*",
+        "https://detail.tmall.com/*",
+        "http://127.0.0.1:5173/*",
+        "http://localhost:5173/*"
+      ],
+      "js": ["src/content.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["src/injected.js"],
+      "matches": ["https://youqianai.com/*", "https://*.youqianai.com/*"]
+    }
+  ]
+}

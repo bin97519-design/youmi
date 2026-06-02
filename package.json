@@ -1,0 +1,21 @@
+{
+  "name": "youmi",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "有米电商 AI 系统 - youqianai.com clone implementation",
+  "scripts": {
+    "api": "powershell -NoProfile -ExecutionPolicy Bypass -File backend/start-dev.ps1",
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@vitejs/plugin-vue": "^6.0.3",
+    "pinia": "^3.0.4",
+    "vite": "^8.0.14",
+    "vue": "^3.5.25",
+    "vue-router": "^4.6.4"
+  },
+  "devDependencies": {}
+}
