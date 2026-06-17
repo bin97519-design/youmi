@@ -289,7 +289,7 @@ async function maybeAutoDetect(layer) {
 const autoDetectionEnabled = ref(true);
 
 function getDetectionVisible() {
-  return doc.value?.payload?.ui?.detectionVisible === true;
+  return doc.value?.payload?.ui?.detectionVisible !== false;
 }
 
 function setDetectionVisible(val) {
