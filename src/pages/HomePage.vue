@@ -1,20 +1,57 @@
 <script setup>
-import { computed, onBeforeUnmount, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import CaseGallery from '../components/home/CaseGallery.vue';
 import HomeComposer from '../components/home/HomeComposer.vue';
 import HomeShortcuts from '../components/home/HomeShortcuts.vue';
 import HomeSidebar from '../components/home/HomeSidebar.vue';
+import ReversePromptPanel from '../components/prompt/ReversePromptPanel.vue';
 import { useUserStore } from '../stores/user';
+import { useCanvasStore } from '../stores/canvas';
 
 const railExpanded = ref(false);
 const prompt = ref('');
 const generation = ref(null);
 const composerRef = ref(null);
 const userStore = useUserStore();
+const router = useRouter();
 const loggedIn = computed(() => userStore.isAuthenticated);
+const userMenuOpen = ref(false);
+const isDarkTheme = ref(document.documentElement.classList.contains('dark'));
+const themeLabel = computed(() => isDarkTheme.value ? '亮色主题' : '暗色主题');
+
+function onUserMenuBlur(event) {
+  // 延迟关闭，让 click 事件先触发
+  setTimeout(() => { userMenuOpen.value = false; }, 150);
+}
+function handleLogout() {
+  userMenuOpen.value = false;
+  userStore.logout();
+  router.push('/');
+}
+function toggleTheme() {
+  isDarkTheme.value = !isDarkTheme.value;
+  if (isDarkTheme.value) {
+    document.documentElement.classList.add('dark');
+  } else {
+    document.documentElement.classList.remove('dark');
+  }
+  userMenuOpen.value = false;
+}
+const reversePromptOpen = ref(false);
+const reversePromptPending = ref(false);
+const reversePromptError = ref('');
+const reversePromptResult = ref(null);
+const reversePromptCategories = ref([
+  { value: 'general', label: '通用', groups: [], fieldLabels: {} },
+  { value: 'mattress', label: '床垫', groups: [], fieldLabels: {} },
+  { value: 'curtain', label: '窗帘', groups: [], fieldLabels: {} },
+  { value: 'solid_wood_bed', label: '实木床', groups: [], fieldLabels: {} },
+]);
 let generationTimer = null;
 const TASK_POLL_INTERVAL = 2500;
 const TASK_MAX_POLLS = 120;
+const DEFAULT_IMAGE_MODEL = 'gpt image 2';
 
 const nowLabel = computed(() => {
   const now = new Date();
@@ -54,6 +91,30 @@ const detailActionDisabled = computed(
 );
 const detailFlowTitle = computed(() => (generation.value?.flow === 'detail-clone' ? '竞品复刻' : '详情页生成'));
 const detailDesignTitle = computed(() => (generation.value?.flow === 'detail-clone' ? '竞品复刻设计' : '详情页设计'));
+const isCloneFlow = computed(() => generation.value?.flow === 'detail-clone');
+const competitorReferenceImages = computed(() => {
+  const images = generation.value?.competitorImages;
+  if (Array.isArray(images)) return normalizeImageUrls(images);
+  return activeDetailPlan.value.map((item) => item.imageUrls?.[1]).filter(Boolean);
+});
+const productReferenceImages = computed(() => {
+  const competitorUrls = new Set(competitorReferenceImages.value);
+  return normalizeImageUrls(generation.value?.images || []).filter((url) => !competitorUrls.has(url));
+});
+const generatedPreviewUrls = computed(() => {
+  const generated = (generation.value?.detailResults || []).filter(Boolean);
+  if (generated.length) return generated.slice(0, 3);
+  return competitorReferenceImages.value.slice(0, 3);
+});
+const activeTaskPlan = computed(() => {
+  const index = Math.max(0, (generation.value?.detailResults || []).findIndex((url) => !url));
+  return activeDetailPlan.value[index >= 0 ? index : 0] || activeDetailPlan.value[0] || {};
+});
+const activeTaskPrompt = computed(() => {
+  const promptText = activeTaskPlan.value?.prompts?.modelInput || activeTaskPlan.value?.prompts?.positive || generation.value?.prompt || '';
+  return String(promptText).replace(/\s+/g, ' ').trim();
+});
+const completedDetailCount = computed(() => (generation.value?.detailResults || []).filter(Boolean).length);
 
 function handleDetailConfigAction() {
   if (!generation.value || detailActionDisabled.value) return;
@@ -62,6 +123,11 @@ function handleDetailConfigAction() {
   if (generation.value.stage === 'planning' || generation.value.stage === 'done' || generation.value.done) {
     startDetailImages();
   }
+}
+
+function truncateText(value, max = 180) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  return text.length > max ? `${text.slice(0, max)}...` : text;
 }
 
 function clearGenerationTimer() {
@@ -112,7 +178,7 @@ async function readApiResponse(response) {
 async function submitImageTask(payload, promptOverride, countOverride = null, imageUrlsOverride = null) {
   const body = {
     prompt: promptOverride || payload.prompt,
-    model: payload.model || 'banana2',
+    model: payload.model || DEFAULT_IMAGE_MODEL,
     size: normalizeGenerationSize(payload.ratio),
     resolution: payload.quality || '2K',
     n: countOverride ?? parseGenerationCount(payload.count),
@@ -164,7 +230,12 @@ function startGeneration(payload) {
     errorMessage: '',
   };
 
-  if (['detail-page', 'detail-clone'].includes(payload.flow)) {
+  if (payload.flow === 'detail-clone') {
+    startDetailImages();
+    return;
+  }
+
+  if (payload.flow === 'detail-page') {
     return;
   }
 
@@ -303,12 +374,112 @@ async function startDetailImages() {
 }
 
 function handleShortcut(item) {
+  if (item?.icon === 'reverse-prompt') {
+    reversePromptOpen.value = true;
+    return;
+  }
   if (item?.icon === 'copy') {
     composerRef.value?.openCloneModalFromShortcut?.();
   }
 }
 
-onBeforeUnmount(clearGenerationTimer);
+async function loadReversePromptCategories() {
+  try {
+    const data = await readApiResponse(await fetch('/api/prompt/categories'));
+    if (Array.isArray(data) && data.length) reversePromptCategories.value = data;
+  } catch (error) {
+    reversePromptError.value = error instanceof Error ? error.message : String(error || '反推品类加载失败');
+  }
+}
+
+async function analyzeReversePrompt(payload) {
+  reversePromptPending.value = true;
+  reversePromptError.value = '';
+  try {
+    const data = await readApiResponse(
+      await fetch('/api/prompt/analyze-image', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...userStore.authHeaders(),
+        },
+        body: JSON.stringify(payload),
+      }),
+    );
+    reversePromptResult.value = {
+      ...data,
+      imageUrl: payload.imageUrl || payload.imageBase64 || '',
+      source: 'system',
+      createdAt: new Date().toISOString(),
+    };
+  } catch (error) {
+    reversePromptError.value = error instanceof Error ? error.message : String(error || '图片反推失败');
+  } finally {
+    reversePromptPending.value = false;
+  }
+}
+
+function handleReversePromptBridgeMessage(event) {
+  const message = event?.data;
+  if (!message || message.type !== 'youmi:reverse-prompt-result') return;
+  const payload = message.payload || {};
+  reversePromptResult.value = {
+    ...payload,
+    source: payload.source || 'bridge',
+    category: payload.category || 'general',
+    categoryLabel: payload.categoryLabel || '通用',
+    promptJson: payload.promptJson || {},
+    promptText: payload.promptText || '',
+    createdAt: payload.createdAt || new Date().toISOString(),
+  };
+  sessionStorage.setItem('youmi:reverse-prompt-result', JSON.stringify(reversePromptResult.value));
+  router.push('/reverse-prompt');
+  reversePromptError.value = '';
+}
+
+async function copyReversePrompt(payload) {
+  await navigator.clipboard?.writeText(payload.promptText || JSON.stringify(payload.promptJson || {}, null, 2));
+}
+
+function applyReversePrompt(payload) {
+  const text = payload.promptText || JSON.stringify(payload.promptJson || {}, null, 2);
+  prompt.value = text;
+  if (generation.value) {
+    generation.value.prompt = text;
+  }
+}
+
+onMounted(() => {
+  loadReversePromptCategories();
+  window.addEventListener('message', handleReversePromptBridgeMessage);
+
+  // 登录后从服务器同步画布数据
+  const canvasStore = useCanvasStore();
+  if (userStore.isAuthenticated && !canvasStore.serverSynced) {
+    canvasStore.syncFromServer();
+  }
+
+  // 监听登录状态：登录成功后立即从服务器拉取数据
+  watch(() => userStore.isAuthenticated, (authed) => {
+    if (authed && !canvasStore.serverSynced) {
+      canvasStore.syncFromServer();
+    }
+  });
+
+  // 点击外部关闭用户菜单
+  const onClickOutside = (e) => {
+    if (userMenuOpen.value && !e.target.closest('.yh-user-dropdown')) {
+      userMenuOpen.value = false;
+    }
+  };
+  document.addEventListener('click', onClickOutside);
+  onBeforeUnmount(() => document.removeEventListener('click', onClickOutside));
+});
+
+onBeforeUnmount(() => {
+  clearGenerationTimer();
+  window.removeEventListener('message', handleReversePromptBridgeMessage);
+});
 </script>
 
 <template>
@@ -321,9 +492,56 @@ onBeforeUnmount(clearGenerationTimer);
       @login="userStore.openLogin()"
     />
 
-    <div v-if="!generation && !loggedIn" class="yh-auth-actions">
-      <button type="button" @click="userStore.openLogin()">注册</button>
-      <button type="button" @click="userStore.openLogin()">登录</button>
+    <div class="yh-auth-actions">
+      <template v-if="loggedIn">
+        <div class="yh-user-dropdown" :class="{ open: userMenuOpen }">
+          <button type="button" class="yh-user-avatar" @click="userMenuOpen = !userMenuOpen" @blur="onUserMenuBlur">
+            {{ userStore.profile?.account?.charAt(0)?.toUpperCase() || userStore.profile?.nickname?.charAt(0)?.toUpperCase() || 'U' }}
+          </button>
+          <div class="yh-user-menu" v-show="userMenuOpen">
+            <div class="yh-user-menu-header">
+              <div class="yh-user-menu-avatar">{{ userStore.profile?.account?.charAt(0)?.toUpperCase() || 'U' }}</div>
+              <div>
+                <div class="yh-user-menu-name">{{ userStore.profile?.account || userStore.profile?.nickname || '用户' }}</div>
+                <div class="yh-user-menu-uid">ID: {{ userStore.profile?.id || '--' }}</div>
+              </div>
+              <span class="yh-user-menu-vip">免费</span>
+            </div>
+            <div class="yh-user-menu-balance">
+              <span class="yh-balance-label">算力余额</span>
+              <span class="yh-balance-value">0</span>
+            </div>
+            <div class="yh-user-menu-divider"></div>
+            <button type="button" class="yh-user-menu-item" @click="userMenuOpen = false">
+              <i class="ri-user-line"></i>个人资料
+            </button>
+            <button type="button" class="yh-user-menu-item" @click="userMenuOpen = false">
+              <i class="ri-lock-line"></i>修改密码
+            </button>
+            <button type="button" class="yh-user-menu-item" @click="userMenuOpen = false">
+              <i class="ri-message-3-line"></i>问题反馈
+            </button>
+            <button type="button" class="yh-user-menu-item" @click="userMenuOpen = false">
+              <i class="ri-customer-service-line"></i>联系客服
+            </button>
+            <button type="button" class="yh-user-menu-item" @click="userMenuOpen = false">
+              <i class="ri-share-forward-line"></i>代理推广
+            </button>
+            <div class="yh-user-menu-divider"></div>
+            <button type="button" class="yh-user-menu-item" @click="toggleTheme">
+              <i class="ri-sun-line"></i>{{ themeLabel }}
+            </button>
+            <div class="yh-user-menu-divider"></div>
+            <button type="button" class="yh-user-menu-item yh-user-menu-logout" @click="handleLogout">
+              <i class="ri-logout-box-r-line"></i>退出登录
+            </button>
+          </div>
+        </div>
+      </template>
+      <template v-else>
+        <button type="button" @click="userStore.openLogin()">注册</button>
+        <button type="button" @click="userStore.openLogin()">登录</button>
+      </template>
     </div>
 
     <section v-if="!generation" class="yh-main">
@@ -354,12 +572,12 @@ onBeforeUnmount(clearGenerationTimer);
           <button class="yh-config-close" type="button" @click="generation = null">×</button>
         </header>
 
-        <div class="yh-config-mode">
+        <div v-if="!isCloneFlow" class="yh-config-mode">
           <button type="button" class="active">分屏生成</button>
           <button type="button">整版长图 <span>0.8折</span></button>
         </div>
 
-        <label class="yh-config-switch">
+        <label v-if="!isCloneFlow" class="yh-config-switch">
           <strong>简约高端</strong>
           <span>已关闭</span>
           <i></i>
@@ -367,9 +585,26 @@ onBeforeUnmount(clearGenerationTimer);
         </label>
 
         <div class="yh-config-scroll">
-          <section class="yh-config-block">
+          <section v-if="isCloneFlow" class="yh-config-block">
+            <h3>竞品图片 <button type="button">?</button></h3>
+            <p class="yh-config-help">请上传其他产品/爆款参考/竞品的参考图，勿与「产品图片」重复上传同一件货。</p>
+            <div class="yh-config-thumb-row">
+              <figure v-for="(url, index) in competitorReferenceImages.slice(0, 2)" :key="`competitor-${url}`">
+                <img :src="url" :alt="`竞品参考图 ${index + 1}`" />
+              </figure>
+              <button type="button" class="yh-config-add-thumb">☁<span>点击/拖拽上传图片</span></button>
+            </div>
+          </section>
+
+          <section class="yh-config-block yh-config-resolution">
             <h3>产品图片 <button type="button">?</button></h3>
-            <div class="yh-config-upload">
+            <div v-if="isCloneFlow" class="yh-config-thumb-row">
+              <figure v-for="(url, index) in productReferenceImages.slice(0, 2)" :key="`product-${url}`">
+                <img :src="url" :alt="`产品图 ${index + 1}`" />
+              </figure>
+              <button type="button" class="yh-config-add-thumb">☁<span>点击/拖拽上传图片</span></button>
+            </div>
+            <div v-else class="yh-config-upload">
               <img v-if="generation.images?.[0]?.url" :src="generation.images[0].url" alt="产品参考图" />
               <i v-else class="yh-config-upload-icon" aria-hidden="true">☁</i>
               <span class="yh-config-upload-copy">点击上传<small>或拖拽上传</small></span>
@@ -381,11 +616,11 @@ onBeforeUnmount(clearGenerationTimer);
             <h3>产品信息</h3>
             <div class="yh-config-info-field">
               <textarea :value="generation.prompt" readonly></textarea>
-              <button class="yh-config-optimize" type="button">优化产品信息</button>
+              <button class="yh-config-optimize" type="button" @click="reversePromptOpen = true">反推提示词</button>
             </div>
           </section>
 
-          <section class="yh-config-block">
+          <section v-if="!isCloneFlow" class="yh-config-block">
             <h3>模型选择</h3>
             <div class="yh-config-segment">
               <button type="button">由前 3.0</button>
@@ -396,12 +631,13 @@ onBeforeUnmount(clearGenerationTimer);
           <section class="yh-config-block">
             <h3>分辨率</h3>
             <div class="yh-config-segment">
+              <button type="button" :class="{ active: generation.quality === '1K' }">1K</button>
               <button type="button" :class="{ active: (generation.quality || '2K') === '2K' }">2K</button>
               <button type="button" :class="{ active: generation.quality === '4K' }">4K</button>
             </div>
           </section>
 
-          <section class="yh-config-block yh-config-grid">
+          <section v-if="!isCloneFlow" class="yh-config-block yh-config-grid">
             <label>
               <span>平台</span>
               <button type="button">{{ generation.platform || '淘宝' }}⌄</button>
@@ -420,7 +656,16 @@ onBeforeUnmount(clearGenerationTimer);
             </label>
           </section>
 
-          <button class="yh-config-advanced" type="button">高级设定 已跳过策略 · 模特图 · 风格参考 · 分屏构思 <span>点击展开</span></button>
+          <section v-if="isCloneFlow" class="yh-config-block">
+            <label class="yh-config-switch compact">
+              <strong>模特保持一致 <em>(可选)</em></strong>
+              <span>{{ generation.keepModel ? '开启' : '关闭' }}</span>
+              <i></i>
+            </label>
+            <p class="yh-config-help">仅当竞品图中含有模特时本设置才会生效；竞品图中无模特则忽略本设置。</p>
+          </section>
+
+          <button v-if="!isCloneFlow" class="yh-config-advanced" type="button">高级设定 已跳过策略 · 模特图 · 风格参考 · 分屏构思 <span>点击展开</span></button>
         </div>
 
         <div class="yh-config-submit">
@@ -441,7 +686,7 @@ onBeforeUnmount(clearGenerationTimer);
       </header>
 
       <section class="yh-generation-thread">
-        <div v-if="isDetailFlow" class="yh-detail-stepper">
+        <div v-if="isDetailFlow && generation.stage === 'planning'" class="yh-detail-stepper">
           <span><i></i>策略<small>已跳过</small></span>
           <span class="done"><i>✓</i>策划<small>已完成</small></span>
           <span :class="{ active: generation.stage === 'generating', done: generation.done }">
@@ -499,38 +744,64 @@ onBeforeUnmount(clearGenerationTimer);
           </div>
         </section>
 
-        <section v-else-if="isDetailFlow && !generation.done" class="yh-detail-generating">
-          <h2>{{ detailDesignTitle }} <span>生成中 {{ generation.progress }}%</span></h2>
-          <p><img :src="referenceImageUrl" alt="" /> {{ generation.platform || '淘宝' }} | 9:16 | {{ generation.model || 'banana2' }} | {{ activeDetailPlan.length }}张 | "{{ generation.prompt }}"</p>
-          <div class="yh-detail-progress-grid">
-            <article v-for="item in activeDetailPlan" :key="item.id || item.index" class="yh-generation-card">
-              <div class="yh-card-progress" :style="{ width: `${generation.progress}%` }"></div>
-              <div class="yh-generating-center">
-                <div class="yh-generating-logo">YOUMI</div>
-                <strong>{{ generation.progress }}%</strong>
-                <p>{{ item.title }}｜{{ generation.statusText }}</p>
-              </div>
-            </article>
+        <section v-else-if="isDetailFlow" class="yh-detail-workbench">
+          <div v-if="generatedPreviewUrls.length" class="yh-detail-preview-strip">
+            <figure
+              v-for="(url, index) in generatedPreviewUrls"
+              :key="`preview-${url}`"
+              :class="{ active: index === Math.min(completedDetailCount, generatedPreviewUrls.length - 1) }"
+            >
+              <img :src="url" :alt="`详情页预览 ${index + 1}`" />
+              <span v-if="index === 0">详情页设计{{ activeTaskPlan.index || 1 }}⌄</span>
+              <i v-if="index === Math.min(completedDetailCount, generatedPreviewUrls.length - 1)">⌃</i>
+            </figure>
           </div>
-        </section>
 
-        <section v-else-if="isDetailFlow" class="yh-detail-results">
-          <h2>{{ detailDesignTitle }}</h2>
-          <p><img :src="referenceImageUrl" alt="" /> {{ generation.platform || '淘宝' }} | 9:16 | {{ generation.model || 'banana2' }} | {{ activeDetailPlan.length }}张 | "{{ generation.prompt }}"</p>
-          <div class="yh-detail-result-grid">
-            <img
-              v-for="(url, index) in generation.detailResults"
-              :key="url"
-              :src="url"
-              :alt="`详情页图片 ${index + 1}`"
-            />
-          </div>
-          <div class="yh-result-actions">
+          <div class="yh-detail-toolbar">
             <button type="button">▣ 万能画布</button>
             <button type="button">▤ 长图预览</button>
             <button type="button">✎ 重新编辑</button>
-            <button type="button">⟳ 重新生成</button>
+            <button type="button" @click="startDetailImages">⟳ 重新生成</button>
             <button type="button">↓ 下载全部⌄</button>
+          </div>
+
+          <article class="yh-detail-task-message">
+            <header>
+              <div>
+                <span class="yh-thread-pill">▣ {{ detailFlowTitle }}</span>
+                <span v-if="!generation.done" :class="['yh-progress-pill', { failed: generation.stage === 'failed' }]">
+                  {{ generation.stage === 'failed' ? '生成失败' : `生成中 ${generation.progress}%` }}
+                </span>
+                <span v-else class="yh-count-pill">{{ activeDetailPlan.length }} 张</span>
+              </div>
+              <time>{{ nowLabel }}</time>
+            </header>
+            <div class="yh-detail-task-meta">
+              <img :src="referenceImageUrl" alt="产品参考图" />
+              <p>"{{ truncateText(activeTaskPrompt, 220) }}"</p>
+              <button type="button">⌄</button>
+            </div>
+          </article>
+
+          <div class="yh-detail-stage">
+            <article
+              v-for="(item, index) in activeDetailPlan"
+              :key="item.id || item.index"
+              class="yh-detail-stage-card"
+              :class="{ hidden: index !== Math.max(0, (generation.detailResults || []).findIndex((url) => !url)) && !generation.done }"
+            >
+              <img
+                v-if="generation.detailResults?.[index]"
+                :src="generation.detailResults[index]"
+                :alt="`详情页图片 ${index + 1}`"
+              />
+              <div v-else class="yh-detail-rendering-card" :style="{ '--progress': `${generation.progress}%` }">
+                <strong>YOUMI</strong>
+                <span>{{ generation.stage === 'failed' ? '生成失败' : `${generation.progress}%` }}</span>
+                <p>{{ generation.stage === 'failed' ? generation.statusText : '正在渲染细分纹理与光追效果...' }}</p>
+              </div>
+            </article>
+            <div v-if="!generation.done" class="yh-detail-screen-count">⌄ <span>{{ completedDetailCount }}/{{ activeDetailPlan.length }}</span></div>
           </div>
         </section>
 
@@ -566,5 +837,16 @@ onBeforeUnmount(clearGenerationTimer);
     </section>
 
     <button class="yh-help-float" type="button">?</button>
+    <ReversePromptPanel
+      :visible="reversePromptOpen"
+      :categories="reversePromptCategories"
+      :result="reversePromptResult"
+      :pending="reversePromptPending"
+      :error="reversePromptError"
+      @close="reversePromptOpen = false"
+      @analyze="analyzeReversePrompt"
+      @copy="copyReversePrompt"
+      @apply="applyReversePrompt"
+    />
   </main>
 </template>

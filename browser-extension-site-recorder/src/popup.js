@@ -5,6 +5,7 @@ const kinds = document.getElementById('kinds');
 const preview = document.getElementById('preview');
 const download = document.getElementById('download');
 const clear = document.getElementById('clear');
+const reverseCategory = document.getElementById('reverseCategory');
 
 function send(message) {
   return chrome.runtime.sendMessage(message);
@@ -12,7 +13,9 @@ function send(message) {
 
 async function refresh() {
   const data = await send({ type: 'recorder:get' });
+  const reverseSettings = await send({ type: 'youmi:reverse-prompt:get-settings' });
   enabled.checked = data.enabled;
+  reverseCategory.value = reverseSettings?.category || 'mattress';
   count.textContent = `${data.events.length} logs`;
   const lastEvent = data.events.at(-1);
   last.textContent = lastEvent ? `${lastEvent.kind} · ${lastEvent.time}` : 'No events';
@@ -27,6 +30,10 @@ async function refresh() {
 enabled.addEventListener('change', async () => {
   await send({ type: 'recorder:setEnabled', enabled: enabled.checked });
   await refresh();
+});
+
+reverseCategory.addEventListener('change', async () => {
+  await send({ type: 'youmi:reverse-prompt:set-category', category: reverseCategory.value });
 });
 
 download.addEventListener('click', async () => {

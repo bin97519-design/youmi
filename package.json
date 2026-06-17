@@ -5,7 +5,7 @@
   "type": "module",
   "description": "有米电商 AI 系统 - youqianai.com clone implementation",
   "scripts": {
-    "api": "powershell -NoProfile -ExecutionPolicy Bypass -File backend/start-dev.ps1",
+    "api": "powershell -NoProfile -ExecutionPolicy Bypass -File ../backend/backend_java/start-dev.ps1",
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1"

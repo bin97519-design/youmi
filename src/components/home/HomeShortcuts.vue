@@ -12,10 +12,14 @@ const shortcuts = [
   { title: 'AI 主图', desc: '秒出爆款主图', icon: 'main' },
   { title: '竞品复刻', desc: '精准狙击竞品', icon: 'copy' },
   { title: '产品场景图', desc: '场景化产品展示', icon: 'camera' },
-  { title: '服装上身', desc: '服装模特随心换', icon: 'shirt' },
+  { title: '反推提示词', desc: '图片反推可编辑提示词', icon: 'reverse-prompt' },
 ];
 
 function handleShortcut(item) {
+  if (item.icon === 'reverse-prompt') {
+    router.push('/reverse-prompt');
+    return;
+  }
   if (!userStore.requireLogin()) return;
   if (item.icon === 'copy') {
     emit('select', item);

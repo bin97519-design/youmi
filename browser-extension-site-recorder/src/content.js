@@ -26,7 +26,7 @@ function isTmallDetailPage() {
 }
 
 function isYoumiLocalPage() {
-  return ['127.0.0.1', 'localhost'].includes(location.hostname) && location.port === '5173';
+  return ['127.0.0.1', 'localhost'].includes(location.hostname) && ['5173', '5174'].includes(location.port);
 }
 
 function now() {
@@ -159,6 +159,202 @@ function normalizeTmallImageUrl(raw) {
 function addTmallImageUrl(set, raw) {
   const url = normalizeTmallImageUrl(raw);
   if (url) set.add(url);
+}
+
+function normalizePageImageUrl(raw) {
+  if (!raw) return '';
+  const text = String(raw).trim();
+  if (!text || text.startsWith('blob:')) return '';
+  if (text.startsWith('data:')) return text;
+  try {
+    return new URL(text, location.href).href;
+  } catch {
+    return '';
+  }
+}
+
+function extractCssBackgroundUrl(backgroundImage) {
+  if (!backgroundImage || backgroundImage === 'none') return '';
+  const matches = [...String(backgroundImage).matchAll(/url\((['"]?)(.*?)\1\)/g)];
+  return matches.length ? matches[matches.length - 1][2] : '';
+}
+
+function reversePromptImageInfoFromElement(element) {
+  if (!element) return null;
+
+  const image = element.closest?.('img, source');
+  if (image) {
+    const srcset = image.getAttribute('srcset') || image.getAttribute('data-srcset') || '';
+    const rawUrl =
+      image.currentSrc ||
+      image.src ||
+      image.getAttribute('src') ||
+      image.getAttribute('data-src') ||
+      image.getAttribute('data-original') ||
+      srcset.split(',')[0]?.trim().split(/\s+/)[0];
+    const url = normalizePageImageUrl(rawUrl);
+    if (url) {
+      return {
+        url,
+        kind: 'image',
+        alt: image.getAttribute('alt') || '',
+        pageUrl: location.href,
+      };
+    }
+  }
+
+  let node = element;
+  while (node && node !== document.documentElement) {
+    const url = normalizePageImageUrl(extractCssBackgroundUrl(getComputedStyle(node).backgroundImage));
+    if (url) {
+      return {
+        url,
+        kind: 'background',
+        alt: node.getAttribute?.('aria-label') || node.textContent?.trim().slice(0, 80) || '',
+        pageUrl: location.href,
+      };
+    }
+    node = node.parentElement;
+  }
+
+  return null;
+}
+
+function sendReversePromptHoverImage(image) {
+  chrome.runtime.sendMessage({
+    type: 'youmi:reverse-prompt-hover-image',
+    image,
+  }).catch(() => {});
+}
+
+function showReversePromptToast(message, state = 'info') {
+  if (!message) return;
+  let toast = document.getElementById('youmi-reverse-prompt-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'youmi-reverse-prompt-toast';
+    toast.style.position = 'fixed';
+    toast.style.top = '18px';
+    toast.style.right = '18px';
+    toast.style.zIndex = '2147483647';
+    toast.style.maxWidth = '360px';
+    toast.style.padding = '12px 14px';
+    toast.style.borderRadius = '8px';
+    toast.style.font = '13px/1.5 "Microsoft YaHei", "Segoe UI", sans-serif';
+    toast.style.boxShadow = '0 12px 32px rgba(0,0,0,.35)';
+    toast.style.pointerEvents = 'none';
+    document.documentElement.appendChild(toast);
+  }
+  toast.textContent = message;
+  toast.style.display = 'block';
+  toast.style.color = state === 'error' ? '#fecaca' : '#dbeafe';
+  toast.style.background = state === 'error' ? '#450a0a' : '#0f172a';
+  toast.style.border = state === 'error' ? '1px solid #991b1b' : '1px solid #2563eb';
+  clearTimeout(showReversePromptToast.timer);
+  showReversePromptToast.timer = setTimeout(() => {
+    toast.style.display = 'none';
+  }, state === 'running' ? 3000 : 7000);
+}
+
+function postReversePromptResult(payload) {
+  window.postMessage({
+    type: 'youmi:reverse-prompt-result',
+    payload: payload || {},
+  }, location.origin);
+}
+
+async function requestLastReversePromptResult() {
+  const response = await chrome.runtime.sendMessage({ type: 'youmi:reverse-prompt:get-last' }).catch(() => null);
+  if (response?.ok && response.payload) postReversePromptResult(response.payload);
+}
+
+async function clearLastReversePromptResult() {
+  await chrome.runtime.sendMessage({ type: 'youmi:reverse-prompt:clear-last' }).catch(() => null);
+}
+
+function startReversePromptSelection() {
+  if (document.getElementById('youmi-reverse-selection-overlay')) return;
+  showReversePromptToast('拖拽框选要反推的区域，按 Esc 取消', 'running');
+
+  const overlay = document.createElement('div');
+  overlay.id = 'youmi-reverse-selection-overlay';
+  overlay.innerHTML = '<div class="youmi-reverse-selection-tip">拖拽框选图片区域</div><div class="youmi-reverse-selection-box"></div>';
+  const style = document.createElement('style');
+  style.textContent = `
+    #youmi-reverse-selection-overlay{position:fixed;inset:0;z-index:2147483647;cursor:crosshair;background:rgba(15,23,42,.18);user-select:none}
+    #youmi-reverse-selection-overlay .youmi-reverse-selection-tip{position:fixed;top:18px;left:50%;transform:translateX(-50%);padding:8px 14px;border-radius:999px;background:rgba(15,23,42,.95);border:1px solid rgba(37,99,235,.7);color:#dbeafe;font:700 13px/1.4 "Microsoft YaHei","Segoe UI",sans-serif;box-shadow:0 10px 32px rgba(0,0,0,.35);pointer-events:none}
+    #youmi-reverse-selection-overlay .youmi-reverse-selection-box{position:fixed;display:none;border:2px solid #60a5fa;background:rgba(96,165,250,.14);box-shadow:0 0 0 9999px rgba(0,0,0,.32);pointer-events:none}
+  `;
+  overlay.appendChild(style);
+  document.documentElement.appendChild(overlay);
+
+  const box = overlay.querySelector('.youmi-reverse-selection-box');
+  let startX = 0;
+  let startY = 0;
+  let dragging = false;
+
+  function updateBox(currentX, currentY) {
+    const left = Math.min(startX, currentX);
+    const top = Math.min(startY, currentY);
+    const width = Math.abs(currentX - startX);
+    const height = Math.abs(currentY - startY);
+    box.style.display = 'block';
+    box.style.left = `${left}px`;
+    box.style.top = `${top}px`;
+    box.style.width = `${width}px`;
+    box.style.height = `${height}px`;
+    return { x: left, y: top, width, height, devicePixelRatio: window.devicePixelRatio || 1 };
+  }
+
+  function cleanup() {
+    window.removeEventListener('mousemove', onMouseMove, true);
+    window.removeEventListener('mouseup', onMouseUp, true);
+    window.removeEventListener('keydown', onKeyDown, true);
+    overlay.remove();
+  }
+
+  function onMouseMove(event) {
+    if (!dragging) return;
+    event.preventDefault();
+    updateBox(event.clientX, event.clientY);
+  }
+
+  async function onMouseUp(event) {
+    if (!dragging) return;
+    event.preventDefault();
+    dragging = false;
+    const rect = updateBox(event.clientX, event.clientY);
+    cleanup();
+    if (rect.width < 8 || rect.height < 8) {
+      showReversePromptToast('框选区域太小', 'error');
+      return;
+    }
+    showReversePromptToast('已提交框选区域，正在反推...', 'running');
+    const response = await chrome.runtime.sendMessage({
+      type: 'youmi:reverse-prompt-selection',
+      rect,
+      pageUrl: location.href,
+    }).catch((error) => ({ ok: false, error: String(error?.message || error) }));
+    if (!response?.ok) showReversePromptToast(response?.error || '框选识别失败', 'error');
+  }
+
+  function onKeyDown(event) {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    cleanup();
+    showReversePromptToast('已取消框选', 'info');
+  }
+
+  overlay.addEventListener('mousedown', (event) => {
+    event.preventDefault();
+    startX = event.clientX;
+    startY = event.clientY;
+    dragging = true;
+    updateBox(startX, startY);
+  });
+  window.addEventListener('mousemove', onMouseMove, true);
+  window.addEventListener('mouseup', onMouseUp, true);
+  window.addEventListener('keydown', onKeyDown, true);
 }
 
 function extractTmallDescV8Images() {
@@ -514,17 +710,61 @@ function watchUserActions() {
   );
 }
 
+let lastReversePromptHoverImage = null;
+document.addEventListener(
+  'mousemove',
+  (event) => {
+    const image = reversePromptImageInfoFromElement(document.elementFromPoint(event.clientX, event.clientY));
+    if (!image || image.url === lastReversePromptHoverImage?.url) return;
+    lastReversePromptHoverImage = image;
+    sendReversePromptHoverImage(image);
+  },
+  { passive: true },
+);
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === 'youmi:reverse-prompt-toast') {
+    showReversePromptToast(message.message || '', message.state || 'info');
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message?.type === 'youmi:reverse-prompt-start-selection') {
+    startReversePromptSelection();
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message?.type === 'youmi:reverse-prompt-result') {
+    postReversePromptResult(message.payload);
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  return false;
+});
+
 if (isYoumiLocalPage()) {
   window.postMessage({ type: 'youmi:extension-bridge-ready' }, location.origin);
   window.addEventListener('message', (event) => {
     if (event.source !== window || event.origin !== location.origin) return;
-    if (event.data?.type !== 'youmi:extension-bridge-ping') return;
-    window.postMessage({ type: 'youmi:extension-bridge-ready' }, location.origin);
+    if (event.data?.type === 'youmi:extension-bridge-ping') {
+      window.postMessage({ type: 'youmi:extension-bridge-ready' }, location.origin);
+      return;
+    }
+    if (event.data?.type === 'youmi:reverse-prompt-request-last') {
+      requestLastReversePromptResult();
+      return;
+    }
+    if (event.data?.type === 'youmi:reverse-prompt-clear-last') {
+      clearLastReversePromptResult();
+    }
   });
 
   chrome.runtime.onMessage.addListener((message) => {
-    if (message?.type !== 'youmi:tmall-descv8-images') return;
-    window.postMessage(message.payload, location.origin);
+    if (message?.type === 'youmi:tmall-descv8-images') {
+      window.postMessage(message.payload, location.origin);
+    }
   });
 } else if (isTmallDetailPage()) {
   if (document.readyState === 'loading') {

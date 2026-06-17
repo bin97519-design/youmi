@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, reactive, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { layerName, useCanvasStore } from '../stores/canvas';
 import { useUserStore } from '../stores/user';
@@ -13,6 +13,11 @@ const doc = computed(() => canvas.ensureDocument(props.id));
 const fileInput = ref(null);
 const fileInputMode = ref('canvas');
 const addOpen = ref(false);
+const shortcutsOpen = ref(false);
+const helpMenuOpen = ref(false);
+const toolbarAddOpen = ref(false);
+const minimapVisible = ref(true);
+const rightPanelVisible = ref(true);
 const selectedLayerId = ref(doc.value.payload.layers[0]?.id || '');
 const selectedLayerIds = ref(selectedLayerId.value ? [selectedLayerId.value] : []);
 const rightTab = ref('chat');
@@ -43,9 +48,9 @@ const canvasTools = [
   { key: 'hand', label: '抓手（拖动画布）', shortcut: 'H', icon: 'ri-hand' },
   { key: 'focus', label: '聚焦选中 / 适应画面', shortcut: 'F', icon: 'ri-focus-3-line' },
   { key: 'bringTop', label: '置顶图层', icon: 'ri-arrow-up-double-line' },
-  { key: 'bringForward', label: '上移一层', icon: 'ri-arrow-up-line' },
   { key: 'text', label: '插入文字', shortcut: 'T', icon: 'ri-text' },
   { key: 'shape', label: '插入矢量图', icon: 'ri-shape-line' },
+  { key: 'annotate', label: '标记元素（点击图片元素选中加入输入框）', shortcut: 'M', icon: 'ri-mark-pen-line' },
 ];
 const dragState = ref(null);
 const panState = ref(null);
@@ -60,6 +65,97 @@ const selectedLayerIndex = computed(() => layers.value.findIndex((item) => item.
 const viewScale = computed(() => doc.value.payload.view.scale || 1);
 const viewOffset = computed(() => doc.value.payload.view.offset || { x: 0, y: 0 });
 const toolbarStyle = computed(() => (toolbar.x === null ? {} : { left: `${toolbar.x}px`, top: `${toolbar.y}px`, bottom: 'auto' }));
+
+// 缩放滑块
+const ZOOM_MIN = 0.1, ZOOM_MAX = 4.0;
+const zoomSliderValue = computed(() => Math.round((viewScale.value - ZOOM_MIN) / (ZOOM_MAX - ZOOM_MIN) * 100));
+function setZoomFromSlider(value) {
+  const newScale = ZOOM_MIN + (ZOOM_MAX - ZOOM_MIN) * (Number(value) / 100);
+  setDocScale(newScale);
+}
+function zoomSliderReset() { setDocScale(1); }
+function setDocScale(newScale) {
+  if (newScale === viewScale.value) return;
+  const oldScale = viewScale.value;
+  canvas.updateDocument(props.id, (draft) => {
+    draft.payload.view.scale = Math.round(newScale * 1000) / 1000;
+    if (newScale > 0.1 && oldScale > 0.1) {
+      const ratio = newScale / oldScale;
+      draft.payload.view.offset.x = Math.round(draft.payload.view.offset.x * ratio);
+      draft.payload.view.offset.y = Math.round(draft.payload.view.offset.y * ratio);
+    }
+    return draft;
+  });
+}
+
+// UI 布局缓存
+const UI_LAYOUT_KEY = 'youmi_canvas_ui_layout_v3';
+const LAYOUT_SAVE_DEBOUNCE = 300;
+let _layoutSaveTimer = null;
+function loadUILayout() {
+  try {
+    const raw = localStorage.getItem(UI_LAYOUT_KEY);
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    if (s.panel != null) {
+      if (s.panel.x != null) panel.x = s.panel.x;
+      if (s.panel.y != null) panel.y = s.panel.y;
+      if (s.panel.width != null) panel.width = Math.max(260, Math.min(600, s.panel.width));
+      if (s.panel.chatHeight != null) panel.chatHeight = Math.max(140, Math.min(800, s.panel.chatHeight));
+      if (s.panel.rightTab != null) rightTab.value = s.panel.rightTab;
+      if (s.panel.rightPanelVisible != null) rightPanelVisible.value = s.panel.rightPanelVisible;
+    }
+    if (s.minimapVisible != null) minimapVisible.value = s.minimapVisible;
+  } catch (_) { /* ignore */ }
+}
+function saveUILayout() {
+  try {
+    localStorage.setItem(UI_LAYOUT_KEY, JSON.stringify({
+      panel: { x: panel.x, y: panel.y, width: panel.width, chatHeight: panel.chatHeight, rightTab: rightTab.value, rightPanelVisible: rightPanelVisible.value },
+      minimapVisible: minimapVisible.value,
+    }));
+  } catch (_) { /* ignore */ }
+}
+function debounceSaveLayout() {
+  clearTimeout(_layoutSaveTimer);
+  _layoutSaveTimer = setTimeout(saveUILayout, LAYOUT_SAVE_DEBOUNCE);
+}
+watch([() => panel.x, () => panel.y, () => panel.width, () => panel.chatHeight, rightTab, rightPanelVisible, minimapVisible], debounceSaveLayout, { deep: true });
+
+// 帮助菜单定位
+const helpMenuStyle = ref({});
+function openHelpMenu(event) {
+  const rect = event.currentTarget.getBoundingClientRect();
+  helpMenuStyle.value = { position: 'fixed', right: `${window.innerWidth - rect.right}px`, top: `${rect.top - 8}px`, transform: 'translateY(-100%)' };
+  helpMenuOpen.value = !helpMenuOpen.value;
+}
+
+// 地图
+const canvasMinimap = computed(() => {
+  const width = 184; const height = 132; const padding = 10;
+  const viewportWorld = { x: -viewOffset.value.x / viewScale.value, y: -viewOffset.value.y / viewScale.value, width: viewportSize.width / viewScale.value, height: viewportSize.height / viewScale.value };
+  const boxes = layers.value.map((layer) => ({ id: layer.id, type: layer.type, selected: selectedLayerIds.value.includes(layer.id), x: layer.x, y: layer.y, width: layer.width || 1, height: layer.height || Math.round(((layer.width || 1) * (layer.naturalHeight || 1)) / (layer.naturalWidth || 1)) || 1 }));
+  const boundsItems = [...boxes, { x: viewportWorld.x, y: viewportWorld.y, width: viewportWorld.width, height: viewportWorld.height }];
+  const minX = Math.min(...boundsItems.map((item) => item.x));
+  const minY = Math.min(...boundsItems.map((item) => item.y));
+  const maxX = Math.max(...boundsItems.map((item) => item.x + item.width));
+  const maxY = Math.max(...boundsItems.map((item) => item.y + item.height));
+  const worldW = maxX - minX || 1; const worldH = maxY - minY || 1;
+  const scale = Math.min((width - padding * 2) / worldW, (height - padding * 2) / worldH);
+  const layers_ = boxes.map((box) => ({ ...box, style: { position: 'absolute', left: `${padding + (box.x - minX) * scale}px`, top: `${padding + (box.y - minY) * scale}px`, width: `${box.width * scale}px`, height: `${box.height * scale}px` } }));
+  const vpLeft = padding + (viewportWorld.x - minX) * scale;
+  const vpTop = padding + (viewportWorld.y - minY) * scale;
+  return { width, height, layers: layers_, viewportStyle: { left: `${vpLeft}px`, top: `${vpTop}px`, width: `${viewportWorld.width * scale}px`, height: `${viewportWorld.height * scale}px` } };
+});
+const minimapPanState = ref(null);
+function startMinimapPan(e) { if (e.button !== 0) return; const rect = e.currentTarget.getBoundingClientRect(); const mapData = canvasMinimap.value; const worldBounds = getWorldBounds(); minimapPanState.value = { startX: e.clientX, startY: e.clientY, mapLeft: rect.left, mapTop: rect.top, worldW: worldBounds.maxX - worldBounds.minX, worldH: worldBounds.maxY - worldBounds.minY, minX: worldBounds.minX, minY: worldBounds.minY }; e.currentTarget.setPointerCapture(e.pointerId); }
+function moveMinimapPan(e) { if (!minimapPanState.value) return; const s = minimapPanState.value; const dx = e.clientX - s.startX; const dy = e.clientY - s.startY; const worldToMap = (canvasMinimap.value.width - 20) / s.worldW; const newCenterX = s.minX + s.worldW * (((s.mapLeft - e.clientX) * -1 + 10) / (canvasMinimap.value.width - 20)); canvas.updateDocument(props.id, (draft) => { draft.payload.view.offset = { x: Math.round(-(newCenterX * viewScale.value - viewportSize.width / 2)), y: Math.round(-(s.minY * viewScale.value - 50)) }; return draft; }); }
+function stopMinimapPan(e) { if (!minimapPanState.value) return; e.currentTarget.releasePointerCapture(minimapPanState.value.pointerId); minimapPanState.value = null; }
+function getWorldBounds() { let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity; for (const l of layers.value) { if (l.x < minX) minX = l.x; if (l.y < minY) minY = l.y; if (l.x + (l.width || 1) > maxX) maxX = l.x + (l.width || 1); if (l.y + (l.height || 1) > maxY) maxY = l.y + (l.height || 1); } return { minX, minY, maxX, maxY }; }
+
+// viewport size
+const viewportSize = reactive({ width: 1200, height: 800 });
+function updateViewportSize() { viewportSize.width = window.innerWidth; viewportSize.height = window.innerHeight - 60; }
 const demoChatMessages = [
   { id: 'demo-user-1', role: 'user', text: '3333' },
   { id: 'demo-assistant-1', role: 'assistant', text: '已提交对话修改任务，请等待生成结果（生成完成后会显示在画布中）。' },
@@ -747,22 +843,30 @@ function stopChatResize(event) {
 }
 
 function zoom(delta, center = null) {
+  if (center && center.fit) { fitCanvasView(); return; }
   canvas.updateDocument(props.id, (draft) => {
     const oldScale = draft.payload.view.scale || 1;
-    const nextScale = Math.max(0.3, Math.min(1.8, Number((oldScale + delta).toFixed(2))));
+    const nextScale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Number((oldScale + delta).toFixed(2))));
     const offset = draft.payload.view.offset || { x: 0, y: 0 };
-
     draft.payload.view.scale = nextScale;
-
     if (center) {
       const worldX = (center.x - offset.x) / oldScale;
       const worldY = (center.y - offset.y) / oldScale;
-      draft.payload.view.offset = {
-        x: Math.round(center.x - worldX * nextScale),
-        y: Math.round(center.y - worldY * nextScale),
-      };
+      draft.payload.view.offset = { x: Math.round(center.x - worldX * nextScale), y: Math.round(center.y - worldY * nextScale) };
     }
-
+    return draft;
+  });
+}
+function fitCanvasView() {
+  canvas.updateDocument(props.id, (draft) => {
+    const layersList = draft.payload.layers || [];
+    if (!layersList.length) { draft.payload.view.scale = 1; draft.payload.view.offset = { x: 0, y: 0 }; return draft; }
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const l of layersList) { if (l.x < minX) minX = l.x; if (l.y < minY) minY = l.y; if (l.x + (l.width || 1) > maxX) maxX = l.x + (l.width || 1); if (l.y + (l.height || 1) > maxY) maxY = l.y + (l.height || 1); }
+    const w = maxX - minX + 120, h = maxY - minY + 120;
+    const fitScale = Math.min(viewportSize.width / w, viewportSize.height / h, 2);
+    draft.payload.view.scale = Math.round(fitScale * 1000) / 1000;
+    draft.payload.view.offset = { x: Math.round((viewportSize.width - w * draft.payload.view.scale) / 2 - minX * draft.payload.view.scale), y: Math.round((viewportSize.height - h * draft.payload.view.scale) / 2 - minY * draft.payload.view.scale) };
     return draft;
   });
 }
@@ -856,6 +960,71 @@ nextTick(() => {
   if (selectedLayerId.value && !selectedLayerIds.value.length) selectedLayerIds.value = [selectedLayerId.value];
 });
 
+// 全局快捷键
+function onGlobalKeydown(event) {
+  const tag = String(event.target?.tagName || '').toLowerCase();
+  const inInput = tag === 'input' || tag === 'textarea' || tag === 'select' || event.target?.isContentEditable;
+  if (event.key === 'Escape') {
+    if (helpMenuOpen.value) { helpMenuOpen.value = false; return; }
+    if (shortcutsOpen.value) { shortcutsOpen.value = false; return; }
+  }
+  if (event.key === 'Delete') {
+    if (inInput) return;
+    if (selectedLayerId.value && layers.value.length > 1) {
+      event.preventDefault();
+      removeLayer(selectedLayerId.value);
+    }
+  }
+  if ((event.ctrlKey || event.metaKey) && event.key === 'z' && !event.shiftKey) {
+    if (inInput) return;
+    event.preventDefault();
+    const snapshot = undoStack.value.pop();
+    if (snapshot && doc.value) {
+      canvas.updateDocument(props.id, (draft) => { draft.payload.layers = snapshot; return draft; });
+      selectedLayerId.value = snapshot[0]?.id || '';
+      selectedLayerIds.value = selectedLayerId.value ? [selectedLayerId.value] : [];
+    }
+  }
+  // 工具快捷键
+  if (!inInput) {
+    const keyMap = { v: 'select', h: 'hand', f: 'focus', t: 'text', m: 'annotate' };
+    const tool = keyMap[event.key.toLowerCase()];
+    if (tool) { event.preventDefault(); activeTool.value = tool; }
+  }
+}
+
+// Undo stack
+const undoStack = ref([]);
+function pushUndo() {
+  if (doc.value?.payload?.layers) {
+    undoStack.value.push(JSON.parse(JSON.stringify(doc.value.payload.layers)));
+    if (undoStack.value.length > 30) undoStack.value.shift();
+  }
+}
+
+// Ctrl state
+const ctrlHeld = ref(false);
+
+onMounted(() => {
+  updateViewportSize();
+  window.addEventListener('resize', updateViewportSize);
+  window.addEventListener('keydown', onGlobalKeydown);
+  loadUILayout();
+  const onCtrlDown = (e) => { if (e.key === 'Control') ctrlHeld.value = true; };
+  const onCtrlUp = (e) => { if (e.key === 'Control') ctrlHeld.value = false; };
+  window.addEventListener('keydown', onCtrlDown);
+  window.addEventListener('keyup', onCtrlUp);
+  const onDocClick = () => { toolbarAddOpen.value = false; helpMenuOpen.value = false; };
+  window.addEventListener('click', onDocClick);
+  onBeforeUnmount(() => {
+    window.removeEventListener('keydown', onCtrlDown);
+    window.removeEventListener('keyup', onCtrlUp);
+    window.removeEventListener('click', onDocClick);
+    window.removeEventListener('resize', updateViewportSize);
+    window.removeEventListener('keydown', onGlobalKeydown);
+  });
+});
+
 onBeforeUnmount(() => {
   chatReferenceImages.value.forEach((image) => {
     if (image.localUrl?.startsWith('blob:')) URL.revokeObjectURL(image.localUrl);
@@ -870,7 +1039,7 @@ onBeforeUnmount(() => {
         <button class="logo logo-link" type="button" @click="router.push('/')">YOUMI</button><span>·</span><b>万能画布</b><span>/</span><button>✎ {{ doc.title }}</button><em>已保存 · 刚刚</em>
       </div>
       <div class="head-actions">
-        <button>↶</button><button>↷</button><button @click="zoom(-0.08)">−</button><strong>{{ Math.round(viewScale * 100) }}%</strong><button @click="zoom(0.08)">＋</button><button @click="router.push('/canvas')">×</button>
+        <button class="panel-visibility-btn" :class="{ active: rightPanelVisible }" :title="rightPanelVisible ? '隐藏对话框' : '显示对话框'" @click="rightPanelVisible = !rightPanelVisible">▮</button><button @click="router.push('/canvas')">×</button>
       </div>
     </header>
 
@@ -886,12 +1055,11 @@ onBeforeUnmount(() => {
             <button>▤ 从历史生成导入</button>
           </div>
         </div>
-        <button>ⓘ 帮助</button>
-        <button>⌘ 快捷键</button>
+        <button :class="{ active: shortcutsOpen }" @click="shortcutsOpen = !shortcutsOpen; if (shortcutsOpen) addOpen = false">⌘ 快捷键</button>
       </div>
 
       <div
-        :class="['stage', { 'hand-tool': activeTool === 'hand', 'is-panning': panState }]"
+        :class="['stage', { 'hand-tool': activeTool === 'hand', 'annotate-tool': activeTool === 'annotate', 'is-panning': panState }]"
         @wheel.prevent="wheelZoom"
         @pointerdown="startMarquee"
         @pointermove="moveMarquee"
@@ -962,7 +1130,54 @@ onBeforeUnmount(() => {
         <div v-if="marquee.active" class="selection-marquee" :style="marqueeStyle" />
       </div>
 
-      <nav class="bottom-tools uc-sidebar-tools uc-floating uc-floating-toolbar" :style="toolbarStyle" aria-label="画布工具栏" @pointerdown.stop>
+      <aside
+        v-if="layers.length && minimapVisible"
+        class="canvas-minimap"
+        :style="{ width: `${canvasMinimap.width}px`, height: `${canvasMinimap.height}px` }"
+        aria-label="画布地图"
+        @pointerdown.stop="startMinimapPan"
+        @pointermove.stop="moveMinimapPan"
+        @pointerup.stop="stopMinimapPan"
+        @pointercancel.stop="stopMinimapPan"
+      >
+        <header>
+          <strong>地图</strong>
+          <span>{{ layers.length }} 张</span>
+        </header>
+        <div class="canvas-minimap-plane">
+          <i
+            v-for="layer in canvasMinimap.layers"
+            :key="layer.id"
+            :class="['canvas-minimap-layer', { selected: layer.selected, placeholder: layer.type === 'placeholder' }]"
+            :style="layer.style"
+          ></i>
+          <b class="canvas-minimap-viewport" :style="canvasMinimap.viewportStyle"></b>
+        </div>
+      </aside>
+
+      <div class="canvas-zoom-bar" aria-label="画布缩放">
+        <button class="zoom-bar-icon-btn" title="适应画布" @click="zoom(0, { fit: true })"><i class="ri-aspect-ratio-line"></i></button>
+        <button class="zoom-bar-icon-btn minimap-toggle-btn" :class="{ active: minimapVisible }" title="地图" @click="minimapVisible = !minimapVisible"><i class="ri-map-pin-line"></i></button>
+        <div class="zoom-bar-slider-wrap">
+          <input type="range" class="zoom-bar-slider" min="0" max="100" :value="zoomSliderValue" @input="setZoomFromSlider($event.target.value)" />
+        </div>
+        <button @click="zoom(-0.08)"><i class="ri-subtract-line"></i></button>
+        <strong @click="zoomSliderReset" title="点击重置 100%">{{ Math.round(viewScale * 100) }}%</strong>
+        <button @click="zoom(0.08)"><i class="ri-add-line"></i></button>
+        <div class="zoom-bar-sep"></div>
+        <button class="zoom-bar-help-btn" :class="{ active: helpMenuOpen }" title="帮助" @click.stop="openHelpMenu">?</button>
+      </div>
+
+      <nav class="bottom-tools uc-sidebar-tools uc-floating uc-floating-toolbar is-docked" aria-label="画布工具栏" @pointerdown.stop>
+        <div class="uc-toolbar-add-wrap">
+          <button type="button" class="uc-sidebar-tool-btn uc-toolbar-add-btn" :class="{ active: toolbarAddOpen }" title="添加图片" @click.stop="toolbarAddOpen = !toolbarAddOpen">
+            <i class="ri-add-line" aria-hidden="true"></i>
+          </button>
+          <div v-if="toolbarAddOpen" class="uc-toolbar-add-menu" @click.stop>
+            <button @click="openImageUpload('canvas'); toolbarAddOpen = false"><i class="ri-upload-2-line" aria-hidden="true"></i>本地上传</button>
+            <button @click="toolbarAddOpen = false"><i class="ri-history-line" aria-hidden="true"></i>从历史生成导入</button>
+          </div>
+        </div>
         <button
           v-for="tool in canvasTools"
           :key="tool.key"
@@ -975,19 +1190,9 @@ onBeforeUnmount(() => {
           <i :class="tool.icon" aria-hidden="true"></i>
           <span v-if="tool.shortcut" class="uc-sidebar-tool-key">{{ tool.shortcut }}</span>
         </button>
-        <div
-          class="uc-floating-drag-grip uc-floating-drag-grip--right"
-          title="拖动工具栏"
-          @pointerdown.stop="startToolbarDrag"
-          @pointermove.stop="moveToolbar"
-          @pointerup.stop="stopToolbarDrag"
-          @pointercancel.stop="stopToolbarDrag"
-        >
-          <i class="ri-drag-move-2-fill" aria-hidden="true"></i>
-        </div>
       </nav>
 
-      <aside class="right-panel uc-left uc-rightpanel uc-floating uc-floating-panel" :style="{ width: `${panel.width}px`, ...(panel.x === null ? {} : { left: `${panel.x}px`, top: `${panel.y}px`, right: 'auto' }) }">
+      <aside v-if="rightPanelVisible" class="right-panel uc-left uc-rightpanel uc-floating uc-floating-panel" :style="{ width: `${panel.width}px`, ...(panel.x === null ? {} : { left: `${panel.x}px`, top: `${panel.y}px`, right: 'auto' }) }">
         <div class="panel-resize-handle" title="调节对话窗口宽度" @pointerdown="startPanelResize" @pointermove="resizePanel" @pointerup="stopPanelResize" @pointercancel="stopPanelResize" />
         <header class="uc-left-tabs uc-floating-drag-handle">
           <button class="uc-left-tab" :class="{ active: rightTab === 'chat' }" @click="rightTab = 'chat'">
@@ -1039,7 +1244,7 @@ onBeforeUnmount(() => {
                     <span v-else>{{ chatReferenceImages.length ? '+' : '＋' }}</span>
                   </button>
                 </div>
-                <textarea v-model="chatText" placeholder="描述你想生成的图片，或选中画布图片描述修改..." @keydown.ctrl.enter.prevent="sendChat" />
+                <textarea v-model="chatText" placeholder="描述你想生成的图片，或选中画布图片描述修改..." @keydown.enter.prevent="sendChat" @keydown.ctrl.enter.prevent="chatText += '\n'" />
               </div>
               <div class="uc-chat-generate-options" @click.stop>
                 <label>
@@ -1061,7 +1266,7 @@ onBeforeUnmount(() => {
                   </select>
                 </label>
               </div>
-              <footer class="uc-bottom-toolbar"><span>⌘ Ctrl/⌘ + Enter 发送</span><button :disabled="!chatText.trim() || chatGenerating" @click="sendChat"><i class="ri-send-plane-fill" aria-hidden="true"></i>{{ chatGenerating ? '生成中' : '发送' }}</button></footer>
+              <footer class="uc-bottom-toolbar"><span>Enter 发送 · Ctrl+Enter 换行</span><button :disabled="!chatText.trim() || chatGenerating" @click="sendChat"><i class="ri-send-plane-fill" aria-hidden="true"></i>{{ chatGenerating ? '生成中' : '发送' }}</button></footer>
             </div>
           </div>
         </section>
@@ -1074,5 +1279,60 @@ onBeforeUnmount(() => {
         </section>
       </aside>
     </section>
+
+    <!-- 帮助菜单 -->
+    <Teleport to="body">
+      <div v-if="helpMenuOpen" class="zoom-bar-help-menu" :style="helpMenuStyle" @click.stop>
+        <button class="help-menu-item" @click="helpMenuOpen = false"><i class="ri-guide-line"></i><span>帮助</span></button>
+        <button class="help-menu-item" @click="helpMenuOpen = false; shortcutsOpen = true"><i class="ri-keyboard-line"></i><span>快捷键</span></button>
+      </div>
+    </Teleport>
+
+    <!-- 快捷键面板 -->
+    <div v-if="shortcutsOpen" class="shortcuts-backdrop" @click.self="shortcutsOpen = false">
+      <div class="shortcuts-panel">
+        <div class="shortcuts-head">
+          <h2>⌨ 快捷键速查</h2>
+          <button @click="shortcutsOpen = false">✕</button>
+        </div>
+        <div class="shortcuts-body">
+          <div class="shortcuts-group">
+            <h3>🛠 工具切换</h3>
+            <dl>
+              <div><dt>V</dt><dd>选择工具</dd></div>
+              <div><dt>H</dt><dd>抓手工具（拖动画布）</dd></div>
+              <div><dt>F</dt><dd>聚焦选中图层 / 适应画面</dd></div>
+              <div><dt>T</dt><dd>插入文字</dd></div>
+              <div><dt>M</dt><dd>标记元素（点击选中）</dd></div>
+            </dl>
+          </div>
+          <div class="shortcuts-group">
+            <h3>🖱 画布操作</h3>
+            <dl>
+              <div><dt>滚轮</dt><dd>缩放画布</dd></div>
+              <div><dt>空格 + 拖拽</dt><dd>平移画布</dd></div>
+              <div><dt>拖入图片/文件</dt><dd>添加图片到画布</dd></div>
+              <div><dt>Ctrl + 点击</dt><dd>任意工具下临时选中元素</dd></div>
+            </dl>
+          </div>
+          <div class="shortcuts-group">
+            <h3>✏ 编辑</h3>
+            <dl>
+              <div><dt>Ctrl + Z</dt><dd>撤销上一步（最多30步）</dd></div>
+              <div><dt>Delete</dt><dd>删除选中图层</dd></div>
+              <div><dt>Backspace</dt><dd>输入框内删除字符</dd></div>
+              <div><dt>Esc</dt><dd>关闭面板</dd></div>
+            </dl>
+          </div>
+          <div class="shortcuts-group">
+            <h3>💬 对话</h3>
+            <dl>
+              <div><dt>Enter</dt><dd>发送对话消息</dd></div>
+              <div><dt>Ctrl + Enter</dt><dd>输入框换行</dd></div>
+            </dl>
+          </div>
+        </div>
+      </div>
+    </div>
   </main>
 </template>

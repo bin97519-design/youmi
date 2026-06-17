@@ -1,6 +1,10 @@
 import { defineStore } from 'pinia';
+import { useUserStore } from './user';
 
 const STORAGE_KEY = 'youmi_canvas_documents_v3';
+const OFFLINE_QUEUE_KEY = 'youmi_canvas_offline_queue_v1';
+const PERSIST_DEBOUNCE_MS = 50;  // 快速防抖：拖动时批量合并，但几乎实时落库
+let authFailed = false;  // 认证失败后静默，避免重复请求刷屏
 const demoImages = [
   new URL('../assets/youqian/images/060-1780040674695_a003c35a-7592-42ae-9a69-bcae7156c3bf.png', import.meta.url).href,
   new URL('../assets/youqian/images/061-1780040584339_6fd15155-2051-4c0c-bf83-5e32fd8201a8.png', import.meta.url).href,
@@ -31,6 +35,7 @@ export function makeCanvasDocument(id = String(Date.now()).slice(-4)) {
       view: { scale: 0.68, offset: { x: 0, y: 0 } },
       layers: [],
       chat: [],
+      ui: { detectionVisible: true },
     },
   };
 }
@@ -110,7 +115,7 @@ function mergeSeedDocuments(documents) {
   return [...documents, ...seeds.filter((doc) => !existingIds.has(doc.id))];
 }
 
-function load() {
+function loadLocal() {
   try {
     const data = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
     return Array.isArray(data) && data.length ? mergeSeedDocuments(data) : seed();
@@ -119,8 +124,163 @@ function load() {
   }
 }
 
-function save(documents) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(documents));
+function saveLocal(documents) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(documents));
+  } catch (e) {
+    // 配额超出：尝试清理历史 generationHistory
+    try {
+      const slim = documents.map((doc) => {
+        if (!doc?.payload) return doc;
+        const layers = (doc.payload.layers || []).slice(-100);
+        const history = (doc.payload.generationHistory || []).slice(0, 20);
+        return { ...doc, payload: { ...doc.payload, layers, generationHistory: history } };
+      });
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(slim));
+      console.warn('localStorage 配额不足，已自动裁剪 history');
+    } catch (e2) {
+      console.error('localStorage 写入失败：', e2);
+    }
+  }
+}
+
+function loadOfflineQueue() {
+  try {
+    const data = JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || '[]');
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveOfflineQueue(queue) {
+  try {
+    localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
+  } catch (e) {
+    console.warn('offline queue write failed:', e);
+  }
+}
+
+function pushOfflineQueue(doc) {
+  if (!doc) return;
+  const queue = loadOfflineQueue();
+  const filtered = queue.filter((item) => item.id !== doc.id);
+  filtered.unshift({ id: doc.id, doc, enqueuedAt: Date.now() });
+  saveOfflineQueue(filtered.slice(0, 30));
+}
+
+function getAuthHeaders() {
+  try {
+    const user = useUserStore();
+    return user.authHeaders();
+  } catch {
+    return {};
+  }
+}
+
+async function syncToServer(doc, { skipQueue = false } = {}) {
+  if (authFailed) return;
+  const headers = getAuthHeaders();
+  if (!headers.Authorization) return;
+  // 检查 localStorage 里是否已有离线队列（说明之前保存失败过），如果有就直接跳过避免刷屏
+  if (!skipQueue && loadOfflineQueue().length > 0) return;
+  try {
+    const res = await fetch('/api/canvas/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify({
+        docId: doc.id,
+        title: doc.title,
+        payload: doc.payload,
+        thumbnailUrl: doc.thumbnailUrl || '',
+        isReversePrompt: doc.id === 'reverse-prompt',
+      }),
+    });
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) { authFailed = true; saveOfflineQueue([]); return; }
+      try {
+        const body = await res.json().catch(() => ({}));
+        if (body.message === '未登录' || body.message === '登录已过期') { authFailed = true; saveOfflineQueue([]); return; }
+      } catch {}
+      if (!skipQueue) {
+        pushOfflineQueue(doc);
+      }
+    }
+  } catch (e) {
+    console.warn('Sync canvas to server failed:', e);
+    if (!skipQueue) pushOfflineQueue(doc);
+  }
+}
+
+async function flushOfflineQueue() {
+  if (authFailed) return;
+  const queue = loadOfflineQueue();
+  if (!queue.length) return;
+  const headers = getAuthHeaders();
+  if (!headers.Authorization) return;
+  const remaining = [];
+  for (const item of queue) {
+    try {
+      const res = await fetch('/api/canvas/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({
+          docId: item.doc.id,
+          title: item.doc.title,
+          payload: item.doc.payload,
+          thumbnailUrl: item.doc.thumbnailUrl || '',
+          isReversePrompt: item.doc.id === 'reverse-prompt',
+        }),
+      });
+      if (!res.ok) {
+        if (res.status === 401 || res.status === 403) { authFailed = true; saveOfflineQueue([]); continue; }
+        try {
+          const body = await res.json().catch(() => ({}));
+          if (body.message === '未登录' || body.message === '登录已过期') { authFailed = true; saveOfflineQueue([]); continue; }
+        } catch {}
+        remaining.push(item);
+      }
+    } catch {
+      remaining.push(item);
+    }
+  }
+  saveOfflineQueue(remaining);
+}
+
+async function syncDeleteFromServer(docId) {
+  const headers = getAuthHeaders();
+  if (!headers.Authorization) return;
+  try {
+    await fetch(`/api/canvas/${docId}`, {
+      method: 'DELETE',
+      headers: { ...headers },
+    });
+  } catch (e) {
+    console.warn('Delete canvas from server failed:', e);
+  }
+}
+
+async function loadFromServer() {
+  const headers = getAuthHeaders();
+  if (!headers.Authorization) return [];
+  try {
+    const response = await fetch('/api/canvas/list', { headers: { ...headers } });
+    const payload = await response.json().catch(() => ({}));
+    if (payload.code !== 0 || !Array.isArray(payload.data)) return [];
+    return payload.data.map((item) => ({
+      id: item.docId,
+      title: item.title,
+      updatedAt: item.updatedAt,
+      createdAt: item.createdAt || item.updatedAt,
+      lastOpenedAt: item.updatedAt,
+      thumbnailUrl: item.thumbnailUrl || '',
+      payload: item.payload || { schemaVersion: 1, view: { scale: 0.68, offset: { x: 0, y: 0 } }, layers: [], chat: [] },
+      meta: {},
+    }));
+  } catch (e) {
+    console.warn('Load canvas from server failed:', e);
+    return [];
+  }
 }
 
 export function layerName(index) {
@@ -130,12 +290,75 @@ export function layerName(index) {
 
 export const useCanvasStore = defineStore('canvas', {
   state: () => ({
-    documents: load(),
+    documents: loadLocal(),
+    serverSynced: false,
   }),
   actions: {
     persist() {
-      save(this.documents);
+      // localStorage 立即同步写（防止意外关页面丢图）
+      saveLocal(this.documents);
+      // 服务器同步防抖，避免拖动 / 批量操作时打爆后端
+      if (this._serverSyncTimer) {
+        clearTimeout(this._serverSyncTimer);
+      }
+      this._serverSyncTimer = setTimeout(() => {
+        this._serverSyncTimer = null;
+        // 同步所有需要同步的画布（不仅第一个）
+        for (const doc of this.documents) {
+          if (doc && doc.payload) syncToServer(doc);
+        }
+        // 顺便尝试清空离线队列
+        flushOfflineQueue();
+      }, PERSIST_DEBOUNCE_MS);
     },
+
+    async syncFromServer() {
+      const serverDocs = await loadFromServer();
+      if (!serverDocs.length) {
+        this.serverSynced = true;
+        return;
+      }
+      const merged = [...this.documents];
+      let needFlush = false;
+      for (const serverDoc of serverDocs) {
+        const existingIndex = merged.findIndex((d) => d.id === serverDoc.id);
+        if (existingIndex >= 0) {
+          const localDoc = merged[existingIndex];
+          const localLayerCount = (localDoc.payload?.layers || []).length;
+          const serverLayerCount = (serverDoc.payload?.layers || []).length;
+
+          // 保护：本地有图层但服务器是空的 → 保留本地，并触发一次同步
+          if (localLayerCount > 0 && serverLayerCount === 0) {
+            needFlush = true;
+            continue;  // 不覆盖
+          }
+
+          // 服务器有数据 → 覆盖本地；仅保留 detection 缓存
+          const mergedDoc = { ...serverDoc };
+          if (serverDoc.payload?.layers && localDoc.payload?.layers) {
+            mergedDoc.payload = { ...serverDoc.payload };
+            mergedDoc.payload.layers = serverDoc.payload.layers.map((sl, i) => {
+              const ll = localDoc.payload.layers[i];
+              if (sl && ll && ll.detection?.status === 'done' && !sl.detection) {
+                return { ...sl, detection: ll.detection };
+              }
+              return sl;
+            });
+          }
+          merged[existingIndex] = mergedDoc;
+        } else {
+          merged.push(serverDoc);
+        }
+      }
+      this.documents = merged;
+      saveLocal(this.documents);
+      this.serverSynced = true;
+      // 本地有数据但服务器缺失的 → 立即同步到服务器
+      if (needFlush) {
+        this.flushNow();
+      }
+    },
+
     createDocument() {
       const doc = makeCanvasDocument();
       this.documents.unshift(doc);
@@ -163,11 +386,160 @@ export const useCanvasStore = defineStore('canvas', {
     },
     removeDocument(id) {
       this.documents = this.documents.filter((doc) => doc.id !== id);
-      this.persist();
+      saveLocal(this.documents);
+      // 同步删除服务器记录
+      syncDeleteFromServer(id);
+      // 从离线队列中也移除
+      const queue = loadOfflineQueue().filter((item) => item.id !== id);
+      saveOfflineQueue(queue);
     },
     markOpened(id) {
       this.documents = this.documents.map((doc) => (doc.id === id ? { ...doc, lastOpenedAt: Date.now() } : doc));
       this.persist();
+    },
+
+    // 立即刷写：场景：用户上传/AI 生图完成 → 立即同步服务器，不等防抖
+    flushNow() {
+      if (this._serverSyncTimer) {
+        clearTimeout(this._serverSyncTimer);
+        this._serverSyncTimer = null;
+      }
+      saveLocal(this.documents);
+      for (const doc of this.documents) {
+        if (doc && doc.payload) syncToServer(doc, { skipQueue: true });
+      }
+    },
+
+    /**
+     * 给指定画布指定图层跑视觉检测，识别到的框写到 layer.detection 并立即落库。
+     * 幂等：同一 url 跨画布复用，已有 detection 且 status=done 则跳过。
+     * @returns {Promise<{boxes: Array, status: string, errorMessage?: string}>}
+     */
+    async runDetection(docId, layerId, { force = false } = {}) {
+      const doc = this.documents.find((d) => d.id === docId);
+      if (!doc) return { boxes: [], status: 'failed', errorMessage: '画布不存在' };
+      const layer = doc.payload.layers.find((l) => l.id === layerId);
+      if (!layer || !layer.url) return { boxes: [], status: 'failed', errorMessage: '图层无 url' };
+
+      // 已识别过：done 直接返回缓存；failed 在 force=false 时也不再重试
+      if (!force && layer.detection) {
+        if (layer.detection.status === 'done') {
+          return { boxes: layer.detection.boxes || [], status: 'done' };
+        }
+        if (layer.detection.status === 'failed' && !force) {
+          return { boxes: [], status: 'failed', errorMessage: layer.detection.errorMessage };
+        }
+      }
+
+      // 跨画布去重：同 url 在别的画布已经识别过，直接复用
+      if (!force) {
+        for (const other of this.documents) {
+          if (other.id === docId) continue;
+          const ol = other.payload.layers.find((l) => l && l.url === layer.url && l.detection?.status === 'done');
+          if (ol) {
+            const reused = {
+              status: 'done',
+              boxes: ol.detection.boxes,
+              cacheKey: layer.url,
+              updatedAt: Date.now(),
+            };
+            this.updateDocument(docId, (d) => {
+              const target = d.payload.layers.find((l) => l.id === layerId);
+              if (target) target.detection = reused;
+              return d;
+            });
+            this.flushNow();
+            return { boxes: reused.boxes, status: 'done' };
+          }
+        }
+      }
+
+      // 标记 pending
+      this.updateDocument(docId, (d) => {
+        const target = d.payload.layers.find((l) => l.id === layerId);
+        if (target) {
+          target.detection = { status: 'pending', cacheKey: layer.url, boxes: [], updatedAt: Date.now() };
+        }
+        return d;
+      });
+
+      try {
+        const headers = getAuthHeaders();
+        const res = await fetch('/api/image/detect-elements', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify({ imageUrl: layer.url, layerId }),
+        });
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const json = await res.json().catch(() => ({}));
+        const imageInfo =
+          json.data?.result?.imageInfo ||
+          json.data?.imageInfo ||
+          json.data?.element?.data?.images?.[0]?.data ||
+          json.data ||
+          [];
+        const boxes = Array.isArray(imageInfo)
+          ? imageInfo.map((el, idx) => {
+              // 兼容字段名: box_2d / box.2d / bbox / box2d；值可能是字符串
+              let bx = el.box_2d || el['box.2d'] || el.bbox_2d || el.box2d || el.bbox;
+              if (typeof bx === 'string') {
+                try { bx = JSON.parse(bx); } catch { bx = null; }
+              }
+              if (!Array.isArray(bx) || bx.length !== 4) bx = [0, 0, 100, 100];
+              // 自适应归一化: 0-1 浮点 → ×1000 转 0-1000 整数
+              const mx = Math.max(...bx.map((v) => Math.abs(v)));
+              if (mx > 0 && mx <= 1.5) bx = bx.map((v) => v * 1000);
+              bx = bx.map((v) => Math.max(0, Math.min(1000, Math.round(v))));
+              return {
+                name: el.object_name || el.name || `元素${idx + 1}`,
+                box2d: bx,
+              };
+            })
+          : [];
+        // 落库：done
+        this.updateDocument(docId, (d) => {
+          const target = d.payload.layers.find((l) => l.id === layerId);
+          if (target) {
+            target.detection = {
+              status: 'done',
+              cacheKey: layer.url,
+              boxes,
+              updatedAt: Date.now(),
+            };
+          }
+          return d;
+        });
+        this.flushNow();
+        return { boxes, status: 'done' };
+      } catch (err) {
+        const msg = err?.message || String(err);
+        this.updateDocument(docId, (d) => {
+          const target = d.payload.layers.find((l) => l.id === layerId);
+          if (target) {
+            target.detection = {
+              status: 'failed',
+              cacheKey: layer.url,
+              boxes: [],
+              updatedAt: Date.now(),
+              errorMessage: msg,
+            };
+          }
+          return d;
+        });
+        this.flushNow();
+        return { boxes: [], status: 'failed', errorMessage: msg };
+      }
+    },
+
+    /** 切换视觉框开关（画布级，写到 doc.payload.ui.detectionVisible） */
+    setDetectionVisible(docId, visible) {
+      this.updateDocument(docId, (d) => {
+        if (!d.payload.ui) d.payload.ui = { detectionVisible: true };
+        d.payload.ui.detectionVisible = Boolean(visible);
+        return d;
+      });
     },
   },
 });

@@ -34,11 +34,12 @@ const ratioOpen = ref(false);
 const selectedRatio = ref('智能比例');
 const ratioOptions = ['1:1', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'];
 const modelOpen = ref(false);
-const selectedModel = ref('banana2');
-const modelOptions = ['banana2', 'banana pro', 'GPT imag 2'];
+const selectedModel = ref('gpt image 2');
+const modelOptions = ['gpt image 2', 'banana2', 'banana pro'];
 const qualityOpen = ref(false);
 const selectedQuality = ref('2K');
-const qualityOptions = ['2K', '4K'];
+const qualityOptions = ['1K', '2K', '4K'];
+const cloneResolutionOptions = ['1K', '2K', '4K'];
 const countOpen = ref(false);
 const selectedCount = ref('生成1张');
 const countOptions = ['生成1张', '生成2张', '生成3张', '生成4张'];
@@ -47,7 +48,7 @@ const splitIdeaOpen = ref(false);
 const detailDraft = ref({
   productInfo: '',
   method: 'split',
-  model: 'banana2',
+  model: 'gpt image 2',
   ratio: '9:16',
   resolution: '2K',
   platform: '淘宝',
@@ -62,6 +63,8 @@ const promptError = ref('');
 const cloneModalOpen = ref(false);
 const cloneLoading = ref('');
 const cloneError = ref('');
+const cloneOptimizingProductInfo = ref(false);
+const cloneProductInfoPreview = ref(false);
 const cloneExtractRequestId = ref('');
 const cloneBridgeReady = ref(false);
 const clonePreviewZoom = ref(96);
@@ -70,10 +73,10 @@ const cloneCutMode = ref(false);
 const cloneCutLines = ref([]);
 const cloneDraggingCutLine = ref(null);
 const clonePreviewDragId = ref('');
+const clonePreviewDragOverId = ref('');
 const clonePreviewActiveImageId = ref('');
 const cloneDraft = ref({
   productInfo: '',
-  model: 'banana2',
   ratio: '9:16',
   resolution: '2K',
   cloneStrength: 'MEDIUM',
@@ -979,8 +982,23 @@ function startClonePreviewDrag(imageId, event) {
   event.dataTransfer.setData('text/plain', imageId);
 }
 
+function enterClonePreviewDrag(targetId, event) {
+  if (!clonePreviewDragId.value || clonePreviewDragId.value === targetId) return;
+  clonePreviewDragOverId.value = targetId;
+  event.dataTransfer.dropEffect = 'move';
+}
+
+function leaveClonePreviewDrag(targetId, event) {
+  const nextTarget = event.relatedTarget;
+  if (event.currentTarget.contains(nextTarget)) return;
+  if (clonePreviewDragOverId.value === targetId) {
+    clonePreviewDragOverId.value = '';
+  }
+}
+
 function endClonePreviewDrag() {
   clonePreviewDragId.value = '';
+  clonePreviewDragOverId.value = '';
 }
 
 function dropClonePreviewImage(targetId) {
@@ -999,7 +1017,8 @@ function dropClonePreviewImage(targetId) {
   }
 
   const [moved] = webpageImages.splice(fromIndex, 1);
-  webpageImages.splice(toIndex, 0, moved);
+  const insertIndex = fromIndex < toIndex ? toIndex : toIndex;
+  webpageImages.splice(insertIndex, 0, moved);
   const reorderedWebpageIds = new Set(webpageImages.map((image) => image.id));
   const otherImages = cloneDraft.value.competitorImages.filter((image) => !reorderedWebpageIds.has(image.id));
   setCloneImages('competitor', [...otherImages, ...webpageImages]);
@@ -1105,85 +1124,108 @@ function cloneImageUrls(type) {
     .map((image) => image.url);
 }
 
+function escapeHtml(value) {
+  return String(value || '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function renderProductInfoMarkdown(markdown) {
+  const source = String(markdown || '').trim();
+  if (!source) return '<p class="empty">优化后的 Markdown 产品信息会显示在这里</p>';
+
+  const lines = source.split(/\r?\n/);
+  let html = '';
+  let listOpen = false;
+  const closeList = () => {
+    if (listOpen) {
+      html += '</ol>';
+      listOpen = false;
+    }
+  };
+  const inline = (text) => escapeHtml(text).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      closeList();
+      continue;
+    }
+    const heading = line.match(/^#{1,3}\s+(.+)$/);
+    if (heading) {
+      closeList();
+      html += `<h4>${inline(heading[1])}</h4>`;
+      continue;
+    }
+    const ordered = line.match(/^\d+[.、]\s*(.+)$/);
+    if (ordered) {
+      if (!listOpen) {
+        html += '<ol>';
+        listOpen = true;
+      }
+      html += `<li>${inline(ordered[1])}</li>`;
+      continue;
+    }
+    const unordered = line.match(/^[-*]\s+(.+)$/);
+    if (unordered) {
+      if (!listOpen) {
+        html += '<ol>';
+        listOpen = true;
+      }
+      html += `<li>${inline(unordered[1])}</li>`;
+      continue;
+    }
+    closeList();
+    html += `<p>${inline(line)}</p>`;
+  }
+  closeList();
+  return html;
+}
+
+async function optimizeCloneProductInfo() {
+  const productImages = cloneImageUrls('product');
+  if (!productImages.length) {
+    cloneError.value = '请先上传产品图片，再优化产品信息';
+    return;
+  }
+
+  cloneError.value = '';
+  cloneOptimizingProductInfo.value = true;
+  try {
+    const data = await readCloneApiResponse(
+      await fetch('/api/ai/optimize-product-info', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...userStore.authHeaders(),
+        },
+        body: JSON.stringify({
+          productInfo: cloneDraft.value.productInfo,
+          productImages,
+        }),
+      }),
+    );
+    const optimized = String(data?.productInfo || '').trim();
+    if (!optimized) throw new Error('模型没有返回可用的产品信息');
+    cloneDraft.value.productInfo = optimized;
+    cloneProductInfoPreview.value = true;
+    cloneDraft.value.mappingContracts = [];
+  } catch (error) {
+    cloneError.value = error instanceof Error ? error.message : '优化产品信息失败';
+  } finally {
+    cloneOptimizingProductInfo.value = false;
+  }
+}
+
 async function readCloneApiResponse(response) {
   const result = await response.json().catch(() => null);
   if (!response.ok || !result || result.code !== 0) {
     throw new Error(result?.message || `接口请求失败：${response.status}`);
   }
   return result.data;
-}
-
-async function deconstructClone() {
-  const competitorImages = cloneImageUrls('competitor');
-  if (!competitorImages.length) {
-    cloneError.value = '请先上传竞品详情页参考图';
-    return false;
-  }
-
-  cloneError.value = '';
-  cloneLoading.value = 'deconstruct';
-  try {
-    const data = await readCloneApiResponse(
-      await fetch('/api/detail-clone/deconstruct', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...userStore.authHeaders(),
-        },
-        body: JSON.stringify({
-          competitorImages,
-          productInfo: cloneDraft.value.productInfo,
-          cloneStrength: cloneDraft.value.cloneStrength,
-        }),
-      }),
-    );
-    cloneDraft.value.sliceContracts = data?.sliceContracts || [];
-    cloneDraft.value.mappingContracts = [];
-    return cloneDraft.value.sliceContracts.length > 0;
-  } catch (error) {
-    cloneError.value = error instanceof Error ? error.message : '竞品结构拆解失败';
-    return false;
-  } finally {
-    cloneLoading.value = '';
-  }
-}
-
-async function mapCloneContracts() {
-  if (!cloneDraft.value.sliceContracts.length) {
-    const ok = await deconstructClone();
-    if (!ok) return false;
-  }
-  if (!cloneDraft.value.productInfo.trim() && !cloneImageUrls('product').length) {
-    cloneError.value = '请填写产品信息或上传产品图';
-    return false;
-  }
-
-  cloneError.value = '';
-  cloneLoading.value = 'map';
-  try {
-    const data = await readCloneApiResponse(
-      await fetch('/api/detail-clone/map', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...userStore.authHeaders(),
-        },
-        body: JSON.stringify({
-          productInfo: cloneDraft.value.productInfo,
-          productImages: cloneImageUrls('product'),
-          cloneStrength: cloneDraft.value.cloneStrength,
-          sliceContracts: cloneDraft.value.sliceContracts,
-        }),
-      }),
-    );
-    cloneDraft.value.mappingContracts = data?.mappingContracts || [];
-    return cloneDraft.value.mappingContracts.length > 0;
-  } catch (error) {
-    cloneError.value = error instanceof Error ? error.message : '产品内容映射失败';
-    return false;
-  } finally {
-    cloneLoading.value = '';
-  }
 }
 
 function slotText(slots, key) {
@@ -1197,57 +1239,194 @@ function textList(value) {
   return Array.isArray(value) ? value.filter(Boolean).join('、') : String(value || '');
 }
 
+function fallbackCloneRole(pageNo) {
+  return [
+    '首屏：核心利益点和产品第一印象',
+    '痛点/场景：说明用户为什么需要它',
+    '核心卖点：集中展示 1 到 3 个高转化优势',
+    '材质/结构：用细节证明产品真实可靠',
+    '使用场景：展示人群、空间或用途',
+    '规格/参数：辅助购买决策',
+    '品质/工艺：建立信任和安心感',
+    '收尾转化：强化选择理由',
+  ][pageNo - 1] || `第 ${pageNo} 屏：延续竞品该屏的信息职责`;
+}
+
+function cloneStrengthText() {
+  if (cloneDraft.value.cloneStrength === 'LIGHT') return '轻度：只借鉴信息顺序、模块类型和页面职责，视觉重新设计。';
+  if (cloneDraft.value.cloneStrength === 'HIGH') return '高度：贴近参考屏构图、模块组织、色彩层级和视觉语言，但全部替换产品与事实内容。';
+  return '中度：借鉴参考屏布局结构、视觉节奏和模块类型，再按当前产品重写。';
+}
+
+function cloneGlobalStandard(competitorCount) {
+  return [
+    '【竞品详情页复刻 - 全局标准】',
+    `复刻强度：${cloneStrengthText()}`,
+    `有效竞品详情图：${competitorCount} 张，输出 ${competitorCount} 屏，每张竞品图只对应一屏。`,
+    '参考图 1 是当前产品白底图，是产品外观、材质和主体造型的唯一来源。',
+    '参考图 2 是当前竞品单屏详情图，只用于借鉴布局骨架、信息顺序、视觉节奏和构图关系。',
+    '不要重新切屏，不要把多张长图压缩到一张画面，不要复制竞品品牌、Logo、证书、排名、价格、销量、医疗功效、未验证证明或平台水印。',
+    '使用简体中文电商文案，文字清晰可读，输出一张完整 9:16 电商详情页单屏。',
+  ].join('\n');
+}
+
+function mappingPromptFields(mapping = {}, index = 0) {
+  const sliceIndex = Number(mapping.sliceIndex || index + 1);
+  return {
+    theme: mapping.theme || fallbackCloneRole(sliceIndex),
+    designIdea:
+      mapping.designIdea ||
+      `用当前产品真实信息承接竞品第 ${sliceIndex} 屏的信息职责，保留参考屏的模块组织和阅读节奏。`,
+    visualScene:
+      mapping.visualScene ||
+      '参考竞品图只借鉴版式骨架、视觉层级、卡片关系、留白比例和构图节奏；产品外观必须以产品白底图为准。',
+    copyContent:
+      mapping.copyContent ||
+      `围绕当前产品信息重写本屏标题、卖点和说明，不照抄竞品文案。产品信息：${cloneDraft.value.productInfo || '参考产品图判断外观与品类'}`,
+  };
+}
+
+function composeGenerationHint(mapping = {}, index = 0) {
+  const sliceIndex = Number(mapping.sliceIndex || index + 1);
+  const fields = mappingPromptFields(mapping, index);
+  const competitorUrl = cloneImageUrls('competitor')[sliceIndex - 1] || cloneImageUrls('competitor')[0] || '';
+  return [
+    cloneGlobalStandard(cloneImageUrls('competitor').length),
+    '',
+    `【竞品详情页复刻 - 第 ${sliceIndex} 屏】`,
+    `页面职责：${fields.theme}`,
+    `竞品参考图 URL：${competitorUrl || '缺失'}`,
+    `设计思路：${fields.designIdea}`,
+    `视觉画面：${fields.visualScene}`,
+    `文案内容：${fields.copyContent}`,
+    `当前产品信息：${cloneDraft.value.productInfo || '参考图产品'}`,
+    `模特保持一致：${cloneDraft.value.keepModel ? '开启，需要保持产品图/已有参考中的人物风格一致' : '关闭，可根据该屏需要重新组织场景'}`,
+    '生成要求：替换为参考图 1 的当前产品；参考图 2 仅作本屏布局与视觉结构参考；输出一张完整 9:16 电商详情页单屏。',
+  ].join('\n');
+}
+
+function clonePromptForMapping(mapping, index) {
+  return mapping.generationHint || composeGenerationHint(mapping, index);
+}
+
 function buildClonePlan(mapping, index) {
   const sliceIndex = Number(mapping.sliceIndex || index + 1);
-  const headline = slotText(mapping.variableSlots, 'headline') || mapping.newProductRole || `复刻分屏 ${sliceIndex}`;
-  const subheadline = slotText(mapping.variableSlots, 'subheadline');
-  const body = slotText(mapping.variableSlots, 'body');
+  const fields = mappingPromptFields(mapping, index);
+  const headline = fields.theme || `复刻分屏 ${sliceIndex}`;
   const competitorUrl = cloneImageUrls('competitor')[sliceIndex - 1] || cloneImageUrls('competitor')[0] || '';
   const productUrls = cloneImageUrls('product');
-  const imageUrls = [competitorUrl, ...productUrls].filter(Boolean);
-  const clonePreferences = [
-    '画面比例：9:16',
-    `模特保持一致：${cloneDraft.value.keepModel ? '开启' : '关闭'}`,
-  ].join('；');
-  const fallbackPrompt = [
-    `电商详情页竞品复刻，第${sliceIndex}屏，9:16竖版构图`,
-    `产品信息：${cloneDraft.value.productInfo || '参考图产品'}`,
-    clonePreferences,
-    `本屏职责：${mapping.newProductRole || mapping.aRole || headline}`,
-    `借鉴竞品：${textList(mapping.keepFromA) || '版式骨架、视觉节奏、信息顺序'}`,
-    `替换为产品C：${textList(mapping.replaceWithProduct) || '真实产品外观、卖点和场景'}`,
-    '参考图中竞品只用于布局和视觉语法，产品外观以产品图为准',
-    '禁止竞品品牌、证书、排名、价格、平台水印、乱码文字、虚假功效',
-  ].join('；');
+  const [primaryProductUrl, ...extraProductUrls] = productUrls;
+  const imageUrls = [primaryProductUrl, competitorUrl, ...extraProductUrls].filter(Boolean);
+  const positivePrompt = clonePromptForMapping(mapping, index);
 
   return {
     id: `clone-${sliceIndex}`,
     index: sliceIndex,
     title: headline,
-    goal: mapping.newProductRole || mapping.aRole || '将竞品结构迁移到当前产品',
-    copy: body || subheadline || '使用当前产品真实卖点重写文案',
-    visual: textList(mapping.keepFromA) || '沿用竞品信息顺序与构图节奏',
+    goal: fields.designIdea,
+    copy: fields.copyContent,
+    visual: fields.visualScene,
     category: '竞品复刻',
-    proof: textList(mapping.replaceWithProduct) || '产品图与产品信息',
+    proof: '参考图 1 为产品外观来源，参考图 2 为该屏版式来源',
     imageUrls,
     prompts: {
-      positive: mapping.generationHint ? `${mapping.generationHint}；${clonePreferences}` : fallbackPrompt,
-      negative: textList(mapping.forbidden) || '竞品品牌、虚假证书、未验证排名、价格标签、乱码文字',
-      layout: textList(mapping.keepFromA),
-      text: `${headline}${subheadline ? `｜${subheadline}` : ''}${body ? `｜${body}` : ''}`,
-      modelInput: mapping.generationHint ? `${mapping.generationHint}；${clonePreferences}` : fallbackPrompt,
+      positive: positivePrompt,
+      negative: textList(mapping.forbidden) || '竞品品牌、Logo、虚假证书、未验证排名、价格标签、销量数据、平台水印、乱码文字、虚假功效',
+      layout: fields.visualScene,
+      text: fields.copyContent,
+      modelInput: positivePrompt,
     },
   };
 }
 
-async function submitCloneGenerate() {
-  if (!userStore.requireLogin()) return;
-  if (!cloneDraft.value.mappingContracts.length) {
-    const ok = await mapCloneContracts();
-    if (!ok) return;
+function mappingBySliceIndex(mappings) {
+  const map = new Map();
+  for (const item of mappings || []) {
+    const index = Number(item?.sliceIndex || 0);
+    if (index > 0 && !map.has(index)) map.set(index, item);
+  }
+  return map;
+}
+
+function createFallbackMapping(sliceIndex, sliceContract = {}) {
+  const fields = mappingPromptFields(
+    {
+      sliceIndex,
+      theme: sliceContract.role || fallbackCloneRole(sliceIndex),
+    },
+    sliceIndex - 1,
+  );
+  return {
+    sliceIndex,
+    aRole: `竞品第 ${sliceIndex} 屏`,
+    newProductRole: `产品第 ${sliceIndex} 屏复刻`,
+    ...fields,
+    keepFromA: ['版式骨架', '视觉节奏', '信息顺序', '构图关系'],
+    replaceWithProduct: ['产品真实外观', '产品信息', '产品卖点'],
+    variableSlots: {},
+    forbidden: ['竞品品牌', '虚假证书', '未验证排名', '价格标签', '乱码文字', '虚假功效'],
+    generationHint: '',
+  };
+}
+
+function normalizeCloneMappings(mappings) {
+  const competitorImages = cloneImageUrls('competitor');
+  const byIndex = mappingBySliceIndex(mappings);
+  const sliceByIndex = new Map((cloneDraft.value.sliceContracts || []).map((item) => [Number(item.index || 0), item]));
+  return competitorImages.map((_, index) => {
+    const sliceIndex = index + 1;
+    const existing = byIndex.get(sliceIndex) || createFallbackMapping(sliceIndex, sliceByIndex.get(sliceIndex));
+    const fields = mappingPromptFields(existing, index);
+    return {
+      ...existing,
+      sliceIndex,
+      ...fields,
+      generationHint: existing.generationHint || composeGenerationHint({ ...existing, ...fields }, index),
+    };
+  });
+}
+
+function refreshCloneMappingHint(mapping, index) {
+  mapping.generationHint = composeGenerationHint(mapping, index);
+}
+
+async function prepareClonePrompts() {
+  const competitorImages = cloneImageUrls('competitor');
+  if (!competitorImages.length) {
+    cloneError.value = '请先上传或提取竞品详情图';
+    return false;
+  }
+  if (!cloneDraft.value.productInfo.trim() && !cloneImageUrls('product').length) {
+    cloneError.value = '请填写产品信息或上传产品白底图';
+    return false;
   }
 
-  const splitPlan = cloneDraft.value.mappingContracts.map(buildClonePlan);
+  cloneError.value = '';
+  cloneLoading.value = 'prompt';
+  try {
+    cloneDraft.value.mappingContracts = normalizeCloneMappings(cloneDraft.value.mappingContracts);
+    return cloneDraft.value.mappingContracts.length > 0;
+  } finally {
+    cloneLoading.value = '';
+  }
+}
+
+async function submitCloneGenerate() {
+  if (!userStore.requireLogin()) return;
+  const competitorImagesForPlan = cloneImageUrls('competitor');
+  if (!competitorImagesForPlan.length) {
+    cloneError.value = '请先上传或提取竞品详情图';
+    return;
+  }
+  if (!cloneDraft.value.productInfo.trim() && !cloneImageUrls('product').length) {
+    cloneError.value = '请填写产品信息或上传产品白底图';
+    return;
+  }
+
+  cloneError.value = '';
+  const mappings = normalizeCloneMappings(cloneDraft.value.mappingContracts);
+  const splitPlan = mappings.map(buildClonePlan);
+
   const validCloneImage = (image) => image.url && !image.uploading && !image.error;
   const productImages = cloneImages('product')
     .filter(validCloneImage)
@@ -1270,9 +1449,7 @@ async function submitCloneGenerate() {
     prompt: cloneDraft.value.productInfo || prompt.value || '参考图产品',
     mode: '竞品复刻',
     ratio: '9:16',
-    model: cloneDraft.value.model,
     quality: cloneDraft.value.resolution,
-    platform: '淘宝',
     screens: `${splitPlan.length} 屏`,
     method: 'split',
     cloneStrength: cloneDraft.value.cloneStrength,
@@ -1483,9 +1660,9 @@ async function submitCloneGenerate() {
               <label class="yh-detail-field">
                 <span>模型</span>
                 <select v-model="detailDraft.model">
+                  <option>gpt image 2</option>
                   <option>banana2</option>
                   <option>banana pro</option>
-                  <option>GPT imag 2</option>
                 </select>
               </label>
               <label class="yh-detail-field">
@@ -1726,8 +1903,28 @@ async function submitCloneGenerate() {
                 <strong>产品信息</strong>
               </div>
               <div class="yh-copycat-info">
-                <textarea v-model="cloneDraft.productInfo" placeholder="请输入产品名称、卖点、价格等信息"></textarea>
-                <button type="button">优化产品信息</button>
+                <div class="yh-copycat-info-tabs" aria-label="产品信息显示模式">
+                  <button type="button" :class="{ active: !cloneProductInfoPreview }" @click="cloneProductInfoPreview = false">编辑</button>
+                  <button type="button" :class="{ active: cloneProductInfoPreview }" @click="cloneProductInfoPreview = true">预览</button>
+                </div>
+                <textarea
+                  v-if="!cloneProductInfoPreview"
+                  v-model="cloneDraft.productInfo"
+                  placeholder="请输入产品名称、卖点、价格等信息，支持 Markdown"
+                ></textarea>
+                <div
+                  v-else
+                  class="yh-copycat-info-preview"
+                  v-html="renderProductInfoMarkdown(cloneDraft.productInfo)"
+                ></div>
+                <button
+                  type="button"
+                  class="yh-copycat-info-optimize"
+                  :disabled="cloneOptimizingProductInfo || cloneLoading === 'upload-product'"
+                  @click="optimizeCloneProductInfo"
+                >
+                  {{ cloneOptimizingProductInfo ? '优化中...' : '优化产品信息' }}
+                </button>
               </div>
             </section>
 
@@ -1743,10 +1940,86 @@ async function submitCloneGenerate() {
               </label>
             </section>
 
+            <section class="yh-copycat-field yh-copycat-resolution">
+              <div class="yh-copycat-label">
+                <strong>分辨率</strong>
+              </div>
+              <div class="yh-copycat-resolution-options" role="group" aria-label="分辨率">
+                <button
+                  v-for="resolution in cloneResolutionOptions"
+                  :key="resolution"
+                  type="button"
+                  :class="{ active: cloneDraft.resolution === resolution }"
+                  @click="cloneDraft.resolution = resolution"
+                >
+                  {{ resolution }}
+                </button>
+              </div>
+            </section>
+
+            <section class="yh-copycat-field yh-copycat-prompts">
+              <div class="yh-copycat-label">
+                <strong>复刻提示词</strong>
+                <button type="button" aria-label="复刻提示词说明">?</button>
+              </div>
+              <div class="yh-copycat-prompt-head">
+                <p>竞品预览有 {{ cloneImageUrls('competitor').length }} 张图，将生成 {{ cloneImageUrls('competitor').length }} 屏；每屏提示词可编辑。</p>
+                <button
+                  type="button"
+                  :disabled="cloneLoading === 'prompt' || cloneLoading === 'upload-product'"
+                  @click="prepareClonePrompts"
+                >
+                  {{ cloneLoading === 'prompt' ? '生成中...' : '生成复刻提示词' }}
+                </button>
+              </div>
+              <div v-if="cloneDraft.mappingContracts.length" class="yh-copycat-prompt-list">
+                <article v-for="(mapping, index) in cloneDraft.mappingContracts" :key="`mapping-${mapping.sliceIndex || index}`">
+                  <header>
+                    <strong>第 {{ index + 1 }} 屏</strong>
+                    <span>{{ mapping.newProductRole || mapping.aRole || '产品信息映射' }}</span>
+                  </header>
+                  <div class="yh-copycat-prompt-card">
+                    <div class="yh-copycat-prompt-fields">
+                      <label>
+                        <span>每屏主题</span>
+                        <input v-model="mapping.theme" type="text" @input="refreshCloneMappingHint(mapping, index)" />
+                      </label>
+                      <label>
+                        <span>设计思路</span>
+                        <textarea v-model="mapping.designIdea" @input="refreshCloneMappingHint(mapping, index)"></textarea>
+                      </label>
+                      <label>
+                        <span>视觉画面</span>
+                        <textarea v-model="mapping.visualScene" @input="refreshCloneMappingHint(mapping, index)"></textarea>
+                      </label>
+                      <label>
+                        <span>文案内容</span>
+                        <textarea v-model="mapping.copyContent" @input="refreshCloneMappingHint(mapping, index)"></textarea>
+                      </label>
+                      <label>
+                        <span>生图提示词</span>
+                        <textarea v-model="mapping.generationHint" class="full" placeholder="编辑本屏完整图生图提示词"></textarea>
+                      </label>
+                    </div>
+                    <figure class="yh-copycat-prompt-image">
+                      <img
+                        v-if="cloneImageUrls('competitor')[index]"
+                        :src="cloneImageUrls('competitor')[index]"
+                        :alt="`竞品第 ${index + 1} 屏`"
+                      />
+                      <figcaption v-if="cloneImageUrls('competitor')[index]">竞品第 {{ index + 1 }} 屏</figcaption>
+                      <span v-else>暂无对应竞品图</span>
+                    </figure>
+                  </div>
+                </article>
+              </div>
+              <div v-else class="yh-copycat-prompt-empty">点击生成后，会按竞品图片数量生成每屏可编辑提示词。</div>
+            </section>
+
             <p v-if="['upload-competitor', 'upload-product'].includes(cloneLoading)" class="yh-split-status">正在上传图片...</p>
             <p v-if="cloneLoading === 'extract-competitor'" class="yh-split-status">正在从网页提取竞品图片...</p>
             <p v-if="cloneLoading === 'cut-competitor'" class="yh-split-status">正在合并并裁切竞品图片...</p>
-            <p v-if="cloneLoading === 'deconstruct' || cloneLoading === 'map'" class="yh-split-status">正在分析竞品并映射产品信息...</p>
+            <p v-if="cloneLoading === 'prompt'" class="yh-split-status">正在按竞品图片生成每屏提示词...</p>
             <p v-if="cloneError" class="yh-split-status error">{{ cloneError }}</p>
           </div>
 
@@ -1832,12 +2105,18 @@ async function submitCloneGenerate() {
               <figure
                 v-for="(image, index) in cloneWebpageImages"
                 :key="image.id"
-                :class="{ active: clonePreviewActiveImageId === image.id, dragging: clonePreviewDragId === image.id }"
+                :class="{
+                  active: clonePreviewActiveImageId === image.id,
+                  dragging: clonePreviewDragId === image.id,
+                  'drag-over': clonePreviewDragOverId === image.id,
+                }"
                 :title="image.url"
                 draggable="true"
                 @click.stop="clonePreviewActiveImageId = image.id"
                 @dragstart="startClonePreviewDrag(image.id, $event)"
+                @dragenter.prevent="enterClonePreviewDrag(image.id, $event)"
                 @dragover.prevent
+                @dragleave="leaveClonePreviewDrag(image.id, $event)"
                 @drop.prevent="dropClonePreviewImage(image.id)"
                 @dragend="endClonePreviewDrag"
               >

@@ -21,6 +21,7 @@ const routes = [
   { path: '/canvas', name: 'canvas-list', component: CanvasListPage, meta: { public: true } },
   { path: '/canvas/:id', name: 'canvas-editor', component: CanvasEditorPage, props: true, meta: { public: true } },
   { path: '/canvas/share/:token', name: 'canvas-share', component: CanvasSharePage, props: true, meta: { public: true } },
+  { path: '/reverse-prompt', name: 'reverse-prompt', component: CanvasEditorPage, props: { id: 'reverse-prompt' }, meta: { public: true } },
 ];
 
 const router = createRouter({
