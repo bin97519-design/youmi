@@ -823,28 +823,7 @@ function smartToggleElement(layerId, elementId, event) {
   chatSkipPillSync.value = false;
 }
 
-// 元素语义优先级（数值越小越优先，用于重叠区域智能选择）
-const ELEMENT_PRIORITY_KEYWORDS = {
-  foreground: ['杯', '茶', '碗', '盘', '手机', '书', '眼镜', '笔', '戒指', '手镯', '花', '食物', '水果', '饮料', '遥控', '钥匙', '剪刀', '药'],
-  person:     ['女', '男', '人', '人物', '模特', '小孩', '儿童', '手', '脸', '眼', '头', '发', '肤', '臂', '腿'],
-  text:       ['文字', '标语', '标题', '价格', '字', 'logo', '品牌', '签名', '数字', '日期'],
-  clothing:   ['衣', '裙', '裤', '鞋', '帽', '包', '饰', '围巾', '领带'],
-  furniture:  ['沙发', '椅', '桌', '柜', '床', '灯', '窗', '帘', '架', '地毯'],
-  background: ['背景', '墙', '地板', '天', '空', '植物', '装饰', '画框', '壁画'],
-};
-
-function getElementPriority(name) {
-  const n = (name || '').toLowerCase();
-  const categories = Object.entries(ELEMENT_PRIORITY_KEYWORDS);
-  for (let i = 0; i < categories.length; i++) {
-    for (const kw of categories[i][1]) {
-      if (n.includes(kw)) return i; // 0=foreground, 1=person, ...
-    }
-  }
-  return categories.length; // unknown = lowest
-}
-
-// 查找点击坐标处所有重叠元素，返回按优先级排序的列表
+// 查找点击坐标处所有重叠元素（不做排序，排序交给 pickBestElement）
 function findElementsAtPoint(clientX, clientY) {
   const overlayEl = document.querySelector('.detected-elements-overlay');
   if (!overlayEl) return [];
@@ -865,45 +844,93 @@ function findElementsAtPoint(clientX, clientY) {
       const right = left + (box[3] - box[1]) * layer.width * vs;
       const bottom = top + (box[2] - box[0]) * layer.height * vs;
       if (cx >= left && cx <= right && cy >= top && cy <= bottom) {
-        const area = (box[3] - box[1]) * (box[2] - box[0]);
         results.push({
           layerId,
           el,
-          priority: getElementPriority(el.object_name || el.name || ''),
-          area,
+          box_2d: box,
+          area: (box[3] - box[1]) * (box[2] - box[0]),
           id: el.object_name || el.name || el.id,
+          name: el.object_name || el.name || '',
         });
       }
     }
   }
-  // 排序：优先级 → 面积小（前景元素通常更小）
-  results.sort((a, b) => {
-    if (a.priority !== b.priority) return a.priority - b.priority;
-    return a.area - b.area;
-  });
   return results;
 }
 
-// 标注模式或 Ctrl+点击时，智能选择重叠区域最优先元素
+// 基于视觉几何分析判断前景：面积、包含关系、位置
+function pickBestElement(candidates) {
+  if (candidates.length === 1) return candidates[0];
+
+  const scored = candidates.map((c) => {
+    const b = c.box_2d;
+    const area = c.area;
+    let score = 0;
+
+    // 1) 面积：越小越像前景道具/细节（权重 35%）
+    //    茶杯面积通常只有画面的 0.1%，沙发可能是 30%
+    score += (1 - Math.min(area * 4, 1)) * 0.35;
+
+    // 2) 画面位置：前景主体通常在中下部（权重 25%）
+    const cy = (b[0] + b[2]) / 2; // 垂直中心 (0=顶部, 1=底部)
+    const cx = (b[1] + b[3]) / 2; // 水平中心
+    const horizScore = 1 - Math.abs(cx - 0.5) * 2;   // 越居中越好
+    const vertScore = cy;                             // 越靠下越好（前景在前）
+    score += (horizScore * 0.6 + vertScore * 0.4) * 0.25;
+
+    // 3) 包含关系：被其他框完全包含的小框 ≈ 前景细节（权重 40%）
+    let containment = 0;
+    for (const other of candidates) {
+      if (other === c) continue;
+      const ob = other.box_2d;
+      const oArea = other.area;
+      // c 被 other 完全包含 → c 是 other 的内部细节
+      if (ob[1] <= b[1] && ob[0] <= b[0] && ob[3] >= b[3] && ob[2] >= b[2]) {
+        const ratio = area / oArea;
+        if (ratio < 0.5) containment += 0.4;  // 子框很小 → 明显是前景细节（茶杯在沙发上）
+      }
+      // other 被 c 包含 → c 是容器/背景
+      if (b[1] <= ob[1] && b[0] <= ob[0] && b[3] >= ob[3] && b[2] >= ob[2]) {
+        const ratio = oArea / area;
+        if (ratio < 0.5) containment -= 0.2;  // c 包含小框 → c 更像是背景（沙发包含茶杯）
+      }
+    }
+    score += Math.max(-0.2, Math.min(0.4, containment));
+
+    return { ...c, score, area, name: c.name };
+  });
+
+  scored.sort((a, b) => b.score - a.score);
+
+  // 只在控制台输出，帮助调试和校验
+  if (candidates.length >= 2) {
+    const top2 = scored[0];
+    const runnerUp = scored[1];
+    console.log(
+      '[smart-click] 重叠', candidates.length, '个元素 → 选中',
+      `"${top2.name}" (score=${top2.score.toFixed(3)}, area=${top2.area.toFixed(4)})`,
+      '| 次选', `"${runnerUp.name}" (score=${runnerUp.score.toFixed(3)})`
+    );
+  }
+
+  return scored[0];
+}
+
+// 标注模式或 Ctrl+点击时，智能选择重叠区域最前景元素
 function handleDetectedOverlayClick(event) {
   const inAnnotate = activeTool.value === 'annotate';
   const withCtrl = event.ctrlKey || event.metaKey;
-  if (!inAnnotate && !withCtrl) return; // 不拦截，让 manual box 或 marquee 处理
+  if (!inAnnotate && !withCtrl) return;
 
   const candidates = findElementsAtPoint(event.clientX, event.clientY);
   if (!candidates.length) {
-    // 标注模式下没点到元素 → 放行让 startMarquee 触发手动框选
-    if (inAnnotate) return;
-    // Ctrl+点击但没元素 → 也放行
+    if (inAnnotate) return; // 放行手动框选
     return;
   }
-  // 选中最优元素
   event.preventDefault();
   event.stopPropagation();
-  const best = candidates[0];
-  if (candidates.length > 1) {
-    console.log('[smart-click]', candidates.length, '个重叠元素 → 优先选择:', best.el.object_name || best.el.name, '(priority=', best.priority, 'area=', best.area.toFixed(4), ')');
-  }
+
+  const best = pickBestElement(candidates);
   const key = `${best.layerId}::${best.id}`;
   const set = new Set(selectedDetectedElements.value);
   if (set.has(key)) {
@@ -912,9 +939,11 @@ function handleDetectedOverlayClick(event) {
     set.add(key);
   }
   selectedDetectedElements.value = set;
+  const overlayEl = document.querySelector('.detected-elements-overlay');
+  const overlayRect = overlayEl?.getBoundingClientRect() || { left: 0, top: 0 };
   elementClickPositions.value = {
     ...elementClickPositions.value,
-    [key]: { x: event.clientX - (document.querySelector('.detected-elements-overlay')?.getBoundingClientRect()?.left || 0), y: event.clientY - (document.querySelector('.detected-elements-overlay')?.getBoundingClientRect()?.top || 0) },
+    [key]: { x: event.clientX - overlayRect.left, y: event.clientY - overlayRect.top },
   };
   chatSkipPillSync.value = false;
 }
