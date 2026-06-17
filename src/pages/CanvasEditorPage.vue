@@ -1100,6 +1100,23 @@ function handleEditorInput() {
     selectedDetectedElements.value = current;
   }
   updateChatTextFromEditor();
+
+  // 编辑器完全为空时，重置光标到最前端
+  // contenteditable 清空后浏览器可能留下 <br> 或奇怪的光标位置
+  const noPills = !pills.length;
+  const noText = !editor.textContent || editor.textContent === '\n' || !editor.textContent.trim();
+  if (noPills && noText) {
+    requestAnimationFrame(() => {
+      if (!editor.isConnected) return;
+      const sel = window.getSelection();
+      if (!sel) return;
+      sel.removeAllRanges();
+      const range = document.createRange();
+      range.setStart(editor, 0);
+      range.collapse(true);
+      sel.addRange(range);
+    });
+  }
 }
 
 function handleEditorPillClick(event) {
