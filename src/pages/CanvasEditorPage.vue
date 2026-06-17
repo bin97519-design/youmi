@@ -858,58 +858,81 @@ function findElementsAtPoint(clientX, clientY) {
   return results;
 }
 
-// 基于视觉几何分析判断前景：面积、包含关系、位置
+// 基于视觉几何分析判断前景：面积、深度、包含关系、交叠分析
 function pickBestElement(candidates) {
   if (candidates.length === 1) return candidates[0];
+
+  // 辅助：boxB 覆盖了 boxA 多少比例
+  const coverage = (boxA, boxB) => {
+    const il = Math.max(boxA[1], boxB[1]);
+    const it = Math.max(boxA[0], boxB[0]);
+    const ir = Math.min(boxA[3], boxB[3]);
+    const ib = Math.min(boxA[2], boxB[2]);
+    if (il >= ir || it >= ib) return 0;
+    const iArea = (ir - il) * (ib - it);
+    const aArea = (boxA[3] - boxA[1]) * (boxA[2] - boxA[0]);
+    return aArea > 0 ? iArea / aArea : 0;
+  };
+
+  // 完全包含：boxOuter 完全包裹 boxInner
+  const fullyContains = (boxOuter, boxInner) =>
+    boxOuter[1] <= boxInner[1] && boxOuter[0] <= boxInner[0] &&
+    boxOuter[3] >= boxInner[3] && boxOuter[2] >= boxInner[2];
 
   const scored = candidates.map((c) => {
     const b = c.box_2d;
     const area = c.area;
     let score = 0;
 
-    // 1) 面积：越小越像前景道具/细节（权重 35%）
-    //    茶杯面积通常只有画面的 0.1%，沙发可能是 30%
-    score += (1 - Math.min(area * 4, 1)) * 0.35;
+    // 1) 面积：越小越像前景细节（权重 40%）
+    score += (1 - Math.min(area * 3, 1)) * 0.40;
 
-    // 2) 画面位置：前景主体通常在中下部（权重 25%）
-    const cy = (b[0] + b[2]) / 2; // 垂直中心 (0=顶部, 1=底部)
-    const cx = (b[1] + b[3]) / 2; // 水平中心
-    const horizScore = 1 - Math.abs(cx - 0.5) * 2;   // 越居中越好
-    const vertScore = cy;                             // 越靠下越好（前景在前）
-    score += (horizScore * 0.6 + vertScore * 0.4) * 0.25;
+    // 2) 底边深度：底边越靠下 ≈ 越靠近镜头（透视原理）（权重 5%）
+    score += b[2] * 0.05;
 
-    // 3) 包含关系：被其他框完全包含的小框 ≈ 前景细节（权重 40%）
-    let containment = 0;
+    // 3) 与其他元素的关系分析（权重 55%）
+    let relation = 0;
     for (const other of candidates) {
       if (other === c) continue;
       const ob = other.box_2d;
-      const oArea = other.area;
-      // c 被 other 完全包含 → c 是 other 的内部细节
-      if (ob[1] <= b[1] && ob[0] <= b[0] && ob[3] >= b[3] && ob[2] >= b[2]) {
-        const ratio = area / oArea;
-        if (ratio < 0.5) containment += 0.4;  // 子框很小 → 明显是前景细节（茶杯在沙发上）
+      const cInO = fullyContains(ob, b);  // c 被 other 包含
+      const oInC = fullyContains(b, ob);  // other 被 c 包含
+
+      // 3a) 完全包含 → 子框是前景细节
+      if (cInO) {
+        const ratio = area / Math.max(other.area, 0.0001);
+        if (ratio < 0.6) relation += 0.55;  // c 小 → 前景（茶杯在沙发上）
       }
-      // other 被 c 包含 → c 是容器/背景
-      if (b[1] <= ob[1] && b[0] <= ob[0] && b[3] >= ob[3] && b[2] >= ob[2]) {
-        const ratio = oArea / area;
-        if (ratio < 0.5) containment -= 0.2;  // c 包含小框 → c 更像是背景（沙发包含茶杯）
+      if (oInC) {
+        const ratio = other.area / Math.max(area, 0.0001);
+        if (ratio < 0.6) relation -= 0.30;  // 包住小框 → c 是容器/背景
+      }
+
+      // 3b) 部分重叠（非包含关系）→ 被覆盖比例高的一方在后
+      if (!cInO && !oInC) {
+        const cCovered = coverage(b, ob);   // c 被 other 覆盖的比例
+        const oCovered = coverage(ob, b);   // other 被 c 覆盖的比例
+
+        if (oCovered > cCovered + 0.2) {
+          relation += 0.18;  // other 被 c 盖得更多 → c 在前
+        }
+        if (cCovered > oCovered + 0.2) {
+          relation -= 0.18;  // c 被 other 盖得更多 → c 在后
+        }
       }
     }
-    score += Math.max(-0.2, Math.min(0.4, containment));
+    score += Math.max(-0.30, Math.min(0.55, relation));
 
     return { ...c, score, area, name: c.name };
   });
 
   scored.sort((a, b) => b.score - a.score);
 
-  // 只在控制台输出，帮助调试和校验
   if (candidates.length >= 2) {
-    const top2 = scored[0];
-    const runnerUp = scored[1];
     console.log(
-      '[smart-click] 重叠', candidates.length, '个元素 → 选中',
-      `"${top2.name}" (score=${top2.score.toFixed(3)}, area=${top2.area.toFixed(4)})`,
-      '| 次选', `"${runnerUp.name}" (score=${runnerUp.score.toFixed(3)})`
+      '[smart-click] 重叠', candidates.length, '个 → 选中',
+      `"${scored[0].name}" (score=${scored[0].score.toFixed(3)})`,
+      '| 次选', `"${scored[1].name}" (score=${scored[1].score.toFixed(3)})`
     );
   }
 
