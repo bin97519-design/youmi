@@ -863,9 +863,8 @@ function findElementsAtPoint(clientX, clientY) {
 }
 
 // 查找与给定元素框有交叠的所有元素（用于下拉候选列表）
-// 两框交集面积必须占较小框的 8% 以上才算真正"重叠"——过滤掉边界贴靠的情况
+// 只要两框有任意面积交集就算重叠
 function findOverlappingElements(targetLayerId, targetBox) {
-  const targetArea = (targetBox[3] - targetBox[1]) * (targetBox[2] - targetBox[0]);
   const results = [];
   for (const [layerId, elements] of Object.entries(layerDetectedElements.value)) {
     for (const el of elements) {
@@ -876,19 +875,11 @@ function findOverlappingElements(targetLayerId, targetBox) {
       const ir = Math.min(targetBox[3], box[3]);
       const ib = Math.min(targetBox[2], box[2]);
       if (il < ir && it < ib) {
-        const intersectArea = (ir - il) * (ib - it);
-        const elArea = (box[3] - box[1]) * (box[2] - box[0]);
-        const minArea = Math.min(targetArea, elArea);
-        // 交集面积占较小框 15% 以上才算真正重叠（过滤边界贴靠/小角相交）
-        if (minArea > 0 && intersectArea / minArea < 0.15) {
-          console.log('[overlap-filter] 跳过弱重叠:', el.object_name || el.name, '交集占比=', (intersectArea / minArea * 100).toFixed(1) + '%');
-          continue;
-        }
         results.push({
           layerId,
           el,
           box_2d: box,
-          area: elArea,
+          area: (box[3] - box[1]) * (box[2] - box[0]),
           id: el.object_name || el.name || el.id,
           name: el.object_name || el.name || '',
         });
