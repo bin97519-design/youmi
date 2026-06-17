@@ -862,6 +862,33 @@ function findElementsAtPoint(clientX, clientY) {
   return results;
 }
 
+// 查找与给定元素框有交叠的所有元素（用于下拉候选列表）
+// 两框有任意面积交集就算重叠 —— 不依赖精确点击坐标
+function findOverlappingElements(targetLayerId, targetBox) {
+  const results = [];
+  for (const [layerId, elements] of Object.entries(layerDetectedElements.value)) {
+    for (const el of elements) {
+      const box = el.box_2d || el.box2d || [0, 0, 1, 1];
+      // 检查两框是否相交
+      const il = Math.max(targetBox[1], box[1]);
+      const it = Math.max(targetBox[0], box[0]);
+      const ir = Math.min(targetBox[3], box[3]);
+      const ib = Math.min(targetBox[2], box[2]);
+      if (il < ir && it < ib) {
+        results.push({
+          layerId,
+          el,
+          box_2d: box,
+          area: (box[3] - box[1]) * (box[2] - box[0]),
+          id: el.object_name || el.name || el.id,
+          name: el.object_name || el.name || '',
+        });
+      }
+    }
+  }
+  return results;
+}
+
 // 基于视觉几何分析判断前景元素
 // 核心原理：在2D图像中，如果A大部分在B的边界框内，说明A是B上面的物体（前景）
 // 例如：茶杯在桌子上 → 茶杯大部分在桌子框内 → 茶杯是前景
@@ -977,7 +1004,10 @@ function handleDetectedOverlayClick(event) {
   } else {
     set.add(key);
     // 选中时存储所有重叠候选（用于 pill 下拉切换）
-    const storedCandidates = candidates.map((c) => ({
+    // 用框重叠分析替代点检测——这样即使点击的精确像素
+    // 没落在相邻框内，只要两框有交集就能出现在下拉列表里
+    const overlappingCandidates = findOverlappingElements(best.layerId, best.box_2d);
+    const storedCandidates = overlappingCandidates.map((c) => ({
       layerId: c.layerId,
       id: c.id,
       name: c.name,
