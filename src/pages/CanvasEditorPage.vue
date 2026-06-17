@@ -124,6 +124,8 @@ const resizeState = ref(null);
 const marquee = reactive({ active: false, startX: 0, startY: 0, currentX: 0, currentY: 0 });
 const annotationInput = reactive({ visible: false, layerId: '', x: 0, y: 0, width: 0, height: 0, text: '', geoPixel: null });
 const manualBoxDraft = reactive({ active: false, startX: 0, startY: 0, currentX: 0, currentY: 0, layerId: '' });
+// 手动框选命名输入
+const manualNameInput = reactive({ visible: false, layerId: '', x: 0, y: 0, box_2d: null, text: '' });
 // 重叠元素候选列表：key = "layerId::elementId" → [{layerId, el, id, name, box_2d, area}]
 const elementOverlapCandidates = ref({});
 // 重叠元素下拉弹窗状态
@@ -1242,7 +1244,7 @@ function replacePillElement(newCandidate) {
   nextTick(() => { chatSkipPillSync.value = false; });
 }
 
-// 手动框选：在画布拖拽矩形框添加自定义元素
+// 手动框选：拖拽后弹出输入框让用户命名
 function createManualElement() {
   const layerId = manualBoxDraft.layerId;
   if (!layerId) return;
@@ -1253,6 +1255,9 @@ function createManualElement() {
   const maxX = Math.max(manualBoxDraft.startX, manualBoxDraft.currentX);
   const minY = Math.min(manualBoxDraft.startY, manualBoxDraft.currentY);
   const maxY = Math.max(manualBoxDraft.startY, manualBoxDraft.currentY);
+
+  // 框太小视为误触，不创建
+  if (maxX - minX < 8 || maxY - minY < 8) return;
 
   // 屏幕坐标 → 世界坐标：world = (screen - offset) / scale
   const vs = viewScale.value;
@@ -1269,11 +1274,31 @@ function createManualElement() {
   const right = (wRight - layer.x) / layer.width;
   const box_2d = [top, left, bottom, right].map((v) => Math.max(0, Math.min(1, v)));
 
-  const ts = Date.now();
+  // 弹出命名输入框（屏幕坐标，置于框上方）
+  manualNameInput.visible = true;
+  manualNameInput.layerId = layerId;
+  manualNameInput.box_2d = box_2d;
+  manualNameInput.text = '';
+  manualNameInput.x = minX;
+  manualNameInput.y = Math.max(4, minY - 36); // 框上方 36px，不超出画布顶部
+  // 自动聚焦
+  nextTick(() => {
+    const input = document.querySelector('.manual-name-input input');
+    if (input) input.focus();
+  });
+}
+
+// 确认手动元素命名并添加到检测列表
+function confirmManualElementName() {
+  const name = manualNameInput.text.trim() || `手标-${Date.now()}`;
+  const layerId = manualNameInput.layerId;
+  const box_2d = manualNameInput.box_2d;
+  if (!layerId || !box_2d) return;
+
   const el = {
-    id: `manual-${ts}`,
-    name: `手标-${ts}`,
-    object_name: `手标-${ts}`,
+    id: `manual-${Date.now()}`,
+    name,
+    object_name: name,
     box_2d,
     box2d: box_2d,
     manual: true,
@@ -1282,7 +1307,15 @@ function createManualElement() {
     ...layerDetectedElements.value,
     [layerId]: [...(layerDetectedElements.value[layerId] || []), el],
   };
-  console.log('[manual] 手动添加元素:', el.object_name, box_2d);
+  console.log('[manual] 手动添加元素:', name, box_2d);
+  manualNameInput.visible = false;
+  manualNameInput.text = '';
+}
+
+// 取消手动元素命名
+function cancelManualElementName() {
+  manualNameInput.visible = false;
+  manualNameInput.text = '';
 }
 
 function clearAllAnnotations() {
@@ -2059,6 +2092,18 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
         </figure>
         <div v-if="marquee.active" class="selection-marquee" :style="marqueeStyle" />
         <div v-if="manualBoxDraft.active" class="manual-box-draft" :style="manualBoxDraftStyle" />
+        <div v-if="manualNameInput.visible" class="manual-name-input" :style="{ left: `${manualNameInput.x}px`, top: `${manualNameInput.y}px` }" @pointerdown.stop>
+          <input
+            ref="manualNameInputRef"
+            v-model="manualNameInput.text"
+            placeholder="输入元素名称..."
+            @keydown.enter.prevent="confirmManualElementName"
+            @keydown.escape.prevent="cancelManualElementName"
+            @blur="confirmManualElementName"
+          />
+          <button @click="confirmManualElementName">✓</button>
+          <button @click="cancelManualElementName">✕</button>
+        </div>
         <div
           v-if="getDetectionVisible() || activeTool === 'annotate' || ctrlHeld"
           :class="['detected-elements-overlay', { 'annotate-mode': activeTool === 'annotate', 'ctrl-mode': ctrlHeld && activeTool !== 'annotate', 'detection-visible': getDetectionVisible() }]"
