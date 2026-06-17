@@ -250,13 +250,11 @@ async function maybeAutoDetect(layer) {
   if (!layer || !layer.url || layer.type === 'placeholder') return;
   if (!autoDetectionEnabled.value) return;
   if (detectingLayerIds.value.has(layer.id)) return;
-  // 优先从 document payload 缓存读取
-  const cached = doc.value?.payload?.detectedElements?.[layer.id];
-  if (cached?.length) {
-    layerDetectedElements.value = { ...layerDetectedElements.value, [layer.id]: cached };
-    return;
-  }
-  if (layerDetectedElements.value[layer.id]?.length) return;
+  
+  // 清除旧检测结果
+  layerDetectedElements.value = { ...layerDetectedElements.value };
+  delete layerDetectedElements.value[layer.id];
+  selectedDetectedElements.value = new Set();
   
   detectingLayerIds.value = new Set([...detectingLayerIds.value, layer.id]);
   try {
