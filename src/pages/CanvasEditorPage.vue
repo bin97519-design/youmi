@@ -791,12 +791,10 @@ function smartToggleElement(layerId, elementId, event) {
   }
   const key = `${layerId}::${elementId}`;
   const set = new Set(selectedDetectedElements.value);
-  if (event && event.shiftKey) {
-    set.add(key);
-  } else if (set.has(key)) {
+  // 多选模式：点击切换选中/取消，不清除其他已选元素
+  if (set.has(key)) {
     set.delete(key);
   } else {
-    set.clear();
     set.add(key);
   }
   selectedDetectedElements.value = set;
