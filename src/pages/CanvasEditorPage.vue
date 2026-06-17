@@ -754,6 +754,8 @@ function removeLayer(id) {
 function startLayerDrag(event, layer) {
   if (!userStore.requireLogin()) return;
   if (activeTool.value === 'hand') return;
+  // 标注模式：不拦截拖拽，让 stage 的 startMarquee 处理手动框选
+  if (activeTool.value === 'annotate') return;
   if (event.button !== 0 || event.target.closest('.layer-toolbar') || event.target.closest('.resize-dot')) return;
   event.stopPropagation();
   event.currentTarget.setPointerCapture(event.pointerId);
