@@ -124,6 +124,10 @@ const resizeState = ref(null);
 const marquee = reactive({ active: false, startX: 0, startY: 0, currentX: 0, currentY: 0 });
 const annotationInput = reactive({ visible: false, layerId: '', x: 0, y: 0, width: 0, height: 0, text: '', geoPixel: null });
 const manualBoxDraft = reactive({ active: false, startX: 0, startY: 0, currentX: 0, currentY: 0, layerId: '' });
+// 重叠元素候选列表：key = "layerId::elementId" → [{layerId, el, id, name, box_2d, area}]
+const elementOverlapCandidates = ref({});
+// 重叠元素下拉弹窗状态
+const overlapDropdown = reactive({ visible: false, x: 0, y: 0, pillKey: '', candidates: [] });
 const selectedAnnotation = ref({ layerId: '', annoId: '' });
 const panel = reactive({ x: null, y: 6, width: 340, chatHeight: 258, dragging: null, resizing: null, resizingChat: null });
 const toolbar = reactive({ x: null, y: null, dragging: null });
@@ -966,8 +970,23 @@ function handleDetectedOverlayClick(event) {
   const set = new Set(selectedDetectedElements.value);
   if (set.has(key)) {
     set.delete(key);
+    // 取消选中时清除候选列表
+    const nextCandidates = { ...elementOverlapCandidates.value };
+    delete nextCandidates[key];
+    elementOverlapCandidates.value = nextCandidates;
   } else {
     set.add(key);
+    // 选中时存储所有重叠候选（用于 pill 下拉切换）
+    elementOverlapCandidates.value = {
+      ...elementOverlapCandidates.value,
+      [key]: candidates.map((c) => ({
+        layerId: c.layerId,
+        id: c.id,
+        name: c.name,
+        box_2d: c.box_2d,
+        area: c.area,
+      })),
+    };
   }
   selectedDetectedElements.value = set;
   const overlayEl = document.querySelector('.detected-elements-overlay');
@@ -1052,13 +1071,96 @@ function handleEditorInput() {
 function handleEditorPillClick(event) {
   const pill = event.target.closest('.chat-pill');
   if (!pill) return;
-  // 点击 pill 的处理：如果点击的是 em（切换重叠元素），弹出选择
+  // 点击 ▼ 切换重叠元素
   if (event.target.closest('[data-action="pick-overlap"]')) {
+    event.preventDefault();
+    event.stopPropagation();
     const elId = pill.dataset.elId;
     const elLayer = pill.dataset.elLayer;
-    // 可以在这里弹出重叠元素列表
+    const key = `${elLayer}::${elId}`;
+    const candidates = elementOverlapCandidates.value[key] || [];
+    if (candidates.length <= 1) {
+      console.log('[overlap-dropdown] 该元素没有重叠候选');
+      return;
+    }
+    // 定位弹窗
+    const rect = pill.getBoundingClientRect();
+    overlapDropdown.visible = true;
+    overlapDropdown.x = rect.left;
+    overlapDropdown.y = rect.bottom + 4;
+    overlapDropdown.pillKey = key;
+    overlapDropdown.candidates = candidates;
     return;
   }
+}
+
+// 关闭重叠元素下拉弹窗
+function closeOverlapDropdown() {
+  overlapDropdown.visible = false;
+}
+
+// 从下拉弹窗中选择一个元素替换当前 pill
+function replacePillElement(newCandidate) {
+  const oldKey = overlapDropdown.pillKey;
+  if (!oldKey) return;
+  const newKey = `${newCandidate.layerId}::${newCandidate.id}`;
+
+  // 如果选的就是自己，关闭弹窗
+  if (newKey === oldKey) {
+    overlapDropdown.visible = false;
+    return;
+  }
+
+  // 更新 selectedDetectedElements：删旧加新（保持顺序）
+  const current = [...selectedDetectedElements.value];
+  const idx = current.indexOf(oldKey);
+  if (idx === -1) {
+    overlapDropdown.visible = false;
+    return;
+  }
+  // 如果新 key 已存在，不重复添加
+  if (current.includes(newKey)) {
+    current.splice(idx, 1);
+  } else {
+    current[idx] = newKey;
+  }
+  chatSkipPillSync.value = true; // 阻止 watch 触发 syncPillsToEditor 重建
+  selectedDetectedElements.value = new Set(current);
+
+  // 更新候选列表：旧 key 的候选转移到新 key
+  const nextCandidates = { ...elementOverlapCandidates.value };
+  const stored = nextCandidates[oldKey] || [];
+  delete nextCandidates[oldKey];
+  nextCandidates[newKey] = stored;
+  elementOverlapCandidates.value = nextCandidates;
+
+  // 更新 DOM pill：替换 data 属性和显示文字
+  const editor = document.querySelector('.chat-editor');
+  if (editor) {
+    const pills = editor.querySelectorAll('.chat-pill');
+    for (const p of pills) {
+      const pKey = `${p.dataset.elLayer}::${p.dataset.elId}`;
+      if (pKey === oldKey) {
+        p.dataset.elId = newCandidate.id;
+        p.dataset.elName = newCandidate.name;
+        p.dataset.elLayer = newCandidate.layerId;
+        p.dataset.elBox = (newCandidate.box_2d || []).join(',');
+        // 更新显示文字（保留编号和 ▼ 按钮）
+        const numEl = p.querySelector('.chat-pill-num');
+        const imgEl = p.querySelector('img');
+        const emEl = p.querySelector('[data-action="pick-overlap"]');
+        // 清空 pill 内容重建
+        p.innerHTML = '';
+        if (numEl) p.appendChild(numEl);
+        if (imgEl) p.appendChild(imgEl);
+        p.appendChild(document.createTextNode(newCandidate.name));
+        if (emEl) p.appendChild(emEl);
+        break;
+      }
+    }
+  }
+
+  overlapDropdown.visible = false;
 }
 
 // 手动框选：在画布拖拽矩形框添加自定义元素
@@ -2125,4 +2227,25 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
       </div>
     </div>
   </main>
+
+  <!-- 重叠元素切换弹窗 -->
+  <Teleport to="body">
+    <div v-if="overlapDropdown.visible" class="detect-select-overlay" @click="closeOverlapDropdown">
+      <div class="detect-select-popup" :style="{ left: `${overlapDropdown.x}px`, top: `${overlapDropdown.y}px` }" @pointerdown.stop="">
+        <div class="detect-select-popup-header">切换重叠元素 ({{ overlapDropdown.candidates.length }})</div>
+        <div class="detect-select-popup-list">
+          <button
+            v-for="(c, i) in overlapDropdown.candidates"
+            :key="`${c.layerId}::${c.id}`"
+            :class="['detect-select-popup-item', { selected: `${c.layerId}::${c.id}` === overlapDropdown.pillKey }]"
+            @click.stop="replacePillElement(c)"
+          >
+            <span :class="['detect-select-popup-dot', { active: `${c.layerId}::${c.id}` === overlapDropdown.pillKey }]"></span>
+            <span class="detect-select-popup-name">{{ c.name }}</span>
+            <small style="color:#666;flex-shrink:0;">{{ (c.area * 100).toFixed(1) }}%</small>
+          </button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
 </template>
