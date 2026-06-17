@@ -272,6 +272,18 @@ const marqueeStyle = computed(() => {
   };
 });
 
+const manualBoxDraftStyle = computed(() => {
+  if (!manualBoxDraft.active) return {};
+  const left = Math.min(manualBoxDraft.startX, manualBoxDraft.currentX);
+  const top = Math.min(manualBoxDraft.startY, manualBoxDraft.currentY);
+  return {
+    left: `${left}px`,
+    top: `${top}px`,
+    width: `${Math.abs(manualBoxDraft.currentX - manualBoxDraft.startX)}px`,
+    height: `${Math.abs(manualBoxDraft.currentY - manualBoxDraft.startY)}px`,
+  };
+});
+
 function imageSize(src) {
   return new Promise((resolve) => {
     const image = new Image();
@@ -891,6 +903,49 @@ function handleEditorPillClick(event) {
   }
 }
 
+// 手动框选：在画布拖拽矩形框添加自定义元素
+function createManualElement() {
+  const layerId = manualBoxDraft.layerId;
+  if (!layerId) return;
+  const layer = layers.value.find((l) => l.id === layerId);
+  if (!layer) return;
+
+  const minX = Math.min(manualBoxDraft.startX, manualBoxDraft.currentX);
+  const maxX = Math.max(manualBoxDraft.startX, manualBoxDraft.currentX);
+  const minY = Math.min(manualBoxDraft.startY, manualBoxDraft.currentY);
+  const maxY = Math.max(manualBoxDraft.startY, manualBoxDraft.currentY);
+
+  // 屏幕坐标 → 世界坐标：world = (screen - offset) / scale
+  const vs = viewScale.value;
+  const vo = viewOffset.value;
+  const wLeft = (minX - vo.x) / vs;
+  const wRight = (maxX - vo.x) / vs;
+  const wTop = (minY - vo.y) / vs;
+  const wBottom = (maxY - vo.y) / vs;
+
+  // 图层相对归一化 0-1
+  const top = (wTop - layer.y) / layer.height;
+  const left = (wLeft - layer.x) / layer.width;
+  const bottom = (wBottom - layer.y) / layer.height;
+  const right = (wRight - layer.x) / layer.width;
+  const box_2d = [top, left, bottom, right].map((v) => Math.max(0, Math.min(1, v)));
+
+  const ts = Date.now();
+  const el = {
+    id: `manual-${ts}`,
+    name: `手标-${ts}`,
+    object_name: `手标-${ts}`,
+    box_2d,
+    box2d: box_2d,
+    manual: true,
+  };
+  layerDetectedElements.value = {
+    ...layerDetectedElements.value,
+    [layerId]: [...(layerDetectedElements.value[layerId] || []), el],
+  };
+  console.log('[manual] 手动添加元素:', el.object_name, box_2d);
+}
+
 function clearAllAnnotations() {
   selectedDetectedElements.value = new Set();
   elementClickPositions.value = {};
@@ -1296,6 +1351,27 @@ function wheelZoom(event) {
 function startMarquee(event) {
   if (event.button !== 0) return;
 
+  // 标注模式：手动画框添加元素
+  if (activeTool.value === 'annotate') {
+    if (event.target.closest?.('.detected-element-box, .detected-element-label, .layer-toolbar, .bottom-tools, .top-tools, .right-panel')) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const rect = event.currentTarget.getBoundingClientRect();
+    manualBoxDraft.active = true;
+    manualBoxDraft.startX = event.clientX - rect.left;
+    manualBoxDraft.startY = event.clientY - rect.top;
+    manualBoxDraft.currentX = manualBoxDraft.startX;
+    manualBoxDraft.currentY = manualBoxDraft.startY;
+    // 找到框下面的图层
+    const picked = [...event.currentTarget.querySelectorAll('.canvas-layer')].filter((node) => {
+      const r = node.getBoundingClientRect();
+      return r.left < event.clientX && r.right > event.clientX && r.top < event.clientY && r.bottom > event.clientY;
+    }).map((node) => node.dataset.layerId);
+    manualBoxDraft.layerId = picked[0] || selectedLayerId.value || layers.value[0]?.id || '';
+    return;
+  }
+
+  // 手形工具：拖动画布
   if (activeTool.value === 'hand') {
     if (event.target.closest?.('.layer-toolbar, .resize-dot, .bottom-tools, .top-tools, .right-panel')) return;
     event.preventDefault();
@@ -1337,6 +1413,13 @@ function moveMarquee(event) {
     return;
   }
 
+  if (manualBoxDraft.active) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    manualBoxDraft.currentX = event.clientX - rect.left;
+    manualBoxDraft.currentY = event.clientY - rect.top;
+    return;
+  }
+
   if (!marquee.active) return;
   const rect = event.currentTarget.getBoundingClientRect();
   marquee.currentX = event.clientX - rect.left;
@@ -1347,6 +1430,13 @@ function stopMarquee(event) {
   if (panState.value) {
     if (event.currentTarget.hasPointerCapture(panState.value.pointerId)) event.currentTarget.releasePointerCapture(panState.value.pointerId);
     panState.value = null;
+    return;
+  }
+
+  if (manualBoxDraft.active) {
+    if (event.currentTarget.hasPointerCapture) event.currentTarget.releasePointerCapture(event.pointerId);
+    createManualElement();
+    manualBoxDraft.active = false;
     return;
   }
 
@@ -1528,7 +1618,7 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
       </div>
 
       <aside v-if="activeTool === 'annotate'" class="annotate-banner">
-        标记工具已开启 · 点击图片元素选中加入输入框；其他工具下可按住 Ctrl+点击 选中元素
+        标记工具已开启 · 拖拽框选手动添加元素，或点击已有元素选中加入输入框；其他工具下可按住 Ctrl+点击 选中元素
         <button type="button" class="annotate-banner-close" @click="activeTool = 'select'">退出</button>
       </aside>
 
@@ -1602,6 +1692,7 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
           </template>
         </figure>
         <div v-if="marquee.active" class="selection-marquee" :style="marqueeStyle" />
+        <div v-if="manualBoxDraft.active" class="manual-box-draft" :style="manualBoxDraftStyle" />
         <div v-if="getDetectionVisible() || activeTool === 'annotate' || ctrlHeld" :class="['detected-elements-overlay', { 'annotate-mode': activeTool === 'annotate', 'ctrl-mode': ctrlHeld && activeTool !== 'annotate', 'detection-visible': getDetectionVisible() }]">
           <template v-for="(elements, layerId) in layerDetectedElements" :key="layerId">
             <template v-for="(el, eIdx) in elements" :key="`${layerId}::${el.object_name || el.name || el.id || `e${eIdx}`}`">

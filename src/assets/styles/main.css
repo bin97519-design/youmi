@@ -638,6 +638,15 @@ textarea::placeholder, input::placeholder { color: #91a2ba; font-weight: 700; }
   pointer-events: none;
 }
 
+.manual-box-draft {
+  position: absolute;
+  z-index: 15;
+  border: 2px dashed #ff8a65;
+  background: rgba(255, 138, 101, .12);
+  box-shadow: 0 0 0 1px rgba(255, 138, 101, .2);
+  pointer-events: none;
+}
+
 .canvas-minimap {
   position: absolute;
   left: 16px;
