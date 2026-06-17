@@ -260,8 +260,9 @@ async function maybeAutoDetect(layer) {
       body: JSON.stringify({ imageUrl: layer.url, layerId: layer.id }),
     });
     const data = await res.json();
-    if (data.code === 0 && data.data?.elements) {
-      layerDetectedElements.value = { ...layerDetectedElements.value, [layer.id]: data.data.elements };
+    if ((data.code === 0 || data.code === 200) && (data.data?.elements || data.data?.imageInfo)) {
+      const els = data.data.elements || data.data.imageInfo;
+      layerDetectedElements.value = { ...layerDetectedElements.value, [layer.id]: els };
     }
   } catch (e) { /* ignore */ }
   const next = new Set(detectingLayerIds.value);
@@ -1307,7 +1308,7 @@ onBeforeUnmount(() => {
           @pointercancel="stopLayerDrag"
         >
           <div v-if="layer.type !== 'placeholder' && layer.id === selectedLayerId && selectedLayerIds.length <= 1" class="layer-toolbar">
-            <button>✂ 智能抠图</button><button>◈ 智能分层</button><button>T 编辑文字</button><button>↔ 扩图</button><button>☏ 对话修改</button><button>▧ 尺寸修改</button><button>⌗ 裁剪</button><button>✂ 分割</button><button>⇩ 下载</button><button @click.stop="removeLayer(layer.id)">⌫ 删除</button>
+            <button>✂ 智能抠图</button><button @click.stop="maybeAutoDetect(selectedLayer)">◈ 智能分层</button><button>T 编辑文字</button><button>↔ 扩图</button><button>☏ 对话修改</button><button>▧ 尺寸修改</button><button>⌗ 裁剪</button><button>✂ 分割</button><button>⇩ 下载</button><button @click.stop="removeLayer(layer.id)">⌫ 删除</button>
           </div>
           <template v-if="layer.type === 'placeholder'">
             <div
