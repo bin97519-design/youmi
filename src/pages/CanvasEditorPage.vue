@@ -17,6 +17,11 @@ const shortcutsOpen = ref(false);
 const helpMenuOpen = ref(false);
 const toolbarAddOpen = ref(false);
 const minimapVisible = ref(true);
+const layerDetectedElements = ref({});
+const selectedDetectedElements = ref(new Set());
+const elementClickPositions = ref({});
+const detectingLayerIds = ref(new Set());
+const chatSkipPillSync = ref(false);
 const rightPanelVisible = ref(true);
 const selectedLayerId = ref(doc.value.payload.layers[0]?.id || '');
 const selectedLayerIds = ref(selectedLayerId.value ? [selectedLayerId.value] : []);
@@ -56,6 +61,9 @@ const dragState = ref(null);
 const panState = ref(null);
 const resizeState = ref(null);
 const marquee = reactive({ active: false, startX: 0, startY: 0, currentX: 0, currentY: 0 });
+const annotationInput = reactive({ visible: false, layerId: '', x: 0, y: 0, width: 0, height: 0, text: '', geoPixel: null });
+const manualBoxDraft = reactive({ active: false, startX: 0, startY: 0, currentX: 0, currentY: 0, layerId: '' });
+const selectedAnnotation = ref({ layerId: '', annoId: '' });
 const panel = reactive({ x: null, y: 6, width: 340, chatHeight: 258, dragging: null, resizing: null, resizingChat: null });
 const toolbar = reactive({ x: null, y: null, dragging: null });
 
@@ -64,6 +72,19 @@ const selectedLayer = computed(() => layers.value.find((item) => item.id === sel
 const selectedLayerIndex = computed(() => layers.value.findIndex((item) => item.id === selectedLayerId.value));
 const viewScale = computed(() => doc.value.payload.view.scale || 1);
 const viewOffset = computed(() => doc.value.payload.view.offset || { x: 0, y: 0 });
+
+// Watch for newly added layers to auto-detect
+watch(() => layers.value.map((l) => l.id), (newIds, oldIds) => {
+  if (!newIds || !oldIds) return;
+  const added = newIds.filter((id) => !oldIds.includes(id));
+  for (const id of added) {
+    const layer = layers.value.find((l) => l.id === id);
+    if (layer && layer.url && layer.type !== 'placeholder') {
+      nextTick(() => maybeAutoDetect(layer));
+    }
+  }
+});
+
 const toolbarStyle = computed(() => (toolbar.x === null ? {} : { left: `${toolbar.x}px`, top: `${toolbar.y}px`, bottom: 'auto' }));
 
 // 缩放滑块
@@ -188,6 +209,35 @@ function imageSize(src) {
     image.onerror = () => resolve({ width: 800, height: 800 });
     image.src = src;
   });
+}
+
+async function maybeAutoDetect(layer) {
+  if (!autoDetectionEnabled.value) return;
+  if (!layer.url || layer.type === 'placeholder') return;
+  if (detectingLayerIds.value.has(layer.id)) return;
+  if (layerDetectedElements.value[layer.id]?.length) return;
+  
+  detectingLayerIds.value = new Set([...detectingLayerIds.value, layer.id]);
+  try {
+    const res = await fetch('/api/image/detect-elements', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...userStore.authHeaders() },
+      body: JSON.stringify({ imageUrl: layer.url, layerId: layer.id }),
+    });
+    const data = await res.json();
+    if (data.code === 0 && data.data?.elements) {
+      layerDetectedElements.value = { ...layerDetectedElements.value, [layer.id]: data.data.elements };
+    }
+  } catch (e) { /* ignore */ }
+  const next = new Set(detectingLayerIds.value);
+  next.delete(layer.id);
+  detectingLayerIds.value = next;
+}
+
+const autoDetectionEnabled = ref(true);
+
+function getDetectionVisible() {
+  return doc.value?.payload?.ui?.detectionVisible === true;
 }
 
 function extractUploadUrl(result) {
@@ -613,6 +663,33 @@ function stopLayerDrag(event) {
   dragState.value = null;
 }
 
+function smartToggleElement(layerId, elementId, event) {
+  if (activeTool.value !== 'annotate' && !(event && (event.ctrlKey || event.metaKey))) return;
+  const key = `${layerId}::${elementId}`;
+  const set = new Set(selectedDetectedElements.value);
+  if (event && event.shiftKey) {
+    set.add(key);
+  } else if (set.has(key)) {
+    set.delete(key);
+  } else {
+    set.clear();
+    set.add(key);
+  }
+  selectedDetectedElements.value = set;
+  if (event) {
+    elementClickPositions.value = {
+      ...elementClickPositions.value,
+      [key]: { x: event.offsetX, y: event.offsetY },
+    };
+  }
+  chatSkipPillSync.value = false;
+}
+
+function clearAllAnnotations() {
+  selectedDetectedElements.value = new Set();
+  elementClickPositions.value = {};
+}
+
 function startResize(event, layer, point) {
   if (!userStore.requireLogin()) return;
   event.stopPropagation();
@@ -639,6 +716,28 @@ function stopResize(event) {
   if (!resizeState.value) return;
   if (event.currentTarget.hasPointerCapture(resizeState.value.pointerId)) event.currentTarget.releasePointerCapture(resizeState.value.pointerId);
   resizeState.value = null;
+}
+
+function getSelectedDetectedElements() {
+  return [...selectedDetectedElements.value].map((key) => {
+    const [layerId, elId] = key.split('::');
+    const elements = layerDetectedElements.value[layerId] || [];
+    const el = elements.find((e) => e.id === elId || e.name === elId);
+    return el ? { ...el, layerId } : null;
+  }).filter(Boolean);
+}
+
+function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function buildElementPill(el, order) {
+  const thumb = layers.value.find((l) => l.id === el.layerId)?.thumbnailUrl || '';
+  return `<span class="chat-pill" contenteditable="false" data-el-id="${escHtml(el.id)}" data-el-name="${escHtml(el.name)}" data-el-layer="${escHtml(el.layerId)}" data-el-box="${(el.box_2d || []).join(',')}"><span class="chat-pill-num">${order}</span><img src="${thumb}" alt="" />${escHtml(el.name)}<em title="切换重叠元素" data-action="pick-overlap">&#x25BC;</em></span>&nbsp;`;
+}
+
+function getElementClickStyle(key) {
+  const pos = elementClickPositions.value[key];
+  if (!pos) return {};
+  return { left: `${pos.x}px`, top: `${pos.y}px` };
 }
 
 async function sendChat() {
