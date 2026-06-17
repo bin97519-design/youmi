@@ -247,8 +247,8 @@ function imageSize(src) {
 }
 
 async function maybeAutoDetect(layer) {
+  if (!layer || !layer.url || layer.type === 'placeholder') return;
   if (!autoDetectionEnabled.value) return;
-  if (!layer.url || layer.type === 'placeholder') return;
   if (detectingLayerIds.value.has(layer.id)) return;
   if (layerDetectedElements.value[layer.id]?.length) return;
   
@@ -1308,7 +1308,7 @@ onBeforeUnmount(() => {
           @pointercancel="stopLayerDrag"
         >
           <div v-if="layer.type !== 'placeholder' && layer.id === selectedLayerId && selectedLayerIds.length <= 1" class="layer-toolbar">
-            <button>✂ 智能抠图</button><button @click.stop="maybeAutoDetect(selectedLayer)">◈ 智能分层</button><button>T 编辑文字</button><button>↔ 扩图</button><button>☏ 对话修改</button><button>▧ 尺寸修改</button><button>⌗ 裁剪</button><button>✂ 分割</button><button>⇩ 下载</button><button @click.stop="removeLayer(layer.id)">⌫ 删除</button>
+            <button>✂ 智能抠图</button><button @click.stop="maybeAutoDetect(selectedLayer)"><template v-if="selectedLayer && detectingLayerIds.has(selectedLayer.id)">⏳ 检测中...</template><template v-else>◈ 智能分层</template></button><button>T 编辑文字</button><button>↔ 扩图</button><button>☏ 对话修改</button><button>▧ 尺寸修改</button><button>⌗ 裁剪</button><button>✂ 分割</button><button>⇩ 下载</button><button @click.stop="removeLayer(layer.id)">⌫ 删除</button>
           </div>
           <template v-if="layer.type === 'placeholder'">
             <div
