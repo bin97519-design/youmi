@@ -273,6 +273,8 @@ async function maybeAutoDetect(layer) {
       }));
       layerDetectedElements.value = { ...layerDetectedElements.value, [layer.id]: els };
       console.log('[detect] 填充 layerDetectedElements:', Object.keys(layerDetectedElements.value), '→', els.length, '个元素');
+      console.log('[detect] 第一个元素完整数据:', JSON.stringify(els[0]));
+      console.log('[detect] 当前 layer 信息:', { id: layer.id, x: layer.x, y: layer.y, width: layer.width, height: layer.height, viewScale: viewScale.value, viewOffset: viewOffset.value });
       // 持久化到文档 payload
       canvas.updateDocument(props.id, (draft) => {
         draft.payload.detectedElements = draft.payload.detectedElements || {};

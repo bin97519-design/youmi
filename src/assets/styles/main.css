@@ -522,7 +522,7 @@ textarea::placeholder, input::placeholder { color: #91a2ba; font-weight: 700; }
   position: absolute;
   inset: 0;
   pointer-events: none;
-  z-index: 5;
+  z-index: 100;
 }
 
 /* 元素框基础样式：默认不可见 */
