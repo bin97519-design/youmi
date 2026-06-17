@@ -1448,6 +1448,9 @@ onBeforeUnmount(() => {
           <button class="uc-left-tab" :class="{ active: rightTab === 'layers' }" @click="rightTab = 'layers'">
             <i class="ri-stack-line" aria-hidden="true"></i><span>图层窗口</span>
           </button>
+          <button class="uc-left-tab" :class="{ active: rightTab === 'history' }" @click="rightTab = 'history'">
+            <i class="ri-image-circle-line" aria-hidden="true"></i><span>生图记录</span><b v-if="generationHistory.length">{{ generationHistory.length }}</b>
+          </button>
           <button class="panel-drag uc-rightpanel-toggle-btn uc-floating uc-floating-toggle is-docked" title="拖动右侧面板" @pointerdown="startPanelDrag" @pointermove="movePanel" @pointerup="stopPanel" @pointercancel="stopPanel">
             <i class="ri-contract-right-line" aria-hidden="true"></i>
           </button>
