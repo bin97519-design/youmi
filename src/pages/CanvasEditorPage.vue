@@ -2148,7 +2148,7 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
                   :data-placeholder="'描述你想生成的图片，或选中画布图片描述修改...'"
                   contenteditable="true"
                   @input="handleEditorInput"
-                  @pointerdown="handleEditorPillClick"
+                  @click="handleEditorPillClick"
                   @keydown.enter.prevent="sendChat"
                   @keydown.ctrl.enter.prevent="document.execCommand('insertLineBreak')"
                 />
