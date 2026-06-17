@@ -858,11 +858,14 @@ function findElementsAtPoint(clientX, clientY) {
   return results;
 }
 
-// 基于视觉几何分析判断前景：面积、深度、包含关系、交叠分析
+// 基于视觉几何分析判断前景元素
+// 核心原理：在2D图像中，如果A大部分在B的边界框内，说明A是B上面的物体（前景）
+// 例如：茶杯在桌子上 → 茶杯大部分在桌子框内 → 茶杯是前景
+//       人物坐在沙发上 → 人物大部分在沙发框内 → 人物是前景
 function pickBestElement(candidates) {
   if (candidates.length === 1) return candidates[0];
 
-  // 辅助：boxB 覆盖了 boxA 多少比例
+  // boxA 被 boxB 覆盖的比例（A 有多少面积落在 B 内部）
   const coverage = (boxA, boxB) => {
     const il = Math.max(boxA[1], boxB[1]);
     const it = Math.max(boxA[0], boxB[0]);
@@ -874,7 +877,7 @@ function pickBestElement(candidates) {
     return aArea > 0 ? iArea / aArea : 0;
   };
 
-  // 完全包含：boxOuter 完全包裹 boxInner
+  // 完全包含
   const fullyContains = (boxOuter, boxInner) =>
     boxOuter[1] <= boxInner[1] && boxOuter[0] <= boxInner[0] &&
     boxOuter[3] >= boxInner[3] && boxOuter[2] >= boxInner[2];
@@ -884,44 +887,49 @@ function pickBestElement(candidates) {
     const area = c.area;
     let score = 0;
 
-    // 1) 面积：越小越像前景细节（权重 40%）
-    score += (1 - Math.min(area * 3, 1)) * 0.40;
+    // 1) 面积：越小越像前景细节（权重 30%）
+    //    茶杯面积通常 0.5%，沙发可能 30%，人物可能 15%
+    score += (1 - Math.min(area * 3, 1)) * 0.30;
 
-    // 2) 底边深度：底边越靠下 ≈ 越靠近镜头（透视原理）（权重 5%）
+    // 2) 底边深度：底边越靠下 ≈ 越靠近镜头（权重 5%）
+    //    透视原理：近大远小，近的物体底部更靠下
     score += b[2] * 0.05;
 
-    // 3) 与其他元素的关系分析（权重 55%）
+    // 3) 与其他元素的空间关系（权重 65%）
     let relation = 0;
     for (const other of candidates) {
       if (other === c) continue;
       const ob = other.box_2d;
-      const cInO = fullyContains(ob, b);  // c 被 other 包含
-      const oInC = fullyContains(b, ob);  // other 被 c 包含
+      const cInO = fullyContains(ob, b);  // c 完全在 other 内
+      const oInC = fullyContains(b, ob);  // other 完全在 c 内
 
-      // 3a) 完全包含 → 子框是前景细节
+      // 3a) 完全包含 → 内部小框是前景
       if (cInO) {
-        const ratio = area / Math.max(other.area, 0.0001);
-        if (ratio < 0.6) relation += 0.55;  // c 小 → 前景（茶杯在沙发上）
+        relation += 0.50;  // c 在 other 内 → c 是前景（茶杯在桌面上）
+        continue;
       }
       if (oInC) {
-        const ratio = other.area / Math.max(area, 0.0001);
-        if (ratio < 0.6) relation -= 0.30;  // 包住小框 → c 是容器/背景
+        relation -= 0.25;  // other 在 c 内 → c 是背景容器
+        continue;
       }
 
-      // 3b) 部分重叠（非包含关系）→ 被覆盖比例高的一方在后
-      if (!cInO && !oInC) {
-        const cCovered = coverage(b, ob);   // c 被 other 覆盖的比例
-        const oCovered = coverage(ob, b);   // other 被 c 覆盖的比例
+      // 3b) 部分重叠：A 大部分在 B 内 → A 是 B 上面的前景物体
+      //     这才是正确的方向！
+      //     人物大部分在沙发框内 → 人物坐在沙发上 → 人物在前
+      //     茶杯大部分在桌子框内 → 茶杯放在桌上 → 茶杯在前
+      const cInOPct = coverage(b, ob);   // c 有多少落在 other 内
+      const oInCPct = coverage(ob, b);   // other 有多少落在 c 内
 
-        if (oCovered > cCovered + 0.2) {
-          relation += 0.18;  // other 被 c 盖得更多 → c 在前
-        }
-        if (cCovered > oCovered + 0.2) {
-          relation -= 0.18;  // c 被 other 盖得更多 → c 在后
-        }
+      if (cInOPct > 0.5) {
+        // c 大部分在 other 内 → c 是前景物体（坐在沙发上/放在桌上）
+        relation += 0.35 * cInOPct;  // 覆盖率越高，越确信是前景
+      }
+      if (oInCPct > 0.5) {
+        // other 大部分在 c 内 → other 是前景，c 是背景
+        relation -= 0.20 * oInCPct;
       }
     }
-    score += Math.max(-0.30, Math.min(0.55, relation));
+    score += Math.max(-0.45, Math.min(0.65, relation));
 
     return { ...c, score, area, name: c.name };
   });
@@ -931,8 +939,8 @@ function pickBestElement(candidates) {
   if (candidates.length >= 2) {
     console.log(
       '[smart-click] 重叠', candidates.length, '个 → 选中',
-      `"${scored[0].name}" (score=${scored[0].score.toFixed(3)})`,
-      '| 次选', `"${scored[1].name}" (score=${scored[1].score.toFixed(3)})`
+      `"${scored[0].name}" (score=${scored[0].score.toFixed(3)}, area=${scored[0].area.toFixed(4)})`,
+      '| 次选', `"${scored[1].name}" (score=${scored[1].score.toFixed(3)}, area=${scored[1].area.toFixed(4)})`
     );
   }
 
