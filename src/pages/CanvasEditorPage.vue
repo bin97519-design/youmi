@@ -1290,15 +1290,16 @@ function createManualElement() {
 
 // 确认手动元素命名并添加到检测列表
 function confirmManualElementName() {
-  const name = manualNameInput.text.trim() || `手标-${Date.now()}`;
+  const userInput = manualNameInput.text.trim();
+  const displayName = userInput ? `手标-${userInput}` : `手标-${Date.now()}`;
   const layerId = manualNameInput.layerId;
   const box_2d = manualNameInput.box_2d;
   if (!layerId || !box_2d) return;
 
   const el = {
     id: `manual-${Date.now()}`,
-    name,
-    object_name: name,
+    name: displayName,
+    object_name: displayName,
     box_2d,
     box2d: box_2d,
     manual: true,
@@ -1307,7 +1308,7 @@ function confirmManualElementName() {
     ...layerDetectedElements.value,
     [layerId]: [...(layerDetectedElements.value[layerId] || []), el],
   };
-  console.log('[manual] 手动添加元素:', name, box_2d);
+  console.log('[manual] 手动添加元素:', displayName, box_2d);
   manualNameInput.visible = false;
   manualNameInput.text = '';
 }
@@ -1868,6 +1869,23 @@ function onGlobalKeydown(event) {
   }
   if (event.key === 'Delete') {
     if (inInput) return;
+    // 优先删除选中的元素框（含手动元素）
+    if (selectedDetectedElements.value.size > 0) {
+      event.preventDefault();
+      const nextLayers = { ...layerDetectedElements.value };
+      for (const key of selectedDetectedElements.value) {
+        const [layerId, elId] = key.split('::');
+        if (nextLayers[layerId]) {
+          nextLayers[layerId] = nextLayers[layerId].filter((e) => (e.object_name || e.name || e.id) !== elId);
+          if (!nextLayers[layerId].length) delete nextLayers[layerId];
+        }
+      }
+      layerDetectedElements.value = nextLayers;
+      selectedDetectedElements.value = new Set();
+      elementClickPositions.value = {};
+      return;
+    }
+    // 否则删除选中图层
     if (selectedLayerId.value && layers.value.length > 1) {
       event.preventDefault();
       removeLayer(selectedLayerId.value);
