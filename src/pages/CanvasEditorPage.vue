@@ -261,7 +261,11 @@ async function maybeAutoDetect(layer) {
     });
     const data = await res.json();
     if ((data.code === 0 || data.code === 200) && (data.data?.elements || data.data?.imageInfo)) {
-      const els = data.data.elements || data.data.imageInfo;
+      const els = (data.data.elements || data.data.imageInfo).map((e, i) => ({
+        ...e,
+        id: e.object_name || e.name || e.id || `element-${i}`,
+        name: e.object_name || e.name || e.id || `element-${i}`,
+      }));
       layerDetectedElements.value = { ...layerDetectedElements.value, [layer.id]: els };
     }
   } catch (e) { /* ignore */ }
@@ -721,12 +725,66 @@ function smartToggleElement(layerId, elementId, event) {
   }
   selectedDetectedElements.value = set;
   if (event) {
+    const overlay = event.currentTarget.closest('.detected-elements-overlay');
+    const overlayRect = overlay ? overlay.getBoundingClientRect() : event.currentTarget.getBoundingClientRect();
     elementClickPositions.value = {
       ...elementClickPositions.value,
-      [key]: { x: event.offsetX, y: event.offsetY },
+      [key]: { x: event.clientX - overlayRect.left, y: event.clientY - overlayRect.top },
     };
   }
   chatSkipPillSync.value = false;
+}
+
+// 同步：editor 里被 Backspace 删除的 pill → 取消画布选中
+function handleEditorInput() {
+  const editor = document.querySelector('.chat-editor');
+  if (!editor) return;
+  const pills = editor.querySelectorAll('.chat-pill');
+  const existingKeys = new Set();
+  pills.forEach((pill) => {
+    const elId = pill.dataset.elId;
+    const layerId = pill.dataset.elLayer;
+    if (elId && layerId) existingKeys.add(`${layerId}::${elId}`);
+  });
+
+  const current = new Set(selectedDetectedElements.value);
+  let changed = false;
+  for (const key of current) {
+    if (!existingKeys.has(key)) {
+      current.delete(key);
+      // 清理该元素的位置记录
+      const newPositions = { ...elementClickPositions.value };
+      delete newPositions[key];
+      elementClickPositions.value = newPositions;
+      changed = true;
+    }
+  }
+  if (changed) {
+    chatSkipPillSync.value = true;
+    selectedDetectedElements.value = current;
+  }
+  // 同步纯文本
+  const textContent = [];
+  for (const node of editor.childNodes) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      textContent.push(node.textContent);
+    } else if (node.nodeType === Node.ELEMENT_NODE && !node.classList.contains('chat-pill')) {
+      textContent.push(node.textContent || '');
+    }
+  }
+  chatText.value = textContent.join('');
+}
+
+function handleEditorPillClick(event) {
+  const pill = event.target.closest('.chat-pill');
+  if (!pill) return;
+  // 点击 pill 的处理：如果点击的是 em（切换重叠元素），弹出选择
+  if (event.target.closest('[data-action="pick-overlap"]')) {
+    const elId = pill.dataset.elId;
+    const elLayer = pill.dataset.elLayer;
+    // 可以在这里弹出重叠元素列表
+    return;
+  }
 }
 
 function clearAllAnnotations() {
@@ -766,8 +824,8 @@ function getSelectedDetectedElements() {
   return [...selectedDetectedElements.value].map((key) => {
     const [layerId, elId] = key.split('::');
     const elements = layerDetectedElements.value[layerId] || [];
-    const el = elements.find((e) => e.id === elId || e.name === elId);
-    return el ? { ...el, layerId } : null;
+    const el = elements.find((e) => (e.object_name || e.name || e.id) === elId);
+    return el ? { ...el, layerId, id: el.object_name || el.name || el.id, name: el.object_name || el.name || '' } : null;
   }).filter(Boolean);
 }
 
@@ -775,7 +833,8 @@ function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;'
 
 function buildElementPill(el, order) {
   const thumb = layers.value.find((l) => l.id === el.layerId)?.thumbnailUrl || '';
-  return `<span class="chat-pill" contenteditable="false" data-el-id="${escHtml(el.id)}" data-el-name="${escHtml(el.name)}" data-el-layer="${escHtml(el.layerId)}" data-el-box="${(el.box_2d || []).join(',')}"><span class="chat-pill-num">${order}</span><img src="${thumb}" alt="" />${escHtml(el.name)}<em title="切换重叠元素" data-action="pick-overlap">&#x25BC;</em></span>&nbsp;`;
+  const eId = el.object_name || el.name || el.id;
+  return `<span class="chat-pill" contenteditable="false" data-el-id="${escHtml(eId)}" data-el-name="${escHtml(el.object_name || el.name || '')}" data-el-layer="${escHtml(el.layerId)}" data-el-box="${(el.box_2d || []).join(',')}"><span class="chat-pill-num">${order}</span><img src="${thumb}" alt="" />${escHtml(el.object_name || el.name || '')}<em title="切换重叠元素" data-action="pick-overlap">&#x25BC;</em></span>&nbsp;`;
 }
 
 function syncPillsToEditor() {
@@ -805,6 +864,15 @@ function syncPillsToEditor() {
 
 watch(selectedDetectedElements, () => {
   if (chatSkipPillSync.value) return;
+  const detected = getSelectedDetectedElements();
+  const addedLayers = new Set();
+  for (const d of detected) {
+    const layer = layers.value.find((l) => l.id === d.layerId);
+    if (layer?.url && !addedLayers.has(layer.id)) {
+      addedLayers.add(layer.id);
+      addReversePromptReference(layer.url, layer.id);
+    }
+  }
   nextTick(() => syncPillsToEditor());
 }, { deep: true });
 
@@ -1358,15 +1426,15 @@ onBeforeUnmount(() => {
                   width: `${((el.box_2d[3] || 0) - (el.box_2d[1] || 0)) * (layers.find((l) => l.id === layerId).width || 1) * viewScale}px`,
                   height: `${((el.box_2d[2] || 0) - (el.box_2d[0] || 0)) * (layers.find((l) => l.id === layerId).height || 1) * viewScale}px`,
                 }"
-                @pointerdown.stop="smartToggleElement(layerId, el.id || el.name, $event)"
+                @pointerdown.stop="smartToggleElement(layerId, el.object_name || el.name || el.id, $event)"
               >
-                <span class="detected-element-label">{{ el.name }}</span>
+                <span class="detected-element-label">{{ el.object_name || el.name }}</span>
               </div>
               <span
-                v-if="selectedDetectedElements.has(`${layerId}::${el.id || el.name}`)"
+                v-if="selectedDetectedElements.has(`${layerId}::${el.object_name || el.name || el.id}`)"
                 class="detected-element-index"
-                :style="getElementClickStyle(`${layerId}::${el.id || el.name}`)"
-              >{{ [...selectedDetectedElements].indexOf(`${layerId}::${el.id || el.name}`) + 1 }}</span>
+                :style="getElementClickStyle(`${layerId}::${el.object_name || el.name || el.id}`)"
+              >{{ [...selectedDetectedElements].indexOf(`${layerId}::${el.object_name || el.name || el.id}`) + 1 }}</span>
             </template>
           </template>
         </div>
@@ -1509,7 +1577,8 @@ onBeforeUnmount(() => {
                   :class="{ 'chat-editor-empty': !chatText.trim() && !getSelectedDetectedElements().length }"
                   :data-placeholder="'描述你想生成的图片，或选中画布图片描述修改...'"
                   contenteditable="true"
-                  @input="(e) => { chatText = e.target.innerText; }"
+                  @input="handleEditorInput"
+                  @click="handleEditorPillClick"
                   @keydown.enter.prevent="sendChat"
                   @keydown.ctrl.enter.prevent="document.execCommand('insertLineBreak')"
                 />
