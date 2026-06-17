@@ -276,6 +276,14 @@ function getDetectionVisible() {
   return doc.value?.payload?.ui?.detectionVisible === true;
 }
 
+function setDetectionVisible(val) {
+  canvas.updateDocument(props.id, (draft) => {
+    draft.payload.ui = draft.payload.ui || {};
+    draft.payload.ui.detectionVisible = val;
+    return draft;
+  });
+}
+
 function extractUploadUrl(result) {
   return result?.url || result?.fileUrl || result?.path || result?.data?.url || result?.data?.fileUrl || result?.data?.path || result?.data?.fullUrl || result?.data?.src;
 }
@@ -1243,6 +1251,7 @@ onBeforeUnmount(() => {
         <button class="logo logo-link" type="button" @click="router.push('/')">YOUMI</button><span>·</span><b>万能画布</b><span>/</span><button>✎ {{ doc.title }}</button><em>已保存 · 刚刚</em>
       </div>
       <div class="head-actions">
+        <button class="panel-visibility-btn" :class="{ active: getDetectionVisible() }" :title="getDetectionVisible() ? '隐藏视觉框' : '显示视觉框'" @click="setDetectionVisible(!getDetectionVisible())">{{ getDetectionVisible() ? '👁' : '🚫' }}</button>
         <button class="panel-visibility-btn" :class="{ active: rightPanelVisible }" :title="rightPanelVisible ? '隐藏对话框' : '显示对话框'" @click="rightPanelVisible = !rightPanelVisible">▮</button><button @click="router.push('/canvas')">×</button>
       </div>
     </header>
