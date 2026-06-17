@@ -17,6 +17,30 @@ const shortcutsOpen = ref(false);
 const helpMenuOpen = ref(false);
 const toolbarAddOpen = ref(false);
 const minimapVisible = ref(true);
+
+// 从 layers[*].detection.boxes 自动同步到 layerDetectedElements
+function syncDetectionFromLayers() {
+  for (const layer of layers.value) {
+    const boxes = layer?.detection?.boxes;
+    if (Array.isArray(boxes) && boxes.length) {
+      const els = boxes.map((b, i) => {
+        const b2d = b.box2d || b.box_2d || [];
+        return {
+          id: b.name || b.id || `el-${layer.id}-${i}`,
+          name: b.name || b.id || `element-${i}`,
+          box2d: b2d,
+          box_2d: b2d,
+        };
+      });
+      const cur = layerDetectedElements.value[layer.id];
+      if (!cur || cur.length !== els.length) {
+        layerDetectedElements.value = { ...layerDetectedElements.value, [layer.id]: els };
+      }
+    }
+  }
+}
+watch(() => layers.value.map((l) => l.detection), () => syncDetectionFromLayers(), { deep: true });
+watch(() => layers.value.length, () => syncDetectionFromLayers(), { immediate: true });
 const layerDetectedElements = ref({});
 const selectedDetectedElements = ref(new Set());
 const elementClickPositions = ref({});
