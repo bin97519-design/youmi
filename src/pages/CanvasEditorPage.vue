@@ -809,6 +809,44 @@ function smartToggleElement(layerId, elementId, event) {
   chatSkipPillSync.value = false;
 }
 
+// 从编辑器 DOM 提取纯文本（用于空判断和发送）
+function updateChatTextFromEditor() {
+  const editor = document.querySelector('.chat-editor');
+  if (!editor) return;
+  const textParts = [];
+  for (const node of editor.childNodes) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const t = node.textContent;
+      if (t && t !== '\u00a0') textParts.push(t);
+    } else if (node.nodeType === Node.ELEMENT_NODE && !node.classList.contains('chat-pill')) {
+      textParts.push(node.textContent || '');
+    }
+  }
+  chatText.value = textParts.join('');
+}
+
+// 构建含元素名称的结构化提示词: [元素1] 修改文字1 [元素2] 修改文字2
+function getEditorPrompt() {
+  const editor = document.querySelector('.chat-editor');
+  if (!editor) return chatText.value.trim();
+  const parts = [];
+  for (const node of editor.childNodes) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const t = (node.textContent || '').replace(/\u00a0/g, ' ').trim();
+      if (t) parts.push(t);
+    } else if (node.nodeType === Node.ELEMENT_NODE) {
+      if (node.classList.contains('chat-pill')) {
+        const name = node.dataset.elName || node.dataset.elId || '';
+        if (name) parts.push(`[${name}]`);
+      } else {
+        const t = (node.textContent || '').replace(/\u00a0/g, ' ').trim();
+        if (t) parts.push(t);
+      }
+    }
+  }
+  return parts.join(' ').replace(/\s+/g, ' ').trim();
+}
+
 // 同步：editor 里被 Backspace 删除的 pill → 取消画布选中
 function handleEditorInput() {
   if (_pillSyncLock > 0) return;  // 程序正在写入，跳过同步
@@ -827,7 +865,6 @@ function handleEditorInput() {
   for (const key of current) {
     if (!existingKeys.has(key)) {
       current.delete(key);
-      // 清理该元素的位置记录
       const newPositions = { ...elementClickPositions.value };
       delete newPositions[key];
       elementClickPositions.value = newPositions;
@@ -838,16 +875,8 @@ function handleEditorInput() {
     chatSkipPillSync.value = true;
     selectedDetectedElements.value = current;
   }
-  // 同步纯文本
-  const textContent = [];
-  for (const node of editor.childNodes) {
-    if (node.nodeType === Node.TEXT_NODE) {
-      textContent.push(node.textContent);
-    } else if (node.nodeType === Node.ELEMENT_NODE && !node.classList.contains('chat-pill')) {
-      textContent.push(node.textContent || '');
-    }
-  }
-  chatText.value = textContent.join('');
+  // 同步纯文本（保留 pill 之间的文字位置）
+  updateChatTextFromEditor();
 }
 
 function handleEditorPillClick(event) {
@@ -918,28 +947,56 @@ function syncPillsToEditor() {
   if (!editor) return;
   _pillSyncLock++;
   const lockId = _pillSyncLock;
+
+  // 读取编辑器中已有的 pill
+  const existingPills = Array.from(editor.querySelectorAll('.chat-pill'));
+  const existingKeys = new Set();
+  const pillNodeByKey = {};
+  existingPills.forEach((pill) => {
+    const key = `${pill.dataset.elLayer}::${pill.dataset.elId}`;
+    existingKeys.add(key);
+    pillNodeByKey[key] = pill;
+  });
+
+  const selectedSet = new Set([...selectedDetectedElements.value]);
+
+  // 1) 删除已取消选中的 pill（连同后面的 nbsp 空格）
+  for (const key of existingKeys) {
+    if (!selectedSet.has(key)) {
+      const pill = pillNodeByKey[key];
+      const next = pill.nextSibling;
+      if (next && next.nodeType === Node.TEXT_NODE && next.textContent === '\u00a0') {
+        next.remove();
+      }
+      pill.remove();
+    }
+  }
+
+  // 2) 追加新增的 pill 到编辑器末尾（不触碰已有文字）
   const detected = getSelectedDetectedElements();
-  if (!detected.length) {
-    if (editor.innerHTML !== chatText.value) editor.innerHTML = chatText.value;
-    setTimeout(() => { if (_pillSyncLock === lockId) _pillSyncLock = 0; }, 50);
-    return;
-  }
-  let html = '';
-  let idx = 0;
   for (const el of detected) {
-    idx += 1;
-    html += buildElementPill(el, idx);
+    const key = `${el.layerId}::${el.object_name || el.name || el.id}`;
+    if (!existingKeys.has(key)) {
+      const html = buildElementPill(el, 0) + '\u00a0';
+      editor.insertAdjacentHTML('beforeend', html);
+    }
   }
-  html += chatText.value;
-  // 仅当内容变化时写入，避免无谓的 @input 事件
-  if (editor.innerHTML !== html) {
-    editor.innerHTML = html;
-  }
-  // Place cursor at end of last text node
+
+  // 3) 按顺序重编号所有 pill
+  const finalPills = editor.querySelectorAll('.chat-pill');
+  finalPills.forEach((pill, i) => {
+    const num = pill.querySelector('.chat-pill-num');
+    if (num) num.textContent = String(i + 1);
+  });
+
+  // 4) 同步 chatText（用于空判断）
+  updateChatTextFromEditor();
+
+  // 5) 光标定位到末尾
   requestAnimationFrame(() => {
     if (_pillSyncLock !== lockId) return;
     const sel = window.getSelection();
-    if (!sel) return;
+    if (!sel) { setTimeout(() => { if (_pillSyncLock === lockId) _pillSyncLock = 0; }, 50); return; }
     sel.removeAllRanges();
     const range = document.createRange();
     range.selectNodeContents(editor);
@@ -970,8 +1027,10 @@ function getElementClickStyle(key) {
 }
 
 async function sendChat() {
-  const text = chatText.value.trim();
-  if (!text || chatGenerating.value) return;
+  // 使用结构化提示词：[元素1] 修改文字1 [元素2] 修改文字2
+  const text = getEditorPrompt();
+  const hasContent = text || getSelectedDetectedElements().length;
+  if (!hasContent || chatGenerating.value) return;
   if (!userStore.requireLogin()) return;
 
   const createdAt = Date.now();
@@ -995,7 +1054,12 @@ async function sendChat() {
       createdAt: createdAt + 1,
     },
   ]);
+  // 清空编辑器（pill + 文字）
+  const editorEl = document.querySelector('.chat-editor');
+  if (editorEl) editorEl.innerHTML = '';
   chatText.value = '';
+  selectedDetectedElements.value = new Set();
+  elementClickPositions.value = {};
   chatGenerating.value = true;
   const placeholderId = addGeneratingPlaceholderLayer(text);
 
@@ -1723,7 +1787,7 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
                   </select>
                 </label>
               </div>
-              <footer class="uc-bottom-toolbar"><span>Enter 发送 · Ctrl+Enter 换行</span><button :disabled="!chatText.trim() || chatGenerating" @click="sendChat"><i class="ri-send-plane-fill" aria-hidden="true"></i>{{ chatGenerating ? '生成中' : '发送' }}</button></footer>
+              <footer class="uc-bottom-toolbar"><span>Enter 发送 · Ctrl+Enter 换行</span><button :disabled="(!chatText.trim() && !getSelectedDetectedElements().length) || chatGenerating" @click="sendChat"><i class="ri-send-plane-fill" aria-hidden="true"></i>{{ chatGenerating ? '生成中' : '发送' }}</button></footer>
             </div>
           </div>
         </section>
