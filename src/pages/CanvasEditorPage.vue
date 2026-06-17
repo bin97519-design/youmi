@@ -18,6 +18,14 @@ const helpMenuOpen = ref(false);
 const toolbarAddOpen = ref(false);
 const minimapVisible = ref(true);
 
+// 归一化 box_2d 到 0-1（与 maybeAutoDetect 内的 normalizeBox 一致）
+function normalizeBoxVal(raw) {
+  if (!Array.isArray(raw) || raw.length !== 4) return [0, 0, 1, 1];
+  const allSmall = raw.every(v => Math.abs(v) <= 1.05);
+  if (allSmall) return raw;
+  return raw.map(v => v / 1000);
+}
+
 // 从 doc.value.payload.layers[*].detection.boxes 同步到 layerDetectedElements
 function syncDetectionFromLayers() {
   const allLayers = doc.value?.payload?.layers || [];
@@ -27,7 +35,7 @@ function syncDetectionFromLayers() {
     const boxes = layer?.detection?.boxes;
     if (Array.isArray(boxes) && boxes.length) {
       const els = boxes.map((b, i) => {
-        const b2d = b.box2d || b.box_2d || [];
+        const b2d = normalizeBoxVal(b.box2d || b.box_2d || []);
         return {
           id: b.name || b.id || `el-${layer.id}-${i}`,
           name: b.name || b.id || `element-${i}`,
@@ -293,14 +301,14 @@ async function maybeAutoDetect(layer) {
     const data = await res.json();
     console.log('[detect] API 返回:', { code: data.code, elementCount: (data.data?.elements || data.data?.imageInfo)?.length });
     if ((data.code === 0 || data.code === 200) && (data.data?.elements || data.data?.imageInfo)) {
-      // 归一化 box_2d: 后端可能返回 0-1 / 0-100 / 0-1000，统一转成 0-1
+      // 归一化 box_2d: 后端 proxy_log.py 统一返回 0-1000 千分数
       const normalizeBox = (raw) => {
         if (!Array.isArray(raw) || raw.length !== 4) return null;
-        const max = Math.max(...raw);
-        let scale = 1;
-        if (max > 1000) scale = 1000;
-        else if (max > 1) scale = 100;
-        return raw.map((v) => v / scale);
+        // 如果所有值都 ≤ 1.05，说明已经是 0-1 归一化格式
+        const allSmall = raw.every(v => Math.abs(v) <= 1.05);
+        if (allSmall) return raw;
+        // 否则统一除以 1000（千分数 → 0-1）
+        return raw.map(v => v / 1000);
       };
       const els = (data.data.elements || data.data.imageInfo).map((e, i) => {
         const key = e.object_name || e.name || e.id || `element-${i}`;
@@ -1371,10 +1379,29 @@ onMounted(() => {
   window.addEventListener('resize', updateViewportSize);
   window.addEventListener('keydown', onGlobalKeydown);
   loadUILayout();
-  // 恢复已缓存的检测元素
+  // 恢复已缓存的检测元素（清除旧版错误归一化的缓存）
   const cachedElements = doc.value?.payload?.detectedElements;
   if (cachedElements) {
-    layerDetectedElements.value = { ...cachedElements };
+    let hasBadData = false;
+    for (const els of Object.values(cachedElements)) {
+      if (Array.isArray(els)) {
+        for (const el of els) {
+          const box = el.box_2d || el.box2d || [];
+          if (box.some(v => Math.abs(v) > 1.05)) { hasBadData = true; break; }
+        }
+      }
+      if (hasBadData) break;
+    }
+    if (hasBadData) {
+      // 旧版归一化 bug 导致的数据，清除缓存让用户重新检测
+      canvas.updateDocument(props.id, (draft) => {
+        draft.payload.detectedElements = {};
+        return draft;
+      });
+      layerDetectedElements.value = {};
+    } else {
+      layerDetectedElements.value = { ...cachedElements };
+    }
   }
   const onCtrlDown = (e) => { if (e.key === 'Control') ctrlHeld.value = true; };
   const onCtrlUp = (e) => { if (e.key === 'Control') ctrlHeld.value = false; };
