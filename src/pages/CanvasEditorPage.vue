@@ -763,6 +763,10 @@ function stopLayerDrag(event) {
 
 function smartToggleElement(layerId, elementId, event) {
   if (activeTool.value !== 'annotate' && !(event && (event.ctrlKey || event.metaKey))) return;
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
   const key = `${layerId}::${elementId}`;
   const set = new Set(selectedDetectedElements.value);
   if (event && event.shiftKey) {
@@ -787,6 +791,7 @@ function smartToggleElement(layerId, elementId, event) {
 
 // 同步：editor 里被 Backspace 删除的 pill → 取消画布选中
 function handleEditorInput() {
+  if (_pillSyncLock > 0) return;  // 程序正在写入，跳过同步
   const editor = document.querySelector('.chat-editor');
   if (!editor) return;
   const pills = editor.querySelectorAll('.chat-pill');
@@ -887,12 +892,16 @@ function buildElementPill(el, order) {
   return `<span class="chat-pill" contenteditable="false" data-el-id="${escHtml(eId)}" data-el-name="${escHtml(el.object_name || el.name || '')}" data-el-layer="${escHtml(el.layerId)}" data-el-box="${(el.box_2d || []).join(',')}"><span class="chat-pill-num">${order}</span><img src="${thumb}" alt="" />${escHtml(el.object_name || el.name || '')}<em title="切换重叠元素" data-action="pick-overlap">&#x25BC;</em></span>&nbsp;`;
 }
 
+let _pillSyncLock = 0;
 function syncPillsToEditor() {
   const editor = document.querySelector('.chat-editor');
   if (!editor) return;
+  _pillSyncLock++;
+  const lockId = _pillSyncLock;
   const detected = getSelectedDetectedElements();
   if (!detected.length) {
-    editor.innerHTML = chatText.value;
+    if (editor.innerHTML !== chatText.value) editor.innerHTML = chatText.value;
+    setTimeout(() => { if (_pillSyncLock === lockId) _pillSyncLock = 0; }, 50);
     return;
   }
   let html = '';
@@ -902,14 +911,22 @@ function syncPillsToEditor() {
     html += buildElementPill(el, idx);
   }
   html += chatText.value;
-  editor.innerHTML = html;
-  // Place cursor at end
-  const range = document.createRange();
-  range.selectNodeContents(editor);
-  range.collapse(false);
-  const sel = window.getSelection();
-  sel.removeAllRanges();
-  sel.addRange(range);
+  // 仅当内容变化时写入，避免无谓的 @input 事件
+  if (editor.innerHTML !== html) {
+    editor.innerHTML = html;
+  }
+  // Place cursor at end of last text node
+  requestAnimationFrame(() => {
+    if (_pillSyncLock !== lockId) return;
+    const sel = window.getSelection();
+    if (!sel) return;
+    sel.removeAllRanges();
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    range.collapse(false);
+    sel.addRange(range);
+    setTimeout(() => { if (_pillSyncLock === lockId) _pillSyncLock = 0; }, 50);
+  });
 }
 
 watch(selectedDetectedElements, () => {
