@@ -1193,7 +1193,7 @@ function replacePillElement(newCandidate) {
   } else {
     current[idx] = newKey;
   }
-  chatSkipPillSync.value = true; // 阻止 watch 触发 syncPillsToEditor 重建
+  chatSkipPillSync.value = true;
   selectedDetectedElements.value = new Set(current);
 
   // 更新候选列表：旧 key 的候选转移到新 key
@@ -1202,6 +1202,14 @@ function replacePillElement(newCandidate) {
   delete nextCandidates[oldKey];
   nextCandidates[newKey] = stored;
   elementOverlapCandidates.value = nextCandidates;
+
+  // 更新 elementClickPositions：旧 key 的位置转移到新 key
+  const nextPositions = { ...elementClickPositions.value };
+  if (nextPositions[oldKey]) {
+    nextPositions[newKey] = nextPositions[oldKey];
+    delete nextPositions[oldKey];
+    elementClickPositions.value = nextPositions;
+  }
 
   // 更新 DOM pill：替换 data 属性和显示文字
   const editor = document.querySelector('.chat-editor');
@@ -1230,6 +1238,8 @@ function replacePillElement(newCandidate) {
   }
 
   overlapDropdown.visible = false;
+  // 重置标志，允许后续操作正常同步
+  nextTick(() => { chatSkipPillSync.value = false; });
 }
 
 // 手动框选：在画布拖拽矩形框添加自定义元素
