@@ -863,8 +863,9 @@ function findElementsAtPoint(clientX, clientY) {
 }
 
 // 查找与给定元素框有交叠的所有元素（用于下拉候选列表）
-// 两框有任意面积交集就算重叠 —— 不依赖精确点击坐标
+// 两框交集面积必须占较小框的 8% 以上才算真正"重叠"——过滤掉边界贴靠的情况
 function findOverlappingElements(targetLayerId, targetBox) {
+  const targetArea = (targetBox[3] - targetBox[1]) * (targetBox[2] - targetBox[0]);
   const results = [];
   for (const [layerId, elements] of Object.entries(layerDetectedElements.value)) {
     for (const el of elements) {
@@ -875,11 +876,19 @@ function findOverlappingElements(targetLayerId, targetBox) {
       const ir = Math.min(targetBox[3], box[3]);
       const ib = Math.min(targetBox[2], box[2]);
       if (il < ir && it < ib) {
+        const intersectArea = (ir - il) * (ib - it);
+        const elArea = (box[3] - box[1]) * (box[2] - box[0]);
+        const minArea = Math.min(targetArea, elArea);
+        // 交集面积占较小框 15% 以上才算真正重叠（过滤边界贴靠/小角相交）
+        if (minArea > 0 && intersectArea / minArea < 0.15) {
+          console.log('[overlap-filter] 跳过弱重叠:', el.object_name || el.name, '交集占比=', (intersectArea / minArea * 100).toFixed(1) + '%');
+          continue;
+        }
         results.push({
           layerId,
           el,
           box_2d: box,
-          area: (box[3] - box[1]) * (box[2] - box[0]),
+          area: elArea,
           id: el.object_name || el.name || el.id,
           name: el.object_name || el.name || '',
         });
@@ -1006,7 +1015,9 @@ function handleDetectedOverlayClick(event) {
     // 选中时存储所有重叠候选（用于 pill 下拉切换）
     // 用框重叠分析替代点检测——这样即使点击的精确像素
     // 没落在相邻框内，只要两框有交集就能出现在下拉列表里
-    const overlappingCandidates = findOverlappingElements(best.layerId, best.box_2d);
+    const targetBox = best.box_2d || [0, 0, 1, 1];
+    console.log('[overlap-candidates] targetBox=', targetBox.map(v => v.toFixed(4)), 'area=', ((targetBox[3]-targetBox[1])*(targetBox[2]-targetBox[0])).toFixed(4));
+    const overlappingCandidates = findOverlappingElements(best.layerId, targetBox);
     const storedCandidates = overlappingCandidates.map((c) => ({
       layerId: c.layerId,
       id: c.id,
