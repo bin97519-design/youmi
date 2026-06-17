@@ -293,11 +293,25 @@ async function maybeAutoDetect(layer) {
     const data = await res.json();
     console.log('[detect] API 返回:', { code: data.code, elementCount: (data.data?.elements || data.data?.imageInfo)?.length });
     if ((data.code === 0 || data.code === 200) && (data.data?.elements || data.data?.imageInfo)) {
-      const els = (data.data.elements || data.data.imageInfo).map((e, i) => ({
-        ...e,
-        id: e.object_name || e.name || e.id || `element-${i}`,
-        name: e.object_name || e.name || e.id || `element-${i}`,
-      }));
+      // 归一化 box_2d: 后端可能返回 0-1 / 0-100 / 0-1000，统一转成 0-1
+      const normalizeBox = (raw) => {
+        if (!Array.isArray(raw) || raw.length !== 4) return null;
+        const max = Math.max(...raw);
+        let scale = 1;
+        if (max > 1000) scale = 1000;
+        else if (max > 1) scale = 100;
+        return raw.map((v) => v / scale);
+      };
+      const els = (data.data.elements || data.data.imageInfo).map((e, i) => {
+        const key = e.object_name || e.name || e.id || `element-${i}`;
+        const box = normalizeBox(e.box_2d || e.box2d);
+        return {
+          ...e,
+          id: key,
+          name: key,
+          box_2d: box || [0, 0, 1, 1], // 兜底为整图
+        };
+      });
       layerDetectedElements.value = { ...layerDetectedElements.value, [layer.id]: els };
       console.log('[detect] 填充 layerDetectedElements:', Object.keys(layerDetectedElements.value), '→', els.length, '个元素');
       console.log('[detect] 第一个元素完整数据:', JSON.stringify(els[0]));
@@ -1500,12 +1514,18 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
               <div
                 v-if="layers.find((l) => l.id === layerId)"
                 class="detected-element-box"
-                :style="{
-                  left: `${(layers.find((l) => l.id === layerId).x + (el.box2d?.[1] || el.box_2d?.[1] || 0) * (layers.find((l) => l.id === layerId).width || 1)) * viewScale + viewOffset.x}px`,
-                  top: `${(layers.find((l) => l.id === layerId).y + (el.box2d?.[0] || el.box_2d?.[0] || 0) * (layers.find((l) => l.id === layerId).height || 1)) * viewScale + viewOffset.y}px`,
-                  width: `${((el.box2d?.[3] || el.box_2d?.[3] || 0) - (el.box2d?.[1] || el.box_2d?.[1] || 0)) * (layers.find((l) => l.id === layerId).width || 1) * viewScale}px`,
-                  height: `${((el.box2d?.[2] || el.box_2d?.[2] || 0) - (el.box2d?.[0] || el.box_2d?.[0] || 0)) * (layers.find((l) => l.id === layerId).height || 1) * viewScale}px`,
-                }"
+                :style="(function() {
+                  const layer = layers.find((l) => l.id === layerId);
+                  const box = el.box_2d || el.box2d || [0,0,1,1];
+                  // box 归一化 (0-1)，layer.x/y/width/height 是世界坐标
+                  // 渲染公式与 line 1470 一致：screen = world * viewScale + viewOffset
+                  return {
+                    left: `${(layer.x + box[1] * layer.width) * viewScale + viewOffset.x}px`,
+                    top: `${(layer.y + box[0] * layer.height) * viewScale + viewOffset.y}px`,
+                    width: `${Math.max(2, (box[3] - box[1]) * layer.width * viewScale)}px`,
+                    height: `${Math.max(2, (box[2] - box[0]) * layer.height * viewScale)}px`,
+                  };
+                })()"
                 @pointerdown.stop="smartToggleElement(layerId, el.object_name || el.name || el.id || `e${eIdx}`, $event)"
               >
                 <span class="detected-element-label">{{ el.object_name || el.name || '元素' }}</span>
