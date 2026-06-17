@@ -522,109 +522,82 @@ textarea::placeholder, input::placeholder { color: #91a2ba; font-weight: 700; }
   position: absolute;
   inset: 0;
   pointer-events: none;
+  z-index: 5;
 }
-.detected-elements-overlay .detected-element-box,
-.detected-elements-overlay .detected-element-box.selected,
-.detected-elements-overlay .detected-element-box:hover {
-  border-color: transparent;
+
+/* 元素框基础样式：默认不可见 */
+.detected-element-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid transparent;
+  border-radius: 3px;
   background: transparent;
   pointer-events: none;
-}
-.detected-elements-overlay .detected-element-label {
-  display: none;
-}
-.detected-elements-overlay .detected-element-box.annotate-active,
-.detected-elements-overlay .detected-element-box.annotate-active.selected {
-  border-style: none;
-  border-color: transparent;
-  background: transparent;
-  box-shadow: none;
-  animation: none;
-}
-.detected-elements-overlay .detected-element-box.annotate-active::after,
-.detected-elements-overlay .detected-element-box.annotate-active.selected::after {
-  display: none;
+  transition: border-color 0.12s ease, background 0.12s ease;
 }
 
-/* 标记工具激活时 / Ctrl按住时：元素框仍不可见，但可点击 */
-.detected-elements-overlay.annotate-mode .detected-element-box,
-.detected-elements-overlay.ctrl-mode .detected-element-box {
+/* 当 overlay 处于 detection-visible 状态：框和标签可见 */
+.detected-elements-overlay.detection-visible .detected-element-box {
+  border-color: rgba(99, 102, 241, 0.85);
   pointer-events: auto;
+  cursor: pointer;
 }
 
-/* 手动开启显示视觉框时：恢复框和标签的可见样式 */
-.detected-elements-overlay.detection-visible .detected-element-box,
-.detected-elements-overlay.detection-visible .detected-element-box.selected,
-.detected-elements-overlay.detection-visible .detected-element-box:hover {
-  border-color: rgba(99, 102, 241, 0.78);
-  background: transparent;
-  pointer-events: auto;
-}
-.detected-elements-overlay.detection-visible .detected-element-box.selected {
-  border-color: #22c55e;
-  background: rgba(34, 197, 94, 0.06);
-}
 .detected-elements-overlay.detection-visible .detected-element-box:hover {
   border-color: rgba(139, 92, 246, 0.95);
   background: rgba(139, 92, 246, 0.06);
 }
+
+.detected-elements-overlay.detection-visible .detected-element-box.selected {
+  border-color: #22c55e !important;
+  background: rgba(34, 197, 94, 0.08) !important;
+}
+
+.detected-elements-overlay .detected-element-label {
+  display: none;
+}
+
 .detected-elements-overlay.detection-visible .detected-element-label {
   display: inline-block;
-}
-.detected-element-box {
-  position: absolute;
-  z-index: 4;
-  box-sizing: border-box;
-  border: 2px solid rgba(99, 102, 241, 0.78);
-  border-radius: 3px;
-  background: transparent;
-  pointer-events: auto;
-  cursor: pointer;
-  transition: border-color 0.12s ease, background 0.12s ease;
-}
-.detected-element-box.selected {
-  border-color: #22c55e;
-  background: rgba(34, 197, 94, 0.06);
-}
-.detected-element-label {
   position: absolute;
   top: -22px;
   left: -2px;
-  display: inline-block;
   padding: 2px 7px;
   border-radius: 4px 4px 4px 0;
-  color: #ffffff;
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(99, 102, 241, 0.95);
   white-space: nowrap;
-  background: rgba(99, 102, 241, 0.88);
   pointer-events: none;
   user-select: none;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+  z-index: 6;
 }
-.detected-element-box.selected .detected-element-label {
+
+.detected-elements-overlay.detection-visible .detected-element-box.selected .detected-element-label {
   background: #22c55e;
+}
+
+/* 元素绿色编号圆圈 */
+.detected-element-index {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #22c55e;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 7;
+  box-shadow: 0 0 0 2px #fff, 0 2px 6px rgba(34, 197, 94, 0.4);
+  user-select: none;
 }
 
 /* 数字标记：overlay 的直接子元素，v-show + :style 控制显示/定位 */
-.detected-element-index {
-  position: absolute;
-  z-index: 5;
-  transform: translate(-50%, -50%);
-  width: 26px;
-  height: 26px;
-  place-items: center;
-  border: 2px solid #ffffff;
-  border-radius: 50%;
-  color: #ffffff;
-  font-size: 14px;
-  font-weight: 900;
-  line-height: 1;
-  background: #22c55e;
-  box-shadow: 0 2px 8px rgba(34, 197, 94, 0.5);
-  pointer-events: none;
-}
-
 .selection-marquee {
   position: absolute;
   z-index: 14;

@@ -286,11 +286,16 @@ async function maybeAutoDetect(layer) {
 
 const autoDetectionEnabled = ref(true);
 
+// 视觉框显隐状态（默认显示）
+const detectionVisible = ref(true);
+
 function getDetectionVisible() {
-  return doc.value?.payload?.ui?.detectionVisible !== false;
+  if (doc.value?.payload?.ui?.detectionVisible === false) return false;
+  return detectionVisible.value !== false;
 }
 
 function setDetectionVisible(val) {
+  detectionVisible.value = val;
   canvas.updateDocument(props.id, (draft) => {
     draft.payload.ui = draft.payload.ui || {};
     draft.payload.ui.detectionVisible = val;
@@ -1429,7 +1434,7 @@ onBeforeUnmount(() => {
           </template>
         </figure>
         <div v-if="marquee.active" class="selection-marquee" :style="marqueeStyle" />
-        <div v-if="getDetectionVisible() || activeTool === 'annotate' || ctrlHeld" :class="['detected-elements-overlay', { 'annotate-mode': activeTool === 'annotate', 'ctrl-mode': ctrlHeld && activeTool !== 'annotate', 'detection-visible': getDetectionVisible() }]">
+        <div v-if="getDetectionVisible() || activeTool === 'annotate' || ctrlHeld" :class="['detected-elements-overlay', { 'annotate-mode': activeTool === 'annotate', 'ctrl-mode': ctrlHeld && activeTool !== 'annotate', 'detection-visible': getDetectionVisible() }]" :data-debug-count="Object.keys(layerDetectedElements).length">
           <template v-for="(elements, layerId) in layerDetectedElements" :key="layerId">
             <template v-for="el in elements" :key="`${layerId}::${el.id}`">
               <div
