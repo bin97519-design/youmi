@@ -250,6 +250,12 @@ async function maybeAutoDetect(layer) {
   if (!layer || !layer.url || layer.type === 'placeholder') return;
   if (!autoDetectionEnabled.value) return;
   if (detectingLayerIds.value.has(layer.id)) return;
+  // 优先从 document payload 缓存读取
+  const cached = doc.value?.payload?.detectedElements?.[layer.id];
+  if (cached?.length) {
+    layerDetectedElements.value = { ...layerDetectedElements.value, [layer.id]: cached };
+    return;
+  }
   if (layerDetectedElements.value[layer.id]?.length) return;
   
   detectingLayerIds.value = new Set([...detectingLayerIds.value, layer.id]);
@@ -267,6 +273,12 @@ async function maybeAutoDetect(layer) {
         name: e.object_name || e.name || e.id || `element-${i}`,
       }));
       layerDetectedElements.value = { ...layerDetectedElements.value, [layer.id]: els };
+      // 持久化到文档 payload
+      canvas.updateDocument(props.id, (draft) => {
+        draft.payload.detectedElements = draft.payload.detectedElements || {};
+        draft.payload.detectedElements[layer.id] = els;
+        return draft;
+      });
     }
   } catch (e) { /* ignore */ }
   const next = new Set(detectingLayerIds.value);
@@ -1290,6 +1302,11 @@ onMounted(() => {
   window.addEventListener('resize', updateViewportSize);
   window.addEventListener('keydown', onGlobalKeydown);
   loadUILayout();
+  // 恢复已缓存的检测元素
+  const cachedElements = doc.value?.payload?.detectedElements;
+  if (cachedElements) {
+    layerDetectedElements.value = { ...cachedElements };
+  }
   const onCtrlDown = (e) => { if (e.key === 'Control') ctrlHeld.value = true; };
   const onCtrlUp = (e) => { if (e.key === 'Control') ctrlHeld.value = false; };
   window.addEventListener('keydown', onCtrlDown);
