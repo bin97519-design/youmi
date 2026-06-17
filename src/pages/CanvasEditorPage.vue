@@ -264,6 +264,7 @@ async function maybeAutoDetect(layer) {
       body: JSON.stringify({ imageUrl: layer.url, layerId: layer.id }),
     });
     const data = await res.json();
+    console.log('[detect] API 返回:', { code: data.code, elementCount: (data.data?.elements || data.data?.imageInfo)?.length });
     if ((data.code === 0 || data.code === 200) && (data.data?.elements || data.data?.imageInfo)) {
       const els = (data.data.elements || data.data.imageInfo).map((e, i) => ({
         ...e,
@@ -271,14 +272,19 @@ async function maybeAutoDetect(layer) {
         name: e.object_name || e.name || e.id || `element-${i}`,
       }));
       layerDetectedElements.value = { ...layerDetectedElements.value, [layer.id]: els };
+      console.log('[detect] 填充 layerDetectedElements:', Object.keys(layerDetectedElements.value), '→', els.length, '个元素');
       // 持久化到文档 payload
       canvas.updateDocument(props.id, (draft) => {
         draft.payload.detectedElements = draft.payload.detectedElements || {};
         draft.payload.detectedElements[layer.id] = els;
         return draft;
       });
+    } else {
+      console.warn('[detect] API 返回异常:', data);
     }
-  } catch (e) { /* ignore */ }
+  } catch (e) {
+    console.error('[detect] 请求失败:', e);
+  }
   const next = new Set(detectingLayerIds.value);
   next.delete(layer.id);
   detectingLayerIds.value = next;
@@ -1434,7 +1440,7 @@ onBeforeUnmount(() => {
           </template>
         </figure>
         <div v-if="marquee.active" class="selection-marquee" :style="marqueeStyle" />
-        <div v-if="getDetectionVisible() || activeTool === 'annotate' || ctrlHeld" :class="['detected-elements-overlay', { 'annotate-mode': activeTool === 'annotate', 'ctrl-mode': ctrlHeld && activeTool !== 'annotate', 'detection-visible': getDetectionVisible() }]" :data-debug-count="Object.keys(layerDetectedElements).length">
+        <div v-if="getDetectionVisible() || activeTool === 'annotate' || ctrlHeld" :class="['detected-elements-overlay', { 'annotate-mode': activeTool === 'annotate', 'ctrl-mode': ctrlHeld && activeTool !== 'annotate', 'detection-visible': getDetectionVisible() }]">
           <template v-for="(elements, layerId) in layerDetectedElements" :key="layerId">
             <template v-for="el in elements" :key="`${layerId}::${el.id}`">
               <div
