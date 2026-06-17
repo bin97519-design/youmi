@@ -1116,11 +1116,11 @@ function handleEditorPillClick(event) {
       console.log('[overlap-dropdown] 该元素没有重叠候选，候选人数据为空或只有1个');
       return;
     }
-    // 定位弹窗
+    // 定位弹窗：上拉框，底部贴近 pill 顶部
     const rect = pill.getBoundingClientRect();
     overlapDropdown.visible = true;
     overlapDropdown.x = rect.left;
-    overlapDropdown.y = rect.bottom + 4;
+    overlapDropdown.y = rect.top - 4; // popup 的 top + translateY(-100%) = 底部对齐 pill 顶部
     overlapDropdown.pillKey = key;
     overlapDropdown.candidates = candidates;
     console.log('[overlap-dropdown] 弹窗已显示, x=', overlapDropdown.x, 'y=', overlapDropdown.y);
@@ -2265,7 +2265,7 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
   <!-- 重叠元素切换弹窗 -->
   <Teleport to="body">
     <div v-if="overlapDropdown.visible" class="detect-select-overlay" @click="closeOverlapDropdown">
-      <div class="detect-select-popup" :style="{ left: `${overlapDropdown.x}px`, top: `${overlapDropdown.y}px` }" @pointerdown.stop="">
+      <div class="detect-select-popup" :style="{ left: `${overlapDropdown.x}px`, top: `${overlapDropdown.y}px`, transform: 'translateY(-100%)' }" @pointerdown.stop="">
         <div class="detect-select-popup-header">切换重叠元素 ({{ overlapDropdown.candidates.length }})</div>
         <div class="detect-select-popup-list">
           <button
