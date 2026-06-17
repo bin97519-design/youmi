@@ -977,16 +977,18 @@ function handleDetectedOverlayClick(event) {
   } else {
     set.add(key);
     // 选中时存储所有重叠候选（用于 pill 下拉切换）
+    const storedCandidates = candidates.map((c) => ({
+      layerId: c.layerId,
+      id: c.id,
+      name: c.name,
+      box_2d: c.box_2d,
+      area: c.area,
+    }));
     elementOverlapCandidates.value = {
       ...elementOverlapCandidates.value,
-      [key]: candidates.map((c) => ({
-        layerId: c.layerId,
-        id: c.id,
-        name: c.name,
-        box_2d: c.box_2d,
-        area: c.area,
-      })),
+      [key]: storedCandidates,
     };
+    console.log('[overlap-candidates] 存储了', storedCandidates.length, '个候选 for key=', key, storedCandidates.map(c => c.name));
   }
   selectedDetectedElements.value = set;
   const overlayEl = document.querySelector('.detected-elements-overlay');
@@ -1079,8 +1081,9 @@ function handleEditorPillClick(event) {
     const elLayer = pill.dataset.elLayer;
     const key = `${elLayer}::${elId}`;
     const candidates = elementOverlapCandidates.value[key] || [];
+    console.log('[overlap-dropdown] pill clicked, key=', key, 'candidates=', candidates.length, 'allKeys=', Object.keys(elementOverlapCandidates.value));
     if (candidates.length <= 1) {
-      console.log('[overlap-dropdown] 该元素没有重叠候选');
+      console.log('[overlap-dropdown] 该元素没有重叠候选，候选人数据为空或只有1个');
       return;
     }
     // 定位弹窗
@@ -1090,6 +1093,7 @@ function handleEditorPillClick(event) {
     overlapDropdown.y = rect.bottom + 4;
     overlapDropdown.pillKey = key;
     overlapDropdown.candidates = candidates;
+    console.log('[overlap-dropdown] 弹窗已显示, x=', overlapDropdown.x, 'y=', overlapDropdown.y);
     return;
   }
 }
@@ -2117,7 +2121,7 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
                   :data-placeholder="'描述你想生成的图片，或选中画布图片描述修改...'"
                   contenteditable="true"
                   @input="handleEditorInput"
-                  @click="handleEditorPillClick"
+                  @pointerdown="handleEditorPillClick"
                   @keydown.enter.prevent="sendChat"
                   @keydown.ctrl.enter.prevent="document.execCommand('insertLineBreak')"
                 />
