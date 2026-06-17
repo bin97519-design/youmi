@@ -537,6 +537,7 @@ async function addImageLayerFromUrl(url, name = 'AI生成图片') {
 }
 
 function addGeneratingPlaceholderLayer(prompt) {
+  pushUndo();
   const referenceImages = chatReferenceImages.value.filter((image) => !image.uploading && !image.error);
   const selected = selectedLayer.value;
   const fallbackBase = [...layers.value].reverse().find((layer) => layer.type !== 'placeholder');
@@ -590,6 +591,7 @@ function updateGeneratingPlaceholder(layerId, patch) {
 }
 
 async function replaceGeneratingPlaceholder(layerId, url) {
+  pushUndo();
   const size = await imageSize(url);
   let replaced = false;
   canvas.updateDocument(props.id, (draft) => {
@@ -747,6 +749,7 @@ function updateLayer(id, patch) {
 
 function removeLayer(id) {
   if (!userStore.requireLogin()) return;
+  pushUndo();
   canvas.updateDocument(props.id, (draft) => {
     draft.payload.layers = draft.payload.layers.filter((layer) => layer.id !== id);
     return draft;
@@ -758,9 +761,9 @@ function removeLayer(id) {
 function startLayerDrag(event, layer) {
   if (!userStore.requireLogin()) return;
   if (activeTool.value === 'hand') return;
-  // 标注模式：不拦截拖拽，让 stage 的 startMarquee 处理手动框选
   if (activeTool.value === 'annotate') return;
   if (event.button !== 0 || event.target.closest('.layer-toolbar') || event.target.closest('.resize-dot')) return;
+  pushUndo();
   event.stopPropagation();
   event.currentTarget.setPointerCapture(event.pointerId);
   const draggingGroup = selectedLayerIds.value.length > 1 && selectedLayerIds.value.includes(layer.id);
@@ -1289,6 +1292,7 @@ function clearAllAnnotations() {
 
 function startResize(event, layer, point) {
   if (!userStore.requireLogin()) return;
+  pushUndo();
   event.stopPropagation();
   event.preventDefault();
   event.currentTarget.setPointerCapture(event.pointerId);
@@ -1859,7 +1863,7 @@ const undoStack = ref([]);
 function pushUndo() {
   if (doc.value?.payload?.layers) {
     undoStack.value.push(JSON.parse(JSON.stringify(doc.value.payload.layers)));
-    if (undoStack.value.length > 30) undoStack.value.shift();
+    if (undoStack.value.length > 50) undoStack.value.shift();
   }
 }
 
@@ -2312,7 +2316,7 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
           <div class="shortcuts-group">
             <h3>✏ 编辑</h3>
             <dl>
-              <div><dt>Ctrl + Z</dt><dd>撤销上一步（最多30步）</dd></div>
+              <div><dt>Ctrl + Z</dt><dd>撤销上一步（最多50步）</dd></div>
               <div><dt>Delete</dt><dd>删除选中图层</dd></div>
               <div><dt>Backspace</dt><dd>输入框内删除字符</dd></div>
               <div><dt>Esc</dt><dd>关闭面板</dd></div>
