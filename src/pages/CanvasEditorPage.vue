@@ -978,10 +978,15 @@ async function sendChat() {
 
   const createdAt = Date.now();
   const assistantId = `msg-${createdAt}-assistant`;
-  const imageUrls = chatReferenceImages.value
+  const chatImageUrls = chatReferenceImages.value
     .filter((image) => !image.uploading && !image.error)
     .map((image) => image.url)
     .filter((url) => url && !String(url).startsWith('blob:'));
+  // 合并反推参考图（元素选中时自动添加的 layer 图）—— 不显示但传给 API
+  const refImageUrls = visibleReferenceImages.value
+    .map((r) => r.url)
+    .filter((url) => url && !String(url).startsWith('blob:'));
+  const imageUrls = [...new Set([...chatImageUrls, ...refImageUrls])];
 
   addChatMessages([
     { id: `msg-${createdAt}`, role: 'user', text, targetLayerId: selectedLayerId.value, createdAt },
@@ -1605,18 +1610,8 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
         <button class="zoom-bar-help-btn" :class="{ active: helpMenuOpen }" title="帮助" @click.stop="openHelpMenu">?</button>
       </div>
 
-      <aside v-if="isReversePromptCanvas && visibleReferenceImages.length" class="reverse-prompt-mini-card uc-floating" :style="reversePromptCard.x !== null ? { left: `${reversePromptCard.x}px`, top: `${reversePromptCard.y}px`, width: `${reversePromptCard.width}px`, height: `${reversePromptCard.height}px` } : { width: `${reversePromptCard.width}px`, height: `${reversePromptCard.height}px` }" aria-label="反推提示词卡片" @pointerdown.stop="">
-        <header class="uc-floating-drag-handle" @pointerdown.stop="startRPCardDrag" @pointermove.stop="moveRPCard" @pointerup.stop="stopRPCard" @pointercancel.stop="stopRPCard">
-          <strong>反推提示词</strong>
-          <span>{{ visibleReferenceImages.length }} 参考图</span>
-        </header>
-        <div class="rp-card-body">
-          <div v-for="ref in visibleReferenceImages" :key="ref.layerId" class="rp-card-thumb">
-            <img :src="ref.url" alt="" />
-            <button class="rp-card-remove" @click.stop="removeReversePromptReference(ref.layerId)">×</button>
-          </div>
-          <div v-if="!visibleReferenceImages.length" class="rp-card-empty">点击图层添加到参考</div>
-        </div>
+      <!-- 反推提示词卡片：隐藏大图，参考图 URL 仍传给生图 API -->
+      <aside v-if="false" class="reverse-prompt-mini-card uc-floating" aria-label="反推提示词卡片" @pointerdown.stop="">
       </aside>
 
       <nav class="bottom-tools uc-sidebar-tools uc-floating uc-floating-toolbar is-docked" aria-label="画布工具栏" @pointerdown.stop>
