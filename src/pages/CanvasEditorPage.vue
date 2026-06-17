@@ -23,6 +23,9 @@ const elementClickPositions = ref({});
 const detectingLayerIds = ref(new Set());
 const chatSkipPillSync = ref(false);
 const rightPanelVisible = ref(true);
+const isReversePromptCanvas = computed(() => props.id === 'reverse-prompt');
+const reversePromptCard = reactive({ x: null, y: null, width: 380, height: 240, dragging: null });
+const reversePromptConnectors = ref([]);
 const selectedLayerId = ref(doc.value.payload.layers[0]?.id || '');
 const selectedLayerIds = ref(selectedLayerId.value ? [selectedLayerId.value] : []);
 const rightTab = ref('chat');
@@ -31,6 +34,7 @@ const chatReferenceImages = ref([]);
 const activeChatReferenceId = ref('');
 const chatUploading = ref(false);
 const chatGenerating = ref(false);
+const generationHistory = ref([]);
 const chatModel = ref('banana2');
 const chatRatio = ref('9:16');
 const chatResolution = ref('2K');
@@ -47,6 +51,28 @@ const PLACEHOLDER_STATUS_TEXTS = [
   '正在计算光影层次与空间氛围...',
   '正在封装生成结果，即将呈现...',
 ];
+function addReversePromptReference(imageUrl, layerId) {
+  canvas.updateDocument(props.id, (draft) => {
+    draft.payload.reversePrompt = draft.payload.reversePrompt || { referenceImages: [] };
+    if (!draft.payload.reversePrompt.referenceImages.find((r) => r.layerId === layerId)) {
+      draft.payload.reversePrompt.referenceImages.push({ url: imageUrl, layerId, addedAt: Date.now() });
+    }
+    return draft;
+  });
+}
+
+function removeReversePromptReference(layerId) {
+  canvas.updateDocument(props.id, (draft) => {
+    if (!draft.payload.reversePrompt) return draft;
+    draft.payload.reversePrompt.referenceImages = draft.payload.reversePrompt.referenceImages.filter((r) => r.layerId !== layerId);
+    return draft;
+  });
+}
+
+const visibleReferenceImages = computed(() => {
+  if (!doc.value?.payload?.reversePrompt?.referenceImages) return [];
+  return doc.value.payload.reversePrompt.referenceImages.filter((r) => layers.value.some((l) => l.id === r.layerId));
+});
 const activeTool = ref('select');
 const canvasTools = [
   { key: 'select', label: '选择', shortcut: 'V', icon: 'ri-cursor-line' },
@@ -127,6 +153,13 @@ function loadUILayout() {
       if (s.panel.rightPanelVisible != null) rightPanelVisible.value = s.panel.rightPanelVisible;
     }
     if (s.minimapVisible != null) minimapVisible.value = s.minimapVisible;
+    if (s.reversePromptCard != null) {
+      if (s.reversePromptCard.x != null) reversePromptCard.x = s.reversePromptCard.x;
+      if (s.reversePromptCard.y != null) reversePromptCard.y = s.reversePromptCard.y;
+      if (s.reversePromptCard.width != null) reversePromptCard.width = Math.max(300, Math.min(900, s.reversePromptCard.width));
+      if (s.reversePromptCard.height != null) reversePromptCard.height = Math.max(200, Math.min(700, s.reversePromptCard.height));
+    }
+    if (s.generationHistory != null) generationHistory.value = s.generationHistory;
   } catch (_) { /* ignore */ }
 }
 function saveUILayout() {
@@ -134,6 +167,8 @@ function saveUILayout() {
     localStorage.setItem(UI_LAYOUT_KEY, JSON.stringify({
       panel: { x: panel.x, y: panel.y, width: panel.width, chatHeight: panel.chatHeight, rightTab: rightTab.value, rightPanelVisible: rightPanelVisible.value },
       minimapVisible: minimapVisible.value,
+      reversePromptCard: { x: reversePromptCard.x, y: reversePromptCard.y, width: reversePromptCard.width, height: reversePromptCard.height },
+      generationHistory: generationHistory.value,
     }));
   } catch (_) { /* ignore */ }
 }
@@ -141,7 +176,7 @@ function debounceSaveLayout() {
   clearTimeout(_layoutSaveTimer);
   _layoutSaveTimer = setTimeout(saveUILayout, LAYOUT_SAVE_DEBOUNCE);
 }
-watch([() => panel.x, () => panel.y, () => panel.width, () => panel.chatHeight, rightTab, rightPanelVisible, minimapVisible], debounceSaveLayout, { deep: true });
+watch([() => panel.x, () => panel.y, () => panel.width, () => panel.chatHeight, rightTab, rightPanelVisible, minimapVisible, () => reversePromptCard.x, () => reversePromptCard.y, () => reversePromptCard.width, () => reversePromptCard.height], debounceSaveLayout, { deep: true });
 
 // 帮助菜单定位
 const helpMenuStyle = ref({});
@@ -820,6 +855,17 @@ async function sendChat() {
         updateGeneratingPlaceholder(placeholderId, { progress: 100, status: 'completed', statusText: '生成完成，正在渲染到画布...' });
         await replaceGeneratingPlaceholder(placeholderId, url);
         updateChatMessage(assistantId, { text: '生成完成，已添加到画布。', imageUrl: url });
+        generationHistory.value.push({
+          id: `gen-${Date.now()}`,
+          prompt: text,
+          model: chatModel.value,
+          ratio: chatRatio.value,
+          resolution: chatResolution.value,
+          imageUrl: url,
+          referenceImageUrls: imageUrls,
+          createdAt: Date.now(),
+        });
+        if (generationHistory.value.length > 50) generationHistory.value.shift();
         return;
       }
     }
@@ -970,6 +1016,10 @@ function stopChatResize(event) {
   if (event.currentTarget.hasPointerCapture(panel.resizingChat.pointerId)) event.currentTarget.releasePointerCapture(panel.resizingChat.pointerId);
   panel.resizingChat = null;
 }
+
+function startRPCardDrag(e) { if (e.button !== 0) return; const node = e.currentTarget.closest('.reverse-prompt-mini-card'); const parentNode = e.currentTarget.closest('.editor-body'); const rect = node.getBoundingClientRect(); const parentRect = parentNode.getBoundingClientRect(); reversePromptCard.dragging = { pointerId: e.pointerId, offsetX: e.clientX - rect.left, offsetY: e.clientY - rect.top, parentLeft: parentRect.left, parentTop: parentRect.top, parentWidth: parentRect.width, parentHeight: parentRect.height, cardWidth: rect.width, cardHeight: rect.height }; reversePromptCard.x = Math.round(rect.left - parentRect.left); reversePromptCard.y = Math.round(rect.top - parentRect.top); e.currentTarget.setPointerCapture(e.pointerId); }
+function moveRPCard(e) { if (!reversePromptCard.dragging) return; const nx = e.clientX - reversePromptCard.dragging.parentLeft - reversePromptCard.dragging.offsetX; const ny = e.clientY - reversePromptCard.dragging.parentTop - reversePromptCard.dragging.offsetY; reversePromptCard.x = Math.round(Math.max(0, Math.min(reversePromptCard.dragging.parentWidth - reversePromptCard.dragging.cardWidth, nx))); reversePromptCard.y = Math.round(Math.max(0, Math.min(reversePromptCard.dragging.parentHeight - reversePromptCard.dragging.cardHeight, ny))); }
+function stopRPCard(e) { if (!reversePromptCard.dragging) return; e.currentTarget.releasePointerCapture(reversePromptCard.dragging.pointerId); reversePromptCard.dragging = null; }
 
 function zoom(delta, center = null) {
   if (center && center.fit) { fitCanvasView(); return; }
@@ -1133,6 +1183,30 @@ function pushUndo() {
 
 // Ctrl state
 const ctrlHeld = ref(false);
+
+function addGenerationRecordToCanvas(record) {
+  if (!record.imageUrl) return;
+  addImageLayerFromUrl(record.imageUrl, '生图记录复用');
+}
+
+function useGenerationRecordAsReference(record) {
+  if (!record.imageUrl) return;
+  chatReferenceImages.value.push({
+    id: `ref-${Date.now()}`,
+    url: record.imageUrl,
+    name: `记录 ${new Date(record.createdAt).toLocaleString()}`,
+    uploading: false,
+  });
+  activeChatReferenceId.value = chatReferenceImages.value.at(-1)?.id || '';
+}
+
+function reuseGenerationRecordPrompt(record) {
+  chatText.value = record.prompt || '';
+}
+
+function removeGenerationRecord(id) {
+  generationHistory.value = generationHistory.value.filter((r) => r.id !== id);
+}
 
 onMounted(() => {
   updateViewportSize();
@@ -1326,6 +1400,20 @@ onBeforeUnmount(() => {
         <button class="zoom-bar-help-btn" :class="{ active: helpMenuOpen }" title="帮助" @click.stop="openHelpMenu">?</button>
       </div>
 
+      <aside v-if="isReversePromptCanvas && visibleReferenceImages.length" class="reverse-prompt-mini-card uc-floating" :style="reversePromptCard.x !== null ? { left: `${reversePromptCard.x}px`, top: `${reversePromptCard.y}px`, width: `${reversePromptCard.width}px`, height: `${reversePromptCard.height}px` } : { width: `${reversePromptCard.width}px`, height: `${reversePromptCard.height}px` }" aria-label="反推提示词卡片" @pointerdown.stop="">
+        <header class="uc-floating-drag-handle" @pointerdown.stop="startRPCardDrag" @pointermove.stop="moveRPCard" @pointerup.stop="stopRPCard" @pointercancel.stop="stopRPCard">
+          <strong>反推提示词</strong>
+          <span>{{ visibleReferenceImages.length }} 参考图</span>
+        </header>
+        <div class="rp-card-body">
+          <div v-for="ref in visibleReferenceImages" :key="ref.layerId" class="rp-card-thumb">
+            <img :src="ref.url" alt="" />
+            <button class="rp-card-remove" @click.stop="removeReversePromptReference(ref.layerId)">×</button>
+          </div>
+          <div v-if="!visibleReferenceImages.length" class="rp-card-empty">点击图层添加到参考</div>
+        </div>
+      </aside>
+
       <nav class="bottom-tools uc-sidebar-tools uc-floating uc-floating-toolbar is-docked" aria-label="画布工具栏" @pointerdown.stop>
         <div class="uc-toolbar-add-wrap">
           <button type="button" class="uc-sidebar-tool-btn uc-toolbar-add-btn" :class="{ active: toolbarAddOpen }" title="添加图片" @click.stop="toolbarAddOpen = !toolbarAddOpen">
@@ -1443,6 +1531,22 @@ onBeforeUnmount(() => {
           <button v-for="(layer, index) in [...layers].reverse()" :key="layer.id" :class="{ active: selectedLayerIds.includes(layer.id) }" @click="selectedLayerId = layer.id; selectedLayerIds = [layer.id]">
             <span>◉</span><img v-if="layer.thumbnailUrl" :src="layer.thumbnailUrl" alt="" /><i v-else class="ri-ai-generate-2-line" aria-hidden="true"></i><strong>{{ layerName(layers.findIndex((item) => item.id === layer.id)) }}</strong><small>{{ Math.round(layer.width) }} x {{ Math.round(layer.height) }}</small><em>▣</em>
           </button>
+        </section>
+
+        <section v-if="rightTab === 'history'" class="generation-history-panel">
+          <h3>生图记录 <b>{{ generationHistory.length }}</b></h3>
+          <article v-for="record in [...generationHistory].reverse()" :key="record.id" class="gh-record">
+            <img v-if="record.imageUrl" :src="record.imageUrl" alt="" />
+            <strong>{{ record.model }} · {{ record.ratio }}</strong>
+            <p>{{ record.prompt }}</p>
+            <small v-if="record.referenceImageUrls?.length">参考图 {{ record.referenceImageUrls.length }} 张</small>
+            <footer>
+              <button type="button" @click="addGenerationRecordToCanvas(record)">加到画布</button>
+              <button type="button" @click="useGenerationRecordAsReference(record)">作参考图</button>
+              <button type="button" @click="reuseGenerationRecordPrompt(record)">复用提示词</button>
+              <button type="button" class="danger" @click="removeGenerationRecord(record.id)">删除</button>
+            </footer>
+          </article>
         </section>
       </aside>
     </section>
