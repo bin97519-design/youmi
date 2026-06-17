@@ -734,6 +734,36 @@ function buildElementPill(el, order) {
   return `<span class="chat-pill" contenteditable="false" data-el-id="${escHtml(el.id)}" data-el-name="${escHtml(el.name)}" data-el-layer="${escHtml(el.layerId)}" data-el-box="${(el.box_2d || []).join(',')}"><span class="chat-pill-num">${order}</span><img src="${thumb}" alt="" />${escHtml(el.name)}<em title="切换重叠元素" data-action="pick-overlap">&#x25BC;</em></span>&nbsp;`;
 }
 
+function syncPillsToEditor() {
+  const editor = document.querySelector('.chat-editor');
+  if (!editor) return;
+  const detected = getSelectedDetectedElements();
+  if (!detected.length) {
+    editor.innerHTML = chatText.value;
+    return;
+  }
+  let html = '';
+  let idx = 0;
+  for (const el of detected) {
+    idx += 1;
+    html += buildElementPill(el, idx);
+  }
+  html += chatText.value;
+  editor.innerHTML = html;
+  // Place cursor at end
+  const range = document.createRange();
+  range.selectNodeContents(editor);
+  range.collapse(false);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+watch(selectedDetectedElements, () => {
+  if (chatSkipPillSync.value) return;
+  nextTick(() => syncPillsToEditor());
+}, { deep: true });
+
 function getElementClickStyle(key) {
   const pos = elementClickPositions.value[key];
   if (!pos) return {};
@@ -1157,6 +1187,11 @@ onBeforeUnmount(() => {
         <button :class="{ active: shortcutsOpen }" @click="shortcutsOpen = !shortcutsOpen; if (shortcutsOpen) addOpen = false">⌘ 快捷键</button>
       </div>
 
+      <aside v-if="activeTool === 'annotate'" class="annotate-banner">
+        标记工具已开启 · 点击图片元素选中加入输入框；其他工具下可按住 Ctrl+点击 选中元素
+        <button type="button" class="annotate-banner-close" @click="activeTool = 'select'">退出</button>
+      </aside>
+
       <div
         :class="['stage', { 'hand-tool': activeTool === 'hand', 'annotate-tool': activeTool === 'annotate', 'is-panning': panState }]"
         @wheel.prevent="wheelZoom"
@@ -1227,6 +1262,30 @@ onBeforeUnmount(() => {
           </template>
         </figure>
         <div v-if="marquee.active" class="selection-marquee" :style="marqueeStyle" />
+        <div v-if="activeTool === 'annotate' || ctrlHeld" :class="['detected-elements-overlay', { 'annotate-mode': activeTool === 'annotate', 'ctrl-mode': ctrlHeld && activeTool !== 'annotate', 'detection-visible': getDetectionVisible() }]">
+          <template v-for="(elements, layerId) in layerDetectedElements" :key="layerId">
+            <template v-for="el in elements" :key="`${layerId}::${el.id}`">
+              <div
+                v-if="layers.find((l) => l.id === layerId)"
+                class="detected-element-box"
+                :style="{
+                  left: `${(layers.find((l) => l.id === layerId).x + (el.box_2d[1] || 0) * (layers.find((l) => l.id === layerId).width || 1)) * viewScale + viewOffset.x}px`,
+                  top: `${(layers.find((l) => l.id === layerId).y + (el.box_2d[0] || 0) * (layers.find((l) => l.id === layerId).height || 1)) * viewScale + viewOffset.y}px`,
+                  width: `${((el.box_2d[3] || 0) - (el.box_2d[1] || 0)) * (layers.find((l) => l.id === layerId).width || 1) * viewScale}px`,
+                  height: `${((el.box_2d[2] || 0) - (el.box_2d[0] || 0)) * (layers.find((l) => l.id === layerId).height || 1) * viewScale}px`,
+                }"
+                @pointerdown.stop="smartToggleElement(layerId, el.id || el.name, $event)"
+              >
+                <span class="detected-element-label">{{ el.name }}</span>
+              </div>
+              <span
+                v-if="selectedDetectedElements.has(`${layerId}::${el.id || el.name}`)"
+                class="detected-element-index"
+                :style="getElementClickStyle(`${layerId}::${el.id || el.name}`)"
+              >{{ [...selectedDetectedElements].indexOf(`${layerId}::${el.id || el.name}`) + 1 }}</span>
+            </template>
+          </template>
+        </div>
       </div>
 
       <aside
@@ -1343,7 +1402,16 @@ onBeforeUnmount(() => {
                     <span v-else>{{ chatReferenceImages.length ? '+' : '＋' }}</span>
                   </button>
                 </div>
-                <textarea v-model="chatText" placeholder="描述你想生成的图片，或选中画布图片描述修改..." @keydown.enter.prevent="sendChat" @keydown.ctrl.enter.prevent="chatText += '\n'" />
+                <div
+                  ref="chatEditorRef"
+                  class="chat-editor"
+                  :class="{ 'chat-editor-empty': !chatText.trim() && !getSelectedDetectedElements().length }"
+                  :data-placeholder="'描述你想生成的图片，或选中画布图片描述修改...'"
+                  contenteditable="true"
+                  @input="(e) => { chatText = e.target.innerText; }"
+                  @keydown.enter.prevent="sendChat"
+                  @keydown.ctrl.enter.prevent="document.execCommand('insertLineBreak')"
+                />
               </div>
               <div class="uc-chat-generate-options" @click.stop>
                 <label>
