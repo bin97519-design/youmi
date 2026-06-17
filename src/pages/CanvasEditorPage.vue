@@ -1101,6 +1101,17 @@ function handleEditorInput() {
     if (changed) {
       chatSkipPillSync.value = true;
       selectedDetectedElements.value = current;
+      // 删除 pill 后把光标定到编辑器最前端，方便用户输入文字
+      requestAnimationFrame(() => {
+        if (!editor.isConnected) return;
+        const sel = window.getSelection();
+        if (!sel) return;
+        sel.removeAllRanges();
+        const range = document.createRange();
+        range.setStart(editor, 0);
+        range.collapse(true);
+        sel.addRange(range);
+      });
     }
     // 同步纯文本（保留 pill 之间的文字位置）
     updateChatTextFromEditor();
