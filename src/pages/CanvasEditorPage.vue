@@ -18,9 +18,12 @@ const helpMenuOpen = ref(false);
 const toolbarAddOpen = ref(false);
 const minimapVisible = ref(true);
 
-// 从 layers[*].detection.boxes 自动同步到 layerDetectedElements
+// 从 doc.value.payload.layers[*].detection.boxes 同步到 layerDetectedElements
 function syncDetectionFromLayers() {
-  for (const layer of layers.value) {
+  const allLayers = doc.value?.payload?.layers || [];
+  const next = { ...layerDetectedElements.value };
+  let changed = false;
+  for (const layer of allLayers) {
     const boxes = layer?.detection?.boxes;
     if (Array.isArray(boxes) && boxes.length) {
       const els = boxes.map((b, i) => {
@@ -32,15 +35,15 @@ function syncDetectionFromLayers() {
           box_2d: b2d,
         };
       });
-      const cur = layerDetectedElements.value[layer.id];
+      const cur = next[layer.id];
       if (!cur || cur.length !== els.length) {
-        layerDetectedElements.value = { ...layerDetectedElements.value, [layer.id]: els };
+        next[layer.id] = els;
+        changed = true;
       }
     }
   }
+  if (changed) layerDetectedElements.value = next;
 }
-watch(() => layers.value.map((l) => l.detection), () => syncDetectionFromLayers(), { deep: true });
-watch(() => layers.value.length, () => syncDetectionFromLayers(), { immediate: true });
 const layerDetectedElements = ref({});
 const selectedDetectedElements = ref(new Set());
 const elementClickPositions = ref({});
@@ -1362,6 +1365,14 @@ onBeforeUnmount(() => {
     if (image.localUrl?.startsWith('blob:')) URL.revokeObjectURL(image.localUrl);
   });
 });
+
+// 监听 layers 变化时同步元素检测数据到 layerDetectedElements
+watch(
+  () => doc.value?.payload?.layers,
+  () => syncDetectionFromLayers(),
+  { deep: true, immediate: true }
+);
+watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers());
 </script>
 
 <template>
