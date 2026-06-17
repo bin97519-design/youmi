@@ -1496,7 +1496,7 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
         <div v-if="marquee.active" class="selection-marquee" :style="marqueeStyle" />
         <div v-if="getDetectionVisible() || activeTool === 'annotate' || ctrlHeld" :class="['detected-elements-overlay', { 'annotate-mode': activeTool === 'annotate', 'ctrl-mode': ctrlHeld && activeTool !== 'annotate', 'detection-visible': getDetectionVisible() }]">
           <template v-for="(elements, layerId) in layerDetectedElements" :key="layerId">
-            <template v-for="el in elements" :key="`${layerId}::${el.id}`">
+            <template v-for="(el, eIdx) in elements" :key="`${layerId}::${el.object_name || el.name || el.id || `e${eIdx}`}`">
               <div
                 v-if="layers.find((l) => l.id === layerId)"
                 class="detected-element-box"
@@ -1506,15 +1506,15 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
                   width: `${((el.box2d?.[3] || el.box_2d?.[3] || 0) - (el.box2d?.[1] || el.box_2d?.[1] || 0)) * (layers.find((l) => l.id === layerId).width || 1) * viewScale}px`,
                   height: `${((el.box2d?.[2] || el.box_2d?.[2] || 0) - (el.box2d?.[0] || el.box_2d?.[0] || 0)) * (layers.find((l) => l.id === layerId).height || 1) * viewScale}px`,
                 }"
-                @pointerdown.stop="smartToggleElement(layerId, el.object_name || el.name || el.id, $event)"
+                @pointerdown.stop="smartToggleElement(layerId, el.object_name || el.name || el.id || `e${eIdx}`, $event)"
               >
-                <span class="detected-element-label">{{ el.object_name || el.name }}</span>
+                <span class="detected-element-label">{{ el.object_name || el.name || '元素' }}</span>
               </div>
               <span
-                v-if="selectedDetectedElements.has(`${layerId}::${el.object_name || el.name || el.id}`)"
+                v-if="selectedDetectedElements.has(`${layerId}::${el.object_name || el.name || el.id || `e${eIdx}`}`)"
                 class="detected-element-index"
-                :style="getElementClickStyle(`${layerId}::${el.object_name || el.name || el.id}`)"
-              >{{ [...selectedDetectedElements].indexOf(`${layerId}::${el.object_name || el.name || el.id}`) + 1 }}</span>
+                :style="getElementClickStyle(`${layerId}::${el.object_name || el.name || el.id || `e${eIdx}`}`)"
+              >{{ [...selectedDetectedElements].indexOf(`${layerId}::${el.object_name || el.name || el.id || `e${eIdx}`}`) + 1 }}</span>
             </template>
           </template>
         </div>

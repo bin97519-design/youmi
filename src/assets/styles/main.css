@@ -525,7 +525,7 @@ textarea::placeholder, input::placeholder { color: #91a2ba; font-weight: 700; }
   z-index: 100;
 }
 
-/* 元素框基础样式：默认不可见 */
+/* 元素框基础样式 */
 .detected-element-box {
   position: absolute;
   box-sizing: border-box;
@@ -536,7 +536,7 @@ textarea::placeholder, input::placeholder { color: #91a2ba; font-weight: 700; }
   transition: border-color 0.12s ease, background 0.12s ease;
 }
 
-/* 当 overlay 处于 detection-visible 状态：框和标签可见 */
+/* 元素框默认可见（detection-visible 是关键状态） */
 .detected-elements-overlay.detection-visible .detected-element-box {
   border-color: rgba(99, 102, 241, 0.85);
   pointer-events: auto;
@@ -553,8 +553,39 @@ textarea::placeholder, input::placeholder { color: #91a2ba; font-weight: 700; }
   background: rgba(34, 197, 94, 0.08) !important;
 }
 
+/* 标注模式下元素框也可点（即使没开视觉框） */
+.detected-elements-overlay.annotate-mode .detected-element-box,
+.detected-elements-overlay.ctrl-mode .detected-element-box {
+  border-color: rgba(99, 102, 241, 0.45);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+/* 元素标签：detection-visible / annotate-mode / ctrl-mode 都显示 */
 .detected-elements-overlay .detected-element-label {
+  position: absolute;
+  top: -22px;
+  left: -2px;
   display: none;
+  padding: 2px 6px;
+  font-size: 11px;
+  line-height: 14px;
+  color: #c7d2fe;
+  background: rgba(20, 20, 30, 0.92);
+  border: 1px solid rgba(99, 102, 241, 0.6);
+  border-radius: 3px;
+  white-space: nowrap;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  user-select: none;
+  z-index: 1;
+}
+.detected-elements-overlay.detection-visible .detected-element-label,
+.detected-elements-overlay.annotate-mode .detected-element-label,
+.detected-elements-overlay.ctrl-mode .detected-element-label {
+  display: block;
 }
 
 .detected-elements-overlay.detection-visible .detected-element-label {
