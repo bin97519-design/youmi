@@ -1203,13 +1203,10 @@ function replacePillElement(newCandidate) {
   nextCandidates[newKey] = stored;
   elementOverlapCandidates.value = nextCandidates;
 
-  // 更新 elementClickPositions：旧 key 的位置转移到新 key
+  // 更新 elementClickPositions：清除旧 key，新 key 不加（靠 getElementClickStyle 从框计算）
   const nextPositions = { ...elementClickPositions.value };
-  if (nextPositions[oldKey]) {
-    nextPositions[newKey] = nextPositions[oldKey];
-    delete nextPositions[oldKey];
-    elementClickPositions.value = nextPositions;
-  }
+  delete nextPositions[oldKey];
+  elementClickPositions.value = nextPositions;
 
   // 更新 DOM pill：替换 data 属性和显示文字
   const editor = document.querySelector('.chat-editor');
@@ -1420,10 +1417,25 @@ watch(selectedDetectedElements, () => {
   nextTick(() => syncPillsToEditor());
 }, { deep: true });
 
+// 元素序号位置：优先从元素框中心计算，fallback 到点击位置
 function getElementClickStyle(key) {
+  // 先试点击位置
   const pos = elementClickPositions.value[key];
-  if (!pos) return {};
-  return { left: `${pos.x}px`, top: `${pos.y}px` };
+  if (pos) return { left: `${pos.x}px`, top: `${pos.y}px` };
+  // 回退到元素框左上角
+  const [layerId, elId] = key.split('::');
+  const elements = layerDetectedElements.value[layerId] || [];
+  const el = elements.find((e) => (e.object_name || e.name || e.id) === elId);
+  if (!el) return {};
+  const layer = layers.value.find((l) => l.id === layerId);
+  if (!layer) return {};
+  const box = el.box_2d || el.box2d || [0, 0, 1, 1];
+  const vs = viewScale.value;
+  const vo = viewOffset.value;
+  return {
+    left: `${(layer.x + box[1] * layer.width) * vs + vo.x - 6}px`,
+    top: `${(layer.y + box[0] * layer.height) * vs + vo.y - 6}px`,
+  };
 }
 
 async function sendChat() {
