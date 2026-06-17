@@ -1422,7 +1422,7 @@ function getElementClickStyle(key) {
   // 先试点击位置
   const pos = elementClickPositions.value[key];
   if (pos) return { left: `${pos.x}px`, top: `${pos.y}px` };
-  // 回退到元素框左上角
+  // 回退到元素框中心点
   const [layerId, elId] = key.split('::');
   const elements = layerDetectedElements.value[layerId] || [];
   const el = elements.find((e) => (e.object_name || e.name || e.id) === elId);
@@ -1432,9 +1432,11 @@ function getElementClickStyle(key) {
   const box = el.box_2d || el.box2d || [0, 0, 1, 1];
   const vs = viewScale.value;
   const vo = viewOffset.value;
+  const centerX = box[1] + (box[3] - box[1]) / 2;
+  const centerY = box[0] + (box[2] - box[0]) / 2;
   return {
-    left: `${(layer.x + box[1] * layer.width) * vs + vo.x - 6}px`,
-    top: `${(layer.y + box[0] * layer.height) * vs + vo.y - 6}px`,
+    left: `${(layer.x + centerX * layer.width) * vs + vo.x}px`,
+    top: `${(layer.y + centerY * layer.height) * vs + vo.y}px`,
   };
 }
 
