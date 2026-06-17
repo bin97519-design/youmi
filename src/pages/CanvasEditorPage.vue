@@ -1072,8 +1072,28 @@ function getEditorPrompt() {
 }
 
 // 同步：editor 里被 Backspace 删除的 pill → 取消画布选中
+// 用 MutationObserver 代替 @input，因为 contenteditable 的 @input
+// 可能在 pill 完全移出 DOM 之前触发，导致检测不到删除
+let _pillObserver = null;
+
+function setupPillObserver() {
+  const editor = document.querySelector('.chat-editor');
+  if (!editor || _pillObserver) return;
+  _pillObserver = new MutationObserver(() => {
+    if (_pillSyncLock > 0) return;
+    syncPillDeletions();
+  });
+  _pillObserver.observe(editor, { childList: true, subtree: true });
+}
+
 function handleEditorInput() {
   if (_pillSyncLock > 0) return;
+  syncPillDeletions();
+  updateChatTextFromEditor();
+}
+
+// 核心：检测 DOM 中被删掉的 pill → 同步到 selectedDetectedElements
+function syncPillDeletions() {
   const editor = document.querySelector('.chat-editor');
   if (!editor) return;
   const pills = editor.querySelectorAll('.chat-pill');
@@ -1099,13 +1119,9 @@ function handleEditorInput() {
     chatSkipPillSync.value = true;
     selectedDetectedElements.value = current;
   }
-  updateChatTextFromEditor();
 
   // 编辑器完全为空时，重置光标到最前端
-  // contenteditable 清空后浏览器可能留下 <br> 或奇怪的光标位置
-  const noPills = !pills.length;
-  const noText = !editor.textContent || editor.textContent === '\n' || !editor.textContent.trim();
-  if (noPills && noText) {
+  if (!pills.length && (!editor.textContent || editor.textContent === '\n' || !editor.textContent.trim())) {
     requestAnimationFrame(() => {
       if (!editor.isConnected) return;
       const sel = window.getSelection();
@@ -1855,6 +1871,8 @@ onMounted(() => {
   window.addEventListener('resize', updateViewportSize);
   window.addEventListener('keydown', onGlobalKeydown);
   loadUILayout();
+  // 建立 pill 删除监听 — MutationObserver 比 @input 更可靠
+  nextTick(() => setupPillObserver());
   // 恢复已缓存的检测元素（清除旧版错误归一化的缓存）
   const cachedElements = doc.value?.payload?.detectedElements;
   if (cachedElements) {
@@ -1890,6 +1908,7 @@ onMounted(() => {
     window.removeEventListener('keyup', onCtrlUp);
     window.removeEventListener('click', onDocClick);
     window.removeEventListener('resize', updateViewportSize);
+    if (_pillObserver) { _pillObserver.disconnect(); _pillObserver = null; }
     window.removeEventListener('keydown', onGlobalKeydown);
   });
 });
