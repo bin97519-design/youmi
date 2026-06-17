@@ -1449,10 +1449,10 @@ onBeforeUnmount(() => {
                 v-if="layers.find((l) => l.id === layerId)"
                 class="detected-element-box"
                 :style="{
-                  left: `${(layers.find((l) => l.id === layerId).x + (el.box_2d[1] || 0) * (layers.find((l) => l.id === layerId).width || 1)) * viewScale + viewOffset.x}px`,
-                  top: `${(layers.find((l) => l.id === layerId).y + (el.box_2d[0] || 0) * (layers.find((l) => l.id === layerId).height || 1)) * viewScale + viewOffset.y}px`,
-                  width: `${((el.box_2d[3] || 0) - (el.box_2d[1] || 0)) * (layers.find((l) => l.id === layerId).width || 1) * viewScale}px`,
-                  height: `${((el.box_2d[2] || 0) - (el.box_2d[0] || 0)) * (layers.find((l) => l.id === layerId).height || 1) * viewScale}px`,
+                  left: `${(layers.find((l) => l.id === layerId).x + (el.box2d?.[1] || el.box_2d?.[1] || 0) * (layers.find((l) => l.id === layerId).width || 1)) * viewScale + viewOffset.x}px`,
+                  top: `${(layers.find((l) => l.id === layerId).y + (el.box2d?.[0] || el.box_2d?.[0] || 0) * (layers.find((l) => l.id === layerId).height || 1)) * viewScale + viewOffset.y}px`,
+                  width: `${((el.box2d?.[3] || el.box_2d?.[3] || 0) - (el.box2d?.[1] || el.box_2d?.[1] || 0)) * (layers.find((l) => l.id === layerId).width || 1) * viewScale}px`,
+                  height: `${((el.box2d?.[2] || el.box_2d?.[2] || 0) - (el.box2d?.[0] || el.box_2d?.[0] || 0)) * (layers.find((l) => l.id === layerId).height || 1) * viewScale}px`,
                 }"
                 @pointerdown.stop="smartToggleElement(layerId, el.object_name || el.name || el.id, $event)"
               >
