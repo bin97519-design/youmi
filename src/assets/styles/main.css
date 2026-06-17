@@ -560,6 +560,11 @@ textarea::placeholder, input::placeholder { color: #91a2ba; font-weight: 700; }
   pointer-events: auto;
   cursor: pointer;
 }
+.detected-elements-overlay.annotate-mode .detected-element-box.selected,
+.detected-elements-overlay.ctrl-mode .detected-element-box.selected {
+  border-color: #22c55e !important;
+  background: rgba(34, 197, 94, 0.08) !important;
+}
 
 /* 元素标签：detection-visible / annotate-mode / ctrl-mode 都显示 */
 .detected-elements-overlay .detected-element-label {
@@ -605,7 +610,9 @@ textarea::placeholder, input::placeholder { color: #91a2ba; font-weight: 700; }
   z-index: 6;
 }
 
-.detected-elements-overlay.detection-visible .detected-element-box.selected .detected-element-label {
+.detected-elements-overlay.detection-visible .detected-element-box.selected .detected-element-label,
+.detected-elements-overlay.annotate-mode .detected-element-box.selected .detected-element-label,
+.detected-elements-overlay.ctrl-mode .detected-element-box.selected .detected-element-label {
   background: #22c55e;
 }
 

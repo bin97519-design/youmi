@@ -2051,7 +2051,7 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
               <div
                 v-if="layers.find((l) => l.id === layerId)"
                 class="detected-element-box"
-                :class="{ 'detected-element-selected': selectedDetectedElements.has(`${layerId}::${el.object_name || el.name || el.id || `e${eIdx}`}`) }"
+                :class="{ 'selected': selectedDetectedElements.has(`${layerId}::${el.object_name || el.name || el.id || `e${eIdx}`}`) }"
                 :style="(function() {
                   const layer = layers.find((l) => l.id === layerId);
                   const box = el.box_2d || el.box2d || [0,0,1,1];
