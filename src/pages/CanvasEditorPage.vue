@@ -864,26 +864,27 @@ function findElementsAtPoint(clientX, clientY) {
 
 // 查找与给定元素框有交叠的所有元素（用于下拉候选列表）
 // 只要两框有任意面积交集就算重叠
+// 只在同一图层内比较——不同图层的坐标空间不一致，无意义
 function findOverlappingElements(targetLayerId, targetBox) {
   const results = [];
-  for (const [layerId, elements] of Object.entries(layerDetectedElements.value)) {
-    for (const el of elements) {
-      const box = el.box_2d || el.box2d || [0, 0, 1, 1];
-      // 检查两框是否相交
-      const il = Math.max(targetBox[1], box[1]);
-      const it = Math.max(targetBox[0], box[0]);
-      const ir = Math.min(targetBox[3], box[3]);
-      const ib = Math.min(targetBox[2], box[2]);
-      if (il < ir && it < ib) {
-        results.push({
-          layerId,
-          el,
-          box_2d: box,
-          area: (box[3] - box[1]) * (box[2] - box[0]),
-          id: el.object_name || el.name || el.id,
-          name: el.object_name || el.name || '',
-        });
-      }
+  const elements = layerDetectedElements.value[targetLayerId];
+  if (!elements) return results;
+  for (const el of elements) {
+    const box = el.box_2d || el.box2d || [0, 0, 1, 1];
+    // 检查两框是否相交
+    const il = Math.max(targetBox[1], box[1]);
+    const it = Math.max(targetBox[0], box[0]);
+    const ir = Math.min(targetBox[3], box[3]);
+    const ib = Math.min(targetBox[2], box[2]);
+    if (il < ir && it < ib) {
+      results.push({
+        layerId: targetLayerId,
+        el,
+        box_2d: box,
+        area: (box[3] - box[1]) * (box[2] - box[0]),
+        id: el.object_name || el.name || el.id,
+        name: el.object_name || el.name || '',
+      });
     }
   }
   return results;
@@ -1072,34 +1073,38 @@ function getEditorPrompt() {
 
 // 同步：editor 里被 Backspace 删除的 pill → 取消画布选中
 function handleEditorInput() {
-  if (_pillSyncLock > 0) return;  // 程序正在写入，跳过同步
-  const editor = document.querySelector('.chat-editor');
-  if (!editor) return;
-  const pills = editor.querySelectorAll('.chat-pill');
-  const existingKeys = new Set();
-  pills.forEach((pill) => {
-    const elId = pill.dataset.elId;
-    const layerId = pill.dataset.elLayer;
-    if (elId && layerId) existingKeys.add(`${layerId}::${elId}`);
-  });
+  // 用 setTimeout 延迟检查 DOM，确保 contenteditable 已完成删除操作
+  // （@input 可能在被删元素完全移出 DOM 之前触发）
+  setTimeout(() => {
+    if (_pillSyncLock > 0) return;
+    const editor = document.querySelector('.chat-editor');
+    if (!editor) return;
+    const pills = editor.querySelectorAll('.chat-pill');
+    const existingKeys = new Set();
+    pills.forEach((pill) => {
+      const elId = pill.dataset.elId;
+      const layerId = pill.dataset.elLayer;
+      if (elId && layerId) existingKeys.add(`${layerId}::${elId}`);
+    });
 
-  const current = new Set(selectedDetectedElements.value);
-  let changed = false;
-  for (const key of current) {
-    if (!existingKeys.has(key)) {
-      current.delete(key);
-      const newPositions = { ...elementClickPositions.value };
-      delete newPositions[key];
-      elementClickPositions.value = newPositions;
-      changed = true;
+    const current = new Set(selectedDetectedElements.value);
+    let changed = false;
+    for (const key of current) {
+      if (!existingKeys.has(key)) {
+        current.delete(key);
+        const newPositions = { ...elementClickPositions.value };
+        delete newPositions[key];
+        elementClickPositions.value = newPositions;
+        changed = true;
+      }
     }
-  }
-  if (changed) {
-    chatSkipPillSync.value = true;
-    selectedDetectedElements.value = current;
-  }
-  // 同步纯文本（保留 pill 之间的文字位置）
-  updateChatTextFromEditor();
+    if (changed) {
+      chatSkipPillSync.value = true;
+      selectedDetectedElements.value = current;
+    }
+    // 同步纯文本（保留 pill 之间的文字位置）
+    updateChatTextFromEditor();
+  }, 0);
 }
 
 function handleEditorPillClick(event) {
@@ -1343,18 +1348,8 @@ function syncPillsToEditor() {
   // 4) 同步 chatText（用于空判断）
   updateChatTextFromEditor();
 
-  // 5) 光标定位到末尾
-  requestAnimationFrame(() => {
-    if (_pillSyncLock !== lockId) return;
-    const sel = window.getSelection();
-    if (!sel) { setTimeout(() => { if (_pillSyncLock === lockId) _pillSyncLock = 0; }, 50); return; }
-    sel.removeAllRanges();
-    const range = document.createRange();
-    range.selectNodeContents(editor);
-    range.collapse(false);
-    sel.addRange(range);
-    setTimeout(() => { if (_pillSyncLock === lockId) _pillSyncLock = 0; }, 50);
-  });
+  // 5) 释放锁（不强制移动光标，让浏览器自然处理）
+  setTimeout(() => { if (_pillSyncLock === lockId) _pillSyncLock = 0; }, 30);
 }
 
 watch(selectedDetectedElements, () => {
@@ -2278,7 +2273,6 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
           >
             <span :class="['detect-select-popup-dot', { active: `${c.layerId}::${c.id}` === overlapDropdown.pillKey }]"></span>
             <span class="detect-select-popup-name">{{ c.name }}</span>
-            <small style="color:#666;flex-shrink:0;">{{ (c.area * 100).toFixed(1) }}%</small>
           </button>
         </div>
       </div>
