@@ -823,6 +823,102 @@ function smartToggleElement(layerId, elementId, event) {
   chatSkipPillSync.value = false;
 }
 
+// 元素语义优先级（数值越小越优先，用于重叠区域智能选择）
+const ELEMENT_PRIORITY_KEYWORDS = {
+  foreground: ['杯', '茶', '碗', '盘', '手机', '书', '眼镜', '笔', '戒指', '手镯', '花', '食物', '水果', '饮料', '遥控', '钥匙', '剪刀', '药'],
+  person:     ['女', '男', '人', '人物', '模特', '小孩', '儿童', '手', '脸', '眼', '头', '发', '肤', '臂', '腿'],
+  text:       ['文字', '标语', '标题', '价格', '字', 'logo', '品牌', '签名', '数字', '日期'],
+  clothing:   ['衣', '裙', '裤', '鞋', '帽', '包', '饰', '围巾', '领带'],
+  furniture:  ['沙发', '椅', '桌', '柜', '床', '灯', '窗', '帘', '架', '地毯'],
+  background: ['背景', '墙', '地板', '天', '空', '植物', '装饰', '画框', '壁画'],
+};
+
+function getElementPriority(name) {
+  const n = (name || '').toLowerCase();
+  const categories = Object.entries(ELEMENT_PRIORITY_KEYWORDS);
+  for (let i = 0; i < categories.length; i++) {
+    for (const kw of categories[i][1]) {
+      if (n.includes(kw)) return i; // 0=foreground, 1=person, ...
+    }
+  }
+  return categories.length; // unknown = lowest
+}
+
+// 查找点击坐标处所有重叠元素，返回按优先级排序的列表
+function findElementsAtPoint(clientX, clientY) {
+  const overlayEl = document.querySelector('.detected-elements-overlay');
+  if (!overlayEl) return [];
+  const overlayRect = overlayEl.getBoundingClientRect();
+  const cx = clientX - overlayRect.left;
+  const cy = clientY - overlayRect.top;
+  const vs = viewScale.value;
+  const vo = viewOffset.value;
+
+  const results = [];
+  for (const [layerId, elements] of Object.entries(layerDetectedElements.value)) {
+    const layer = layers.value.find((l) => l.id === layerId);
+    if (!layer) continue;
+    for (const el of elements) {
+      const box = el.box_2d || el.box2d || [0, 0, 1, 1];
+      const left = (layer.x + box[1] * layer.width) * vs + vo.x;
+      const top = (layer.y + box[0] * layer.height) * vs + vo.y;
+      const right = left + (box[3] - box[1]) * layer.width * vs;
+      const bottom = top + (box[2] - box[0]) * layer.height * vs;
+      if (cx >= left && cx <= right && cy >= top && cy <= bottom) {
+        const area = (box[3] - box[1]) * (box[2] - box[0]);
+        results.push({
+          layerId,
+          el,
+          priority: getElementPriority(el.object_name || el.name || ''),
+          area,
+          id: el.object_name || el.name || el.id,
+        });
+      }
+    }
+  }
+  // 排序：优先级 → 面积小（前景元素通常更小）
+  results.sort((a, b) => {
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    return a.area - b.area;
+  });
+  return results;
+}
+
+// 标注模式或 Ctrl+点击时，智能选择重叠区域最优先元素
+function handleDetectedOverlayClick(event) {
+  const inAnnotate = activeTool.value === 'annotate';
+  const withCtrl = event.ctrlKey || event.metaKey;
+  if (!inAnnotate && !withCtrl) return; // 不拦截，让 manual box 或 marquee 处理
+
+  const candidates = findElementsAtPoint(event.clientX, event.clientY);
+  if (!candidates.length) {
+    // 标注模式下没点到元素 → 放行让 startMarquee 触发手动框选
+    if (inAnnotate) return;
+    // Ctrl+点击但没元素 → 也放行
+    return;
+  }
+  // 选中最优元素
+  event.preventDefault();
+  event.stopPropagation();
+  const best = candidates[0];
+  if (candidates.length > 1) {
+    console.log('[smart-click]', candidates.length, '个重叠元素 → 优先选择:', best.el.object_name || best.el.name, '(priority=', best.priority, 'area=', best.area.toFixed(4), ')');
+  }
+  const key = `${best.layerId}::${best.id}`;
+  const set = new Set(selectedDetectedElements.value);
+  if (set.has(key)) {
+    set.delete(key);
+  } else {
+    set.add(key);
+  }
+  selectedDetectedElements.value = set;
+  elementClickPositions.value = {
+    ...elementClickPositions.value,
+    [key]: { x: event.clientX - (document.querySelector('.detected-elements-overlay')?.getBoundingClientRect()?.left || 0), y: event.clientY - (document.querySelector('.detected-elements-overlay')?.getBoundingClientRect()?.top || 0) },
+  };
+  chatSkipPillSync.value = false;
+}
+
 // 从编辑器 DOM 提取纯文本（用于空判断和发送）
 function updateChatTextFromEditor() {
   const editor = document.querySelector('.chat-editor');
@@ -1695,12 +1791,17 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
         </figure>
         <div v-if="marquee.active" class="selection-marquee" :style="marqueeStyle" />
         <div v-if="manualBoxDraft.active" class="manual-box-draft" :style="manualBoxDraftStyle" />
-        <div v-if="getDetectionVisible() || activeTool === 'annotate' || ctrlHeld" :class="['detected-elements-overlay', { 'annotate-mode': activeTool === 'annotate', 'ctrl-mode': ctrlHeld && activeTool !== 'annotate', 'detection-visible': getDetectionVisible() }]">
+        <div
+          v-if="getDetectionVisible() || activeTool === 'annotate' || ctrlHeld"
+          :class="['detected-elements-overlay', { 'annotate-mode': activeTool === 'annotate', 'ctrl-mode': ctrlHeld && activeTool !== 'annotate', 'detection-visible': getDetectionVisible() }]"
+          @pointerdown="handleDetectedOverlayClick"
+        >
           <template v-for="(elements, layerId) in layerDetectedElements" :key="layerId">
             <template v-for="(el, eIdx) in elements" :key="`${layerId}::${el.object_name || el.name || el.id || `e${eIdx}`}`">
               <div
                 v-if="layers.find((l) => l.id === layerId)"
                 class="detected-element-box"
+                :class="{ 'detected-element-selected': selectedDetectedElements.has(`${layerId}::${el.object_name || el.name || el.id || `e${eIdx}`}`) }"
                 :style="(function() {
                   const layer = layers.find((l) => l.id === layerId);
                   const box = el.box_2d || el.box2d || [0,0,1,1];
@@ -1713,7 +1814,6 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
                     height: `${Math.max(2, (box[2] - box[0]) * layer.height * viewScale)}px`,
                   };
                 })()"
-                @pointerdown.stop="smartToggleElement(layerId, el.object_name || el.name || el.id || `e${eIdx}`, $event)"
               >
                 <span class="detected-element-label">{{ el.object_name || el.name || '元素' }}</span>
               </div>
