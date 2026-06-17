@@ -1073,49 +1073,33 @@ function getEditorPrompt() {
 
 // 同步：editor 里被 Backspace 删除的 pill → 取消画布选中
 function handleEditorInput() {
-  // 用 setTimeout 延迟检查 DOM，确保 contenteditable 已完成删除操作
-  // （@input 可能在被删元素完全移出 DOM 之前触发）
-  setTimeout(() => {
-    if (_pillSyncLock > 0) return;
-    const editor = document.querySelector('.chat-editor');
-    if (!editor) return;
-    const pills = editor.querySelectorAll('.chat-pill');
-    const existingKeys = new Set();
-    pills.forEach((pill) => {
-      const elId = pill.dataset.elId;
-      const layerId = pill.dataset.elLayer;
-      if (elId && layerId) existingKeys.add(`${layerId}::${elId}`);
-    });
+  if (_pillSyncLock > 0) return;
+  const editor = document.querySelector('.chat-editor');
+  if (!editor) return;
+  const pills = editor.querySelectorAll('.chat-pill');
+  const existingKeys = new Set();
+  pills.forEach((pill) => {
+    const elId = pill.dataset.elId;
+    const layerId = pill.dataset.elLayer;
+    if (elId && layerId) existingKeys.add(`${layerId}::${elId}`);
+  });
 
-    const current = new Set(selectedDetectedElements.value);
-    let changed = false;
-    for (const key of current) {
-      if (!existingKeys.has(key)) {
-        current.delete(key);
-        const newPositions = { ...elementClickPositions.value };
-        delete newPositions[key];
-        elementClickPositions.value = newPositions;
-        changed = true;
-      }
+  const current = new Set(selectedDetectedElements.value);
+  let changed = false;
+  for (const key of current) {
+    if (!existingKeys.has(key)) {
+      current.delete(key);
+      const newPositions = { ...elementClickPositions.value };
+      delete newPositions[key];
+      elementClickPositions.value = newPositions;
+      changed = true;
     }
-    if (changed) {
-      chatSkipPillSync.value = true;
-      selectedDetectedElements.value = current;
-      // 删除 pill 后把光标定到编辑器最前端，方便用户输入文字
-      requestAnimationFrame(() => {
-        if (!editor.isConnected) return;
-        const sel = window.getSelection();
-        if (!sel) return;
-        sel.removeAllRanges();
-        const range = document.createRange();
-        range.setStart(editor, 0);
-        range.collapse(true);
-        sel.addRange(range);
-      });
-    }
-    // 同步纯文本（保留 pill 之间的文字位置）
-    updateChatTextFromEditor();
-  }, 0);
+  }
+  if (changed) {
+    chatSkipPillSync.value = true;
+    selectedDetectedElements.value = current;
+  }
+  updateChatTextFromEditor();
 }
 
 function handleEditorPillClick(event) {
