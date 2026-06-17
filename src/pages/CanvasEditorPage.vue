@@ -1342,11 +1342,13 @@ function syncPillsToEditor() {
 
   // 2) 追加新增的 pill 到编辑器末尾（不触碰已有文字）
   const detected = getSelectedDetectedElements();
+  let anyAdded = false;
   for (const el of detected) {
     const key = `${el.layerId}::${el.object_name || el.name || el.id}`;
     if (!existingKeys.has(key)) {
       const html = buildElementPill(el, 0) + '\u00a0';
       editor.insertAdjacentHTML('beforeend', html);
+      anyAdded = true;
     }
   }
 
@@ -1360,7 +1362,21 @@ function syncPillsToEditor() {
   // 4) 同步 chatText（用于空判断）
   updateChatTextFromEditor();
 
-  // 5) 释放锁（不强制移动光标，让浏览器自然处理）
+  // 5) 有新增 pill 时，光标定到编辑器末尾（pill 后面，方便继续输入文字）
+  if (anyAdded) {
+    requestAnimationFrame(() => {
+      if (_pillSyncLock !== lockId || !editor.isConnected) return;
+      const sel = window.getSelection();
+      if (!sel) return;
+      sel.removeAllRanges();
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      range.collapse(false);
+      sel.addRange(range);
+    });
+  }
+
+  // 6) 释放锁
   setTimeout(() => { if (_pillSyncLock === lockId) _pillSyncLock = 0; }, 30);
 }
 
