@@ -3765,7 +3765,7 @@ function themeLabel() {
             :src="imageViewer.url"
             :alt="imageViewer.name"
             :style="{
-              transform: `rotate(${imageViewer.rotation}deg) scaleX(${imageViewer.flipX ? -1 : 1}) scaleY(${imageViewer.flipY ? -1 : 1}) scale(${imageViewer.scale}) translate(${imageViewer.translateX}px, ${imageViewer.translateY}px)`,
+              transform: `translate(${imageViewer.translateX}px, ${imageViewer.translateY}px) rotate(${imageViewer.rotation}deg) scaleX(${imageViewer.flipX ? -1 : 1}) scaleY(${imageViewer.flipY ? -1 : 1}) scale(${imageViewer.scale})`,
               transition: imageViewer.isDragging ? 'none' : 'transform 0.3s ease',
             }"
             draggable="false"
