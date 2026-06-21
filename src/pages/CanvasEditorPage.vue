@@ -111,13 +111,17 @@ const connecting = reactive({
   currentY: 0,
 });
 
-// 获取节点端口的世界坐标
+// 获取节点端口的世界坐标（与 CSS 端口位置对齐）
 function getPortWorldPosition(layerId, port) {
   const layer = layers.value.find(l => l.id === layerId);
   if (!layer) return { x: 0, y: 0 };
   const nodeWidth = layer.width || 200;
-  const nodeHeight = layer.height || 150;
-  const x = layer.x + (port === 'left' ? 0 : nodeWidth);
+  // 图片节点高度 = width × (naturalHeight / naturalWidth)
+  const nodeHeight = layer.height
+    || (layer.naturalWidth && layer.naturalHeight ? Math.round(nodeWidth * layer.naturalHeight / layer.naturalWidth) : 150);
+  // CSS 端口: left: -14px, width: 24px → 中心偏移 -14+12 = -2px
+  // CSS 端口: right: -14px, width: 24px → 中心偏移 nodeWidth+14-12 = nodeWidth+2px
+  const x = layer.x + (port === 'left' ? -2 : nodeWidth + 2);
   const y = layer.y + nodeHeight / 2;
   return { x, y };
 }
@@ -136,15 +140,17 @@ function startConnection(event, layerId, port) {
   connecting.currentY = pos.y;
 }
 
-// 更新连接线拖拽位置
+// 更新连接线拖拽位置（屏幕坐标转 SVG 内部坐标）
 function updateConnectionDrag(event) {
   if (!connecting.active) return;
-  const canvasEl = document.querySelector('.canvas-viewport');
-  if (!canvasEl) return;
-  const rect = canvasEl.getBoundingClientRect();
-  const zoomLevel = zoomLevelVal.value;
-  connecting.currentX = (event.clientX - rect.left) / zoomLevel - panX.value;
-  connecting.currentY = (event.clientY - rect.top) / zoomLevel - panY.value;
+  const stageEl = document.querySelector('.stage');
+  if (!stageEl) return;
+  const rect = stageEl.getBoundingClientRect();
+  const vs = viewScale.value;
+  const vo = viewOffset.value;
+  // 屏幕坐标 → 画布世界坐标: (screen - offset) / scale
+  connecting.currentX = (event.clientX - rect.left - vo.x) / vs;
+  connecting.currentY = (event.clientY - rect.top - vo.y) / vs;
 }
 
 // 完成连接
