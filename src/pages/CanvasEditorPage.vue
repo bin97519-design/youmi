@@ -111,35 +111,34 @@ const connecting = reactive({
   currentY: 0,
 });
 
-// 获取 stage 元素的 rect（缓存）
-function getStageRect() {
-  const stageEl = document.querySelector('.stage');
-  return stageEl ? stageEl.getBoundingClientRect() : null;
-}
-
-// 通过 DOM 获取端口的中心坐标（相对于 stage 左上角的像素值）
+// 获取节点端口在 stage 坐标系中的像素位置（纯计算，不依赖 DOM 可见性）
 function getPortPosition(layerId, port) {
-  const portClass = port === 'left' ? 'uc-port-left' : 'uc-port-right';
-  const layerEl = document.querySelector(`[data-layer-id="${layerId}"]`);
-  if (!layerEl) return { x: 0, y: 0 };
-  const portEl = layerEl.querySelector(`.${portClass}`);
-  if (!portEl) return { x: 0, y: 0 };
-  const stageRect = getStageRect();
-  if (!stageRect) return { x: 0, y: 0 };
-  const rect = portEl.getBoundingClientRect();
+  const layer = layers.value.find(l => l.id === layerId);
+  if (!layer) return { x: 0, y: 0 };
+  const vs = viewScale.value;
+  const vo = viewOffset.value;
+  const nodeWidth = layer.width || 200;
+  // 图片节点高度 = width × (naturalHeight / naturalWidth)
+  const nodeHeight = layer.height
+    || (layer.naturalWidth && layer.naturalHeight ? Math.round(nodeWidth * layer.naturalHeight / layer.naturalWidth) : 150);
+  // 节点 transform: translate(x*vs+vo.x, y*vs+vo.y) scale(vs)
+  // 端口 CSS: left:-14px(左) / right:-14px(右), width:24px → 中心偏移 -2px / nodeWidth+2
+  // stage 坐标 = (layer.x + portOffset) * vs + vo.x
+  const portOffset = port === 'left' ? -2 : nodeWidth + 2;
   return {
-    x: rect.left + rect.width / 2 - stageRect.left,
-    y: rect.top + rect.height / 2 - stageRect.top,
+    x: (layer.x + portOffset) * vs + vo.x,
+    y: (layer.y + nodeHeight / 2) * vs + vo.y,
   };
 }
 
 // 屏幕坐标 → stage 相对坐标
 function screenToStage(clientX, clientY) {
-  const stageRect = getStageRect();
-  if (!stageRect) return { x: 0, y: 0 };
+  const stageEl = document.querySelector('.stage');
+  if (!stageEl) return { x: 0, y: 0 };
+  const rect = stageEl.getBoundingClientRect();
   return {
-    x: clientX - stageRect.left,
-    y: clientY - stageRect.top,
+    x: clientX - rect.left,
+    y: clientY - rect.top,
   };
 }
 
