@@ -3766,7 +3766,7 @@ function themeLabel() {
             :alt="imageViewer.name"
             :style="{
               transform: `translate(${imageViewer.translateX}px, ${imageViewer.translateY}px) scale(${imageViewer.scale}) rotate(${imageViewer.rotation}deg) scaleX(${imageViewer.flipX ? -1 : 1}) scaleY(${imageViewer.flipY ? -1 : 1})`,
-              transition: imageViewer.isDragging ? 'none' : 'transform 0.3s ease',
+              transition: imageViewer.isDragging ? 'none' : 'transform 0.35s cubic-bezier(0.215, 0.61, 0.355, 1)',
             }"
             draggable="false"
           />
