@@ -186,7 +186,7 @@ function updateConnectionDrag(event) {
   connecting.currentY = pos.y;
 }
 
-// 完成连接
+// 完成连接（不限制连接数量，允许任意节点间连接）
 function finishConnection(event, layerId, port) {
   if (!connecting.active) return;
   if (connecting.fromLayerId === layerId) {
@@ -194,19 +194,14 @@ function finishConnection(event, layerId, port) {
     connecting.active = false;
     return;
   }
-  // 检查是否已存在连接
-  const exists = connections.value.some(
-    c => c.fromLayerId === connecting.fromLayerId && c.toLayerId === layerId
-  );
-  if (!exists) {
-    connections.value.push({
-      id: `conn-${Date.now()}`,
-      fromLayerId: connecting.fromLayerId,
-      fromPort: connecting.fromPort,
-      toLayerId: layerId,
-      toPort: port,
-    });
-  }
+  // 允许创建连接（不限制数量）
+  connections.value.push({
+    id: `conn-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+    fromLayerId: connecting.fromLayerId,
+    fromPort: connecting.fromPort,
+    toLayerId: layerId,
+    toPort: port,
+  });
   connecting.active = false;
 }
 
