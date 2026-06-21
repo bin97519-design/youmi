@@ -12884,7 +12884,7 @@ body {
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 6px 8px;
+  padding: 4px 6px;
   background: #ffffff;
   border: none;
   border-radius: 40px;
@@ -12909,9 +12909,9 @@ body {
 }
 
 .uc-viewer-tool-btn {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
   border: none;
   background: transparent;
   color: #333333;
@@ -12920,7 +12920,7 @@ body {
   align-items: center;
   justify-content: center;
   transition: all 0.2s ease;
-  font-size: 20px;
+  font-size: 18px;
 }
 
 .uc-viewer-tool-btn:hover {

@@ -3733,9 +3733,21 @@ function themeLabel() {
             <i class="ri-arrow-left-right-line"></i>
           </button>
 
-          <!-- 旋转 -->
-          <button class="uc-viewer-tool-btn" title="旋转" @click="rotateImage(90)">
-            <i class="ri-refresh-line"></i>
+          <!-- 上下翻转 -->
+          <button class="uc-viewer-tool-btn" title="上下翻转" @click="flipImage('y')">
+            <i class="ri-arrow-up-down-line"></i>
+          </button>
+
+          <div class="uc-viewer-tool-divider"></div>
+
+          <!-- 左旋转 -->
+          <button class="uc-viewer-tool-btn" title="左旋转" @click="rotateImage(-90)">
+            <i class="ri-arrow-go-back-line"></i>
+          </button>
+
+          <!-- 右旋转 -->
+          <button class="uc-viewer-tool-btn" title="右旋转" @click="rotateImage(90)">
+            <i class="ri-arrow-go-forward-line"></i>
           </button>
 
           <div class="uc-viewer-tool-divider"></div>
