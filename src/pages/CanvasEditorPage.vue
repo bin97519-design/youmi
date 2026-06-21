@@ -98,6 +98,117 @@ const reversePromptConnectors = ref([]);
 const selectedLayerId = ref(doc.value.payload.layers[0]?.id || '');
 const selectedLayerIds = ref(selectedLayerId.value ? [selectedLayerId.value] : []);
 const rightTab = ref('chat');
+
+// ========== 连接线系统 ==========
+const connections = ref([]); // { id, fromLayerId, fromPort, toLayerId, toPort }
+const connecting = reactive({
+  active: false,
+  fromLayerId: '',
+  fromPort: '', // 'left' | 'right'
+  startX: 0,
+  startY: 0,
+  currentX: 0,
+  currentY: 0,
+});
+
+// 获取节点端口的世界坐标
+function getPortWorldPosition(layerId, port) {
+  const layer = layers.value.find(l => l.id === layerId);
+  if (!layer) return { x: 0, y: 0 };
+  const nodeWidth = layer.width || 200;
+  const nodeHeight = layer.height || 150;
+  const x = layer.x + (port === 'left' ? 0 : nodeWidth);
+  const y = layer.y + nodeHeight / 2;
+  return { x, y };
+}
+
+// 开始连接
+function startConnection(event, layerId, port) {
+  event.stopPropagation();
+  event.preventDefault();
+  const pos = getPortWorldPosition(layerId, port);
+  connecting.active = true;
+  connecting.fromLayerId = layerId;
+  connecting.fromPort = port;
+  connecting.startX = pos.x;
+  connecting.startY = pos.y;
+  connecting.currentX = pos.x;
+  connecting.currentY = pos.y;
+}
+
+// 更新连接线拖拽位置
+function updateConnectionDrag(event) {
+  if (!connecting.active) return;
+  const canvasEl = document.querySelector('.canvas-viewport');
+  if (!canvasEl) return;
+  const rect = canvasEl.getBoundingClientRect();
+  const zoomLevel = zoomLevelVal.value;
+  connecting.currentX = (event.clientX - rect.left) / zoomLevel - panX.value;
+  connecting.currentY = (event.clientY - rect.top) / zoomLevel - panY.value;
+}
+
+// 完成连接
+function finishConnection(event, layerId, port) {
+  if (!connecting.active) return;
+  if (connecting.fromLayerId === layerId) {
+    // 不能连接自己
+    connecting.active = false;
+    return;
+  }
+  // 检查是否已存在连接
+  const exists = connections.value.some(
+    c => c.fromLayerId === connecting.fromLayerId && c.toLayerId === layerId
+  );
+  if (!exists) {
+    connections.value.push({
+      id: `conn-${Date.now()}`,
+      fromLayerId: connecting.fromLayerId,
+      fromPort: connecting.fromPort,
+      toLayerId: layerId,
+      toPort: port,
+    });
+  }
+  connecting.active = false;
+}
+
+// 取消连接
+function cancelConnection() {
+  connecting.active = false;
+}
+
+// 删除连接
+function removeConnection(connId) {
+  connections.value = connections.value.filter(c => c.id !== connId);
+}
+
+// 生成贝塞尔曲线路径
+function generateCurvePath(x1, y1, x2, y2) {
+  const dx = Math.abs(x2 - x1);
+  const cp = Math.max(dx * 0.5, 50);
+  return `M ${x1} ${y1} C ${x1 + cp} ${y1}, ${x2 - cp} ${y2}, ${x2} ${y2}`;
+}
+
+// 计算所有连接线路径
+const connectionPaths = computed(() => {
+  return connections.value.map(conn => {
+    const from = getPortWorldPosition(conn.fromLayerId, conn.fromPort);
+    const to = getPortWorldPosition(conn.toLayerId, conn.toPort);
+    return {
+      ...conn,
+      path: generateCurvePath(from.x, from.y, to.x, to.y),
+      fromX: from.x,
+      fromY: from.y,
+      toX: to.x,
+      toY: to.y,
+    };
+  });
+});
+
+// 当前拖拽中的连接线路径
+const connectingPath = computed(() => {
+  if (!connecting.active) return '';
+  return generateCurvePath(connecting.startX, connecting.startY, connecting.currentX, connecting.currentY);
+});
 const chatHistoryRef = ref(null);
 const chatText = ref('');
 const chatReferenceImages = ref([]);
@@ -2974,12 +3085,12 @@ function themeLabel() {
 
       <!-- 左侧 + 号分类菜单栏（已合并到 bottom-tools 的 uc-toolbar-add-btn 弹层） -->
       <div
-        :class="['stage', { 'hand-tool': activeTool === 'hand', 'annotate-tool': activeTool === 'annotate', 'is-panning': panState }]"
+        :class="['stage', { 'hand-tool': activeTool === 'hand', 'annotate-tool': activeTool === 'annotate', 'is-panning': panState, 'is-connecting': connecting.active }]"
         @wheel.prevent="wheelZoom"
         @pointerdown="startMarquee"
-        @pointermove="moveMarquee"
-        @pointerup="stopMarquee"
-        @pointercancel="stopMarquee"
+        @pointermove="moveMarquee; updateConnectionDrag($event)"
+        @pointerup="stopMarquee; cancelConnection()"
+        @pointercancel="stopMarquee; cancelConnection()"
       >
         <!-- 上传进度条 -->
         <div v-if="uploadProgress" class="upload-progress-overlay">
@@ -2999,7 +3110,7 @@ function themeLabel() {
         </div>
 
         <figure
-          v-for="(layer, index) in layers"
+          v-for="layer in layers"
           :key="layer.id"
           :data-layer-id="layer.id"
           :class="[
@@ -3070,8 +3181,8 @@ function themeLabel() {
               </div>
               <button class="uc-node-close" type="button" title="删除文本节点" @pointerdown.stop @click.stop="removeLayer(layer.id)">×</button>
               <!-- 左右连接点 -->
-              <div class="uc-connection-port uc-port-left" @pointerdown.stop>+</div>
-              <div class="uc-connection-port uc-port-right" @pointerdown.stop>+</div>
+              <div class="uc-connection-port uc-port-left" @pointerdown.stop="startConnection($event, layer.id, 'left')" @pointerup.stop="finishConnection($event, layer.id, 'left')">+</div>
+              <div class="uc-connection-port uc-port-right" @pointerdown.stop="startConnection($event, layer.id, 'right')" @pointerup.stop="finishConnection($event, layer.id, 'right')">+</div>
             </div>
           </template>
           <template v-else-if="layer.type === 'image-placeholder'">
@@ -3089,8 +3200,8 @@ function themeLabel() {
               </div>
               <button class="uc-node-close" type="button" title="删除图片节点" @pointerdown.stop @click.stop="removeLayer(layer.id)">×</button>
               <!-- 左右连接点 -->
-              <div class="uc-connection-port uc-port-left" @pointerdown.stop>+</div>
-              <div class="uc-connection-port uc-port-right" @pointerdown.stop>+</div>
+              <div class="uc-connection-port uc-port-left" @pointerdown.stop="startConnection($event, layer.id, 'left')" @pointerup.stop="finishConnection($event, layer.id, 'left')">+</div>
+              <div class="uc-connection-port uc-port-right" @pointerdown.stop="startConnection($event, layer.id, 'right')" @pointerup.stop="finishConnection($event, layer.id, 'right')">+</div>
             </div>
           </template>
           <template v-else-if="layer.type === 'video'">
@@ -3117,8 +3228,8 @@ function themeLabel() {
               </template>
               <button class="uc-node-close" type="button" title="删除视频节点" @pointerdown.stop @click.stop="removeLayer(layer.id)">×</button>
               <!-- 左右连接点 -->
-              <div class="uc-connection-port uc-port-left" @pointerdown.stop>+</div>
-              <div class="uc-connection-port uc-port-right" @pointerdown.stop>+</div>
+              <div class="uc-connection-port uc-port-left" @pointerdown.stop="startConnection($event, layer.id, 'left')" @pointerup.stop="finishConnection($event, layer.id, 'left')">+</div>
+              <div class="uc-connection-port uc-port-right" @pointerdown.stop="startConnection($event, layer.id, 'right')" @pointerup.stop="finishConnection($event, layer.id, 'right')">+</div>
             </div>
           </template>
           <template v-else>
@@ -3133,14 +3244,36 @@ function themeLabel() {
               </div>
               <button class="uc-node-close" type="button" title="删除图片节点" @pointerdown.stop @click.stop="removeLayer(layer.id)">×</button>
               <!-- 左右连接点 -->
-              <div class="uc-connection-port uc-port-left" @pointerdown.stop>+</div>
-              <div class="uc-connection-port uc-port-right" @pointerdown.stop>+</div>
+              <div class="uc-connection-port uc-port-left" @pointerdown.stop="startConnection($event, layer.id, 'left')" @pointerup.stop="finishConnection($event, layer.id, 'left')">+</div>
+              <div class="uc-connection-port uc-port-right" @pointerdown.stop="startConnection($event, layer.id, 'right')" @pointerup.stop="finishConnection($event, layer.id, 'right')">+</div>
             </div>
           </template>
           <template v-if="layer.type !== 'placeholder' && layer.type !== 'text' && layer.type !== 'image' && layer.type !== 'image-placeholder' && layer.type !== 'video' && !(layer.url && !layer.type) && layer.id === selectedLayerId && selectedLayerIds.length <= 1">
             <i v-for="point in ['top-left','top','top-right','right','bottom-right','bottom','bottom-left','left']" :key="point" :class="['resize-dot', point]" @pointerdown="startResize($event, layer, point)" @pointermove="resizeLayer" @pointerup="stopResize" @pointercancel="stopResize" />
           </template>
         </figure>
+
+        <!-- 连接线 SVG 层 -->
+        <svg class="connections-layer" :style="{ transform: `translate(${viewOffset.x}px, ${viewOffset.y}px) scale(${viewScale})` }">
+          <!-- 已建立的连接线 -->
+          <g v-for="conn in connectionPaths" :key="conn.id" class="connection-group">
+            <path
+              :d="conn.path"
+              class="connection-line"
+              @click.stop="removeConnection(conn.id)"
+            />
+            <!-- 连接点圆圈 -->
+            <circle :cx="conn.fromX" :cy="conn.fromY" r="4" class="connection-dot" />
+            <circle :cx="conn.toX" :cy="conn.toY" r="4" class="connection-dot" />
+          </g>
+          <!-- 正在拖拽的连接线 -->
+          <path
+            v-if="connecting.active"
+            :d="connectingPath"
+            class="connection-line connecting"
+          />
+        </svg>
+
         <div v-if="marquee.active" class="selection-marquee" :style="marqueeStyle" />
         <div v-if="manualBoxDraft.active" class="manual-box-draft" :style="manualBoxDraftStyle" />
         <div v-if="manualNameInput.visible" class="manual-name-input" :style="{ left: `${manualNameInput.x}px`, top: `${manualNameInput.y}px` }" @pointerdown.stop>
@@ -3387,7 +3520,7 @@ function themeLabel() {
 
         <section v-else class="layers-panel">
           <h3>图层 <b>{{ layers.length }}</b></h3>
-          <button v-for="(layer, index) in [...layers].reverse()" :key="layer.id" :class="{ active: selectedLayerIds.includes(layer.id) }" @click="selectedLayerId = layer.id; selectedLayerIds = [layer.id]">
+          <button v-for="layer in [...layers].reverse()" :key="layer.id" :class="{ active: selectedLayerIds.includes(layer.id) }" @click="selectedLayerId = layer.id; selectedLayerIds = [layer.id]">
             <span>◉</span><img v-if="layer.thumbnailUrl" :src="layer.thumbnailUrl" alt="" /><i v-else class="ri-ai-generate-2-line" aria-hidden="true"></i><strong>{{ layerName(layers.findIndex((item) => item.id === layer.id)) }}</strong><small>{{ Math.round(layer.width) }} x {{ Math.round(layer.height) }}</small><em>▣</em>
           </button>
         </section>
