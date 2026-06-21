@@ -3162,6 +3162,46 @@ function themeLabel() {
           <dl><dt>拖入图片</dt><dd>或 .yq 画布文件 即可添加到画布</dd><dt>空格</dt><dd>长按 + 左键拖动 即可平移画布</dd><dt>A</dt><dd>打开“添加图片”面板，从本地或生成历史导入</dd></dl>
         </div>
 
+        <!-- 连接线 SVG 层（在节点层之前，让节点覆盖在连接线上） -->
+        <svg class="connections-layer">
+          <!-- 已建立的连接线 -->
+          <g v-for="conn in getConnectionPaths()" :key="conn.id" class="connection-group">
+            <!-- 加宽的透明点击区域 -->
+            <path
+              :d="conn.path"
+              class="connection-line-hitarea"
+              @click.stop="selectConnection($event, conn.id)"
+            />
+            <!-- 可视连接线 -->
+            <path
+              :d="conn.path"
+              class="connection-line"
+              :class="{ selected: selectedConnection.id === conn.id }"
+              @click.stop="selectConnection($event, conn.id)"
+            />
+            <!-- 连接点圆圈 -->
+            <circle :cx="conn.fromX" :cy="conn.fromY" r="4" class="connection-dot" />
+            <circle :cx="conn.toX" :cy="conn.toY" r="4" class="connection-dot" />
+          </g>
+          <!-- 正在拖拽的连接线 -->
+          <path
+            v-if="connecting.active"
+            :d="connectingPath"
+            class="connection-line connecting"
+          />
+        </svg>
+        <!-- 连接线选中后的删除按钮（剪刀+删除） -->
+        <div
+          v-if="selectedConnection.id"
+          class="connection-delete-btn"
+          :style="{ left: selectedConnection.x + 'px', top: selectedConnection.y + 'px' }"
+          @pointerdown.stop
+          @click.stop="removeConnection(selectedConnection.id); deselectConnection()"
+        >
+          <i class="ri-scissors-line"></i>
+          <span>删除</span>
+        </div>
+
         <figure
           v-for="layer in layers"
           :key="layer.id"
@@ -3305,46 +3345,6 @@ function themeLabel() {
             <i v-for="point in ['top-left','top','top-right','right','bottom-right','bottom','bottom-left','left']" :key="point" :class="['resize-dot', point]" @pointerdown="startResize($event, layer, point)" @pointermove="resizeLayer" @pointerup="stopResize" @pointercancel="stopResize" />
           </template>
         </figure>
-
-        <!-- 连接线 SVG 层 -->
-        <svg class="connections-layer">
-          <!-- 已建立的连接线 -->
-          <g v-for="conn in getConnectionPaths()" :key="conn.id" class="connection-group">
-            <!-- 加宽的透明点击区域 -->
-            <path
-              :d="conn.path"
-              class="connection-line-hitarea"
-              @click.stop="selectConnection($event, conn.id)"
-            />
-            <!-- 可视连接线 -->
-            <path
-              :d="conn.path"
-              class="connection-line"
-              :class="{ selected: selectedConnection.id === conn.id }"
-              @click.stop="selectConnection($event, conn.id)"
-            />
-            <!-- 连接点圆圈 -->
-            <circle :cx="conn.fromX" :cy="conn.fromY" r="4" class="connection-dot" />
-            <circle :cx="conn.toX" :cy="conn.toY" r="4" class="connection-dot" />
-          </g>
-          <!-- 正在拖拽的连接线 -->
-          <path
-            v-if="connecting.active"
-            :d="connectingPath"
-            class="connection-line connecting"
-          />
-        </svg>
-        <!-- 连接线选中后的删除按钮（剪刀+删除） -->
-        <div
-          v-if="selectedConnection.id"
-          class="connection-delete-btn"
-          :style="{ left: selectedConnection.x + 'px', top: selectedConnection.y + 'px' }"
-          @pointerdown.stop
-          @click.stop="removeConnection(selectedConnection.id); deselectConnection()"
-        >
-          <i class="ri-scissors-line"></i>
-          <span>删除</span>
-        </div>
 
         <div v-if="marquee.active" class="selection-marquee" :style="marqueeStyle" />
         <div v-if="manualBoxDraft.active" class="manual-box-draft" :style="manualBoxDraftStyle" />
