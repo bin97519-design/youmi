@@ -9918,7 +9918,7 @@ body {
 
 .connection-line {
   fill: none;
-  stroke: var(--color-accent-500, #6366f1);
+  stroke: #fff1a6;
   stroke-width: 2;
   stroke-linecap: round;
   stroke-dasharray: 8 5;
@@ -9929,12 +9929,12 @@ body {
 }
 
 .connection-line:hover {
-  stroke: var(--color-accent-400, #818cf8);
+  stroke: #ffe066;
   stroke-width: 2.5;
 }
 
 .connection-line.connecting {
-  stroke: var(--color-accent-400, #818cf8);
+  stroke: #ffe066;
   stroke-width: 2;
   pointer-events: none;
 }
@@ -9946,7 +9946,7 @@ body {
 }
 
 .connection-dot {
-  fill: var(--color-accent-500, #6366f1);
+  fill: #fff1a6;
   stroke: #fff;
   stroke-width: 1.5;
 }
