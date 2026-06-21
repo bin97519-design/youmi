@@ -9919,8 +9919,9 @@ body {
 .connection-line {
   fill: none;
   stroke: var(--color-accent-500, #6366f1);
-  stroke-width: 2.5;
+  stroke-width: 2;
   stroke-linecap: round;
+  stroke-dasharray: 8 5;
   pointer-events: stroke;
   cursor: pointer;
   transition: stroke 0.2s ease, stroke-width 0.2s ease;
@@ -9928,7 +9929,7 @@ body {
 
 .connection-line:hover {
   stroke: var(--color-accent-400, #818cf8);
-  stroke-width: 3.5;
+  stroke-width: 2.5;
 }
 
 .connection-line.connecting {
