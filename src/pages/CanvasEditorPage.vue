@@ -2313,9 +2313,12 @@ function buildElementLocationHint() {
 function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 function buildElementPill(el, order) {
-  const thumb = layers.value.find((l) => l.id === el.layerId)?.thumbnailUrl || '';
+  const layer = layers.value.find((l) => l.id === el.layerId);
+  const thumb = layer?.thumbnailUrl || layer?.url || '';
   const eId = el.object_name || el.name || el.id;
-  return `<span class="chat-pill" contenteditable="false" data-el-id="${escHtml(eId)}" data-el-name="${escHtml(el.object_name || el.name || '')}" data-el-layer="${escHtml(el.layerId)}" data-el-box="${(el.box_2d || []).join(',')}"><span class="chat-pill-num">${order}</span><img src="${thumb}" alt="" />${escHtml(el.object_name || el.name || '')}<em title="切换重叠元素" data-action="pick-overlap">&#x25BC;</em></span>&nbsp;`;
+  const box = el.box_2d || [];
+  const imgTag = thumb ? `<img src="${escHtml(thumb)}" alt="" style="object-position:${box.length === 4 ? `${(box[1] + (box[3] - box[1]) / 2) * 100}% ${(box[0] + (box[2] - box[0]) / 2) * 100}%` : 'center'};object-fit:cover" />` : '';
+  return `<span class="chat-pill" contenteditable="false" data-el-id="${escHtml(eId)}" data-el-name="${escHtml(el.object_name || el.name || '')}" data-el-layer="${escHtml(el.layerId)}" data-el-box="${box.join(',')}"><span class="chat-pill-num">${order}</span>${imgTag}${escHtml(el.object_name || el.name || '')}<em title="切换重叠元素" data-action="pick-overlap">&#x25BC;</em></span>&nbsp;`;
 }
 
 let _pillSyncLock = 0;
@@ -2415,26 +2418,32 @@ function getElementClickStyle(key) {
   const box = normalizeBoxVal(el.box_2d || el.box2d || [0, 0, 1, 1]);
   const vs = viewScale.value;
   const vo = viewOffset.value;
-  
+
+  // 与 detected-element-box 的 :style 保持一致的 padding 计算
+  const isNode = layer.type === 'image' || layer.type === 'video' || layer.type === 'text' || layer.type === 'image-placeholder' || (layer.url && !layer.type);
+  const pad = isNode ? 8 : 0;
+  const innerW = layer.width - pad * 2;
+  const innerH = layer.height - pad * 2;
+
   // 如果有归一化的点击位置，使用它
   if (pos && pos.relX !== undefined && pos.relY !== undefined) {
-    const boxLeft = (layer.x + box[1] * layer.width) * vs + vo.x;
-    const boxTop = (layer.y + box[0] * layer.height) * vs + vo.y;
-    const boxWidth = (box[3] - box[1]) * layer.width * vs;
-    const boxHeight = (box[2] - box[0]) * layer.height * vs;
-    
+    const boxLeft = (layer.x + pad + box[1] * innerW) * vs + vo.x;
+    const boxTop = (layer.y + pad + box[0] * innerH) * vs + vo.y;
+    const boxWidth = (box[3] - box[1]) * innerW * vs;
+    const boxHeight = (box[2] - box[0]) * innerH * vs;
+
     return {
       left: `${boxLeft + pos.relX * boxWidth}px`,
       top: `${boxTop + pos.relY * boxHeight}px`,
     };
   }
-  
+
   // 否则使用元素框中心点
   const centerX = box[1] + (box[3] - box[1]) / 2;
   const centerY = box[0] + (box[2] - box[0]) / 2;
   return {
-    left: `${(layer.x + centerX * layer.width) * vs + vo.x}px`,
-    top: `${(layer.y + centerY * layer.height) * vs + vo.y}px`,
+    left: `${(layer.x + pad + centerX * innerW) * vs + vo.x}px`,
+    top: `${(layer.y + pad + centerY * innerH) * vs + vo.y}px`,
   };
 }
 
