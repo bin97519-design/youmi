@@ -1110,6 +1110,13 @@ const imageViewer = reactive({
   flipX: false,    // 左右镜像
   flipY: false,    // 上下镜像
   scale: 1,        // 缩放
+  translateX: 0,   // 水平拖动偏移
+  translateY: 0,   // 垂直拖动偏移
+  isDragging: false,
+  dragStartX: 0,
+  dragStartY: 0,
+  dragStartTranslateX: 0,
+  dragStartTranslateY: 0,
 });
 
 // 打开图片查看器
@@ -1121,6 +1128,8 @@ function openImageViewer(url, name) {
   imageViewer.flipX = false;
   imageViewer.flipY = false;
   imageViewer.scale = 1;
+  imageViewer.translateX = 0;
+  imageViewer.translateY = 0;
 }
 
 // 关闭图片查看器
@@ -1143,6 +1152,35 @@ function flipImage(axis) {
 // 缩放
 function zoomImage(delta) {
   imageViewer.scale = Math.max(0.25, Math.min(4, imageViewer.scale + delta));
+}
+
+// 滚轮缩放
+function handleViewerWheel(e) {
+  e.preventDefault();
+  const delta = e.deltaY > 0 ? -0.15 : 0.15;
+  imageViewer.scale = Math.max(0.25, Math.min(4, imageViewer.scale + delta));
+}
+
+// 开始拖动
+function startViewerDrag(e) {
+  if (e.button !== 0) return;
+  imageViewer.isDragging = true;
+  imageViewer.dragStartX = e.clientX;
+  imageViewer.dragStartY = e.clientY;
+  imageViewer.dragStartTranslateX = imageViewer.translateX;
+  imageViewer.dragStartTranslateY = imageViewer.translateY;
+}
+
+// 拖动中
+function moveViewerDrag(e) {
+  if (!imageViewer.isDragging) return;
+  imageViewer.translateX = imageViewer.dragStartTranslateX + (e.clientX - imageViewer.dragStartX);
+  imageViewer.translateY = imageViewer.dragStartTranslateY + (e.clientY - imageViewer.dragStartY);
+}
+
+// 停止拖动
+function stopViewerDrag() {
+  imageViewer.isDragging = false;
 }
 
 // 下载图片
@@ -3714,13 +3752,21 @@ function themeLabel() {
         </button>
 
         <!-- 图片显示区域 -->
-        <div class="uc-image-viewer-content">
+        <div
+          class="uc-image-viewer-content"
+          @wheel.prevent="handleViewerWheel"
+          @pointerdown="startViewerDrag"
+          @pointermove="moveViewerDrag"
+          @pointerup="stopViewerDrag"
+          @pointerleave="stopViewerDrag"
+          :style="{ cursor: imageViewer.isDragging ? 'grabbing' : 'grab' }"
+        >
           <img
             :src="imageViewer.url"
             :alt="imageViewer.name"
             :style="{
-              transform: `rotate(${imageViewer.rotation}deg) scaleX(${imageViewer.flipX ? -1 : 1}) scaleY(${imageViewer.flipY ? -1 : 1}) scale(${imageViewer.scale})`,
-              transition: 'transform 0.3s ease',
+              transform: `rotate(${imageViewer.rotation}deg) scaleX(${imageViewer.flipX ? -1 : 1}) scaleY(${imageViewer.flipY ? -1 : 1}) scale(${imageViewer.scale}) translate(${imageViewer.translateX}px, ${imageViewer.translateY}px)`,
+              transition: imageViewer.isDragging ? 'none' : 'transform 0.3s ease',
             }"
             draggable="false"
           />
