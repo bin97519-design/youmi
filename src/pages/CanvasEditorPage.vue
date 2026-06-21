@@ -110,6 +110,28 @@ const connecting = reactive({
   currentX: 0,
   currentY: 0,
 });
+// 连接线选中状态
+const selectedConnection = reactive({
+  id: '',
+  x: 0,
+  y: 0,
+});
+
+// 选中连接线（点击时触发）
+function selectConnection(event, connId) {
+  event.stopPropagation();
+  const stageEl = document.querySelector('.stage');
+  if (!stageEl) return;
+  const rect = stageEl.getBoundingClientRect();
+  selectedConnection.id = connId;
+  selectedConnection.x = event.clientX - rect.left;
+  selectedConnection.y = event.clientY - rect.top;
+}
+
+// 取消选中连接线
+function deselectConnection() {
+  selectedConnection.id = '';
+}
 
 // 获取节点端口在 stage 坐标系中的像素位置（纯计算，不依赖 DOM 可见性）
 function getPortPosition(layerId, port) {
@@ -2708,6 +2730,11 @@ function wheelZoom(event) {
 function startMarquee(event) {
   if (event.button !== 0) return;
 
+  // 点击空白区域取消连接线选中
+  if (!event.target.closest('.connection-group') && !event.target.closest('.connection-delete-btn')) {
+    deselectConnection();
+  }
+
   // Ctrl+点击元素框 → 选中/取消选中元素
   if ((event.ctrlKey || event.metaKey) && activeTool.value !== 'annotate') {
     if (event.target.closest('.detected-element-box')) {
@@ -3283,10 +3310,18 @@ function themeLabel() {
         <svg class="connections-layer">
           <!-- 已建立的连接线 -->
           <g v-for="conn in getConnectionPaths()" :key="conn.id" class="connection-group">
+            <!-- 加宽的透明点击区域 -->
+            <path
+              :d="conn.path"
+              class="connection-line-hitarea"
+              @click.stop="selectConnection($event, conn.id)"
+            />
+            <!-- 可视连接线 -->
             <path
               :d="conn.path"
               class="connection-line"
-              @click.stop="removeConnection(conn.id)"
+              :class="{ selected: selectedConnection.id === conn.id }"
+              @click.stop="selectConnection($event, conn.id)"
             />
             <!-- 连接点圆圈 -->
             <circle :cx="conn.fromX" :cy="conn.fromY" r="4" class="connection-dot" />
@@ -3299,6 +3334,17 @@ function themeLabel() {
             class="connection-line connecting"
           />
         </svg>
+        <!-- 连接线选中后的删除按钮（剪刀+删除） -->
+        <div
+          v-if="selectedConnection.id"
+          class="connection-delete-btn"
+          :style="{ left: selectedConnection.x + 'px', top: selectedConnection.y + 'px' }"
+          @pointerdown.stop
+          @click.stop="removeConnection(selectedConnection.id); deselectConnection()"
+        >
+          <i class="ri-scissors-line"></i>
+          <span>删除</span>
+        </div>
 
         <div v-if="marquee.active" class="selection-marquee" :style="marqueeStyle" />
         <div v-if="manualBoxDraft.active" class="manual-box-draft" :style="manualBoxDraftStyle" />
