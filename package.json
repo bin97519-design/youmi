@@ -8,7 +8,12 @@
     "api": "powershell -NoProfile -ExecutionPolicy Bypass -File ../backend/backend_java/start-dev.ps1",
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
-    "preview": "vite preview --host 127.0.0.1"
+    "preview": "vite preview --host 127.0.0.1",
+    "lint": "eslint . --ext .js,.vue,.ts --max-warnings 0",
+    "lint:fix": "eslint . --ext .js,.vue,.ts --fix",
+    "format": "prettier --write \"src/**/*.{js,vue,ts,css,md,json}\"",
+    "format:check": "prettier --check \"src/**/*.{js,vue,ts,css,md,json}\"",
+    "prepare": "husky"
   },
   "dependencies": {
     "@vitejs/plugin-vue": "^6.0.3",
@@ -17,5 +22,23 @@
     "vue": "^3.5.25",
     "vue-router": "^4.6.4"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@vue/eslint-config-prettier": "^10.2.0",
+    "eslint": "^9.39.4",
+    "eslint-plugin-vue": "^9.33.0",
+    "globals": "^15.15.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.5.2",
+    "prettier": "^3.8.4",
+    "vue-eslint-parser": "^9.4.3"
+  },
+  "lint-staged": {
+    "*.{js,vue,ts}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{css,md,json}": [
+      "prettier --write"
+    ]
+  }
 }

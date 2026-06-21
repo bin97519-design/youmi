@@ -8,6 +8,7 @@ import ConsolePage from '../pages/ConsolePage.vue';
 import PointsPage from '../pages/PointsPage.vue';
 import PaymentResultPage from '../pages/PaymentResultPage.vue';
 import MockPayPage from '../pages/MockPayPage.vue';
+import DesignSystemPage from '../pages/DesignSystemPage.vue';
 import { useUserStore } from '../stores/user';
 
 const routes = [
@@ -18,6 +19,7 @@ const routes = [
   { path: '/points', name: 'points', component: PointsPage },
   { path: '/payment-result', name: 'payment-result', component: PaymentResultPage, meta: { public: true } },
   { path: '/mock-pay', name: 'mock-pay', component: MockPayPage },
+  { path: '/design-system', name: 'design-system', component: DesignSystemPage, meta: { public: true } },
   { path: '/canvas', name: 'canvas-list', component: CanvasListPage, meta: { public: true } },
   { path: '/canvas/:id', name: 'canvas-editor', component: CanvasEditorPage, props: true, meta: { public: true } },
   { path: '/canvas/share/:token', name: 'canvas-share', component: CanvasSharePage, props: true, meta: { public: true } },

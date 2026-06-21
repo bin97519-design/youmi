@@ -8,6 +8,7 @@ import HomeSidebar from '../components/home/HomeSidebar.vue';
 import ReversePromptPanel from '../components/prompt/ReversePromptPanel.vue';
 import { useUserStore } from '../stores/user';
 import { useCanvasStore } from '../stores/canvas';
+import { useTheme } from '../composables/useTheme';
 
 const railExpanded = ref(false);
 const prompt = ref('');
@@ -17,8 +18,9 @@ const userStore = useUserStore();
 const router = useRouter();
 const loggedIn = computed(() => userStore.isAuthenticated);
 const userMenuOpen = ref(false);
-const isDarkTheme = ref(document.documentElement.classList.contains('dark'));
-const themeLabel = computed(() => isDarkTheme.value ? '亮色主题' : '暗色主题');
+// 套餐 B 改造：使用统一的 useTheme composable
+const { cycle: cycleTheme, isDark, isLight, isSystem } = useTheme();
+const themeLabel = computed(() => isSystem() ? '🖥 跟随系统' : (isDark() ? '🌙 深色' : '☀️ 浅色'));
 
 function onUserMenuBlur(event) {
   // 延迟关闭，让 click 事件先触发
@@ -30,12 +32,7 @@ function handleLogout() {
   router.push('/');
 }
 function toggleTheme() {
-  isDarkTheme.value = !isDarkTheme.value;
-  if (isDarkTheme.value) {
-    document.documentElement.classList.add('dark');
-  } else {
-    document.documentElement.classList.remove('dark');
-  }
+  cycleTheme();
   userMenuOpen.value = false;
 }
 const reversePromptOpen = ref(false);

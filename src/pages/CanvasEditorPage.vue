@@ -17,13 +17,45 @@ const shortcutsOpen = ref(false);
 const helpMenuOpen = ref(false);
 const toolbarAddOpen = ref(false);
 const minimapVisible = ref(true);
+// + 号弹层位置（fixed 定位 + Teleport to body，彻底脱离 transform 父级）
+const addMenuWrapEl = ref(null);
+const addMenuPosition = ref({});
+function toggleToolbarAdd() {
+  if (!toolbarAddOpen.value) {
+    // 先算坐标，再打开菜单 → 避免菜单先在 (0,0) 闪现再跳到正确位置
+    const btn = addMenuWrapEl.value?.querySelector('.uc-toolbar-add-btn');
+    if (btn) {
+      const r = btn.getBoundingClientRect();
+      addMenuPosition.value = {
+        position: 'fixed',
+        top: (r.top + r.height / 2) + 'px',
+        left: (r.right + 8) + 'px',
+        transform: 'translateY(-50%)',
+        zIndex: 9999
+      };
+    }
+    toolbarAddOpen.value = true;
+  } else {
+    toolbarAddOpen.value = false;
+  }
+}
 
-// 归一化 box_2d 到 0-1（与 maybeAutoDetect 内的 normalizeBox 一致）
+// 归一化 box_2d 到 0-1
+// proxy_log.py 已经统一输出 0-1 范围的浮点数
 function normalizeBoxVal(raw) {
   if (!Array.isArray(raw) || raw.length !== 4) return [0, 0, 1, 1];
-  const allSmall = raw.every(v => Math.abs(v) <= 1.05);
-  if (allSmall) return raw;
-  return raw.map(v => v / 1000);
+  // 确保所有值都是数字
+  const box = raw.map(v => {
+    const n = parseFloat(v);
+    return isNaN(n) ? 0 : n;
+  });
+  // 如果值大于 1，说明是 0-1000 范围，需要除以 1000
+  const maxVal = Math.max(...box.map(v => Math.abs(v)));
+  if (maxVal > 1.5) {
+    return box.map(v => Math.max(0, Math.min(1, v / 1000)));
+  }
+  // 已经是 0-1 范围，直接返回
+  return box.map(v => Math.max(0, Math.min(1, v)));
 }
 
 // 从 doc.value.payload.layers[*].detection.boxes 同步到 layerDetectedElements
@@ -57,6 +89,8 @@ const selectedDetectedElements = ref(new Set());
 const elementClickPositions = ref({});
 const detectingLayerIds = ref(new Set());
 const chatSkipPillSync = ref(false);
+const _undoRestoring = ref(false); // 撤销恢复期间跳过自动检测
+const _mounted = ref(false); // 组件是否已挂载（用于防止 polling 越界）
 const rightPanelVisible = ref(true);
 const isReversePromptCanvas = computed(() => props.id === 'reverse-prompt');
 const reversePromptCard = reactive({ x: null, y: null, width: 380, height: 240, dragging: null });
@@ -64,10 +98,12 @@ const reversePromptConnectors = ref([]);
 const selectedLayerId = ref(doc.value.payload.layers[0]?.id || '');
 const selectedLayerIds = ref(selectedLayerId.value ? [selectedLayerId.value] : []);
 const rightTab = ref('chat');
+const chatHistoryRef = ref(null);
 const chatText = ref('');
 const chatReferenceImages = ref([]);
 const activeChatReferenceId = ref('');
 const chatUploading = ref(false);
+const uploadProgress = ref(null); // { fileName, loaded, total, percent } | null
 const chatGenerating = ref(false);
 const generationHistory = ref([]);
 const chatModel = ref('banana2');
@@ -75,8 +111,13 @@ const chatRatio = ref('9:16');
 const chatResolution = ref('2K');
 const chatModelOptions = ['banana2', 'banana pro', 'GPT imag 2'];
 const chatRatioOptions = ['1:1', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'];
-const chatResolutionOptions = ['2K', '4K'];
+const chatResolutionOptions = ['1K', '2K', '4K'];
 const TASK_POLL_INTERVAL = 2500;
+// 聊天消息中元素 pill 的悬停预览
+const hoverPreview = reactive({ visible: false, x: 0, y: 0, layerUrl: '', box: null, name: '', order: 0 });
+const hoverPreviewTimer = ref(null);
+const hoverPreviewImageSize = reactive({ width: 0, height: 0 });
+const hoverPreviewDims = reactive({ w: 220, h: 180 }); // 预览弹窗实际宽高，用于边界自适应
 const TASK_MAX_POLLS = 120;
 const PLACEHOLDER_WIDTH = 720;
 const PLACEHOLDER_HEIGHT = 964;
@@ -114,7 +155,7 @@ const canvasTools = [
   { key: 'hand', label: '抓手（拖动画布）', shortcut: 'H', icon: 'ri-hand' },
   { key: 'focus', label: '聚焦选中 / 适应画面', shortcut: 'F', icon: 'ri-focus-3-line' },
   { key: 'bringTop', label: '置顶图层', icon: 'ri-arrow-up-double-line' },
-  { key: 'text', label: '插入文字', shortcut: 'T', icon: 'ri-text' },
+  { key: 'text', label: '插入文字', shortcut: 'T', icon: 'ri-text', action: addTextNode },
   { key: 'shape', label: '插入矢量图', icon: 'ri-shape-line' },
   { key: 'annotate', label: '标记元素（点击图片元素选中加入输入框）', shortcut: 'M', icon: 'ri-mark-pen-line' },
 ];
@@ -140,13 +181,50 @@ const selectedLayerIndex = computed(() => layers.value.findIndex((item) => item.
 const viewScale = computed(() => doc.value.payload.view.scale || 1);
 const viewOffset = computed(() => doc.value.payload.view.offset || { x: 0, y: 0 });
 
+// 判断元素框是否被更高 z-index 图层遮挡
+function isElementBlocked(layerId, elBox) {
+  const myLayer = layers.value.find((l) => l.id === layerId);
+  if (!myLayer) return false;
+  const myZ = myLayer.zIndex || 0;
+  const vs = viewScale.value;
+  const vo = viewOffset.value;
+  // 元素屏幕矩形
+  const eLeft = (myLayer.x + elBox[1] * myLayer.width) * vs + vo.x;
+  const eTop = (myLayer.y + elBox[0] * myLayer.height) * vs + vo.y;
+  const eRight = eLeft + (elBox[3] - elBox[1]) * myLayer.width * vs;
+  const eBottom = eTop + (elBox[2] - elBox[0]) * myLayer.height * vs;
+
+  for (const l of layers.value) {
+    const lz = l.zIndex || 0;
+    if (lz <= myZ || l.id === layerId) continue;
+    // 高层图层屏幕矩形
+    const lLeft = l.x * vs + vo.x;
+    const lTop = l.y * vs + vo.y;
+    const lRight = lLeft + (l.width || 0) * vs;
+    const lBottom = lTop + (l.height || 0) * vs;
+    // 矩形相交检测
+    if (eLeft < lRight && eRight > lLeft && eTop < lBottom && eBottom > lTop) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Watch for newly added layers to auto-detect
 watch(() => layers.value.map((l) => l.id), (newIds, oldIds) => {
   if (!newIds || !oldIds) return;
+  // 撤销恢复期间不触发自动检测（避免覆盖刚恢复的检测数据）
+  if (_undoRestoring.value) return;
   const added = newIds.filter((id) => !oldIds.includes(id));
   for (const id of added) {
     const layer = layers.value.find((l) => l.id === id);
     if (layer && layer.url && layer.type !== 'placeholder') {
+      // 如果该图层已经有检测数据（来自撤销恢复），不重复检测
+      if (layerDetectedElements.value[id] && layerDetectedElements.value[id].length > 0) {
+        console.log('[watch] 跳过已有检测数据的图层:', id);
+        continue;
+      }
+      console.log('[watch] 触发自动检测:', id, layer.url);
       nextTick(() => maybeAutoDetect(layer));
     }
   }
@@ -299,9 +377,25 @@ function imageSize(src) {
   });
 }
 
+function videoSize(src) {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement('video');
+    video.preload = 'metadata';
+    video.onloadedmetadata = () => {
+      const w = video.videoWidth || 1920;
+      const h = video.videoHeight || 1080;
+      URL.revokeObjectURL(video.src);
+      resolve({ width: w, height: h });
+    };
+    video.onerror = () => reject(new Error('无法获取视频尺寸'));
+    video.src = src;
+  });
+}
+
 async function maybeAutoDetect(layer) {
   if (!layer || !layer.url || layer.type === 'placeholder') return;
   if (!autoDetectionEnabled.value) return;
+  if (_undoRestoring.value) return; // 撤销恢复期间不触发自动检测
   if (detectingLayerIds.value.has(layer.id)) return;
   
   // 清除旧检测结果
@@ -382,15 +476,34 @@ function extractUploadUrl(result) {
   return result?.url || result?.fileUrl || result?.path || result?.data?.url || result?.data?.fileUrl || result?.data?.path || result?.data?.fullUrl || result?.data?.src;
 }
 
-async function uploadFile(file) {
-  const form = new FormData();
-  form.append('file', file);
-  const response = await fetch('http://101.133.149.214/prod-api/api/v1/file/upload', { method: 'POST', body: form });
-  if (!response.ok) throw new Error(`图片上传失败：${response.status}`);
-  const result = await response.json();
-  const url = extractUploadUrl(result);
-  if (!url) throw new Error('上传成功，但接口没有返回图片地址');
-  return url.startsWith('http') ? url : `http://101.133.149.214${url}`;
+function uploadFile(file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const form = new FormData();
+    form.append('file', file);
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', 'http://101.133.149.214/prod-api/api/v1/file/upload');
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) {
+        onProgress({ loaded: e.loaded, total: e.total, percent: Math.round((e.loaded / e.total) * 100) });
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(`图片上传失败：${xhr.status}`));
+        return;
+      }
+      try {
+        const result = JSON.parse(xhr.responseText);
+        const url = extractUploadUrl(result);
+        if (!url) { reject(new Error('上传成功，但接口没有返回图片地址')); return; }
+        resolve(url.startsWith('http') ? url : `http://101.133.149.214${url}`);
+      } catch (e) {
+        reject(new Error('解析上传响应失败'));
+      }
+    };
+    xhr.onerror = () => reject(new Error('网络错误，上传失败'));
+    xhr.send(form);
+  });
 }
 
 function wait(ms) {
@@ -501,41 +614,55 @@ function addChatMessages(messages) {
     draft.payload.chat.push(...messages);
     return draft;
   });
+  scrollChatToBottom();
+}
+
+function scrollChatToBottom() {
+  nextTick(() => {
+    const el = chatHistoryRef.value;
+    if (el) el.scrollTop = el.scrollHeight;
+  });
 }
 
 async function addImageLayerFromUrl(url, name = 'AI生成图片') {
-  const size = await imageSize(url);
-  let layerId = '';
-  canvas.updateDocument(props.id, (draft) => {
-    const index = draft.payload.layers.length;
-    const maxZ = draft.payload.layers.reduce((max, layer) => Math.max(max, layer.zIndex || 0), 0);
-    const base = selectedLayer.value;
-    const width = size.width > size.height ? 360 : 280;
-    const fallbackX = Math.round(((panel.x ?? 0) + 180 - viewOffset.value.x) / viewScale.value);
-    const fallbackY = Math.round((170 - viewOffset.value.y) / viewScale.value);
-    const layer = {
-      id: `layer-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      name: layerName(index),
-      url,
-      thumbnailUrl: url,
-      naturalWidth: size.width,
-      naturalHeight: size.height,
-      width,
-      height: Math.round((width * size.height) / size.width),
-      x: base ? base.x + Math.min(420, base.width + 60) : fallbackX,
-      y: base ? base.y + 30 : fallbackY,
-      zIndex: maxZ + 1,
-      visible: true,
-      locked: false,
-      source: name,
-    };
-    layerId = layer.id;
-    draft.payload.layers.push(layer);
-    return draft;
-  });
-  selectedLayerId.value = layerId;
-  selectedLayerIds.value = [layerId];
-  return layerId;
+  try {
+    const size = await imageSize(url);
+    let layerId = '';
+    canvas.updateDocument(props.id, (draft) => {
+      const index = draft.payload.layers.length;
+      const maxZ = draft.payload.layers.reduce((max, layer) => Math.max(max, layer.zIndex || 0), 0);
+      const base = selectedLayer.value;
+      const width = size.width > size.height ? 360 : 280;
+      const fallbackX = Math.round(((panel.x ?? 0) + 180 - viewOffset.value.x) / viewScale.value);
+      const fallbackY = Math.round((170 - viewOffset.value.y) / viewScale.value);
+      const layer = {
+        id: `layer-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        name: layerName(index),
+        url,
+        thumbnailUrl: url,
+        naturalWidth: size.width,
+        naturalHeight: size.height,
+        width,
+        height: Math.round((width * size.height) / size.width),
+        x: base ? base.x + Math.min(420, base.width + 60) : fallbackX,
+        y: base ? base.y + 30 : fallbackY,
+        zIndex: maxZ + 1,
+        visible: true,
+        locked: false,
+        source: name,
+      };
+      layerId = layer.id;
+      draft.payload.layers.push(layer);
+      return draft;
+    });
+    selectedLayerId.value = layerId;
+    selectedLayerIds.value = [layerId];
+    return layerId;
+  } catch (error) {
+    console.error('[addImageLayerFromUrl] 添加图片图层失败:', error);
+    window.alert('添加图片图层失败: ' + (error.message || '未知错误'));
+    return '';
+  }
 }
 
 function addGeneratingPlaceholderLayer(prompt) {
@@ -550,8 +677,12 @@ function addGeneratingPlaceholderLayer(prompt) {
   canvas.updateDocument(props.id, (draft) => {
     const index = draft.payload.layers.length;
     const maxZ = draft.payload.layers.reduce((max, layer) => Math.max(max, layer.zIndex || 0), 0);
-    const fallbackX = Math.round(((panel.x ?? 0) + 260 - viewOffset.value.x) / viewScale.value);
-    const fallbackY = Math.round((210 - viewOffset.value.y) / viewScale.value);
+    // 跟在选中图层后面（右下偏移），没有选中则居中
+    const base = selected?.type === 'placeholder' ? [...layers.value].reverse().find((l) => l.type !== 'placeholder') : selected;
+    const cx = (viewportSize.width / 2 - viewOffset.value.x) / viewScale.value;
+    const cy = (viewportSize.height / 2 - viewOffset.value.y) / viewScale.value;
+    const fallbackX = cx - PLACEHOLDER_WIDTH / 2;
+    const fallbackY = cy - PLACEHOLDER_HEIGHT / 2;
     const layer = {
       id: `placeholder-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       type: 'placeholder',
@@ -567,7 +698,7 @@ function addGeneratingPlaceholderLayer(prompt) {
       naturalHeight: PLACEHOLDER_HEIGHT,
       width: PLACEHOLDER_WIDTH,
       height: PLACEHOLDER_HEIGHT,
-      x: base ? base.x + Math.min(420, base.width + 42) : fallbackX,
+      x: base ? base.x + base.width + 40 : fallbackX,
       y: base ? base.y : fallbackY,
       zIndex: maxZ + 1,
       visible: true,
@@ -594,36 +725,52 @@ function updateGeneratingPlaceholder(layerId, patch) {
 
 async function replaceGeneratingPlaceholder(layerId, url) {
   pushUndo();
-  const size = await imageSize(url);
-  let replaced = false;
-  canvas.updateDocument(props.id, (draft) => {
-    const index = draft.payload.layers.findIndex((layer) => layer.id === layerId);
-    if (index === -1) return draft;
-    const placeholder = draft.payload.layers[index];
-    const width = placeholder.width || (size.width > size.height ? 360 : 280);
-    draft.payload.layers[index] = {
-      ...placeholder,
-      type: 'image',
-      url,
-      thumbnailUrl: url,
-      naturalWidth: size.width,
-      naturalHeight: size.height,
-      width,
-      height: Math.round((width * size.height) / size.width),
-      progress: undefined,
-      status: undefined,
-      statusText: undefined,
-      previewUrl: undefined,
-      source: 'AI生成图片',
-    };
-    replaced = true;
-    return draft;
-  });
+  try {
+    const size = await imageSize(url);
+    let replaced = false;
+    canvas.updateDocument(props.id, (draft) => {
+      const index = draft.payload.layers.findIndex((layer) => layer.id === layerId);
+      if (index === -1) return draft;
+      const placeholder = draft.payload.layers[index];
+      const width = placeholder.width || (size.width > size.height ? 360 : 280);
+      const height = Math.round((width * size.height) / size.width);
+      // 跟在选中图层后面（右下偏移）
+      const base = [...layers.value].reverse().find((l) => l.id !== layerId && l.type !== 'placeholder');
+      const cx = (viewportSize.width / 2 - viewOffset.value.x) / viewScale.value;
+      const cy = (viewportSize.height / 2 - viewOffset.value.y) / viewScale.value;
+      draft.payload.layers[index] = {
+        ...placeholder,
+        type: 'image',
+        url,
+        thumbnailUrl: url,
+        naturalWidth: size.width,
+        naturalHeight: size.height,
+        width,
+        height,
+        x: base ? base.x + base.width + 40 : cx - width / 2,
+        y: base ? base.y : cy - height / 2,
+        progress: undefined,
+        status: undefined,
+        statusText: undefined,
+        previewUrl: undefined,
+        source: 'AI生成图片',
+      };
+      replaced = true;
+      return draft;
+    });
 
-  if (!replaced) return addImageLayerFromUrl(url);
-  selectedLayerId.value = layerId;
-  selectedLayerIds.value = [layerId];
-  return layerId;
+    if (!replaced) return addImageLayerFromUrl(url);
+    selectedLayerId.value = layerId;
+    selectedLayerIds.value = [layerId];
+    // 生图完成后自动检测元素
+    const newLayer = layers.value.find((l) => l.id === layerId);
+    if (newLayer) nextTick(() => maybeAutoDetect(newLayer));
+    return layerId;
+  } catch (error) {
+    console.error('[replaceGeneratingPlaceholder] 替换占位图层失败:', error);
+    updateLayer(layerId, { progress: 1, status: 'failed', statusText: `渲染失败：${error.message || '未知错误'}` });
+    return '';
+  }
 }
 
 function openImageUpload(mode = 'canvas') {
@@ -631,6 +778,271 @@ function openImageUpload(mode = 'canvas') {
   fileInputMode.value = mode;
   addOpen.value = false;
   fileInput.value?.click();
+}
+
+// 添加文字节点（直接在画布上创建可编辑文字图层）
+// 添加文字节点（v4 风格：440×320，透明背景，#f5f5f5 文本区 + 提示词标签）
+function addTextNode() {
+  if (!userStore.requireLogin()) return;
+  pushUndo();
+  let layerId = '';
+  canvas.updateDocument(props.id, (draft) => {
+    const index = draft.payload.layers.length;
+    const maxZ = draft.payload.layers.reduce((max, layer) => Math.max(max, layer.zIndex || 0), 0);
+    const base = selectedLayer.value;
+    const fallbackX = Math.round(((panel.x ?? 0) + 180 - viewOffset.value.x) / viewScale.value);
+    const fallbackY = Math.round((170 - viewOffset.value.y) / viewScale.value);
+    const layer = {
+      id: `layer-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: layerName(index),
+      type: 'text',
+      text: '',
+      color: '#999999',
+      fontSize: 14,
+      fontWeight: 400,
+      align: 'left',
+      width: 440,
+      height: 320,
+      x: base ? base.x + 30 : fallbackX,
+      y: base ? base.y + 30 : fallbackY,
+      zIndex: maxZ + 1,
+      visible: true,
+      locked: false,
+    };
+    layerId = layer.id;
+    draft.payload.layers.push(layer);
+    return draft;
+  });
+  selectedLayerId.value = layerId;
+  selectedLayerIds.value = [layerId];
+  activeTool.value = 'select';
+}
+
+// 添加视频节点（v4 风格：占位态，双击上传视频）
+function addVideoNode() {
+  if (!userStore.requireLogin()) return;
+  pushUndo();
+  let layerId = '';
+  canvas.updateDocument(props.id, (draft) => {
+    const index = draft.payload.layers.length;
+    const maxZ = draft.payload.layers.reduce((max, layer) => Math.max(max, layer.zIndex || 0), 0);
+    const base = selectedLayer.value;
+    const fallbackX = Math.round(((panel.x ?? 0) + 180 - viewOffset.value.x) / viewScale.value);
+    const fallbackY = Math.round((170 - viewOffset.value.y) / viewScale.value);
+    const layer = {
+      id: `layer-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: layerName(index),
+      type: 'video',
+      url: '',
+      thumbnailUrl: '',
+      width: 320,
+      height: 240,
+      x: base ? base.x + 30 : fallbackX,
+      y: base ? base.y + 30 : fallbackY,
+      zIndex: maxZ + 1,
+      visible: true,
+      locked: false,
+    };
+    layerId = layer.id;
+    draft.payload.layers.push(layer);
+    return draft;
+  });
+  selectedLayerId.value = layerId;
+  selectedLayerIds.value = [layerId];
+  activeTool.value = 'select';
+}
+
+// 添加图片节点（v4 风格：占位态，双击上传图片）
+function addImageNode() {
+  if (!userStore.requireLogin()) return;
+  pushUndo();
+  let layerId = '';
+  canvas.updateDocument(props.id, (draft) => {
+    const index = draft.payload.layers.length;
+    const maxZ = draft.payload.layers.reduce((max, layer) => Math.max(max, layer.zIndex || 0), 0);
+    const base = selectedLayer.value;
+    const fallbackX = Math.round(((panel.x ?? 0) + 180 - viewOffset.value.x) / viewScale.value);
+    const fallbackY = Math.round((170 - viewOffset.value.y) / viewScale.value);
+    const layer = {
+      id: `layer-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: layerName(index),
+      type: 'image-placeholder',
+      url: '',
+      width: 200,
+      height: 200,
+      x: base ? base.x + 30 : fallbackX,
+      y: base ? base.y + 30 : fallbackY,
+      zIndex: maxZ + 1,
+      visible: true,
+      locked: false,
+    };
+    layerId = layer.id;
+    draft.payload.layers.push(layer);
+    return draft;
+  });
+  selectedLayerId.value = layerId;
+  selectedLayerIds.value = [layerId];
+  activeTool.value = 'select';
+}
+
+// 双击上传图片/视频 → 替换占位节点为真实内容
+function uploadNodeMedia(layer) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  if (layer.type === 'video') {
+    input.accept = 'video/*';
+  } else {
+    input.accept = 'image/*';
+  }
+  input.onchange = async (ev) => {
+    const file = ev.target.files?.[0];
+    if (!file) return;
+    pushUndo();
+    // 读取为 data URL 临时显示
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const dataUrl = event.target.result;
+      if (layer.type === 'video') {
+        // 视频：获取尺寸后自适应
+        try {
+          const size = await videoSize(dataUrl);
+          const width = size.width > size.height ? 480 : 360;
+          updateLayer(layer.id, {
+            url: dataUrl,
+            type: 'video',
+            naturalWidth: size.width,
+            naturalHeight: size.height,
+            width,
+            height: Math.round((width * size.height) / size.width),
+          });
+        } catch {
+          updateLayer(layer.id, { url: dataUrl, type: 'video', width: 480, height: 270 });
+        }
+      } else {
+        // 图片：获取尺寸后自适应
+        try {
+          const size = await imageSize(dataUrl);
+          const width = size.width > size.height ? 360 : 280;
+          updateLayer(layer.id, {
+            url: dataUrl,
+            type: 'image',
+            naturalWidth: size.width,
+            naturalHeight: size.height,
+            width,
+            height: Math.round((width * size.height) / size.width),
+          });
+        } catch {
+          updateLayer(layer.id, { url: dataUrl, type: 'image', width: 280, height: 280 });
+        }
+      }
+      // 上传完成后自动智能分层
+      await nextTick();
+      const updatedLayer = layers.value.find((l) => l.id === layer.id);
+      if (updatedLayer) maybeAutoDetect(updatedLayer);
+    };
+    reader.readAsDataURL(file);
+  };
+  input.click();
+}
+
+// 双击编辑文本节点
+const editingTextLayerId = ref(null);
+const editingTextValue = ref('');
+
+// 图片查看器状态
+const imageViewer = reactive({
+  show: false,
+  url: '',
+  name: '',
+  rotation: 0,    // 旋转角度
+  flipX: false,    // 左右镜像
+  flipY: false,    // 上下镜像
+  scale: 1,        // 缩放
+});
+
+// 打开图片查看器
+function openImageViewer(url, name) {
+  imageViewer.show = true;
+  imageViewer.url = url;
+  imageViewer.name = name || '图片';
+  imageViewer.rotation = 0;
+  imageViewer.flipX = false;
+  imageViewer.flipY = false;
+  imageViewer.scale = 1;
+}
+
+// 关闭图片查看器
+function closeImageViewer() {
+  imageViewer.show = false;
+  imageViewer.url = '';
+}
+
+// 旋转图片
+function rotateImage(deg) {
+  imageViewer.rotation = (imageViewer.rotation + deg + 360) % 360;
+}
+
+// 镜像翻转
+function flipImage(axis) {
+  if (axis === 'x') imageViewer.flipX = !imageViewer.flipX;
+  else imageViewer.flipY = !imageViewer.flipY;
+}
+
+// 缩放
+function zoomImage(delta) {
+  imageViewer.scale = Math.max(0.25, Math.min(4, imageViewer.scale + delta));
+}
+
+// 下载图片
+function downloadImage() {
+  const a = document.createElement('a');
+  a.href = imageViewer.url;
+  a.download = imageViewer.name || 'image';
+  a.click();
+}
+
+// figure 上的 dblclick 统一入口（因为 setPointerCapture 会劫持内层事件）
+function onLayerDblClick(event, layer) {
+  if (layer.type === 'text') {
+    startEditText(layer);
+  } else if (layer.type === 'image-placeholder' || (layer.type === 'video' && !layer.url)) {
+    uploadNodeMedia(layer);
+  } else if (layer.url && (layer.type === 'image' || (layer.url && !layer.type))) {
+    // 双击图片：打开查看器
+    openImageViewer(layer.url, layer.name);
+  }
+}
+
+function startEditText(layer) {
+  pushUndo();
+  editingTextLayerId.value = layer.id;
+  editingTextValue.value = layer.text || '';
+  nextTick(() => {
+    const input = document.querySelector('.uc-text-edit-input');
+    if (input) input.focus();
+  });
+}
+
+function finishEditText() {
+  if (!editingTextLayerId.value) return;
+  updateLayer(editingTextLayerId.value, { text: editingTextValue.value || '双击编辑文字' });
+  editingTextLayerId.value = null;
+  editingTextValue.value = '';
+}
+
+// 格式化图层创建时间（从 layer.id 中提取时间戳）
+function formatLayerTime(layer) {
+  const match = layer.id?.match(/layer-(\d+)-/);
+  if (!match) return '';
+  const ts = parseInt(match[1], 10);
+  const d = new Date(ts);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+// 播放视频节点（在新窗口打开视频）
+function playVideoNode(layer) {
+  if (layer.url) window.open(layer.url, '_blank');
 }
 
 function toggleAddMenu() {
@@ -664,7 +1076,11 @@ async function addFiles(fileList, options = {}) {
     }
 
     try {
-      const url = await uploadFile(file);
+      uploadProgress.value = { fileName: file.name, loaded: 0, total: file.size, percent: 0 };
+      const url = await uploadFile(file, (p) => {
+        uploadProgress.value = { fileName: file.name, loaded: p.loaded, total: p.total, percent: p.percent };
+      });
+      uploadProgress.value = null;
       if (referenceImage) {
         referenceImage.url = url;
         referenceImage.uploading = false;
@@ -701,6 +1117,7 @@ async function addFiles(fileList, options = {}) {
       if (referenceImage) referenceImage.layerId = layerId;
       uploadedCount += 1;
     } catch (error) {
+      uploadProgress.value = null;
       if (referenceImage) {
         referenceImage.uploading = false;
         referenceImage.error = true;
@@ -764,6 +1181,7 @@ function startLayerDrag(event, layer) {
   if (!userStore.requireLogin()) return;
   if (activeTool.value === 'hand') return;
   if (activeTool.value === 'annotate') return;
+  if (event.ctrlKey || event.metaKey) return; // Ctrl+拖拽由 stage 的 startMarquee 处理
   if (event.button !== 0 || event.target.closest('.layer-toolbar') || event.target.closest('.resize-dot')) return;
   pushUndo();
   event.stopPropagation();
@@ -824,15 +1242,46 @@ function smartToggleElement(layerId, elementId, event) {
   if (event) {
     const overlay = event.currentTarget.closest('.detected-elements-overlay');
     const overlayRect = overlay ? overlay.getBoundingClientRect() : event.currentTarget.getBoundingClientRect();
-    elementClickPositions.value = {
-      ...elementClickPositions.value,
-      [key]: { x: event.clientX - overlayRect.left, y: event.clientY - overlayRect.top },
-    };
+    const clickX = event.clientX - overlayRect.left;
+    const clickY = event.clientY - overlayRect.top;
+    
+    // 计算点击位置相对于元素框的归一化坐标（0-1）
+    const [layerId, elId] = key.split('::');
+    const elements = layerDetectedElements.value[layerId] || [];
+    const el = elements.find((e) => (e.object_name || e.name || e.id) === elId);
+    const layer = layers.value.find((l) => l.id === layerId);
+    
+    if (el && layer) {
+      const box = normalizeBoxVal(el.box_2d || el.box2d || [0, 0, 1, 1]);
+      const vs = viewScale.value;
+      const vo = viewOffset.value;
+      
+      // 元素框的像素坐标
+      const boxLeft = (layer.x + box[1] * layer.width) * vs + vo.x;
+      const boxTop = (layer.y + box[0] * layer.height) * vs + vo.y;
+      const boxWidth = (box[3] - box[1]) * layer.width * vs;
+      const boxHeight = (box[2] - box[0]) * layer.height * vs;
+      
+      // 计算相对位置（0-1）
+      const relX = boxWidth > 0 ? Math.max(0, Math.min(1, (clickX - boxLeft) / boxWidth)) : 0.5;
+      const relY = boxHeight > 0 ? Math.max(0, Math.min(1, (clickY - boxTop) / boxHeight)) : 0.5;
+      
+      elementClickPositions.value = {
+        ...elementClickPositions.value,
+        [key]: { relX, relY },
+      };
+    } else {
+      // fallback: 存储绝对坐标
+      elementClickPositions.value = {
+        ...elementClickPositions.value,
+        [key]: { x: clickX, y: clickY },
+      };
+    }
   }
   chatSkipPillSync.value = false;
 }
 
-// 查找点击坐标处所有重叠元素（不做排序，排序交给 pickBestElement）
+// 查找点击坐标处重叠元素（只返回最高 z-index 图层内的元素）
 function findElementsAtPoint(clientX, clientY) {
   const overlayEl = document.querySelector('.detected-elements-overlay');
   if (!overlayEl) return [];
@@ -842,8 +1291,24 @@ function findElementsAtPoint(clientX, clientY) {
   const vs = viewScale.value;
   const vo = viewOffset.value;
 
+  // 先找点击处最高 z-index 的图层
+  let topLayerId = null;
+  let topZ = -Infinity;
+  for (const layer of layers.value) {
+    const lLeft = layer.x * vs + vo.x;
+    const lTop = layer.y * vs + vo.y;
+    const lRight = lLeft + (layer.width || 0) * vs;
+    const lBottom = lTop + (layer.height || 0) * vs;
+    if (cx >= lLeft && cx <= lRight && cy >= lTop && cy <= lBottom) {
+      const lz = layer.zIndex || 0;
+      if (lz > topZ) { topZ = lz; topLayerId = layer.id; }
+    }
+  }
+
   const results = [];
   for (const [layerId, elements] of Object.entries(layerDetectedElements.value)) {
+    // 如果有点击处最高图层，只返回该图层的元素
+    if (topLayerId && layerId !== topLayerId) continue;
     const layer = layers.value.find((l) => l.id === layerId);
     if (!layer) continue;
     for (const el of elements) {
@@ -984,11 +1449,162 @@ function pickBestElement(candidates) {
   return scored[0];
 }
 
+// 将消息文本中的 [元素名] 替换为结构化元素标签
+function renderMessageContent(message) {
+  let html = escHtml(message.text || '');
+  if (message.elements?.length) {
+    for (const el of message.elements) {
+      const name = escHtml(el.name);
+      const thumb = escHtml(el.thumb || '');
+      const order = el.order;
+      const pillHtml = `<span class="chat-pill chat-pill-msg" contenteditable="false" data-el-layer="${escHtml(el.layerId)}" data-el-name="${escHtml(el.name)}" data-el-order="${order}"><span class="chat-pill-num">${order}</span>${thumb ? `<img src="${thumb}" alt="" />` : ''}${name}</span>`;
+      // 替换 [name] 第一次出现
+      html = html.replace(`[${name}]`, pillHtml);
+    }
+  }
+  return html;
+}
+
+// 聊天消息中元素 pill 悬停预览
+const hoverPreviewPillRef = ref(null); // 当前悬停的 pill DOM 元素，避免重复触发
+
+function handleChatPillEnter(event) {
+  const pill = event.target.closest('.chat-pill-msg');
+  if (!pill) {
+    // 鼠标移到非 pill 区域，隐藏预览
+    if (hoverPreviewPillRef.value) {
+      clearTimeout(hoverPreviewTimer.value);
+      hoverPreview.visible = false;
+      hoverPreviewPillRef.value = null;
+    }
+    return;
+  }
+  // 同一个 pill，不重复处理
+  if (hoverPreviewPillRef.value === pill) return;
+  hoverPreviewPillRef.value = pill;
+  showPillPreview(pill, event);
+}
+
+function handleChatPillMove(event) {
+  if (!hoverPreview.visible) return;
+  clampPreviewPosition(event.clientX + 16, event.clientY + 12);
+}
+
+function handleChatPillLeave(event) {
+  const pill = event.target.closest('.chat-pill-msg');
+  if (pill) {
+    // 鼠标移出 pill 到其子元素上，检查 relatedTarget 是否还在同一个 pill 内
+    const related = event.relatedTarget;
+    if (related && pill.contains(related)) return;
+  }
+  // 鼠标离开了 pill
+  if (!hoverPreviewPillRef.value) return;
+  clearTimeout(hoverPreviewTimer.value);
+  hoverPreviewTimer.value = setTimeout(() => {
+    hoverPreview.visible = false;
+    hoverPreviewPillRef.value = null;
+  }, 120);
+}
+
+function clampPreviewPosition(x, y) {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const pw = hoverPreviewDims.w;
+  const ph = hoverPreviewDims.h;
+  // 右边界溢出 → 翻转到左边
+  if (x + pw + 8 > vw) x = x - pw - 32;
+  // 下边界溢出 → 翻转到上边
+  if (y + ph + 8 > vh) y = y - ph - 24;
+  // 不超出左上边界
+  hoverPreview.x = Math.max(4, x);
+  hoverPreview.y = Math.max(4, y);
+}
+
+function showPillPreview(pill, event) {
+  clearTimeout(hoverPreviewTimer.value);
+  const layerId = pill.getAttribute('data-el-layer');
+  const elName = pill.getAttribute('data-el-name');
+  const elOrder = parseInt(pill.getAttribute('data-el-order') || '0', 10);
+  if (!layerId || !elName) return;
+
+  const layer = layers.value.find((l) => l.id === layerId);
+  if (!layer?.url) return;
+
+  // 从检测数据中查找元素的 box
+  const boxes = layer?.detection?.boxes || [];
+  let foundBox = null;
+  for (const b of boxes) {
+    if ((b.name || b.object_name) === elName) {
+      foundBox = normalizeBoxVal(b.box2d || b.box_2d || []);
+      break;
+    }
+  }
+  // 如果没找到精确匹配，尝试从 layerDetectedElements 中查找
+  if (!foundBox) {
+    const els = layerDetectedElements.value[layerId];
+    if (els) {
+      for (const el of els) {
+        if (el.name === elName) {
+          foundBox = el.box2d || el.box_2d || [];
+          break;
+        }
+      }
+    }
+  }
+
+  // 预载图片以获取自然尺寸
+  const img = new Image();
+  img.onload = () => {
+    hoverPreviewImageSize.width = img.naturalWidth || 800;
+    hoverPreviewImageSize.height = img.naturalHeight || 800;
+    // 计算预览弹窗实际渲染尺寸（图片最大 240x340，容器 + padding 10*2 + border 2*2）
+    const ratio = img.naturalWidth / img.naturalHeight;
+    let imgW, imgH;
+    if (ratio >= 1) {
+      imgW = Math.min(240, 340 * ratio);
+      imgH = imgW / ratio;
+    } else {
+      imgH = Math.min(340, 240 / ratio);
+      imgW = imgH * ratio;
+    }
+    hoverPreviewDims.w = imgW + 24;
+    hoverPreviewDims.h = imgH + 24;
+    hoverPreview.layerUrl = layer.url;
+    hoverPreview.box = foundBox;
+    hoverPreview.name = elName;
+    hoverPreview.order = elOrder;
+    clampPreviewPosition(event.clientX + 16, event.clientY + 12);
+    hoverPreview.visible = true;
+  };
+  img.onerror = () => {
+    hoverPreviewImageSize.width = 800;
+    hoverPreviewImageSize.height = 800;
+    hoverPreviewDims.w = 264;
+    hoverPreviewDims.h = 224;
+    hoverPreview.layerUrl = layer.url;
+    hoverPreview.box = foundBox;
+    hoverPreview.name = elName;
+    hoverPreview.order = elOrder;
+    clampPreviewPosition(event.clientX + 16, event.clientY + 12);
+    hoverPreview.visible = true;
+  };
+  img.src = layer.url;
+}
+
 // 标注模式或 Ctrl+点击时，智能选择重叠区域最前景元素
 function handleDetectedOverlayClick(event) {
+  // 如果点击的是 annotate-banner（退出标记按钮等），放行
+  if (event.target.closest?.('.annotate-banner')) return;
+
   const inAnnotate = activeTool.value === 'annotate';
   const withCtrl = event.ctrlKey || event.metaKey;
   if (!inAnnotate && !withCtrl) return;
+
+  // 如果命名框正在显示，先确认当前元素，放行事件让 startMarquee 处理新框选
+  if (manualNameInput.visible) {
+    confirmManualElementName();
+    return; // 放行，让事件冒泡到 stage
+  }
 
   const candidates = findElementsAtPoint(event.clientX, event.clientY);
   if (!candidates.length) {
@@ -1089,6 +1705,74 @@ function setupPillObserver() {
     syncPillDeletions();
   });
   _pillObserver.observe(editor, { childList: true, subtree: true });
+}
+
+function handleEditorBackspace(event) {
+  const editor = document.querySelector('.chat-editor');
+  if (!editor) return;
+
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return;
+
+  const range = sel.getRangeAt(0);
+
+  // 如果有选区，让浏览器默认处理
+  if (!range.collapsed) return;
+
+  let node = range.startContainer;
+  let offset = range.startOffset;
+
+  // 情况1：光标在文本节点中
+  if (node.nodeType === Node.TEXT_NODE) {
+    // 如果光标在文本开头，检查前面的节点
+    if (offset === 0) {
+      const prevNode = node.previousSibling;
+      if (prevNode && prevNode.classList && prevNode.classList.contains('chat-pill')) {
+        event.preventDefault();
+        // 删除 pill
+        prevNode.remove();
+        // 如果后面的文本是 &nbsp;，也删除
+        if (node.textContent === '\u00a0') {
+          node.remove();
+        }
+        setTimeout(() => syncPillDeletions(), 10);
+        return;
+      }
+    }
+    // 如果光标在 &nbsp; 的位置（offset=1 且文本是 &nbsp;）
+    else if (offset === 1 && node.textContent === '\u00a0') {
+      const prevNode = node.previousSibling;
+      if (prevNode && prevNode.classList && prevNode.classList.contains('chat-pill')) {
+        event.preventDefault();
+        prevNode.remove();
+        node.remove();
+        setTimeout(() => syncPillDeletions(), 10);
+        return;
+      }
+    }
+  }
+  // 情况2：光标在元素节点中（比如编辑器本身）
+  else if (node.nodeType === Node.ELEMENT_NODE) {
+    // 获取光标位置的子节点
+    const childNodes = node.childNodes;
+    if (offset > 0 && offset <= childNodes.length) {
+      const prevNode = childNodes[offset - 1];
+      if (prevNode && prevNode.classList && prevNode.classList.contains('chat-pill')) {
+        event.preventDefault();
+        // 检查 pill 后面是否有 &nbsp;
+        const nextNode = prevNode.nextSibling;
+        if (nextNode && nextNode.nodeType === Node.TEXT_NODE && nextNode.textContent === '\u00a0') {
+          nextNode.remove();
+        }
+        prevNode.remove();
+        setTimeout(() => syncPillDeletions(), 10);
+        return;
+      }
+    }
+  }
+
+  // 延迟同步，等待浏览器默认删除行为完成
+  setTimeout(() => syncPillDeletions(), 50);
 }
 
 function handleEditorInput() {
@@ -1247,9 +1931,15 @@ function replacePillElement(newCandidate) {
 // 手动框选：拖拽后弹出输入框让用户命名
 function createManualElement() {
   const layerId = manualBoxDraft.layerId;
-  if (!layerId) return;
+  if (!layerId) {
+    console.warn('[manual] createManualElement: layerId 为空，跳过');
+    return;
+  }
   const layer = layers.value.find((l) => l.id === layerId);
-  if (!layer) return;
+  if (!layer) {
+    console.warn('[manual] createManualElement: 找不到图层', layerId);
+    return;
+  }
 
   const minX = Math.min(manualBoxDraft.startX, manualBoxDraft.currentX);
   const maxX = Math.max(manualBoxDraft.startX, manualBoxDraft.currentX);
@@ -1257,7 +1947,10 @@ function createManualElement() {
   const maxY = Math.max(manualBoxDraft.startY, manualBoxDraft.currentY);
 
   // 框太小视为误触，不创建
-  if (maxX - minX < 8 || maxY - minY < 8) return;
+  if (maxX - minX < 8 || maxY - minY < 8) {
+    console.log('[manual] createManualElement: 框太小，跳过', { w: maxX - minX, h: maxY - minY });
+    return;
+  }
 
   // 屏幕坐标 → 世界坐标：world = (screen - offset) / scale
   const vs = viewScale.value;
@@ -1290,11 +1983,20 @@ function createManualElement() {
 
 // 确认手动元素命名并添加到检测列表
 function confirmManualElementName() {
+  // 防重复触发（Enter + blur + 按钮 click 组合）
+  if (!manualNameInput.visible) return;
+  clearTimeout(_manualBlurTimer);
   const userInput = manualNameInput.text.trim();
   const displayName = userInput ? `手标-${userInput}` : `手标-${Date.now()}`;
   const layerId = manualNameInput.layerId;
   const box_2d = manualNameInput.box_2d;
-  if (!layerId || !box_2d) return;
+  if (!layerId || !box_2d) {
+    console.warn('[manual] confirmManualElementName: layerId 或 box_2d 为空，跳过', { layerId, box_2d });
+    manualNameInput.visible = false;
+    manualNameInput.text = '';
+    manualBoxDraft.active = false;
+    return;
+  }
 
   const el = {
     id: `manual-${Date.now()}`,
@@ -1308,15 +2010,36 @@ function confirmManualElementName() {
     ...layerDetectedElements.value,
     [layerId]: [...(layerDetectedElements.value[layerId] || []), el],
   };
+  // 同步选中并更新输入框 pill
+  const elKey = `${layerId}::${el.object_name || el.name || el.id}`;
+  selectedDetectedElements.value = new Set([...selectedDetectedElements.value, elKey]);
   console.log('[manual] 手动添加元素:', displayName, box_2d);
+  // 持久化到文档（支持撤销恢复）
+  canvas.updateDocument(props.id, (draft) => {
+    draft.payload.detectedElements = JSON.parse(JSON.stringify(layerDetectedElements.value));
+    return draft;
+  });
   manualNameInput.visible = false;
   manualNameInput.text = '';
+  manualBoxDraft.active = false;
 }
 
 // 取消手动元素命名
 function cancelManualElementName() {
   manualNameInput.visible = false;
   manualNameInput.text = '';
+  manualBoxDraft.active = false;
+}
+
+// 输入框失焦时自动确认（延迟判断，避免与按钮点击冲突）
+let _manualBlurTimer = 0;
+function onManualNameInputBlur() {
+  clearTimeout(_manualBlurTimer);
+  _manualBlurTimer = setTimeout(() => {
+    if (manualNameInput.visible) {
+      confirmManualElementName();
+    }
+  }, 150);
 }
 
 function clearAllAnnotations() {
@@ -1360,6 +2083,40 @@ function getSelectedDetectedElements() {
     const el = elements.find((e) => (e.object_name || e.name || e.id) === elId);
     return el ? { ...el, layerId, id: el.object_name || el.name || el.id, name: el.object_name || el.name || '' } : null;
   }).filter(Boolean);
+}
+
+// 构建元素定位提示：每个元素一行，含检测框坐标
+function buildElementLocationHint() {
+  const selected = getSelectedDetectedElements();
+  if (!selected.length) return '';
+  const lines = [];
+  for (let i = 0; i < selected.length; i++) {
+    const el = selected[i];
+    const layer = layers.value.find((l) => l.id === el.layerId);
+    if (!layer) continue;
+    const box = normalizeBoxVal(el.box_2d || el.box2d || [0, 0, 1, 1]);
+    // 转换为像素坐标
+    const pxLeft = Math.round(box[1] * layer.width);
+    const pxTop = Math.round(box[0] * layer.height);
+    const pxRight = Math.round(box[3] * layer.width);
+    const pxBottom = Math.round(box[2] * layer.height);
+    const width = pxRight - pxLeft;
+    const height = pxBottom - pxTop;
+
+    // 计算相对位置（百分比，保留1位小数）
+    const relLeft = (box[1] * 100).toFixed(1);
+    const relTop = (box[0] * 100).toFixed(1);
+    const relRight = (box[3] * 100).toFixed(1);
+    const relBottom = (box[2] * 100).toFixed(1);
+
+    lines.push({
+      name: el.name || '元素',
+      box: `[${pxLeft},${pxTop},${pxRight},${pxBottom}]`,
+      relBox: `[${relLeft}%,${relTop}%,${relRight}%,${relBottom}%]`,
+      size: `${width}×${height}`,
+    });
+  }
+  return lines;
 }
 
 function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -1455,21 +2212,33 @@ watch(selectedDetectedElements, () => {
   nextTick(() => syncPillsToEditor());
 }, { deep: true });
 
-// 元素序号位置：优先从元素框中心计算，fallback 到点击位置
+// 元素序号位置：跟随点击位置，缩放时正确更新
 function getElementClickStyle(key) {
-  // 先试点击位置
   const pos = elementClickPositions.value[key];
-  if (pos) return { left: `${pos.x}px`, top: `${pos.y}px` };
-  // 回退到元素框中心点
   const [layerId, elId] = key.split('::');
   const elements = layerDetectedElements.value[layerId] || [];
   const el = elements.find((e) => (e.object_name || e.name || e.id) === elId);
   if (!el) return {};
   const layer = layers.value.find((l) => l.id === layerId);
   if (!layer) return {};
-  const box = el.box_2d || el.box2d || [0, 0, 1, 1];
+  const box = normalizeBoxVal(el.box_2d || el.box2d || [0, 0, 1, 1]);
   const vs = viewScale.value;
   const vo = viewOffset.value;
+  
+  // 如果有归一化的点击位置，使用它
+  if (pos && pos.relX !== undefined && pos.relY !== undefined) {
+    const boxLeft = (layer.x + box[1] * layer.width) * vs + vo.x;
+    const boxTop = (layer.y + box[0] * layer.height) * vs + vo.y;
+    const boxWidth = (box[3] - box[1]) * layer.width * vs;
+    const boxHeight = (box[2] - box[0]) * layer.height * vs;
+    
+    return {
+      left: `${boxLeft + pos.relX * boxWidth}px`,
+      top: `${boxTop + pos.relY * boxHeight}px`,
+    };
+  }
+  
+  // 否则使用元素框中心点
   const centerX = box[1] + (box[3] - box[1]) / 2;
   const centerY = box[0] + (box[2] - box[0]) / 2;
   return {
@@ -1479,8 +2248,40 @@ function getElementClickStyle(key) {
 }
 
 async function sendChat() {
-  // 使用结构化提示词：[元素1] 修改文字1 [元素2] 修改文字2
   const text = getEditorPrompt();
+  const elementHint = buildElementLocationHint();
+  // 优化后的提示词格式 - 坐标清晰明确
+  let fullPrompt;
+  if (elementHint && elementHint.length > 0) {
+    const selected = getSelectedDetectedElements();
+
+    // 构建元素描述列表
+    const elementList = elementHint.map((el, i) => {
+      return `${i + 1}. 【${el.name}】坐标：${el.box}（相对位置：${el.relBox}）`;
+    }).join('\n');
+
+    // 构建坐标区域描述
+    const regionDesc = elementHint.map((el, i) => {
+      return `区域${i + 1}（${el.name}）：像素坐标 ${el.box}`;
+    }).join('；');
+
+    fullPrompt = `【图像编辑指令】
+
+原图尺寸：${elementHint[0] ? '已提供' : '未知'}
+
+【待修改元素坐标】
+${elementList}
+
+【修改要求】
+${text || '请根据元素类型进行适当修改'}
+
+【执行说明】
+请根据以上坐标信息，精确修改原图中对应区域的元素。
+坐标格式为 [左上角X, 左上角Y, 右下角X, 右下角Y]，单位为像素。
+修改时请保持其他区域完全不变，只修改指定坐标范围内的内容。`;
+  } else {
+    fullPrompt = text;
+  }
   const hasContent = text || getSelectedDetectedElements().length;
   if (!hasContent || chatGenerating.value) return;
   if (!userStore.requireLogin()) return;
@@ -1491,14 +2292,31 @@ async function sendChat() {
     .filter((image) => !image.uploading && !image.error)
     .map((image) => image.url)
     .filter((url) => url && !String(url).startsWith('blob:'));
-  // 合并反推参考图（元素选中时自动添加的 layer 图）—— 不显示但传给 API
-  const refImageUrls = visibleReferenceImages.value
-    .map((r) => r.url)
-    .filter((url) => url && !String(url).startsWith('blob:'));
+  // 从当前选中元素计算参考图（只看当前选中，不看历史累积）
+  const selectedRefLayers = new Set();
+  for (const d of getSelectedDetectedElements()) {
+    const layer = layers.value.find((l) => l.id === d.layerId);
+    if (layer?.url && !String(layer.url).startsWith('blob:')) {
+      selectedRefLayers.add(layer.url);
+    }
+  }
+  const refImageUrls = [...selectedRefLayers];
   const imageUrls = [...new Set([...chatImageUrls, ...refImageUrls])];
 
+  // 收集当前选中元素的详细信息（用于对话气泡渲染）
+  const messageElements = getSelectedDetectedElements().map((el, idx) => {
+    const layer = layers.value.find((l) => l.id === el.layerId);
+    return {
+      id: el.object_name || el.name || el.id,
+      name: el.object_name || el.name || '',
+      layerId: el.layerId,
+      thumb: layer?.thumbnailUrl || '',
+      order: idx + 1,
+    };
+  });
+
   addChatMessages([
-    { id: `msg-${createdAt}`, role: 'user', text, targetLayerId: selectedLayerId.value, createdAt },
+    { id: `msg-${createdAt}`, role: 'user', text, targetLayerId: selectedLayerId.value, createdAt, elements: messageElements },
     {
       id: assistantId,
       role: 'assistant',
@@ -1513,15 +2331,17 @@ async function sendChat() {
   selectedDetectedElements.value = new Set();
   elementClickPositions.value = {};
   chatGenerating.value = true;
-  const placeholderId = addGeneratingPlaceholderLayer(text);
+  const placeholderId = addGeneratingPlaceholderLayer(fullPrompt);
 
   try {
-    const taskId = await submitImageTask({ prompt: text, imageUrls });
+    const taskId = await submitImageTask({ prompt: fullPrompt, imageUrls });
     updateChatMessage(assistantId, { taskId, text: `任务已提交，模型 ${chatModel.value}｜${chatRatio.value}｜${chatResolution.value}，正在生成...` });
     updateGeneratingPlaceholder(placeholderId, { taskId, progress: 8, status: 'processing' });
 
     for (let index = 0; index < TASK_MAX_POLLS; index += 1) {
       await wait(TASK_POLL_INTERVAL);
+      // 组件已卸载，停止轮询（避免内存泄漏和野指针错误）
+      if (!_mounted.value) return;
       const status = await fetchImageTask(taskId);
       const progress = normalizeProgress(status.progress, Math.min(96, 10 + (index + 1) * 7));
       const progressText = Number.isFinite(Number(status.progress)) ? ` ${progress}%` : '';
@@ -1542,7 +2362,7 @@ async function sendChat() {
         updateChatMessage(assistantId, { text: '生成完成，已添加到画布。', imageUrl: url });
         generationHistory.value.push({
           id: `gen-${Date.now()}`,
-          prompt: text,
+          prompt: fullPrompt,
           model: chatModel.value,
           ratio: chatRatio.value,
           resolution: chatResolution.value,
@@ -1571,6 +2391,9 @@ function handleChatBoxClick(event) {
 
 function selectCanvasTool(tool) {
   if (!userStore.requireLogin()) return;
+  // text/shape 工具点击后直接执行添加节点，而非切换工具
+  if (tool.key === 'text') { addTextNode(); return; }
+  if (tool.key === 'shape') { return; }
   activeTool.value = tool.key;
 }
 
@@ -1748,9 +2571,23 @@ function wheelZoom(event) {
 function startMarquee(event) {
   if (event.button !== 0) return;
 
-  // 标注模式：手动画框添加元素
-  if (activeTool.value === 'annotate') {
-    if (event.target.closest?.('.detected-element-box, .detected-element-label, .layer-toolbar, .bottom-tools, .top-tools, .right-panel')) return;
+  // Ctrl+点击元素框 → 选中/取消选中元素
+  if ((event.ctrlKey || event.metaKey) && activeTool.value !== 'annotate') {
+    if (event.target.closest('.detected-element-box')) {
+      handleDetectedOverlayClick(event);
+      return;
+    }
+  }
+
+  // 标注模式 或 Ctrl+拖拽：手动画框添加元素
+  const isAnnotate = activeTool.value === 'annotate';
+  const isCtrlDraw = (event.ctrlKey || event.metaKey) && activeTool.value !== 'annotate' && activeTool.value !== 'hand';
+  if (isAnnotate || isCtrlDraw) {
+    if (event.target.closest?.('.detected-element-box, .detected-element-label, .manual-name-input, .layer-toolbar, .bottom-tools, .top-tools, .right-panel, .annotate-banner')) return;
+    // 如果命名框正在显示，先确认当前元素再开始新框选
+    if (manualNameInput.visible) {
+      confirmManualElementName();
+    }
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     const rect = event.currentTarget.getBoundingClientRect();
@@ -1872,6 +2709,7 @@ function onGlobalKeydown(event) {
     // 优先删除选中的元素框（含手动元素）
     if (selectedDetectedElements.value.size > 0) {
       event.preventDefault();
+      pushUndo(); // 删除元素框也入栈，支持撤销
       const nextLayers = { ...layerDetectedElements.value };
       for (const key of selectedDetectedElements.value) {
         const [layerId, elId] = key.split('::');
@@ -1883,6 +2721,11 @@ function onGlobalKeydown(event) {
       layerDetectedElements.value = nextLayers;
       selectedDetectedElements.value = new Set();
       elementClickPositions.value = {};
+      // 持久化到文档
+      canvas.updateDocument(props.id, (draft) => {
+        draft.payload.detectedElements = JSON.parse(JSON.stringify(layerDetectedElements.value));
+        return draft;
+      });
       return;
     }
     // 否则删除选中图层
@@ -1896,24 +2739,70 @@ function onGlobalKeydown(event) {
     event.preventDefault();
     const snapshot = undoStack.value.pop();
     if (snapshot && doc.value) {
-      canvas.updateDocument(props.id, (draft) => { draft.payload.layers = snapshot; return draft; });
-      selectedLayerId.value = snapshot[0]?.id || '';
+      // 标记撤销恢复中，阻止 watch 触发自动检测
+      _undoRestoring.value = true;
+      // 兼容旧格式（纯数组）和新格式（含检测数据的对象）
+      const layersData = Array.isArray(snapshot) ? snapshot : snapshot.layers;
+      // 关键修复：先恢复 layerDetectedElements（如果快照里有），这样 layers watch 触发时新图层的检测数据已就位
+      if (!Array.isArray(snapshot) && snapshot.detectedElements) {
+        layerDetectedElements.value = snapshot.detectedElements;
+        // 同步持久化到文档
+        canvas.updateDocument(props.id, (draft) => {
+          draft.payload.detectedElements = snapshot.detectedElements;
+          return draft;
+        });
+      }
+      if (!Array.isArray(snapshot) && snapshot.selectedDetectedElements) {
+        selectedDetectedElements.value = new Set(snapshot.selectedDetectedElements);
+      }
+      // 然后才恢复 layers
+      canvas.updateDocument(props.id, (draft) => { draft.payload.layers = layersData; return draft; });
+      selectedLayerId.value = layersData[0]?.id || '';
       selectedLayerIds.value = selectedLayerId.value ? [selectedLayerId.value] : [];
+      // 只删除已不存在的图层的检测数据
+      const currentLayerIds = new Set(layersData.map(l => l.id));
+      const nextDetected = { ...layerDetectedElements.value };
+      let pruned = false;
+      for (const lid of Object.keys(nextDetected)) {
+        if (!currentLayerIds.has(lid)) {
+          delete nextDetected[lid];
+          pruned = true;
+        }
+      }
+      if (pruned) layerDetectedElements.value = nextDetected;
+      // 清除已不存在的图层的选中元素
+      const nextSelected = new Set();
+      for (const key of selectedDetectedElements.value) {
+        const [lid] = key.split('::');
+        if (currentLayerIds.has(lid)) nextSelected.add(key);
+      }
+      selectedDetectedElements.value = nextSelected;
+      // 关键：先解除撤销标记，再等 watch 全部执行完毕
+      // 用 setTimeout 而非 nextTick，确保 deep watch 全部触发完毕
+      setTimeout(() => { _undoRestoring.value = false; }, 100);
     }
   }
   // 工具快捷键
   if (!inInput) {
-    const keyMap = { v: 'select', h: 'hand', f: 'focus', t: 'text', m: 'annotate' };
+    const keyMap = { v: 'select', h: 'hand', f: 'focus', m: 'annotate' };
     const tool = keyMap[event.key.toLowerCase()];
     if (tool) { event.preventDefault(); activeTool.value = tool; }
+    // T 快捷键：直接添加文本节点
+    if (event.key.toLowerCase() === 't') { event.preventDefault(); addTextNode(); }
+    // I 快捷键：添加图片占位节点
+    if (event.key.toLowerCase() === 'i') { event.preventDefault(); addImageNode(); }
   }
 }
 
-// Undo stack
+// Undo stack（同时保存图层和元素检测数据，撤销时一起恢复）
 const undoStack = ref([]);
 function pushUndo() {
   if (doc.value?.payload?.layers) {
-    undoStack.value.push(JSON.parse(JSON.stringify(doc.value.payload.layers)));
+    undoStack.value.push({
+      layers: JSON.parse(JSON.stringify(doc.value.payload.layers)),
+      detectedElements: JSON.parse(JSON.stringify(layerDetectedElements.value)),
+      selectedDetectedElements: [...selectedDetectedElements.value],
+    });
     if (undoStack.value.length > 50) undoStack.value.shift();
   }
 }
@@ -1946,6 +2835,7 @@ function removeGenerationRecord(id) {
 }
 
 onMounted(() => {
+  _mounted.value = true;
   updateViewportSize();
   window.addEventListener('resize', updateViewportSize);
   window.addEventListener('keydown', onGlobalKeydown);
@@ -1960,22 +2850,38 @@ onMounted(() => {
       if (Array.isArray(els)) {
         for (const el of els) {
           const box = el.box_2d || el.box2d || [];
-          if (box.some(v => Math.abs(v) > 1.05)) { hasBadData = true; break; }
+          // 检查是否有坏数据：值超出 0-1 范围，或者坐标不合理
+          if (box.some(v => Math.abs(v) > 1.05) || box.length !== 4) { hasBadData = true; break; }
+          // 检查坐标是否有效（top < bottom, left < right）
+          if (box[0] >= box[2] || box[1] >= box[3]) { hasBadData = true; break; }
         }
       }
       if (hasBadData) break;
     }
     if (hasBadData) {
       // 旧版归一化 bug 导致的数据，清除缓存让用户重新检测
+      console.log('[detect] 清除旧版缓存数据，需要重新检测');
       canvas.updateDocument(props.id, (draft) => {
         draft.payload.detectedElements = {};
         return draft;
       });
       layerDetectedElements.value = {};
     } else {
-      layerDetectedElements.value = { ...cachedElements };
+      // 对缓存数据进行归一化处理，确保坐标在 0-1 范围
+      const normalized = {};
+      for (const [layerId, els] of Object.entries(cachedElements)) {
+        if (Array.isArray(els)) {
+          normalized[layerId] = els.map(el => {
+            const box = normalizeBoxVal(el.box_2d || el.box2d || [0, 0, 1, 1]);
+            return { ...el, box_2d: box, box2d: box };
+          });
+        }
+      }
+      layerDetectedElements.value = normalized;
     }
   }
+  // 聊天记录滚动到底部（最后一条消息）
+  scrollChatToBottom();
   const onCtrlDown = (e) => { if (e.key === 'Control') ctrlHeld.value = true; };
   const onCtrlUp = (e) => { if (e.key === 'Control') ctrlHeld.value = false; };
   window.addEventListener('keydown', onCtrlDown);
@@ -1989,10 +2895,14 @@ onMounted(() => {
     window.removeEventListener('resize', updateViewportSize);
     if (_pillObserver) { _pillObserver.disconnect(); _pillObserver = null; }
     window.removeEventListener('keydown', onGlobalKeydown);
+    // 清理所有定时器
+    clearTimeout(_manualBlurTimer);
+    clearTimeout(_layoutSaveTimer);
   });
 });
 
 onBeforeUnmount(() => {
+  _mounted.value = false;
   chatReferenceImages.value.forEach((image) => {
     if (image.localUrl?.startsWith('blob:')) URL.revokeObjectURL(image.localUrl);
   });
@@ -2005,15 +2915,33 @@ watch(
   { deep: true, immediate: true }
 );
 watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers());
+
+// ============ 主题切换（套餐 B 改造） ============
+import { useTheme } from '../composables/useTheme';
+const { theme: currentTheme, cycle: cycleTheme, isDark, isLight, isSystem } = useTheme();
+function themeIcon() {
+  if (isSystem()) return '🖥';
+  if (isDark()) return '🌙';
+  return '☀️';
+}
+function themeLabel() {
+  if (isSystem()) return '跟随系统';
+  if (isDark()) return '深色';
+  return '浅色';
+}
 </script>
 
 <template>
   <main class="editor">
-    <header class="editor-head">
+    <header class="editor-head glass-header">
       <div class="head-left">
         <button class="logo logo-link" type="button" @click="router.push('/')">YOUMI</button><span>·</span><b>万能画布</b><span>/</span><button>✎ {{ doc.title }}</button><em>已保存 · 刚刚</em>
       </div>
       <div class="head-actions">
+        <button class="theme-toggle" :title="`当前：${themeLabel()}（点击切换）`" @click="cycleTheme">
+          <span class="theme-toggle__icon">{{ themeIcon() }}</span>
+          <span>{{ themeLabel() }}</span>
+        </button>
         <button class="panel-visibility-btn" :class="{ active: getDetectionVisible() }" :title="getDetectionVisible() ? '隐藏视觉框' : '显示视觉框'" @click="setDetectionVisible(!getDetectionVisible())">{{ getDetectionVisible() ? '👁' : '🚫' }}</button>
         <button class="panel-visibility-btn" :class="{ active: rightPanelVisible }" :title="rightPanelVisible ? '隐藏对话框' : '显示对话框'" @click="rightPanelVisible = !rightPanelVisible">▮</button><button @click="router.push('/canvas')">×</button>
       </div>
@@ -2034,11 +2962,17 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
         <button :class="{ active: shortcutsOpen }" @click="shortcutsOpen = !shortcutsOpen; if (shortcutsOpen) addOpen = false">⌘ 快捷键</button>
       </div>
 
-      <aside v-if="activeTool === 'annotate'" class="annotate-banner">
-        标记工具已开启 · 拖拽框选手动添加元素，或点击已有元素选中加入输入框；其他工具下可按住 Ctrl+点击 选中元素
-        <button type="button" class="annotate-banner-close" @click="activeTool = 'select'">退出</button>
+      <aside v-if="activeTool === 'annotate'" class="annotate-banner" @pointerdown.stop>
+        <div class="annotate-banner-text">
+          <strong>标记工具</strong>
+          <span>拖拽画框 → 手动添加元素到输入框</span>
+          <span>点击画布元素 → 选中加入输入框</span>
+          <span>其他工具下 <kbd>Ctrl+点击</kbd> 也可选中元素</span>
+        </div>
+        <button type="button" class="annotate-banner-close" @pointerdown.stop @click="activeTool = 'select'">退出标记</button>
       </aside>
 
+      <!-- 左侧 + 号分类菜单栏（已合并到 bottom-tools 的 uc-toolbar-add-btn 弹层） -->
       <div
         :class="['stage', { 'hand-tool': activeTool === 'hand', 'annotate-tool': activeTool === 'annotate', 'is-panning': panState }]"
         @wheel.prevent="wheelZoom"
@@ -2047,6 +2981,16 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
         @pointerup="stopMarquee"
         @pointercancel="stopMarquee"
       >
+        <!-- 上传进度条 -->
+        <div v-if="uploadProgress" class="upload-progress-overlay">
+          <div class="upload-progress-card">
+            <span class="upload-progress-label">上传中 {{ uploadProgress.fileName }}</span>
+            <div class="upload-progress-track">
+              <div class="upload-progress-fill" :style="{ width: `${uploadProgress.percent}%` }" />
+            </div>
+            <span class="upload-progress-pct">{{ uploadProgress.percent }}%</span>
+          </div>
+        </div>
         <div v-if="layers.length === 0" class="start-card">
           <i>▧</i>
           <h2>开始你的画布</h2>
@@ -2064,13 +3008,18 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
               selected: selectedLayerIds.includes(layer.id),
               'multi-selected': selectedLayerIds.length > 1 && selectedLayerIds.includes(layer.id),
               'is-placeholder': layer.type === 'placeholder',
+              'is-text': layer.type === 'text',
+              'is-video': layer.type === 'video',
+              'is-video-placeholder': layer.type === 'video' && !layer.url,
+              'is-image': layer.type === 'image' || (layer.url && !layer.type),
+              'is-image-placeholder': layer.type === 'image-placeholder',
               'is-failed': layer.status === 'failed',
             },
           ]"
           :style="{
             transform: `translate(${layer.x * viewScale + viewOffset.x}px, ${layer.y * viewScale + viewOffset.y}px) scale(${viewScale})`,
             width: `${layer.width}px`,
-            height: layer.type === 'placeholder' ? `${layer.height}px` : undefined,
+            height: (layer.type === 'placeholder' || layer.type === 'text' || layer.type === 'video' || layer.type === 'image-placeholder') ? `${layer.height}px` : undefined,
             zIndex: layer.zIndex,
             '--canvas-inverse-scale': 1 / viewScale,
           }"
@@ -2078,10 +3027,17 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
           @pointermove="moveLayer"
           @pointerup="stopLayerDrag"
           @pointercancel="stopLayerDrag"
+          @dblclick="onLayerDblClick($event, layer)"
         >
-          <div v-if="layer.type !== 'placeholder' && layer.id === selectedLayerId && selectedLayerIds.length <= 1" class="layer-toolbar">
-            <button>✂ 智能抠图</button><button @click.stop="maybeAutoDetect(selectedLayer)"><template v-if="selectedLayer && detectingLayerIds.has(selectedLayer.id)">⏳ 检测中...</template><template v-else>◈ 智能分层</template></button><button>T 编辑文字</button><button>↔ 扩图</button><button>☏ 对话修改</button><button>▧ 尺寸修改</button><button>⌗ 裁剪</button><button>✂ 分割</button><button>⇩ 下载</button><button @click.stop="removeLayer(layer.id)">⌫ 删除</button>
+          <div v-if="layer.type !== 'placeholder' && detectingLayerIds.has(layer.id)" class="layer-detecting-overlay">
+            <span class="layer-detecting-spinner" />
+            <span class="layer-detecting-text">AI 检测元素中...</span>
           </div>
+          <template v-if="layer.type !== 'placeholder' && layer.type !== 'text' && layer.type !== 'image-placeholder' && !(layer.type === 'video' && !layer.url) && layer.id === selectedLayerId && selectedLayerIds.length <= 1">
+            <div class="layer-toolbar">
+              <button>✂ 智能抠图</button><button @click.stop="maybeAutoDetect(selectedLayer)"><template v-if="selectedLayer && detectingLayerIds.has(selectedLayer.id)">⏳ 检测中...</template><template v-else>◈ 智能分层</template></button><button>T 编辑文字</button><button>↔ 扩图</button><button>☏ 对话修改</button><button>▧ 尺寸修改</button><button>⌗ 裁剪</button><button>✂ 分割</button><button>⇩ 下载</button><button @click.stop="removeLayer(layer.id)">⌫ 删除</button>
+            </div>
+          </template>
           <template v-if="layer.type === 'placeholder'">
             <div
               class="uc-layer-placeholder-card"
@@ -2097,14 +3053,91 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
                 <span class="progress-percent dark">{{ Math.round(layer.progress || 0) }}%</span>
                 <p class="dynamic-text dark">{{ layer.statusText || '正在校准粒子精度与材质细节...' }}</p>
               </div>
-              <button class="uc-placeholder-close" type="button" title="移除这张执行卡（不影响后台任务）" @click.stop="removeLayer(layer.id)">×</button>
+              <button class="uc-placeholder-close" type="button" title="移除这张执行卡（不影响后台任务）" @pointerdown.stop @click.stop="removeLayer(layer.id)">×</button>
+            </div>
+          </template>
+          <template v-else-if="layer.type === 'text'">
+            <!-- 文本节点：暖金品牌色选中态 + 提示词标签 -->
+            <div class="uc-text-node">
+              <!-- 图层标签：类型+时间 -->
+              <div class="uc-layer-label"><i class="ri-text"></i> {{ layer.name }} <small>{{ formatLayerTime(layer) }}</small></div>
+              <div class="uc-text-node-area">
+                <span v-if="editingTextLayerId !== layer.id" class="uc-text-node-span" :style="{ fontSize: (layer.fontSize || 14) + 'px', color: layer.color || '#999', textAlign: layer.align || 'left' }">{{ layer.text || '双击开始编辑...' }}</span>
+                <textarea v-else ref="textEditRef" class="uc-text-edit-input" v-model="editingTextValue" @blur="finishEditText" @keydown.escape.prevent="finishEditText" @pointerdown.stop></textarea>
+              </div>
+              <div class="uc-text-node-hint" @pointerdown.stop @click.stop>
+                <i class="ri-edit-line"></i> 提示词
+              </div>
+              <button class="uc-node-close" type="button" title="删除文本节点" @pointerdown.stop @click.stop="removeLayer(layer.id)">×</button>
+              <!-- 左右连接点 -->
+              <div class="uc-connection-port uc-port-left" @pointerdown.stop>+</div>
+              <div class="uc-connection-port uc-port-right" @pointerdown.stop>+</div>
+            </div>
+          </template>
+          <template v-else-if="layer.type === 'image-placeholder'">
+            <!-- 图片占位节点：暖金品牌色 + 虚线框 + 图标 + 提示词 -->
+            <div class="uc-image-placeholder">
+              <!-- 图层标签 -->
+              <div class="uc-layer-label"><i class="ri-image-line"></i> {{ layer.name }} <small>{{ formatLayerTime(layer) }}</small></div>
+              <div class="uc-image-placeholder-inner">
+                <div class="uc-placeholder-icon">
+                  <i class="ri-image-line"></i>
+                </div>
+              </div>
+              <div class="uc-text-node-hint" @pointerdown.stop @click.stop>
+                <i class="ri-edit-line"></i> 提示词
+              </div>
+              <button class="uc-node-close" type="button" title="删除图片节点" @pointerdown.stop @click.stop="removeLayer(layer.id)">×</button>
+              <!-- 左右连接点 -->
+              <div class="uc-connection-port uc-port-left" @pointerdown.stop>+</div>
+              <div class="uc-connection-port uc-port-right" @pointerdown.stop>+</div>
+            </div>
+          </template>
+          <template v-else-if="layer.type === 'video'">
+            <div class="uc-video-node">
+              <!-- 图层标签 -->
+              <div class="uc-layer-label"><i class="ri-video-line"></i> {{ layer.name }} <small>{{ formatLayerTime(layer) }}</small></div>
+              <template v-if="layer.url">
+                <!-- 有视频内容 -->
+                <div class="uc-video-node-inner">
+                  <video :src="layer.url" muted preload="metadata" class="uc-video-node-video" @pointerdown.stop></video>
+                  <button class="uc-video-play-btn" @pointerdown.stop @click.stop="playVideoNode(layer)"><i class="ri-play-fill"></i></button>
+                </div>
+              </template>
+              <template v-else>
+                <!-- 视频占位态：暖金品牌色 + 虚线框 + 图标 + 提示词 -->
+                <div class="uc-image-placeholder-inner">
+                  <div class="uc-placeholder-icon">
+                    <i class="ri-video-line"></i>
+                  </div>
+                </div>
+                <div class="uc-text-node-hint" @pointerdown.stop @click.stop>
+                  <i class="ri-edit-line"></i> 提示词
+                </div>
+              </template>
+              <button class="uc-node-close" type="button" title="删除视频节点" @pointerdown.stop @click.stop="removeLayer(layer.id)">×</button>
+              <!-- 左右连接点 -->
+              <div class="uc-connection-port uc-port-left" @pointerdown.stop>+</div>
+              <div class="uc-connection-port uc-port-right" @pointerdown.stop>+</div>
             </div>
           </template>
           <template v-else>
-            <span class="layer-badge">{{ index + 1 }}</span>
-            <img :src="layer.url" :alt="layer.name" draggable="false" />
+            <!-- 图片节点（含已上传内容）：与占位态保持一致的 UI 结构 -->
+            <div class="uc-image-node">
+              <div class="uc-layer-label"><i class="ri-image-line"></i> {{ layer.name }} <small>{{ formatLayerTime(layer) }}</small></div>
+              <div class="uc-image-node-inner">
+                <img :src="layer.url" :alt="layer.name" draggable="false" />
+              </div>
+              <div class="uc-text-node-hint" @pointerdown.stop @click.stop>
+                <i class="ri-edit-line"></i> 提示词
+              </div>
+              <button class="uc-node-close" type="button" title="删除图片节点" @pointerdown.stop @click.stop="removeLayer(layer.id)">×</button>
+              <!-- 左右连接点 -->
+              <div class="uc-connection-port uc-port-left" @pointerdown.stop>+</div>
+              <div class="uc-connection-port uc-port-right" @pointerdown.stop>+</div>
+            </div>
           </template>
-          <template v-if="layer.type !== 'placeholder' && layer.id === selectedLayerId && selectedLayerIds.length <= 1">
+          <template v-if="layer.type !== 'placeholder' && layer.type !== 'text' && layer.type !== 'image' && layer.type !== 'image-placeholder' && layer.type !== 'video' && !(layer.url && !layer.type) && layer.id === selectedLayerId && selectedLayerIds.length <= 1">
             <i v-for="point in ['top-left','top','top-right','right','bottom-right','bottom','bottom-left','left']" :key="point" :class="['resize-dot', point]" @pointerdown="startResize($event, layer, point)" @pointermove="resizeLayer" @pointerup="stopResize" @pointercancel="stopResize" />
           </template>
         </figure>
@@ -2117,45 +3150,49 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
             placeholder="输入元素名称..."
             @keydown.enter.prevent="confirmManualElementName"
             @keydown.escape.prevent="cancelManualElementName"
-            @blur="confirmManualElementName"
+            @blur="onManualNameInputBlur"
           />
-          <button @click="confirmManualElementName">✓</button>
-          <button @click="cancelManualElementName">✕</button>
+          <button @mousedown.prevent="confirmManualElementName">✓</button>
+          <button @mousedown.prevent="cancelManualElementName">✕</button>
         </div>
-        <div
-          v-if="getDetectionVisible() || activeTool === 'annotate' || ctrlHeld"
-          :class="['detected-elements-overlay', { 'annotate-mode': activeTool === 'annotate', 'ctrl-mode': ctrlHeld && activeTool !== 'annotate', 'detection-visible': getDetectionVisible() }]"
-          @pointerdown="handleDetectedOverlayClick"
-        >
-          <template v-for="(elements, layerId) in layerDetectedElements" :key="layerId">
-            <template v-for="(el, eIdx) in elements" :key="`${layerId}::${el.object_name || el.name || el.id || `e${eIdx}`}`">
-              <div
-                v-if="layers.find((l) => l.id === layerId)"
-                class="detected-element-box"
-                :class="{ 'selected': selectedDetectedElements.has(`${layerId}::${el.object_name || el.name || el.id || `e${eIdx}`}`) }"
-                :style="(function() {
-                  const layer = layers.find((l) => l.id === layerId);
-                  const box = el.box_2d || el.box2d || [0,0,1,1];
-                  // box 归一化 (0-1)，layer.x/y/width/height 是世界坐标
-                  // 渲染公式与 line 1470 一致：screen = world * viewScale + viewOffset
-                  return {
-                    left: `${(layer.x + box[1] * layer.width) * viewScale + viewOffset.x}px`,
-                    top: `${(layer.y + box[0] * layer.height) * viewScale + viewOffset.y}px`,
-                    width: `${Math.max(2, (box[3] - box[1]) * layer.width * viewScale)}px`,
-                    height: `${Math.max(2, (box[2] - box[0]) * layer.height * viewScale)}px`,
-                  };
-                })()"
-              >
-                <span class="detected-element-label">{{ el.object_name || el.name || '元素' }}</span>
-              </div>
-              <span
-                v-if="selectedDetectedElements.has(`${layerId}::${el.object_name || el.name || el.id || `e${eIdx}`}`)"
-                class="detected-element-index"
-                :style="getElementClickStyle(`${layerId}::${el.object_name || el.name || el.id || `e${eIdx}`}`)"
-              >{{ [...selectedDetectedElements].indexOf(`${layerId}::${el.object_name || el.name || el.id || `e${eIdx}`}`) + 1 }}</span>
-            </template>
+
+      <!-- 元素检测框 overlay -->
+      <div
+        :class="['detected-elements-overlay', { 'annotate-mode': activeTool === 'annotate', 'ctrl-mode': ctrlHeld && activeTool !== 'annotate', 'detection-visible': getDetectionVisible() }]"
+        @pointerdown="handleDetectedOverlayClick"
+      >
+        <template v-for="(elements, layerId) in layerDetectedElements" :key="layerId">
+          <template v-for="(el, eIdx) in elements" :key="`${layerId}::${el.object_name || el.name || el.id || `e${eIdx}`}`">
+            <div
+              v-if="layers.find((l) => l.id === layerId) && !isElementBlocked(layerId, el.box_2d || el.box2d || [0,0,1,1])"
+              class="detected-element-box"
+              :class="{ 'selected': selectedDetectedElements.has(`${layerId}::${el.object_name || el.name || el.id || `e${eIdx}`}`) }"
+              :style="(function() {
+                const layer = layers.find((l) => l.id === layerId);
+                const box = el.box_2d || el.box2d || [0,0,1,1];
+                // 节点类型有 padding（外层4px + 内层4px = 8px），需要偏移
+                const isNode = layer.type === 'image' || layer.type === 'video' || layer.type === 'text' || layer.type === 'image-placeholder' || (layer.url && !layer.type);
+                const pad = isNode ? 8 : 0;
+                const innerW = layer.width - pad * 2;
+                const innerH = layer.height - pad * 2;
+                return {
+                  left: `${(layer.x + pad + box[1] * innerW) * viewScale + viewOffset.x}px`,
+                  top: `${(layer.y + pad + box[0] * innerH) * viewScale + viewOffset.y}px`,
+                  width: `${Math.max(2, (box[3] - box[1]) * innerW * viewScale)}px`,
+                  height: `${Math.max(2, (box[2] - box[0]) * innerH * viewScale)}px`,
+                };
+              })()"
+            >
+              <span class="detected-element-label">{{ el.object_name || el.name || '元素' }}</span>
+            </div>
+            <span
+              v-if="selectedDetectedElements.has(`${layerId}::${el.object_name || el.name || el.id || `e${eIdx}`}`) && !isElementBlocked(layerId, el.box_2d || el.box2d || [0,0,1,1])"
+              class="detected-element-index"
+              :style="getElementClickStyle(`${layerId}::${el.object_name || el.name || el.id || `e${eIdx}`}`)"
+            >{{ [...selectedDetectedElements].indexOf(`${layerId}::${el.object_name || el.name || el.id || `e${eIdx}`}`) + 1 }}</span>
           </template>
-        </div>
+        </template>
+      </div>
       </div>
 
       <aside
@@ -2201,14 +3238,10 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
       </aside>
 
       <nav class="bottom-tools uc-sidebar-tools uc-floating uc-floating-toolbar is-docked" aria-label="画布工具栏" @pointerdown.stop>
-        <div class="uc-toolbar-add-wrap">
-          <button type="button" class="uc-sidebar-tool-btn uc-toolbar-add-btn" :class="{ active: toolbarAddOpen }" title="添加图片" @click.stop="toolbarAddOpen = !toolbarAddOpen">
+        <div class="uc-toolbar-add-wrap" ref="addMenuWrapEl">
+          <button type="button" class="uc-sidebar-tool-btn uc-toolbar-add-btn" :class="{ active: toolbarAddOpen }" title="添加节点" @click.stop="toggleToolbarAdd()">
             <i class="ri-add-line" aria-hidden="true"></i>
           </button>
-          <div v-if="toolbarAddOpen" class="uc-toolbar-add-menu" @click.stop>
-            <button @click="openImageUpload('canvas'); toolbarAddOpen = false"><i class="ri-upload-2-line" aria-hidden="true"></i>本地上传</button>
-            <button @click="toolbarAddOpen = false"><i class="ri-history-line" aria-hidden="true"></i>从历史生成导入</button>
-          </div>
         </div>
         <button
           v-for="tool in canvasTools"
@@ -2242,16 +3275,51 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
         </header>
 
         <section v-if="rightTab === 'chat'" class="chat-panel uc-chat">
-          <div class="chat-history uc-chat-history">
+          <div
+            ref="chatHistoryRef"
+            class="chat-history uc-chat-history"
+            @mouseover="handleChatPillEnter"
+            @mousemove="handleChatPillMove"
+            @mouseout="handleChatPillLeave"
+          >
             <div
               v-for="message in chatMessages"
               :key="message.id"
               :class="['uc-chat-msg', message.role === 'user' ? 'uc-chat-msg--user' : 'uc-chat-msg--assistant']"
             >
-              <div class="uc-chat-msg-bubble">{{ message.text }}</div>
+              <div class="uc-chat-msg-bubble" v-html="renderMessageContent(message)"></div>
             </div>
             <div v-if="!chatMessages.length" class="chat-empty"><i>☏</i><strong>对话生图：通过自然语言修改画布上的图片</strong><span>点选画布上的图片，再描述你想要的修改</span></div>
           </div>
+          <!-- 悬停预览弹窗 -->
+          <Teleport to="body">
+            <div
+              v-if="hoverPreview.visible && hoverPreview.layerUrl"
+              class="chat-pill-preview"
+              :style="{
+                left: `${hoverPreview.x}px`,
+                top: `${hoverPreview.y}px`,
+                '--preview-img-w': `${hoverPreviewImageSize.width}px`,
+                '--preview-img-h': `${hoverPreviewImageSize.height}px`,
+              }"
+            >
+              <div class="chat-pill-preview-img-wrap">
+                <div class="chat-pill-preview-img-inner">
+                  <img :src="hoverPreview.layerUrl" alt="" />
+                  <div
+                    v-if="hoverPreview.box && hoverPreview.box.length === 4 && hoverPreview.order"
+                    class="chat-pill-preview-marker"
+                    :style="{
+                      left: `${((hoverPreview.box[1] || 0) + (hoverPreview.box[3] || 1)) * 50}%`,
+                      top: `${((hoverPreview.box[0] || 0) + (hoverPreview.box[2] || 1)) * 50}%`,
+                    }"
+                  >
+                    <span>{{ hoverPreview.order }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </Teleport>
           <div class="chat-input uc-chat-inputbar" :style="{ flexBasis: `${panel.chatHeight + 24}px`, minHeight: `${panel.chatHeight + 24}px` }">
             <div v-if="selectedLayer" class="target-layer"><img :src="selectedLayer.thumbnailUrl" alt="" /><span>{{ layerName(selectedLayerIndex) }}</span></div>
             <div class="chat-box uc-ref-panel" :style="{ height: `${panel.chatHeight}px` }" @click="handleChatBoxClick">
@@ -2289,6 +3357,7 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
                   @click="handleEditorPillClick"
                   @keydown.enter.prevent="sendChat"
                   @keydown.ctrl.enter.prevent="document.execCommand('insertLineBreak')"
+                  @keydown.backspace="handleEditorBackspace"
                 />
               </div>
               <div class="uc-chat-generate-options" @click.stop>
@@ -2397,6 +3466,24 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
     </div>
   </main>
 
+  <!-- + 号菜单：Teleport 到 body，脱离 transform 父级 -->
+  <Teleport to="body">
+    <div v-if="toolbarAddOpen" class="uc-toolbar-add-menu" :style="addMenuPosition" @click.stop>
+      <div class="uc-toolbar-add-group">
+        <span class="uc-toolbar-add-group-label">添加文件</span>
+        <button @click="openImageUpload('canvas'); toolbarAddOpen = false"><i class="ri-upload-2-line" aria-hidden="true"></i><span class="uc-toolbar-add-text">本地上传</span><span class="uc-toolbar-add-shortcut">拖拽</span></button>
+        <button @click="toolbarAddOpen = false"><i class="ri-history-line" aria-hidden="true"></i><span class="uc-toolbar-add-text">历史生成导入</span><span class="uc-toolbar-add-shortcut">H</span></button>
+      </div>
+      <div class="uc-toolbar-add-divider"></div>
+      <div class="uc-toolbar-add-group">
+        <span class="uc-toolbar-add-group-label">添加节点</span>
+        <button @click="addImageNode(); toolbarAddOpen = false"><i class="ri-image-line" aria-hidden="true"></i><span class="uc-toolbar-add-text">图片</span><span class="uc-toolbar-add-shortcut">I</span></button>
+        <button @click="addVideoNode(); toolbarAddOpen = false"><i class="ri-video-line" aria-hidden="true"></i><span class="uc-toolbar-add-text">视频</span><span class="uc-toolbar-add-shortcut">V</span></button>
+        <button @click="addTextNode(); toolbarAddOpen = false"><i class="ri-text" aria-hidden="true"></i><span class="uc-toolbar-add-text">文本</span><span class="uc-toolbar-add-shortcut">T</span></button>
+      </div>
+    </div>
+  </Teleport>
+
   <!-- 重叠元素切换弹窗 -->
   <Teleport to="body">
     <div v-if="overlapDropdown.visible" class="detect-select-overlay" @click="closeOverlapDropdown">
@@ -2413,6 +3500,99 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
             <span class="detect-select-popup-name">{{ c.name }}</span>
           </button>
         </div>
+      </div>
+    </div>
+  </Teleport>
+
+  <!-- 图片查看器 -->
+  <Teleport to="body">
+    <div v-if="imageViewer.show" class="uc-image-viewer-overlay" @click.self="closeImageViewer" @keydown.escape="closeImageViewer">
+      <div class="uc-image-viewer-container">
+        <!-- 关闭按钮 -->
+        <button class="uc-image-viewer-close" @click="closeImageViewer">
+          <i class="ri-close-line"></i>
+        </button>
+
+        <!-- 图片显示区域 -->
+        <div class="uc-image-viewer-content">
+          <img
+            :src="imageViewer.url"
+            :alt="imageViewer.name"
+            :style="{
+              transform: `rotate(${imageViewer.rotation}deg) scaleX(${imageViewer.flipX ? -1 : 1}) scaleY(${imageViewer.flipY ? -1 : 1}) scale(${imageViewer.scale})`,
+              transition: 'transform 0.3s ease',
+            }"
+            draggable="false"
+          />
+        </div>
+
+        <!-- 底部工具栏 -->
+        <div class="uc-image-viewer-toolbar">
+          <!-- 左翻转 -->
+          <button class="uc-viewer-tool-btn" title="左翻转" @click="rotateImage(-90)">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+              <path d="M3 3v5h5"/>
+            </svg>
+          </button>
+
+          <!-- 右翻转 -->
+          <button class="uc-viewer-tool-btn" title="右翻转" @click="rotateImage(90)">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
+              <path d="M21 3v5h-5"/>
+            </svg>
+          </button>
+
+          <!-- 左右镜像 -->
+          <button class="uc-viewer-tool-btn" title="左右镜像" @click="flipImage('x')">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 3v18"/>
+              <path d="M16 7l4 5-4 5"/>
+              <path d="M8 7l-4 5 4 5"/>
+            </svg>
+          </button>
+
+          <!-- 上下镜像 -->
+          <button class="uc-viewer-tool-btn" title="上下镜像" @click="flipImage('y')">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 12h18"/>
+              <path d="M7 8L2 12l5 4"/>
+              <path d="M17 8l5 4-5 4"/>
+            </svg>
+          </button>
+
+          <!-- 缩小 -->
+          <button class="uc-viewer-tool-btn" title="缩小" @click="zoomImage(-0.25)">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"/>
+              <path d="M21 21l-4.35-4.35"/>
+              <path d="M8 11h6"/>
+            </svg>
+          </button>
+
+          <!-- 放大 -->
+          <button class="uc-viewer-tool-btn" title="放大" @click="zoomImage(0.25)">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"/>
+              <path d="M21 21l-4.35-4.35"/>
+              <path d="M11 8v6"/>
+              <path d="M8 11h6"/>
+            </svg>
+          </button>
+
+          <!-- 下载 -->
+          <button class="uc-viewer-tool-btn" title="下载" @click="downloadImage">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+          </button>
+        </div>
+
+        <!-- 页码指示器 -->
+        <div class="uc-image-viewer-page">1 / 1</div>
       </div>
     </div>
   </Teleport>
