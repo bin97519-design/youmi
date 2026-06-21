@@ -111,26 +111,43 @@ const connecting = reactive({
   currentY: 0,
 });
 
-// 获取节点端口的世界坐标（与 CSS 端口位置对齐）
-function getPortWorldPosition(layerId, port) {
-  const layer = layers.value.find(l => l.id === layerId);
-  if (!layer) return { x: 0, y: 0 };
-  const nodeWidth = layer.width || 200;
-  // 图片节点高度 = width × (naturalHeight / naturalWidth)
-  const nodeHeight = layer.height
-    || (layer.naturalWidth && layer.naturalHeight ? Math.round(nodeWidth * layer.naturalHeight / layer.naturalWidth) : 150);
-  // CSS 端口: left: -14px, width: 24px → 中心偏移 -14+12 = -2px
-  // CSS 端口: right: -14px, width: 24px → 中心偏移 nodeWidth+14-12 = nodeWidth+2px
-  const x = layer.x + (port === 'left' ? -2 : nodeWidth + 2);
-  const y = layer.y + nodeHeight / 2;
-  return { x, y };
+// 获取 stage 元素的 rect（缓存）
+function getStageRect() {
+  const stageEl = document.querySelector('.stage');
+  return stageEl ? stageEl.getBoundingClientRect() : null;
+}
+
+// 通过 DOM 获取端口的中心坐标（相对于 stage 左上角的像素值）
+function getPortPosition(layerId, port) {
+  const portClass = port === 'left' ? 'uc-port-left' : 'uc-port-right';
+  const layerEl = document.querySelector(`[data-layer-id="${layerId}"]`);
+  if (!layerEl) return { x: 0, y: 0 };
+  const portEl = layerEl.querySelector(`.${portClass}`);
+  if (!portEl) return { x: 0, y: 0 };
+  const stageRect = getStageRect();
+  if (!stageRect) return { x: 0, y: 0 };
+  const rect = portEl.getBoundingClientRect();
+  return {
+    x: rect.left + rect.width / 2 - stageRect.left,
+    y: rect.top + rect.height / 2 - stageRect.top,
+  };
+}
+
+// 屏幕坐标 → stage 相对坐标
+function screenToStage(clientX, clientY) {
+  const stageRect = getStageRect();
+  if (!stageRect) return { x: 0, y: 0 };
+  return {
+    x: clientX - stageRect.left,
+    y: clientY - stageRect.top,
+  };
 }
 
 // 开始连接
 function startConnection(event, layerId, port) {
   event.stopPropagation();
   event.preventDefault();
-  const pos = getPortWorldPosition(layerId, port);
+  const pos = getPortPosition(layerId, port);
   connecting.active = true;
   connecting.fromLayerId = layerId;
   connecting.fromPort = port;
@@ -140,17 +157,12 @@ function startConnection(event, layerId, port) {
   connecting.currentY = pos.y;
 }
 
-// 更新连接线拖拽位置（屏幕坐标转 SVG 内部坐标）
+// 更新连接线拖拽位置
 function updateConnectionDrag(event) {
   if (!connecting.active) return;
-  const stageEl = document.querySelector('.stage');
-  if (!stageEl) return;
-  const rect = stageEl.getBoundingClientRect();
-  const vs = viewScale.value;
-  const vo = viewOffset.value;
-  // 屏幕坐标 → 画布世界坐标: (screen - offset) / scale
-  connecting.currentX = (event.clientX - rect.left - vo.x) / vs;
-  connecting.currentY = (event.clientY - rect.top - vo.y) / vs;
+  const pos = screenToStage(event.clientX, event.clientY);
+  connecting.currentX = pos.x;
+  connecting.currentY = pos.y;
 }
 
 // 完成连接
@@ -195,10 +207,17 @@ function generateCurvePath(x1, y1, x2, y2) {
 }
 
 // 计算所有连接线路径
-const connectionPaths = computed(() => {
+// 连接线渲染刷新标记（节点移动时触发重绘）
+const connectionTick = ref(0);
+function refreshConnections() { connectionTick.value++; }
+
+// 连接线路径（每次渲染都从 DOM 实时获取端口位置）
+function getConnectionPaths() {
+  // eslint-disable-next-line no-unused-vars
+  const _tick = connectionTick.value; // 依赖触发
   return connections.value.map(conn => {
-    const from = getPortWorldPosition(conn.fromLayerId, conn.fromPort);
-    const to = getPortWorldPosition(conn.toLayerId, conn.toPort);
+    const from = getPortPosition(conn.fromLayerId, conn.fromPort);
+    const to = getPortPosition(conn.toLayerId, conn.toPort);
     return {
       ...conn,
       path: generateCurvePath(from.x, from.y, to.x, to.y),
@@ -208,7 +227,7 @@ const connectionPaths = computed(() => {
       toY: to.y,
     };
   });
-});
+}
 
 // 当前拖拽中的连接线路径
 const connectingPath = computed(() => {
@@ -1322,6 +1341,7 @@ function startLayerDrag(event, layer) {
 
 function moveLayer(event) {
   if (!dragState.value) return;
+  refreshConnections();
   const scale = doc.value.payload.view.scale || 1;
   const dx = (event.clientX - dragState.value.startX) / scale;
   const dy = (event.clientY - dragState.value.startY) / scale;
@@ -2683,6 +2703,7 @@ function wheelZoom(event) {
     x: event.clientX - rect.left,
     y: event.clientY - rect.top,
   });
+  nextTick(() => refreshConnections());
 }
 
 function startMarquee(event) {
@@ -3260,9 +3281,9 @@ function themeLabel() {
         </figure>
 
         <!-- 连接线 SVG 层 -->
-        <svg class="connections-layer" :style="{ transform: `translate(${viewOffset.x}px, ${viewOffset.y}px) scale(${viewScale})` }">
+        <svg class="connections-layer">
           <!-- 已建立的连接线 -->
-          <g v-for="conn in connectionPaths" :key="conn.id" class="connection-group">
+          <g v-for="conn in getConnectionPaths()" :key="conn.id" class="connection-group">
             <path
               :d="conn.path"
               class="connection-line"
