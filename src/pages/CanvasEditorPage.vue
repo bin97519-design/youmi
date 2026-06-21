@@ -3730,64 +3730,37 @@ function themeLabel() {
         <div class="uc-image-viewer-toolbar">
           <!-- 左翻转 -->
           <button class="uc-viewer-tool-btn" title="左翻转" @click="rotateImage(-90)">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
-              <path d="M3 3v5h5"/>
-            </svg>
+            <i class="ri-arrow-go-back-line"></i>
           </button>
 
           <!-- 右翻转 -->
           <button class="uc-viewer-tool-btn" title="右翻转" @click="rotateImage(90)">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
-              <path d="M21 3v5h-5"/>
-            </svg>
+            <i class="ri-arrow-go-forward-line"></i>
           </button>
 
           <!-- 左右镜像 -->
           <button class="uc-viewer-tool-btn" title="左右镜像" @click="flipImage('x')">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M12 3v18"/>
-              <path d="M16 7l4 5-4 5"/>
-              <path d="M8 7l-4 5 4 5"/>
-            </svg>
+            <i class="ri-flip-horizontal-line"></i>
           </button>
 
           <!-- 上下镜像 -->
           <button class="uc-viewer-tool-btn" title="上下镜像" @click="flipImage('y')">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M3 12h18"/>
-              <path d="M7 8L2 12l5 4"/>
-              <path d="M17 8l5 4-5 4"/>
-            </svg>
+            <i class="ri-flip-vertical-line"></i>
           </button>
 
           <!-- 缩小 -->
           <button class="uc-viewer-tool-btn" title="缩小" @click="zoomImage(-0.25)">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="11" cy="11" r="8"/>
-              <path d="M21 21l-4.35-4.35"/>
-              <path d="M8 11h6"/>
-            </svg>
+            <i class="ri-zoom-out-line"></i>
           </button>
 
           <!-- 放大 -->
           <button class="uc-viewer-tool-btn" title="放大" @click="zoomImage(0.25)">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="11" cy="11" r="8"/>
-              <path d="M21 21l-4.35-4.35"/>
-              <path d="M11 8v6"/>
-              <path d="M8 11h6"/>
-            </svg>
+            <i class="ri-zoom-in-line"></i>
           </button>
 
           <!-- 下载 -->
           <button class="uc-viewer-tool-btn" title="下载" @click="downloadImage">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="7 10 12 15 17 10"/>
-              <line x1="12" y1="15" x2="12" y2="3"/>
-            </svg>
+            <i class="ri-download-line"></i>
           </button>
         </div>
 
