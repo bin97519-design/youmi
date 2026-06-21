@@ -1106,7 +1106,7 @@ const imageViewer = reactive({
   show: false,
   url: '',
   name: '',
-  rotation: 0,    // 旋转角度
+  rotation: 0,    // 旋转角度（实际度数，不取模）
   flipX: false,    // 左右镜像
   flipY: false,    // 上下镜像
   scale: 1,        // 缩放
@@ -1138,9 +1138,9 @@ function closeImageViewer() {
   imageViewer.url = '';
 }
 
-// 旋转图片
+// 旋转图片 — 直接累加，不取模，避免跨越0/360边界时动画反向
 function rotateImage(deg) {
-  imageViewer.rotation = (imageViewer.rotation + deg + 360) % 360;
+  imageViewer.rotation += deg;
 }
 
 // 镜像翻转
