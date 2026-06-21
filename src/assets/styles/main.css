@@ -12884,10 +12884,12 @@ body {
   align-items: center;
   gap: 2px;
   padding: 4px 6px;
-  background: #ffffff;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   border: none;
   border-radius: 40px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15), 0 1px 3px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.2);
   animation: toolbarSlideUp 0.35s cubic-bezier(0.215, 0.61, 0.355, 1) 0.1s both;
   position: absolute;
   bottom: 24px;
@@ -12913,7 +12915,7 @@ body {
   border-radius: 8px;
   border: none;
   background: transparent;
-  color: #333333;
+  color: rgba(255, 255, 255, 0.85);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -12923,19 +12925,19 @@ body {
 }
 
 .uc-viewer-tool-btn:hover {
-  background: rgba(0, 0, 0, 0.05);
-  color: #000000;
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
 }
 
 .uc-viewer-tool-btn:active {
   transform: scale(0.95);
-  background: rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .uc-viewer-tool-divider {
   width: 1px;
   height: 20px;
-  background: #e5e5e5;
+  background: rgba(255, 255, 255, 0.2);
   margin: 0 4px;
   flex-shrink: 0;
 }
