@@ -9922,6 +9922,7 @@ body {
   stroke-width: 2;
   stroke-linecap: round;
   stroke-dasharray: 8 5;
+  animation: dashFlow 0.6s linear infinite;
   pointer-events: stroke;
   cursor: pointer;
   transition: stroke 0.2s ease, stroke-width 0.2s ease;
@@ -9935,8 +9936,6 @@ body {
 .connection-line.connecting {
   stroke: var(--color-accent-400, #818cf8);
   stroke-width: 2;
-  stroke-dasharray: 8 4;
-  animation: dashFlow 0.6s linear infinite;
   pointer-events: none;
 }
 
