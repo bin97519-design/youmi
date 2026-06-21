@@ -9964,6 +9964,15 @@ body {
   pointer-events: auto;
 }
 
+/* 透明宽点击区域 */
+.connection-line-hitarea {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 20;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
 /* 连接线选中状态 */
 .connection-line.selected {
   stroke: var(--color-accent-400, #818cf8);

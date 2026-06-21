@@ -3305,6 +3305,12 @@ function themeLabel() {
         <svg class="connections-layer">
           <!-- 已建立的连接线 -->
           <g v-for="conn in getConnectionPaths()" :key="conn.id" class="connection-group">
+            <!-- 透明宽点击区域 -->
+            <path
+              :d="conn.path"
+              class="connection-line-hitarea"
+              @click.stop="selectConnection($event, conn.id)"
+            />
             <!-- 可视连接线 -->
             <path
               :d="conn.path"
