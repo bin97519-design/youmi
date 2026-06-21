@@ -3728,25 +3728,17 @@ function themeLabel() {
 
         <!-- 底部工具栏 -->
         <div class="uc-image-viewer-toolbar">
-          <!-- 左翻转 -->
-          <button class="uc-viewer-tool-btn" title="左翻转" @click="rotateImage(-90)">
-            <i class="ri-arrow-go-back-line"></i>
+          <!-- 左右翻转 -->
+          <button class="uc-viewer-tool-btn" title="左右翻转" @click="flipImage('x')">
+            <i class="ri-arrow-left-right-line"></i>
           </button>
 
-          <!-- 右翻转 -->
-          <button class="uc-viewer-tool-btn" title="右翻转" @click="rotateImage(90)">
-            <i class="ri-arrow-go-forward-line"></i>
+          <!-- 旋转 -->
+          <button class="uc-viewer-tool-btn" title="旋转" @click="rotateImage(90)">
+            <i class="ri-refresh-line"></i>
           </button>
 
-          <!-- 左右镜像 -->
-          <button class="uc-viewer-tool-btn" title="左右镜像" @click="flipImage('x')">
-            <i class="ri-flip-horizontal-line"></i>
-          </button>
-
-          <!-- 上下镜像 -->
-          <button class="uc-viewer-tool-btn" title="上下镜像" @click="flipImage('y')">
-            <i class="ri-flip-vertical-line"></i>
-          </button>
+          <div class="uc-viewer-tool-divider"></div>
 
           <!-- 缩小 -->
           <button class="uc-viewer-tool-btn" title="缩小" @click="zoomImage(-0.25)">
@@ -3757,6 +3749,8 @@ function themeLabel() {
           <button class="uc-viewer-tool-btn" title="放大" @click="zoomImage(0.25)">
             <i class="ri-zoom-in-line"></i>
           </button>
+
+          <div class="uc-viewer-tool-divider"></div>
 
           <!-- 下载 -->
           <button class="uc-viewer-tool-btn" title="下载" @click="downloadImage">

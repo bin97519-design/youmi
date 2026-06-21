@@ -12867,7 +12867,7 @@ body {
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  padding: 20px;
+  padding: 20px 20px 80px;
 }
 
 .uc-image-viewer-content img {
@@ -12883,15 +12883,18 @@ body {
 .uc-image-viewer-toolbar {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 8px 12px;
-  background: rgba(0, 0, 0, 0.75);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 10px;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  gap: 2px;
+  padding: 6px 8px;
+  background: #ffffff;
+  border: none;
+  border-radius: 40px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15), 0 1px 3px rgba(0, 0, 0, 0.1);
   animation: toolbarSlideUp 0.35s cubic-bezier(0.215, 0.61, 0.355, 1) 0.1s both;
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
 }
 
 @keyframes toolbarSlideUp {
@@ -12906,36 +12909,36 @@ body {
 }
 
 .uc-viewer-tool-btn {
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.05);
-  color: rgba(255, 255, 255, 0.85);
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  border: none;
+  background: transparent;
+  color: #333333;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   transition: all 0.2s ease;
-  font-size: 16px;
+  font-size: 20px;
 }
 
 .uc-viewer-tool-btn:hover {
-  background: rgba(255, 255, 255, 0.15);
-  border-color: rgba(255, 255, 255, 0.2);
-  color: #ffffff;
+  background: rgba(0, 0, 0, 0.05);
+  color: #000000;
 }
 
 .uc-viewer-tool-btn:active {
   transform: scale(0.95);
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.08);
 }
 
 .uc-viewer-tool-divider {
   width: 1px;
-  height: 24px;
-  background: rgba(255, 255, 255, 0.15);
+  height: 20px;
+  background: #e5e5e5;
   margin: 0 4px;
+  flex-shrink: 0;
 }
 
 .uc-image-viewer-page {
