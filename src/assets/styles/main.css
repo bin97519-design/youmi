@@ -9802,16 +9802,14 @@ body {
   overflow: visible;
   cursor: move;
 }
-/* 选中态：暖金品牌色描边，圆角弧形 */
+/* 选中态：暖金品牌色描边，紧贴图片无空隙 */
 .canvas-layer.is-text.selected,
 .canvas-layer.is-video.selected,
 .canvas-layer.is-image.selected,
 .canvas-layer.is-image-placeholder.selected {
   outline: none;
-  box-shadow:
-    0 0 0 2px #fff1a6,
-    0 0 16px rgba(255, 241, 166, 0.35);
-  border-radius: 12px;
+  box-shadow: 0 0 0 2px #fff1a6;
+  border-radius: 8px;
 }
 /* 图层标签：顶部外侧，选中才显示，无边框 */
 .uc-layer-label {
@@ -10055,8 +10053,9 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  padding: 4px;
+  justify-content: center;
+  gap: 0;
+  padding: 0;
   background: transparent;
   border: none;
   cursor: move;
@@ -10065,11 +10064,11 @@ body {
   width: 100%;
   flex: 1;
   background: rgba(10, 12, 20, 0.92);
-  border-radius: 12px;
+  border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 20px;
+  padding: 0;
   min-height: 200px;
   position: relative;
   overflow: auto;
@@ -10142,8 +10141,8 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  padding: 4px;
+  gap: 0;
+  padding: 0;
   background: transparent;
   border: none;
   cursor: move;
@@ -10177,8 +10176,8 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  padding: 4px;
+  gap: 0;
+  padding: 0;
   background: transparent;
   border: none;
   cursor: move;
@@ -10241,8 +10240,8 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  padding: 4px;
+  gap: 0;
+  padding: 0;
   background: transparent;
   border: none;
   cursor: move;
@@ -10251,11 +10250,11 @@ body {
   width: 100%;
   flex: 1;
   background: rgba(10, 12, 20, 0.92);
-  border-radius: 12px;
+  border-radius: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 4px;
+  padding: 0;
   min-height: 120px;
   overflow: hidden;
 }
@@ -10263,7 +10262,7 @@ body {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
-  border-radius: 8px;
+  border-radius: 0;
   display: block;
 }
 

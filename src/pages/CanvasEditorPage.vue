@@ -2419,9 +2419,8 @@ function getElementClickStyle(key) {
   const vs = viewScale.value;
   const vo = viewOffset.value;
 
-  // 与 detected-element-box 的 :style 保持一致的 padding 计算
-  const isNode = layer.type === 'image' || layer.type === 'video' || layer.type === 'text' || layer.type === 'image-placeholder' || (layer.url && !layer.type);
-  const pad = isNode ? 8 : 0;
+  // 与 detected-element-box 的 :style 保持一致（pad=0，CSS 已无内边距）
+  const pad = 0;
   const innerW = layer.width - pad * 2;
   const innerH = layer.height - pad * 2;
 
@@ -3430,9 +3429,8 @@ function themeLabel() {
               :style="(function() {
                 const layer = layers.find((l) => l.id === layerId);
                 const box = el.box_2d || el.box2d || [0,0,1,1];
-                // 节点类型有 padding（外层4px + 内层4px = 8px），需要偏移
-                const isNode = layer.type === 'image' || layer.type === 'video' || layer.type === 'text' || layer.type === 'image-placeholder' || (layer.url && !layer.type);
-                const pad = isNode ? 8 : 0;
+                // 节点类型 padding 已移除（CSS padding:0），框选原点即 layer.x/y
+                const pad = 0;
                 const innerW = layer.width - pad * 2;
                 const innerH = layer.height - pad * 2;
                 return {
