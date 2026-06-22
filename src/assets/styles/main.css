@@ -1271,8 +1271,9 @@ input::placeholder {
   z-index: 200;
 }
 
+/* 标注模式：overlay 也不拦截，所有拖拽穿透到 stage */
 .detected-elements-overlay.annotate-mode {
-  pointer-events: auto;
+  pointer-events: none;
 }
 
 /* 标注模式 / Ctrl模式下：AI元素框不拦截 pointer，让拖拽穿透到 stage 画框 */
@@ -1280,7 +1281,6 @@ input::placeholder {
 .detected-elements-overlay.ctrl-mode .detected-element-box {
   pointer-events: none;
 }
-/* AI元素框仅保留 hover 视觉效果（通过 CSS :hover 不需要 pointer-events） */
 /* 但删除按钮仍需可点 */
 .detected-elements-overlay .manual-element-delete {
   pointer-events: auto;
