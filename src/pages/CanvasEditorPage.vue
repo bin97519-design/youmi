@@ -316,7 +316,7 @@ const panState = ref(null);
 const resizeState = ref(null);
 const marquee = reactive({ active: false, startX: 0, startY: 0, currentX: 0, currentY: 0 });
 const annotationInput = reactive({ visible: false, layerId: '', x: 0, y: 0, width: 0, height: 0, text: '', geoPixel: null });
-const manualBoxDraft = reactive({ active: false, startX: 0, startY: 0, currentX: 0, currentY: 0, layerId: '' });
+const manualBoxDraft = reactive({ active: false, visible: false, startX: 0, startY: 0, currentX: 0, currentY: 0, layerId: '' });
 // 手动框选命名输入
 const manualNameInput = reactive({ visible: false, layerId: '', x: 0, y: 0, box_2d: null, text: '' });
 // 重叠元素候选列表：key = "layerId::elementId" → [{layerId, el, id, name, box_2d, area}]
@@ -509,7 +509,7 @@ const marqueeStyle = computed(() => {
 });
 
 const manualBoxDraftStyle = computed(() => {
-  if (!manualBoxDraft.active) return {};
+  if (!manualBoxDraft.active || !manualBoxDraft.visible) return {};
   const left = Math.min(manualBoxDraft.startX, manualBoxDraft.currentX);
   const top = Math.min(manualBoxDraft.startY, manualBoxDraft.currentY);
   return {
@@ -2857,6 +2857,12 @@ function moveMarquee(event) {
     const rect = event.currentTarget.getBoundingClientRect();
     manualBoxDraft.currentX = event.clientX - rect.left;
     manualBoxDraft.currentY = event.clientY - rect.top;
+    // 拖拽超过 4px 才显示框，避免点击时闪现红点
+    const dx = Math.abs(manualBoxDraft.currentX - manualBoxDraft.startX);
+    const dy = Math.abs(manualBoxDraft.currentY - manualBoxDraft.startY);
+    if (dx > 4 || dy > 4) {
+      manualBoxDraft.visible = true;
+    }
     return;
   }
 
@@ -2877,6 +2883,7 @@ function stopMarquee(event) {
     if (event.currentTarget.hasPointerCapture) event.currentTarget.releasePointerCapture(event.pointerId);
     createManualElement();
     manualBoxDraft.active = false;
+    manualBoxDraft.visible = false;
     return;
   }
 
@@ -3389,7 +3396,7 @@ function themeLabel() {
         </div>
 
         <div v-if="marquee.active" class="selection-marquee" :style="marqueeStyle" />
-        <div v-if="manualBoxDraft.active" class="manual-box-draft" :style="manualBoxDraftStyle" />
+        <div v-if="manualBoxDraft.visible" class="manual-box-draft" :style="manualBoxDraftStyle" />
         <div v-if="manualNameInput.visible" class="manual-name-input" :style="{ left: `${manualNameInput.x}px`, top: `${manualNameInput.y}px` }" @pointerdown.stop>
           <input
             ref="manualNameInputRef"
