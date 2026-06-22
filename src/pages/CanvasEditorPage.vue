@@ -1784,6 +1784,9 @@ function showPillPreview(pill, event) {
 
 // 标注模式或 Ctrl+点击时，智能选择重叠区域最前景元素
 function handleDetectedOverlayClick(event) {
+  // 如果点击的是手动元素删除按钮，放行
+  if (event.target.closest?.('.manual-element-delete')) return;
+
   // 如果点击的是 annotate-banner（退出标记按钮等），放行
   if (event.target.closest?.('.annotate-banner')) return;
 
@@ -2224,6 +2227,7 @@ function cancelManualElementName() {
 
 // 删除手动框选元素（AI 检测元素不可删）
 function removeManualElement(layerId, el) {
+  console.log('[manual] removeManualElement called:', layerId, el.object_name || el.name || el.id);
   const elKey = `${layerId}::${el.object_name || el.name || el.id}`;
   const elements = layerDetectedElements.value[layerId];
   if (!elements) return;
@@ -2809,8 +2813,9 @@ function startMarquee(event) {
     deselectConnection();
   }
 
-  // Ctrl+点击元素框 → 选中/取消选中元素
+  // Ctrl+点击元素框 → 选中/取消选中元素（但排除手动元素删除按钮）
   if ((event.ctrlKey || event.metaKey) && activeTool.value !== 'annotate') {
+    if (event.target.closest('.manual-element-delete')) return;
     if (event.target.closest('.detected-element-box')) {
       handleDetectedOverlayClick(event);
       return;
@@ -3480,6 +3485,7 @@ function themeLabel() {
                 v-if="el.manual"
                 class="manual-element-delete"
                 title="删除手动元素"
+                @mousedown.stop
                 @pointerdown.stop
                 @click.stop="removeManualElement(layerId, el)"
               >×</button>
