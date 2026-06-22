@@ -2813,25 +2813,11 @@ function startMarquee(event) {
     deselectConnection();
   }
 
-  // Ctrl模式下：单击AI元素框 → 选中/取消选中，拖拽 → 画框（由 pointerdown/pointermove 区分）
-  // 由于 CSS 已让 annotate/ctrl 模式下 AI 元素框 pointer-events:none，
-  // pointerdown 事件不会来自 .detected-element-box，所以这里只需处理 overlay 自身的点击
-  if ((event.ctrlKey || event.metaKey) && activeTool.value !== 'annotate') {
-    if (event.target.closest('.manual-element-delete')) return;
-    // overlay 可点击区域 → 选中元素（只有 detection-visible 且非 annotate/ctrl 模式时 box 才有 pointer-events）
-    if (event.target.closest('.detected-elements-overlay') && !event.target.closest('.detected-element-box')) {
-      // 交给 handleDetectedOverlayClick，但先看有没有命中元素
-      handleDetectedOverlayClick(event);
-      // 如果选中了元素就返回，否则继续走画框逻辑
-      if (selectedDetectedElements.value.size > 0 || event.defaultPrevented) return;
-    }
-  }
-
   // 标注模式 或 Ctrl+拖拽：手动画框添加元素
   const isAnnotate = activeTool.value === 'annotate';
   const isCtrlDraw = (event.ctrlKey || event.metaKey) && activeTool.value !== 'annotate' && activeTool.value !== 'hand';
   if (isAnnotate || isCtrlDraw) {
-    // 排除 UI 控件，但不排除 AI 元素框——拖拽时应该直接画框
+    // 排除 UI 控件
     if (event.target.closest?.('.manual-name-input, .layer-toolbar, .bottom-tools, .top-tools, .right-panel, .annotate-banner, .manual-element-delete')) return;
     // 如果命名框正在显示，先确认当前元素再开始新框选
     if (manualNameInput.visible) {
@@ -3459,10 +3445,9 @@ function themeLabel() {
           <button @mousedown.prevent="cancelManualElementName">✕</button>
         </div>
 
-      <!-- 元素检测框 overlay -->
+      <!-- 元素检测框 overlay：标注/Ctrl模式下不拦截鼠标，让事件穿透到 stage -->
       <div
         :class="['detected-elements-overlay', { 'annotate-mode': activeTool === 'annotate', 'ctrl-mode': ctrlHeld && activeTool !== 'annotate', 'detection-visible': getDetectionVisible() }]"
-        @pointerdown="handleDetectedOverlayClick"
       >
         <template v-for="(elements, layerId) in layerDetectedElements" :key="layerId">
           <template v-for="(el, eIdx) in elements" :key="`${layerId}::${el.object_name || el.name || el.id || `e${eIdx}`}`">
