@@ -2813,12 +2813,17 @@ function startMarquee(event) {
     deselectConnection();
   }
 
-  // Ctrl+点击元素框 → 选中/取消选中元素（但排除手动元素删除按钮）
+  // Ctrl模式下：单击AI元素框 → 选中/取消选中，拖拽 → 画框（由 pointerdown/pointermove 区分）
+  // 由于 CSS 已让 annotate/ctrl 模式下 AI 元素框 pointer-events:none，
+  // pointerdown 事件不会来自 .detected-element-box，所以这里只需处理 overlay 自身的点击
   if ((event.ctrlKey || event.metaKey) && activeTool.value !== 'annotate') {
     if (event.target.closest('.manual-element-delete')) return;
-    if (event.target.closest('.detected-element-box')) {
+    // overlay 可点击区域 → 选中元素（只有 detection-visible 且非 annotate/ctrl 模式时 box 才有 pointer-events）
+    if (event.target.closest('.detected-elements-overlay') && !event.target.closest('.detected-element-box')) {
+      // 交给 handleDetectedOverlayClick，但先看有没有命中元素
       handleDetectedOverlayClick(event);
-      return;
+      // 如果选中了元素就返回，否则继续走画框逻辑
+      if (selectedDetectedElements.value.size > 0 || event.defaultPrevented) return;
     }
   }
 
@@ -2826,7 +2831,8 @@ function startMarquee(event) {
   const isAnnotate = activeTool.value === 'annotate';
   const isCtrlDraw = (event.ctrlKey || event.metaKey) && activeTool.value !== 'annotate' && activeTool.value !== 'hand';
   if (isAnnotate || isCtrlDraw) {
-    if (event.target.closest?.('.detected-element-box, .detected-element-label, .manual-name-input, .layer-toolbar, .bottom-tools, .top-tools, .right-panel, .annotate-banner')) return;
+    // 排除 UI 控件，但不排除 AI 元素框——拖拽时应该直接画框
+    if (event.target.closest?.('.manual-name-input, .layer-toolbar, .bottom-tools, .top-tools, .right-panel, .annotate-banner, .manual-element-delete')) return;
     // 如果命名框正在显示，先确认当前元素再开始新框选
     if (manualNameInput.visible) {
       confirmManualElementName();
