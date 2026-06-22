@@ -1373,6 +1373,32 @@ input::placeholder {
   background: #22c55e;
 }
 
+/* 手动框选元素右上角 × 删除按钮 */
+.manual-element-delete {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1.5px solid #ff8a65;
+  background: rgba(20, 20, 30, 0.92);
+  color: #ff8a65;
+  font-size: 12px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 10;
+  padding: 0;
+  transition: all 0.15s ease;
+}
+.manual-element-delete:hover {
+  background: #ff8a65;
+  color: #fff;
+}
+
 /* 元素绿色编号圆圈 */
 .detected-element-index {
   position: absolute;

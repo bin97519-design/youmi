@@ -2222,6 +2222,39 @@ function cancelManualElementName() {
   manualBoxDraft.active = false;
 }
 
+// 删除手动框选元素（AI 检测元素不可删）
+function removeManualElement(layerId, el) {
+  const elKey = `${layerId}::${el.object_name || el.name || el.id}`;
+  const elements = layerDetectedElements.value[layerId];
+  if (!elements) return;
+  const next = elements.filter((e) => {
+    const key = `${layerId}::${e.object_name || e.name || e.id}`;
+    return key !== elKey;
+  });
+  layerDetectedElements.value = {
+    ...layerDetectedElements.value,
+    [layerId]: next,
+  };
+  // 从选中列表移除
+  if (selectedDetectedElements.value.has(elKey)) {
+    const set = new Set(selectedDetectedElements.value);
+    set.delete(elKey);
+    selectedDetectedElements.value = set;
+  }
+  // 同步清除 pill 候选
+  if (elementOverlapCandidates.value[elKey]) {
+    const nextCandidates = { ...elementOverlapCandidates.value };
+    delete nextCandidates[elKey];
+    elementOverlapCandidates.value = nextCandidates;
+  }
+  // 持久化
+  canvas.updateDocument(props.id, (draft) => {
+    draft.payload.detectedElements = JSON.parse(JSON.stringify(layerDetectedElements.value));
+    return draft;
+  });
+  chatSkipPillSync.value = false;
+}
+
 // 输入框失焦时自动确认（延迟判断，避免与按钮点击冲突）
 let _manualBlurTimer = 0;
 function onManualNameInputBlur() {
@@ -3442,6 +3475,14 @@ function themeLabel() {
               })()"
             >
               <span class="detected-element-label">{{ el.object_name || el.name || '元素' }}</span>
+              <!-- 手动框选元素：右上角显示 × 删除按钮 -->
+              <button
+                v-if="el.manual"
+                class="manual-element-delete"
+                title="删除手动元素"
+                @pointerdown.stop
+                @click.stop="removeManualElement(layerId, el)"
+              >×</button>
             </div>
             <span
               v-if="selectedDetectedElements.has(`${layerId}::${el.object_name || el.name || el.id || `e${eIdx}`}`) && !isElementBlocked(layerId, el.box_2d || el.box2d || [0,0,1,1])"
