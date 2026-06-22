@@ -2813,9 +2813,26 @@ function startMarquee(event) {
     deselectConnection();
   }
 
-  // 标注模式 或 Ctrl+拖拽：手动画框添加元素
   const isAnnotate = activeTool.value === 'annotate';
-  const isCtrlDraw = (event.ctrlKey || event.metaKey) && activeTool.value !== 'annotate' && activeTool.value !== 'hand';
+  const withCtrl = event.ctrlKey || event.metaKey;
+
+  // Ctrl模式下：单击（不拖拽）AI元素框 → 选中/取消选中元素
+  // 由于 CSS 让 ctrl-mode 下元素框 pointer-events:none，点击穿透到 stage，
+  // 所以用 findElementsAtPoint 在 JS 层面检测是否命中了元素
+  if (withCtrl && !isAnnotate && activeTool.value !== 'hand') {
+    if (!event.target.closest?.('.manual-name-input, .layer-toolbar, .bottom-tools, .top-tools, .right-panel, .annotate-banner, .manual-element-delete')) {
+      const candidates = findElementsAtPoint(event.clientX, event.clientY);
+      if (candidates.length) {
+        // 命中元素 → 选中/取消，不画框
+        handleDetectedOverlayClick(event);
+        return;
+      }
+      // 没命中元素 → 继续走画框逻辑（下面 isCtrlDraw 分支）
+    }
+  }
+
+  // 标注模式 或 Ctrl+拖拽：手动画框添加元素
+  const isCtrlDraw = withCtrl && !isAnnotate && activeTool.value !== 'hand';
   if (isAnnotate || isCtrlDraw) {
     // 排除 UI 控件
     if (event.target.closest?.('.manual-name-input, .layer-toolbar, .bottom-tools, .top-tools, .right-panel, .annotate-banner, .manual-element-delete')) return;
