@@ -2839,6 +2839,12 @@ function startMarquee(event) {
   selectedLayerIds.value = [];
 }
 
+/** stage pointermove 统一处理：手动框选拖拽 + 连接线拖拽 + 选框拖拽 + 画布平移 */
+function onStagePointerMove(event) {
+  moveMarquee(event);
+  updateConnectionDrag(event);
+}
+
 function moveMarquee(event) {
   if (panState.value) {
     const dx = event.clientX - panState.value.startX;
@@ -3189,10 +3195,10 @@ function themeLabel() {
       <div
         :class="['stage', { 'hand-tool': activeTool === 'hand', 'annotate-tool': activeTool === 'annotate', 'is-panning': panState, 'is-connecting': connecting.active }]"
         @wheel.prevent="wheelZoom"
-        @pointerdown="startMarquee"
-        @pointermove="moveMarquee; updateConnectionDrag($event)"
-        @pointerup="stopMarquee; cancelConnection()"
-        @pointercancel="stopMarquee; cancelConnection()"
+        @pointerdown="startMarquee($event)"
+        @pointermove="onStagePointerMove($event)"
+        @pointerup="stopMarquee($event); cancelConnection()"
+        @pointercancel="stopMarquee($event); cancelConnection()"
       >
         <!-- 上传进度条 -->
         <div v-if="uploadProgress" class="upload-progress-overlay">
