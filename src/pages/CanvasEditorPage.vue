@@ -17,6 +17,9 @@ const shortcutsOpen = ref(false);
 const helpMenuOpen = ref(false);
 const toolbarAddOpen = ref(false);
 const minimapVisible = ref(true);
+const myMaterialsOpen = ref(false);
+const myMaterials = ref(JSON.parse(localStorage.getItem('youmi_my_materials') || '[]'));
+
 // + 号弹层位置（fixed 定位 + Teleport to body，彻底脱离 transform 父级）
 const addMenuWrapEl = ref(null);
 const addMenuPosition = ref({});
@@ -3222,6 +3225,8 @@ onMounted(() => {
     if (e.target.closest?.('.shortcuts-backdrop, .shortcuts-panel')) return;
     toolbarAddOpen.value = false;
     helpMenuOpen.value = false;
+    // 关闭右键菜单
+    if (contextMenu.visible) contextMenu.visible = false;
   };
   window.addEventListener('click', onDocClick);
   onBeforeUnmount(() => {
@@ -3265,6 +3270,73 @@ function themeLabel() {
   if (isDark()) return '深色';
   return '浅色';
 }
+
+// ========== 我的素材库 ==========
+function toggleMyMaterials() {
+  myMaterialsOpen.value = !myMaterialsOpen.value;
+  if (myMaterialsOpen.value) toolbarAddOpen.value = false;
+}
+function addLayerToMaterials(layer) {
+  if (!layer || !layer.url) return;
+  const exists = myMaterials.value.some(m => m.url === layer.url);
+  if (exists) return; // 不重复添加
+  myMaterials.value.unshift({
+    id: `mat-${Date.now()}`,
+    url: layer.url,
+    name: layer.name || '素材',
+    width: layer.width,
+    height: layer.height,
+    addedAt: Date.now(),
+  });
+  localStorage.setItem('youmi_my_materials', JSON.stringify(myMaterials.value));
+}
+function removeMaterial(matId) {
+  myMaterials.value = myMaterials.value.filter(m => m.id !== matId);
+  localStorage.setItem('youmi_my_materials', JSON.stringify(myMaterials.value));
+}
+function addMaterialToCanvas(mat) {
+  const maxZ = layers.value.reduce((max, l) => Math.max(max, l.zIndex || 0), 0);
+  canvas.updateDocument(props.id, (draft) => {
+    draft.payload.layers.push({
+      id: String(Date.now()).slice(-6),
+      type: 'image',
+      name: mat.name,
+      url: mat.url,
+      x: Math.round(100 + Math.random() * 200),
+      y: Math.round(100 + Math.random() * 200),
+      width: mat.width || 400,
+      height: mat.height || 400,
+      naturalWidth: mat.width || 400,
+      naturalHeight: mat.height || 400,
+      zIndex: maxZ + 1,
+    });
+    return draft;
+  });
+}
+// 右键菜单
+const contextMenu = reactive({ visible: false, x: 0, y: 0, layerId: null, layer: null });
+function onCanvasContextMenu(event) {
+  // 找到右键点击的图层
+  const layerEl = event.target.closest('.canvas-layer');
+  if (!layerEl) return;
+  const layerId = layerEl.dataset.layerId;
+  const layer = layers.value.find(l => l.id === layerId);
+  if (!layer || !layer.url) return;
+  event.preventDefault();
+  contextMenu.visible = true;
+  contextMenu.x = event.clientX;
+  contextMenu.y = event.clientY;
+  contextMenu.layerId = layerId;
+  contextMenu.layer = layer;
+}
+function closeContextMenu() {
+  contextMenu.visible = false;
+}
+function contextMenuAddToMaterials() {
+  if (contextMenu.layer) addLayerToMaterials(contextMenu.layer);
+  closeContextMenu();
+}
+
 </script>
 
 <template>
@@ -3316,6 +3388,7 @@ function themeLabel() {
         @pointermove="onStagePointerMove($event)"
         @pointerup="stopMarquee($event); cancelConnection()"
         @pointercancel="stopMarquee($event); cancelConnection()"
+        @contextmenu.prevent="onCanvasContextMenu($event)"
       >
         <!-- 上传进度条 -->
         <div v-if="uploadProgress" class="upload-progress-overlay">
@@ -3638,6 +3711,10 @@ function themeLabel() {
         >
           <i :class="tool.icon" aria-hidden="true"></i>
           <span v-if="tool.shortcut" class="uc-sidebar-tool-key">{{ tool.shortcut }}</span>
+        </button>
+        <div class="uc-sidebar-tool-sep"></div>
+        <button type="button" class="uc-sidebar-tool-btn" :class="{ active: myMaterialsOpen }" title="我的素材" @click.stop="toggleMyMaterials()">
+          <i class="ri-folder-image-line" aria-hidden="true"></i>
         </button>
       </nav>
 
@@ -3964,6 +4041,43 @@ function themeLabel() {
 
         <!-- 页码指示器 -->
         <div class="uc-image-viewer-page">1 / 1</div>
+      </div>
+    </div>
+  </Teleport>
+
+  <!-- 右键菜单 -->
+  <Teleport to="body">
+    <div v-if="contextMenu.visible" class="uc-context-menu" :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }" @click.stop>
+      <button class="uc-context-menu-item" @click="contextMenuAddToMaterials">
+        <i class="ri-folder-image-line"></i> 添加到我的素材
+      </button>
+    </div>
+  </Teleport>
+
+  <!-- 我的素材面板 -->
+  <Teleport to="body">
+    <div v-if="myMaterialsOpen" class="uc-materials-backdrop" @click.self="myMaterialsOpen = false">
+      <div class="uc-materials-panel">
+        <header class="uc-materials-head">
+          <h2><i class="ri-folder-image-line"></i> 我的素材</h2>
+          <button @click="myMaterialsOpen = false"><i class="ri-close-line"></i></button>
+        </header>
+        <div class="uc-materials-body">
+          <div v-if="!myMaterials.length" class="uc-materials-empty">
+            <i class="ri-image-add-line"></i>
+            <p>暂无素材</p>
+            <small>右键画布中的图片 → 添加到我的素材</small>
+          </div>
+          <div v-else class="uc-materials-grid">
+            <div v-for="mat in myMaterials" :key="mat.id" class="uc-materials-card" @click="addMaterialToCanvas(mat)">
+              <img :src="mat.url" :alt="mat.name" />
+              <div class="uc-materials-card-footer">
+                <span>{{ mat.name }}</span>
+                <button class="uc-materials-del" title="删除" @click.stop="removeMaterial(mat.id)"><i class="ri-delete-bin-line"></i></button>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </Teleport>
