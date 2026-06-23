@@ -9797,7 +9797,7 @@ body {
 }
 
 .layer-toolbar {
-  bottom: calc(100% + 14px);
+  bottom: calc(100% + 24px);
   padding: 8px 12px;
   border: 1px solid rgba(255, 255, 255, 0.55);
   border-radius: 8px;
