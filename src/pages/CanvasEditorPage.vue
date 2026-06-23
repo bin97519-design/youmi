@@ -432,6 +432,7 @@ function loadUILayout() {
       if (s.reversePromptCard.height != null) reversePromptCard.height = Math.max(200, Math.min(700, s.reversePromptCard.height));
     }
     if (s.generationHistory != null) generationHistory.value = s.generationHistory;
+    if (s.connections != null) connections.value = s.connections;
   } catch (_) { /* ignore */ }
 }
 function saveUILayout() {
@@ -441,6 +442,7 @@ function saveUILayout() {
       minimapVisible: minimapVisible.value,
       reversePromptCard: { x: reversePromptCard.x, y: reversePromptCard.y, width: reversePromptCard.width, height: reversePromptCard.height },
       generationHistory: generationHistory.value,
+      connections: connections.value,
     }));
   } catch (_) { /* ignore */ }
 }
@@ -448,7 +450,7 @@ function debounceSaveLayout() {
   clearTimeout(_layoutSaveTimer);
   _layoutSaveTimer = setTimeout(saveUILayout, LAYOUT_SAVE_DEBOUNCE);
 }
-watch([() => panel.x, () => panel.y, () => panel.width, () => panel.chatHeight, rightTab, rightPanelVisible, minimapVisible, () => reversePromptCard.x, () => reversePromptCard.y, () => reversePromptCard.width, () => reversePromptCard.height], debounceSaveLayout, { deep: true });
+watch([() => panel.x, () => panel.y, () => panel.width, () => panel.chatHeight, rightTab, rightPanelVisible, minimapVisible, () => reversePromptCard.x, () => reversePromptCard.y, () => reversePromptCard.width, () => reversePromptCard.height, connections], debounceSaveLayout, { deep: true });
 
 // 帮助菜单定位
 const helpMenuStyle = ref({});
