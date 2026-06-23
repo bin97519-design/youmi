@@ -3396,7 +3396,6 @@ function contextMenuAddToReference() {
 
     <section class="editor-body">
       <div class="top-tools">
-        <button>✎ 编辑画布⌄</button>
         <button @click="router.push('/canvas')">▣ 我的画布列表</button>
         <div class="add-image">
           <input ref="fileInput" type="file" accept="image/*" multiple hidden @change="onFileChange" />
@@ -3406,7 +3405,6 @@ function contextMenuAddToReference() {
             <button>▤ 从历史生成导入</button>
           </div>
         </div>
-        <button :class="{ active: shortcutsOpen }" @click.stop="shortcutsOpen = !shortcutsOpen; if (shortcutsOpen) addOpen = false">⌘ 快捷键</button>
       </div>
 
       <aside v-if="activeTool === 'annotate'" class="annotate-banner" @pointerdown.stop>
