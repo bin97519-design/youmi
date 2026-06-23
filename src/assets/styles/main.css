@@ -4724,7 +4724,7 @@ body {
   overflow: hidden;
   border: 0;
   border-radius: 11px;
-  background: #f5f5f5;
+  background: #f2f2f2;
   box-shadow:
     0 8px 18px rgba(0, 0, 0, 0.42),
     0 0 0 1px rgba(255, 255, 255, 0.42);
@@ -9239,7 +9239,7 @@ body {
   border: 0;
   border-radius: 7px;
   color: #111111;
-  background: #f5f5f5;
+  background: #f2f2f2;
   box-shadow: none;
   font-size: 12px;
   font-weight: 900;
@@ -9347,7 +9347,7 @@ body {
   border: 0;
   border-radius: 6px;
   color: #111111;
-  background: #f5f5f5;
+  background: #f2f2f2;
   font-size: 12px;
   box-shadow: none;
   cursor: pointer;
@@ -13290,22 +13290,22 @@ body {
  * 通过 [data-theme="light"] 触发，与 useTheme.js 联动
  * ============================================================ */
 [data-theme="light"] .editor-body {
-  background-color: #f0f2f5;
+  background-color: #ffffff;
   background-image:
-    linear-gradient(rgba(0, 0, 0, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 0, 0, 0.04) 1px, transparent 1px);
+    linear-gradient(rgba(0, 0, 0, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.06) 1px, transparent 1px);
 }
 [data-theme="light"] .editor-head {
   color: #111;
-  background: linear-gradient(180deg, #ffffff, #f5f5f5);
+  background: linear-gradient(180deg, #ffffff, #fafafa);
   border-bottom-color: rgba(0, 0, 0, 0.08);
 }
 [data-theme="light"] .editor-head .logo { color: #b58a00; }
 [data-theme="light"] .editor-head b { color: #111; }
 [data-theme="light"] .editor-head button { color: #333; }
-[data-theme="light"] .editor-head em { color: #888; background: #e8e8e8; }
-[data-theme="light"] .head-actions button { color: #555; background: #e8e8e8; }
-[data-theme="light"] .head-actions .panel-visibility-btn { color: #3b82f6; border-color: rgba(0,0,0,0.12); background: #e8e8e8; }
+[data-theme="light"] .editor-head em { color: #888; background: #f2f2f2; }
+[data-theme="light"] .head-actions button { color: #555; background: #f2f2f2; }
+[data-theme="light"] .head-actions .panel-visibility-btn { color: #3b82f6; border-color: rgba(0,0,0,0.12); background: #f2f2f2; }
 
 [data-theme="light"] .top-tools button {
   color: #333;
@@ -13327,14 +13327,14 @@ body {
 }
 [data-theme="light"] .right-panel.uc-rightpanel .uc-left-tab.active {
   color: #111;
-  background: #f0f2f5;
+  background: #f7f7f7;
 }
 [data-theme="light"] .right-panel.uc-rightpanel .uc-left-tab i { color: #888; }
 [data-theme="light"] .right-panel.uc-rightpanel .uc-left-tab.active i { color: #b58a00; }
 
 /* 对话面板 */
 [data-theme="light"] .chat-panel.uc-chat { background: #ffffff; }
-[data-theme="light"] .uc-chat-msg--user .uc-chat-msg-bubble { background: #f0f2f5; color: #111; }
+[data-theme="light"] .uc-chat-msg--user .uc-chat-msg-bubble { background: #f7f7f7; color: #111; }
 [data-theme="light"] .uc-chat-msg--assistant .uc-chat-msg-bubble { background: #fff8e1; color: #111; }
 [data-theme="light"] .chat-input.uc-chat-inputbar { background: #f5f5f5; border-color: rgba(0,0,0,0.08); }
 [data-theme="light"] .chat-input.uc-chat-inputbar textarea { color: #111; background: #fff; }
@@ -13482,15 +13482,15 @@ body {
 
 /* 首页浅色 */
 [data-theme="light"] .youmi-home {
-  --yh-bg: #f0f2f5;
+  --yh-bg: #ffffff;
   --yh-panel: #ffffff;
-  --yh-panel-2: #f5f5f5;
+  --yh-panel-2: #f7f7f7;
   --yh-line: rgba(0, 0, 0, 0.06);
   --yh-text: #111827;
   --yh-muted: #6b7280;
   --yh-purple: #b58a00;
   background:
-    radial-gradient(circle at 50% -6%, rgba(255, 179, 71, 0.12), transparent 15%), var(--yh-bg);
+    radial-gradient(circle at 50% -6%, rgba(255, 179, 71, 0.08), transparent 15%), var(--yh-bg);
 }
 
 /* ---- 补充浅色主题覆盖：遗漏的硬编码深色组件 ---- */
@@ -13508,7 +13508,7 @@ body {
 
 /* 对话气泡（通用/默认样式） */
 [data-theme="light"] .uc-chat-msg-bubble { color: #333; background: #f5f5f5; border-color: rgba(0,0,0,0.06); }
-[data-theme="light"] .uc-chat-msg--user .uc-chat-msg-bubble { color: #111; background: linear-gradient(135deg, #e8e8e8, #f5f5f5); }
+[data-theme="light"] .uc-chat-msg--user .uc-chat-msg-bubble { color: #111; background: linear-gradient(135deg, #eaeaea, #f2f2f2); }
 [data-theme="light"] .chat-msg-pill { background: rgba(99,102,241,0.1); border-color: rgba(99,102,241,0.25); color: #4338ca; }
 [data-theme="light"] .chat-pill-msg { background: rgba(99,102,241,0.1); border-color: rgba(99,102,241,0.25); }
 [data-theme="light"] .chat-pill-msg span { color: #4338ca; }
