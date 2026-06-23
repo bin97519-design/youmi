@@ -309,9 +309,6 @@ const canvasTools = [
   { key: 'select', label: '选择', shortcut: 'V', icon: 'ri-cursor-line' },
   { key: 'hand', label: '抓手（拖动画布）', shortcut: 'H', icon: 'ri-hand' },
   { key: 'focus', label: '聚焦选中 / 适应画面', shortcut: 'F', icon: 'ri-focus-3-line' },
-  { key: 'bringTop', label: '置顶图层', icon: 'ri-arrow-up-double-line' },
-  { key: 'text', label: '插入文字', shortcut: 'T', icon: 'ri-text', action: addTextNode },
-  { key: 'shape', label: '插入矢量图', icon: 'ri-shape-line' },
   { key: 'annotate', label: '标记元素（点击图片元素选中加入输入框）', shortcut: 'M', icon: 'ri-mark-pen-line' },
 ];
 const dragState = ref(null);
@@ -2696,9 +2693,6 @@ function handleChatBoxClick(event) {
 
 function selectCanvasTool(tool) {
   if (!userStore.requireLogin()) return;
-  // text/shape 工具点击后直接执行添加节点，而非切换工具
-  if (tool.key === 'text') { addTextNode(); return; }
-  if (tool.key === 'shape') { return; }
   activeTool.value = tool.key;
 }
 
@@ -3121,8 +3115,6 @@ function onGlobalKeydown(event) {
     const keyMap = { v: 'select', h: 'hand', f: 'focus', m: 'annotate' };
     const tool = keyMap[event.key.toLowerCase()];
     if (tool) { event.preventDefault(); activeTool.value = tool; }
-    // T 快捷键：直接添加文本节点
-    if (event.key.toLowerCase() === 't') { event.preventDefault(); addTextNode(); }
     // I 快捷键：添加图片占位节点
     if (event.key.toLowerCase() === 'i') { event.preventDefault(); addImageNode(); }
   }
@@ -3932,7 +3924,6 @@ function contextMenuAddToReference() {
               <div><dt>V</dt><dd>选择工具</dd></div>
               <div><dt>H</dt><dd>抓手工具（拖动画布）</dd></div>
               <div><dt>F</dt><dd>聚焦选中图层 / 适应画面</dd></div>
-              <div><dt>T</dt><dd>插入文字</dd></div>
               <div><dt>M</dt><dd>标记元素（点击选中）</dd></div>
             </dl>
           </div>
