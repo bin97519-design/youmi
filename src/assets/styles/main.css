@@ -12794,11 +12794,11 @@ body {
 @keyframes scaleIn {
   from {
     opacity: 0;
-    transform: translateY(-50%) scale(0.95);
+    transform: scale(0.95);
   }
   to {
     opacity: 1;
-    transform: translateY(-50%) scale(1);
+    transform: scale(1);
   }
 }
 
