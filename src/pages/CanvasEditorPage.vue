@@ -3336,6 +3336,19 @@ function contextMenuAddToMaterials() {
   if (contextMenu.layer) addLayerToMaterials(contextMenu.layer);
   closeContextMenu();
 }
+function contextMenuDeleteLayer() {
+  if (contextMenu.layerId) removeLayer(contextMenu.layerId);
+  closeContextMenu();
+}
+function contextMenuDownloadLayer() {
+  const layer = contextMenu.layer;
+  if (!layer || !layer.url) return;
+  const a = document.createElement('a');
+  a.href = layer.url;
+  a.download = layer.name || 'image';
+  a.click();
+  closeContextMenu();
+}
 
 </script>
 
@@ -4050,6 +4063,13 @@ function contextMenuAddToMaterials() {
     <div v-if="contextMenu.visible" class="uc-context-menu" :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }" @click.stop>
       <button class="uc-context-menu-item" @click="contextMenuAddToMaterials">
         <i class="ri-folder-image-line"></i> 添加到我的素材
+      </button>
+      <button class="uc-context-menu-item" @click="contextMenuDownloadLayer">
+        <i class="ri-download-2-line"></i> 下载图片
+      </button>
+      <div class="uc-context-menu-divider"></div>
+      <button class="uc-context-menu-item uc-context-menu-item--danger" @click="contextMenuDeleteLayer">
+        <i class="ri-delete-bin-line"></i> 删除图片
       </button>
     </div>
   </Teleport>

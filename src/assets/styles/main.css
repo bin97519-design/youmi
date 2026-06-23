@@ -13034,6 +13034,20 @@ body {
 .uc-context-menu-item:hover {
   background: rgba(255, 255, 255, 0.08);
 }
+.uc-context-menu-divider {
+  height: 1px;
+  margin: 4px 8px;
+  background: rgba(255, 255, 255, 0.08);
+}
+.uc-context-menu-item--danger {
+  color: #ff6b6b;
+}
+.uc-context-menu-item--danger i {
+  color: #ff6b6b;
+}
+.uc-context-menu-item--danger:hover {
+  background: rgba(255, 107, 107, 0.12);
+}
 
 .uc-materials-backdrop {
   position: fixed;
