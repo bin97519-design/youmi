@@ -475,9 +475,63 @@ const canvasMinimap = computed(() => {
   return { width, height, layers: layers_, viewportStyle: { left: `${vpLeft}px`, top: `${vpTop}px`, width: `${viewportWorld.width * scale}px`, height: `${viewportWorld.height * scale}px` } };
 });
 const minimapPanState = ref(null);
-function startMinimapPan(e) { if (e.button !== 0) return; const rect = e.currentTarget.getBoundingClientRect(); const mapData = canvasMinimap.value; const worldBounds = getWorldBounds(); minimapPanState.value = { startX: e.clientX, startY: e.clientY, mapLeft: rect.left, mapTop: rect.top, worldW: worldBounds.maxX - worldBounds.minX, worldH: worldBounds.maxY - worldBounds.minY, minX: worldBounds.minX, minY: worldBounds.minY }; e.currentTarget.setPointerCapture(e.pointerId); }
-function moveMinimapPan(e) { if (!minimapPanState.value) return; const s = minimapPanState.value; const dx = e.clientX - s.startX; const dy = e.clientY - s.startY; const worldToMap = (canvasMinimap.value.width - 20) / s.worldW; const newCenterX = s.minX + s.worldW * (((s.mapLeft - e.clientX) * -1 + 10) / (canvasMinimap.value.width - 20)); canvas.updateDocument(props.id, (draft) => { draft.payload.view.offset = { x: Math.round(-(newCenterX * viewScale.value - viewportSize.width / 2)), y: Math.round(-(s.minY * viewScale.value - 50)) }; return draft; }); }
-function stopMinimapPan(e) { if (!minimapPanState.value) return; e.currentTarget.releasePointerCapture(minimapPanState.value.pointerId); minimapPanState.value = null; }
+function startMinimapPan(e) {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const rect = e.currentTarget.getBoundingClientRect();
+  const mapData = canvasMinimap.value;
+  const worldBounds = getWorldBounds();
+  const worldW = Math.max(1, worldBounds.maxX - worldBounds.minX);
+  const worldH = Math.max(1, worldBounds.maxY - worldBounds.minY);
+  // 点击位置 → 世界坐标 → 视口偏移
+  const mapInnerW = canvasMinimap.value.width - 20;
+  const mapInnerH = canvasMinimap.value.height - 20;
+  const clickMapX = e.clientX - rect.left - 10;
+  const clickMapY = e.clientY - rect.top - 10;
+  const worldX = worldBounds.minX + worldW * (clickMapX / mapInnerW);
+  const worldY = worldBounds.minY + worldH * (clickMapY / mapInnerH);
+  // 平移画布使点击位置居中
+  canvas.updateDocument(props.id, (draft) => {
+    draft.payload.view.offset = {
+      x: Math.round(-(worldX * viewScale.value - viewportSize.width / 2)),
+      y: Math.round(-(worldY * viewScale.value - viewportSize.height / 2)),
+    };
+    return draft;
+  });
+  // 设置拖拽状态，后续拖拽继续移动
+  minimapPanState.value = {
+    pointerId: e.pointerId,
+    lastX: e.clientX,
+    lastY: e.clientY,
+  };
+  e.currentTarget.setPointerCapture(e.pointerId);
+}
+function moveMinimapPan(e) {
+  if (!minimapPanState.value) return;
+  const dx = e.clientX - minimapPanState.value.lastX;
+  const dy = e.clientY - minimapPanState.value.lastY;
+  minimapPanState.value.lastX = e.clientX;
+  minimapPanState.value.lastY = e.clientY;
+  // 像素拖拽 → 视口偏移（反向）
+  const vs = viewScale.value;
+  const worldBounds = getWorldBounds();
+  const worldW = Math.max(1, worldBounds.maxX - worldBounds.minX);
+  const mapInnerW = canvasMinimap.value.width - 20;
+  const pxToWorld = worldW / mapInnerW;
+  canvas.updateDocument(props.id, (draft) => {
+    draft.payload.view.offset = {
+      x: Math.round(draft.payload.view.offset.x - dx * pxToWorld * vs),
+      y: Math.round(draft.payload.view.offset.y - dy * pxToWorld * vs),
+    };
+    return draft;
+  });
+}
+function stopMinimapPan(e) {
+  if (!minimapPanState.value) return;
+  try { e.currentTarget.releasePointerCapture(minimapPanState.value.pointerId); } catch {}
+  minimapPanState.value = null;
+}
 function getWorldBounds() { let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity; for (const l of layers.value) { if (l.x < minX) minX = l.x; if (l.y < minY) minY = l.y; if (l.x + (l.width || 1) > maxX) maxX = l.x + (l.width || 1); if (l.y + (l.height || 1) > maxY) maxY = l.y + (l.height || 1); } return { minX, minY, maxX, maxY }; }
 
 // viewport size
@@ -1376,6 +1430,18 @@ function startLayerDrag(event, layer) {
   pushUndo();
   event.stopPropagation();
   event.currentTarget.setPointerCapture(event.pointerId);
+
+  // 选中图片时置顶为前景：将当前图层 zIndex 设为最高
+  const maxZ = layers.value.reduce((max, l) => Math.max(max, l.zIndex || 0), 0);
+  const currentZ = layer.zIndex || 0;
+  if (currentZ < maxZ) {
+    canvas.updateDocument(props.id, (draft) => {
+      const target = draft.payload.layers.find((l) => l.id === layer.id);
+      if (target) target.zIndex = maxZ + 1;
+      return draft;
+    });
+  }
+
   const draggingGroup = selectedLayerIds.value.length > 1 && selectedLayerIds.value.includes(layer.id);
   if (!draggingGroup) {
     selectedLayerId.value = layer.id;
