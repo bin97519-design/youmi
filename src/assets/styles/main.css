@@ -13193,7 +13193,7 @@ body {
 }
 .uc-history-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
   gap: 12px;
 }
 .uc-history-card {
@@ -13222,7 +13222,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 8px;
+  padding: 8px 10px;
+  min-height: 32px;
 }
 .uc-history-model {
   font-size: 11px;
