@@ -13448,9 +13448,10 @@ body {
 }
 [data-theme="light"] .reverse-prompt-mini-card header { color: #333; }
 
-/* AI检测框 */
-[data-theme="light"] .detected-element-box { border-color: rgba(181,138,0,0.6); }
-[data-theme="light"] .detected-element-box.selected { border-color: #b58a00; background: rgba(181,138,0,0.1); }
+/* AI检测框 — 仅在 detection-visible 时显示，与深色主题逻辑一致 */
+[data-theme="light"] .detected-elements-overlay.detection-visible .detected-element-box { border-color: rgba(181,138,0,0.7); pointer-events: auto; }
+[data-theme="light"] .detected-elements-overlay.detection-visible .detected-element-box:hover { border-color: #b58a00; background: rgba(181,138,0,0.08); }
+[data-theme="light"] .detected-elements-overlay.detection-visible .detected-element-box.selected { border-color: #22c55e !important; background: rgba(34,197,94,0.08) !important; }
 [data-theme="light"] .manual-element-delete { background: rgba(255,255,255,0.92); border-color: #ef4444; color: #ef4444; }
 
 /* 连接线 */
