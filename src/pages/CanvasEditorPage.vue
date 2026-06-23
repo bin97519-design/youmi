@@ -3217,7 +3217,12 @@ onMounted(() => {
   const onCtrlUp = (e) => { if (e.key === 'Control') ctrlHeld.value = false; };
   window.addEventListener('keydown', onCtrlDown);
   window.addEventListener('keyup', onCtrlUp);
-  const onDocClick = () => { toolbarAddOpen.value = false; helpMenuOpen.value = false; };
+  const onDocClick = (e) => {
+    // 如果点击在 shortcuts 面板内，不要关闭 helpMenu
+    if (e.target.closest?.('.shortcuts-backdrop, .shortcuts-panel')) return;
+    toolbarAddOpen.value = false;
+    helpMenuOpen.value = false;
+  };
   window.addEventListener('click', onDocClick);
   onBeforeUnmount(() => {
     window.removeEventListener('keydown', onCtrlDown);
@@ -3290,7 +3295,7 @@ function themeLabel() {
             <button>▤ 从历史生成导入</button>
           </div>
         </div>
-        <button :class="{ active: shortcutsOpen }" @click="shortcutsOpen = !shortcutsOpen; if (shortcutsOpen) addOpen = false">⌘ 快捷键</button>
+        <button :class="{ active: shortcutsOpen }" @click.stop="shortcutsOpen = !shortcutsOpen; if (shortcutsOpen) addOpen = false">⌘ 快捷键</button>
       </div>
 
       <aside v-if="activeTool === 'annotate'" class="annotate-banner" @pointerdown.stop>
@@ -3793,12 +3798,12 @@ function themeLabel() {
     <Teleport to="body">
       <div v-if="helpMenuOpen" class="zoom-bar-help-menu" :style="helpMenuStyle" @click.stop>
         <button class="help-menu-item" @click="helpMenuOpen = false"><i class="ri-guide-line"></i><span>帮助</span></button>
-        <button class="help-menu-item" @click="helpMenuOpen = false; shortcutsOpen = true"><i class="ri-keyboard-line"></i><span>快捷键</span></button>
+        <button class="help-menu-item" @click.stop="helpMenuOpen = false; shortcutsOpen = true"><i class="ri-keyboard-line"></i><span>快捷键</span></button>
       </div>
     </Teleport>
 
     <!-- 快捷键面板 -->
-    <div v-if="shortcutsOpen" class="shortcuts-backdrop" @click.self="shortcutsOpen = false">
+    <div v-if="shortcutsOpen" class="shortcuts-backdrop" @click.self="shortcutsOpen = false" @click.stop>
       <div class="shortcuts-panel">
         <div class="shortcuts-head">
           <h2>⌨ 快捷键速查</h2>
