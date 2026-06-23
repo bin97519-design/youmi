@@ -6,7 +6,7 @@
 import { ref, watch, onMounted } from 'vue';
 
 const STORAGE_KEY = 'youmi-theme';
-const ORDER = ['dark', 'light', 'system'];
+const ORDER = ['dark', 'light'];
 
 const theme = ref('dark');
 const systemTheme = ref('dark');

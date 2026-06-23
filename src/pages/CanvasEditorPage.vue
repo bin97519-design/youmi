@@ -3253,16 +3253,14 @@ watch(
 );
 watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers());
 
-// ============ 主题切换（套餐 B 改造） ============
+// ============ 主题切换 ============
 import { useTheme } from '../composables/useTheme';
 const { theme: currentTheme, cycle: cycleTheme, isDark, isLight, isSystem } = useTheme();
 function themeIcon() {
-  if (isSystem()) return '🖥';
   if (isDark()) return '🌙';
   return '☀️';
 }
 function themeLabel() {
-  if (isSystem()) return '跟随系统';
   if (isDark()) return '深色';
   return '浅色';
 }
@@ -3387,7 +3385,6 @@ function contextMenuAddToReference() {
       <div class="head-actions">
         <button class="theme-toggle" :title="`当前：${themeLabel()}（点击切换）`" @click="cycleTheme">
           <span class="theme-toggle__icon">{{ themeIcon() }}</span>
-          <span>{{ themeLabel() }}</span>
         </button>
         <button class="panel-visibility-btn" :class="{ active: getDetectionVisible() }" :title="getDetectionVisible() ? '隐藏视觉框' : '显示视觉框'" @click="setDetectionVisible(!getDetectionVisible())">{{ getDetectionVisible() ? '👁' : '🚫' }}</button>
         <button class="panel-visibility-btn" :class="{ active: rightPanelVisible }" :title="rightPanelVisible ? '隐藏对话框' : '显示对话框'" @click="rightPanelVisible = !rightPanelVisible">▮</button><button @click="router.push('/canvas')">×</button>

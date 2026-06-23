@@ -9030,6 +9030,7 @@ body {
   background: linear-gradient(180deg, #111111, #0c0c0c);
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow: none;
+  transition: background 0.3s ease, color 0.3s ease;
 }
 
 .editor-head .logo {
@@ -9144,6 +9145,7 @@ body {
     linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
   background-size: 24px 24px;
+  transition: background-color 0.3s ease, background-image 0.3s ease;
 }
 
 .top-tools {
@@ -13281,4 +13283,211 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   line-height: 1.4;
+}
+
+/* ============================================================
+ * 浅色主题（开灯） — 画布编辑器 + 面板覆盖
+ * 通过 [data-theme="light"] 触发，与 useTheme.js 联动
+ * ============================================================ */
+[data-theme="light"] .editor-body {
+  background-color: #f0f2f5;
+  background-image:
+    linear-gradient(rgba(0, 0, 0, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.04) 1px, transparent 1px);
+}
+[data-theme="light"] .editor-head {
+  color: #111;
+  background: linear-gradient(180deg, #ffffff, #f5f5f5);
+  border-bottom-color: rgba(0, 0, 0, 0.08);
+}
+[data-theme="light"] .editor-head .logo { color: #b58a00; }
+[data-theme="light"] .editor-head b { color: #111; }
+[data-theme="light"] .editor-head button { color: #333; }
+[data-theme="light"] .editor-head em { color: #888; background: #e8e8e8; }
+[data-theme="light"] .head-actions button { color: #555; background: #e8e8e8; }
+[data-theme="light"] .head-actions .panel-visibility-btn { color: #3b82f6; border-color: rgba(0,0,0,0.12); background: #e8e8e8; }
+
+[data-theme="light"] .top-tools button {
+  color: #333;
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.1);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+}
+[data-theme="light"] .top-tools button:hover {
+  border-color: rgba(0, 0, 0, 0.2);
+}
+
+/* 右侧面板 */
+[data-theme="light"] .right-panel.uc-rightpanel {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.08);
+}
+[data-theme="light"] .right-panel.uc-rightpanel .uc-left-tab {
+  color: #666;
+}
+[data-theme="light"] .right-panel.uc-rightpanel .uc-left-tab.active {
+  color: #111;
+  background: #f0f2f5;
+}
+[data-theme="light"] .right-panel.uc-rightpanel .uc-left-tab i { color: #888; }
+[data-theme="light"] .right-panel.uc-rightpanel .uc-left-tab.active i { color: #b58a00; }
+
+/* 对话面板 */
+[data-theme="light"] .chat-panel.uc-chat { background: #ffffff; }
+[data-theme="light"] .uc-chat-msg--user .uc-chat-msg-bubble { background: #f0f2f5; color: #111; }
+[data-theme="light"] .uc-chat-msg--assistant .uc-chat-msg-bubble { background: #fff8e1; color: #111; }
+[data-theme="light"] .chat-input.uc-chat-inputbar { background: #f5f5f5; border-color: rgba(0,0,0,0.08); }
+[data-theme="light"] .chat-input.uc-chat-inputbar textarea { color: #111; background: #fff; }
+[data-theme="light"] .uc-chat-generate-options select { color: #333; background: #f5f5f5; }
+[data-theme="light"] .uc-chat-generate-options label { color: #555; }
+
+/* 选中框 */
+[data-theme="light"] .canvas-layer.is-image.selected,
+[data-theme="light"] .canvas-layer.is-video.selected {
+  box-shadow: 0 0 0 2px #b58a00;
+}
+
+/* 工具栏 */
+[data-theme="light"] .layer-toolbar {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.12);
+}
+[data-theme="light"] .layer-toolbar button { color: #333; }
+[data-theme="light"] .layer-toolbar button:hover { background: #f0f2f5; }
+
+/* 左侧工具栏 */
+[data-theme="light"] .bottom-tools.uc-sidebar-tools {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.08);
+}
+[data-theme="light"] .bottom-tools.uc-sidebar-tools .uc-sidebar-tool-btn {
+  color: #555;
+}
+[data-theme="light"] .bottom-tools.uc-sidebar-tools .uc-sidebar-tool-btn.active {
+  color: #b58a00;
+  background: #fff8e1;
+}
+[data-theme="light"] .bottom-tools.uc-sidebar-tools .uc-sidebar-tool-btn i { color: #666; }
+[data-theme="light"] .bottom-tools.uc-sidebar-tools .uc-sidebar-tool-btn.active i { color: #b58a00; }
+
+/* 缩放栏 */
+[data-theme="light"] .canvas-zoom-bar {
+  background: #ffffff;
+  border-color: rgba(0,0,0,0.08);
+}
+[data-theme="light"] .canvas-zoom-bar button { color: #555; }
+[data-theme="light"] .canvas-zoom-bar strong { color: #333; }
+
+/* 小地图 */
+[data-theme="light"] .canvas-minimap {
+  background: #ffffff;
+  border-color: rgba(0,0,0,0.12);
+}
+[data-theme="light"] .canvas-minimap header { color: #333; }
+
+/* 右键菜单 */
+[data-theme="light"] .uc-context-menu {
+  background: rgba(255, 255, 255, 0.96);
+  border-color: rgba(0, 0, 0, 0.08);
+}
+[data-theme="light"] .uc-context-menu-item { color: #333; }
+[data-theme="light"] .uc-context-menu-item i { color: #b58a00; }
+[data-theme="light"] .uc-context-menu-item:hover { background: #f0f2f5; }
+[data-theme="light"] .uc-context-menu-item--danger { color: #ef4444; }
+[data-theme="light"] .uc-context-menu-item--danger i { color: #ef4444; }
+[data-theme="light"] .uc-context-menu-item--danger:hover { background: #fef2f2; }
+[data-theme="light"] .uc-context-menu-divider { background: rgba(0,0,0,0.06); }
+
+/* 素材/历史面板 */
+[data-theme="light"] .uc-materials-panel {
+  background: #ffffff;
+}
+[data-theme="light"] .uc-materials-head h2 { color: #111; }
+[data-theme="light"] .uc-materials-head h2 i { color: #b58a00; }
+[data-theme="light"] .uc-materials-empty p { color: #666; }
+[data-theme="light"] .uc-materials-empty small { color: #999; }
+[data-theme="light"] .uc-materials-card { background: #f5f5f5; border-color: rgba(0,0,0,0.06); }
+[data-theme="light"] .uc-materials-card:hover { border-color: rgba(181,138,0,0.4); background: #f0f2f5; }
+[data-theme="light"] .uc-materials-card-name { color: #333; }
+[data-theme="light"] .uc-materials-card-date { color: #999; }
+[data-theme="light"] .uc-materials-del { color: #999; }
+[data-theme="light"] .uc-materials-del:hover { color: #ef4444; background: #fef2f2; }
+
+/* 历史记录卡片 */
+[data-theme="light"] .uc-history-card { background: #f5f5f5; border-color: rgba(0,0,0,0.06); }
+[data-theme="light"] .uc-history-card:hover { border-color: rgba(181,138,0,0.4); background: #f0f2f5; }
+[data-theme="light"] .uc-history-model { color: #b58a00; }
+[data-theme="light"] .uc-history-ratio { color: #999; }
+[data-theme="light"] .uc-history-act { color: #888; }
+[data-theme="light"] .uc-history-act:hover { color: #333; background: #e8e8e8; }
+[data-theme="light"] .uc-history-prompt { color: #888; }
+
+/* 快捷键面板 */
+[data-theme="light"] .shortcuts-panel {
+  background: #ffffff;
+}
+[data-theme="light"] .shortcuts-group h3 { color: #111; }
+[data-theme="light"] .shortcuts-group dt { color: #333; background: #f0f2f5; }
+[data-theme="light"] .shortcuts-group dd { color: #555; }
+[data-theme="light"] .shortcuts-group dl > div:hover { background: #f5f5f5; }
+
+/* 添加菜单 */
+[data-theme="light"] .uc-toolbar-add-menu {
+  background: rgba(255, 255, 255, 0.96);
+  border-color: rgba(181, 138, 0, 0.3);
+}
+[data-theme="light"] .uc-toolbar-add-menu button { color: #333; }
+[data-theme="light"] .uc-toolbar-add-menu button i { color: #b58a00; }
+[data-theme="light"] .uc-toolbar-add-menu button:hover { background: #f0f2f5; }
+
+/* 反推卡片 */
+[data-theme="light"] .reverse-prompt-mini-card {
+  background: #ffffff;
+  border-color: rgba(0,0,0,0.08);
+  color: #111;
+}
+[data-theme="light"] .reverse-prompt-mini-card header { color: #333; }
+
+/* AI检测框 */
+[data-theme="light"] .detected-element-box { border-color: rgba(181,138,0,0.6); }
+[data-theme="light"] .detected-element-box.selected { border-color: #b58a00; background: rgba(181,138,0,0.1); }
+[data-theme="light"] .manual-element-delete { background: rgba(255,255,255,0.92); border-color: #ef4444; color: #ef4444; }
+
+/* 连接线 */
+[data-theme="light"] .connection-line { stroke: #b58a00; }
+[data-theme="light"] .connection-line.selected { stroke: #8a5cff; }
+[data-theme="light"] .connection-dot { fill: #b58a00; }
+
+/* 连接端口 */
+[data-theme="light"] .uc-connection-port { border-color: #b58a00; color: #b58a00; background: rgba(181,138,0,0.15); }
+
+/* 框选区 */
+[data-theme="light"] .selection-marquee { border-color: #6a36ec; background: rgba(106,54,236,0.1); }
+[data-theme="light"] .manual-box-draft { border-color: #ef4444; }
+
+/* 标注模式横幅 */
+[data-theme="light"] .annotate-banner { background: #fff8e1; color: #333; }
+
+/* 主题切换按钮 */
+[data-theme="light"] .theme-toggle { color: #b58a00; background: #fff8e1; }
+
+/* 图片查看器 */
+[data-theme="light"] .uc-image-viewer-toolbar { background: rgba(255,255,255,0.85); }
+[data-theme="light"] .uc-image-viewer-toolbar button { color: #333; }
+[data-theme="light"] .uc-image-viewer-toolbar button:hover { background: rgba(0,0,0,0.06); }
+
+/* 遮罩层浅色 */
+[data-theme="light"] .uc-materials-backdrop { background: rgba(255,255,255,0.55); }
+
+/* 首页浅色 */
+[data-theme="light"] .youmi-home {
+  --yh-bg: #f0f2f5;
+  --yh-panel: #ffffff;
+  --yh-panel-2: #f5f5f5;
+  --yh-line: rgba(0, 0, 0, 0.06);
+  --yh-text: #111827;
+  --yh-muted: #6b7280;
+  --yh-purple: #b58a00;
+  background:
+    radial-gradient(circle at 50% -6%, rgba(255, 179, 71, 0.12), transparent 15%), var(--yh-bg);
 }
