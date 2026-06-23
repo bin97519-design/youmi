@@ -1263,12 +1263,12 @@ input::placeholder {
   }
 }
 
-/* 智能检测元素框 */
+/* 智能检测元素框 — z-index 必须高于所有 canvas-layer（拖拽置顶后 zIndex 可达数百） */
 .detected-elements-overlay {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  z-index: 200;
+  z-index: 9999;
 }
 
 /* 标注模式 / Ctrl模式：AI元素框不拦截 pointer，拖拽穿透到 stage 画框；
@@ -1430,7 +1430,7 @@ input::placeholder {
 /* 数字标记：overlay 的直接子元素，v-show + :style 控制显示/定位 */
 .selection-marquee {
   position: absolute;
-  z-index: 14;
+  z-index: 9001;
   border: 1px solid #8fe7ff;
   background: rgba(111, 84, 237, 0.16);
   box-shadow:
@@ -1441,7 +1441,7 @@ input::placeholder {
 
 .manual-box-draft {
   position: absolute;
-  z-index: 15;
+  z-index: 9002;
   border: 2px dashed #ff8a65;
   background: rgba(255, 138, 101, 0.12);
   box-shadow: 0 0 0 1px rgba(255, 138, 101, 0.2);
@@ -1450,7 +1450,7 @@ input::placeholder {
 
 .manual-name-input {
   position: absolute;
-  z-index: 20;
+  z-index: 9003;
   display: flex;
   gap: 4px;
   align-items: center;
@@ -9943,7 +9943,7 @@ body {
   width: 100%;
   height: 100%;
   pointer-events: none;
-  z-index: 5;
+  z-index: 9000;
   overflow: visible;
 }
 
@@ -9956,7 +9956,9 @@ body {
   animation: dashFlow 0.6s linear infinite;
   pointer-events: stroke;
   cursor: pointer;
-  transition: stroke 0.2s ease, stroke-width 0.2s ease;
+  transition:
+    stroke 0.2s ease,
+    stroke-width 0.2s ease;
 }
 
 .connection-line:hover {
@@ -10067,7 +10069,8 @@ body {
 }
 
 @keyframes portPulse {
-  0%, 100% {
+  0%,
+  100% {
     transform: translateY(-50%) scale(1);
     box-shadow: 0 0 0 0 rgba(255, 241, 166, 0.4);
   }
@@ -12921,7 +12924,9 @@ body {
   -webkit-backdrop-filter: blur(12px);
   border: none;
   border-radius: 40px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.2);
+  box-shadow:
+    0 4px 20px rgba(0, 0, 0, 0.3),
+    0 1px 3px rgba(0, 0, 0, 0.2);
   animation: toolbarSlideUp 0.35s cubic-bezier(0.215, 0.61, 0.355, 1) 0.1s both;
   position: absolute;
   bottom: 24px;
@@ -13022,8 +13027,13 @@ body {
   border-radius: 7px;
   cursor: pointer;
 }
-.uc-context-menu-item i { font-size: 16px; color: #fff1a6; }
-.uc-context-menu-item:hover { background: rgba(255, 255, 255, 0.08); }
+.uc-context-menu-item i {
+  font-size: 16px;
+  color: #fff1a6;
+}
+.uc-context-menu-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
 
 .uc-materials-backdrop {
   position: fixed;
@@ -13065,7 +13075,9 @@ body {
   color: #fff;
   margin: 0;
 }
-.uc-materials-head h2 i { color: #fff1a6; }
+.uc-materials-head h2 i {
+  color: #fff1a6;
+}
 .uc-materials-head button {
   background: none;
   border: none;
@@ -13075,23 +13087,42 @@ body {
   padding: 4px;
   border-radius: 6px;
 }
-.uc-materials-head button:hover { color: #fff; background: rgba(255,255,255,0.08); }
+.uc-materials-head button:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
 
-.uc-materials-body { padding: 16px; overflow-y: auto; flex: 1; }
+.uc-materials-body {
+  padding: 16px;
+  overflow-y: auto;
+  flex: 1;
+}
 
 .uc-materials-empty {
   text-align: center;
   padding: 48px 20px;
   color: #888;
 }
-.uc-materials-empty i { font-size: 40px; display: block; margin-bottom: 12px; color: #555; }
-.uc-materials-empty p { font-size: 15px; margin: 0 0 6px; color: #aaa; }
-.uc-materials-empty small { font-size: 12px; color: #666; }
+.uc-materials-empty i {
+  font-size: 40px;
+  display: block;
+  margin-bottom: 12px;
+  color: #555;
+}
+.uc-materials-empty p {
+  font-size: 15px;
+  margin: 0 0 6px;
+  color: #aaa;
+}
+.uc-materials-empty small {
+  font-size: 12px;
+  color: #666;
+}
 
 .uc-materials-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 10px;
 }
 .uc-materials-card {
   background: rgba(255, 255, 255, 0.04);
@@ -13137,4 +13168,7 @@ body {
   border-radius: 4px;
   flex-shrink: 0;
 }
-.uc-materials-del:hover { color: #ff6b6b; background: rgba(255,107,107,0.12); }
+.uc-materials-del:hover {
+  color: #ff6b6b;
+  background: rgba(255, 107, 107, 0.12);
+}
