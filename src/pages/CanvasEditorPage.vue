@@ -3404,14 +3404,14 @@ function contextMenuAddToReference() {
         </div>
       </div>
 
-      <aside v-if="activeTool === 'annotate'" class="annotate-banner" @pointerdown.stop>
+      <aside v-if="activeTool === 'annotate'" class="annotate-banner">
         <div class="annotate-banner-text">
           <strong>标记工具</strong>
           <span>拖拽画框 → 手动添加元素到输入框</span>
           <span>点击画布元素 → 选中加入输入框</span>
           <span>其他工具下 <kbd>Ctrl+点击</kbd> 也可选中元素</span>
         </div>
-        <button type="button" class="annotate-banner-close" @pointerdown.stop @click="activeTool = 'select'">退出标记</button>
+        <button type="button" class="annotate-banner-close" @click.stop="activeTool = 'select'">退出标记</button>
       </aside>
 
       <!-- 左侧 + 号分类菜单栏（已合并到 bottom-tools 的 uc-toolbar-add-btn 弹层） -->
