@@ -895,7 +895,7 @@ input::placeholder {
   position: absolute;
   left: 50%;
   bottom: calc(100% + 16px);
-  z-index: 8;
+  z-index: 9010;
   display: flex;
   gap: 4px;
   width: max-content;
@@ -10707,7 +10707,7 @@ body {
   top: 76px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 320;
+  z-index: 9100;
   display: flex;
   align-items: center;
   gap: 12px;
