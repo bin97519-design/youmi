@@ -3349,6 +3349,32 @@ function contextMenuDownloadLayer() {
   a.click();
   closeContextMenu();
 }
+function contextMenuAddToReference() {
+  // 支持多选：如果右键的图层在已选中列表中，把所有选中的图片图层都加为参考图
+  const targetId = contextMenu.layerId;
+  const ids = (selectedLayerIds.value.length > 1 && selectedLayerIds.value.includes(targetId))
+    ? [...selectedLayerIds.value]
+    : [targetId];
+  let added = 0;
+  for (const id of ids) {
+    const layer = layers.value.find(l => l.id === id);
+    if (!layer || !layer.url) continue;
+    // 避免重复添加
+    const exists = chatReferenceImages.value.some(img => img.url === layer.url);
+    if (exists) continue;
+    chatReferenceImages.value.push({
+      id: `ref-${Date.now()}-${id}`,
+      url: layer.url,
+      name: layer.name || '参考图',
+      uploading: false,
+    });
+    added++;
+  }
+  if (added > 0) {
+    activeChatReferenceId.value = chatReferenceImages.value.at(-1)?.id || '';
+  }
+  closeContextMenu();
+}
 
 </script>
 
@@ -4061,6 +4087,9 @@ function contextMenuDownloadLayer() {
   <!-- 右键菜单 -->
   <Teleport to="body">
     <div v-if="contextMenu.visible" class="uc-context-menu" :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }" @click.stop>
+      <button class="uc-context-menu-item" @click="contextMenuAddToReference">
+        <i class="ri-image-add-line"></i> 添加到参考图
+      </button>
       <button class="uc-context-menu-item" @click="contextMenuAddToMaterials">
         <i class="ri-folder-image-line"></i> 添加到我的素材
       </button>
