@@ -11372,7 +11372,7 @@ body {
   box-shadow:
     0 12px 40px rgba(0, 0, 0, 0.55),
     0 0 0 1px rgba(139, 92, 246, 0.15);
-  background: #1a1a2e;
+  background: #181818;
 }
 .chat-pill-preview-img-wrap img {
   display: block;
@@ -12688,7 +12688,7 @@ body {
   width: 520px;
   max-width: 94vw;
   max-height: 82vh;
-  background: #1a1a2e;
+  background: #181818;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 14px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
