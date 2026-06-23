@@ -13064,7 +13064,7 @@ body {
   width: 700px;
   max-width: 94vw;
   max-height: 82vh;
-  background: #1a1a2e;
+  background: #181818;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 14px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
@@ -13200,6 +13200,7 @@ body {
 /* ========== 历史记录面板 ========== */
 .uc-history-panel {
   width: 700px;
+  background: #181818;
 }
 .uc-history-grid {
   display: grid;
