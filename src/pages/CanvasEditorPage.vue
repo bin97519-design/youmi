@@ -18,6 +18,7 @@ const helpMenuOpen = ref(false);
 const toolbarAddOpen = ref(false);
 const minimapVisible = ref(true);
 const myMaterialsOpen = ref(false);
+const historyPanelOpen = ref(false);
 const myMaterials = ref(JSON.parse(localStorage.getItem('youmi_my_materials') || '[]'));
 
 // + 号弹层位置（fixed 定位 + Teleport to body，彻底脱离 transform 父级）
@@ -3219,6 +3220,7 @@ onMounted(() => {
     helpMenuOpen.value = false;
     // 关闭右键菜单
     if (contextMenu.visible) contextMenu.visible = false;
+    // 点击历史面板外部关闭（面板内 click.stop 已阻止冒泡，这里捕获不到）
   };
   window.addEventListener('click', onDocClick);
   onBeforeUnmount(() => {
@@ -3266,7 +3268,11 @@ function themeLabel() {
 // ========== 我的素材库 ==========
 function toggleMyMaterials() {
   myMaterialsOpen.value = !myMaterialsOpen.value;
-  if (myMaterialsOpen.value) toolbarAddOpen.value = false;
+  if (myMaterialsOpen.value) { toolbarAddOpen.value = false; historyPanelOpen.value = false; }
+}
+function toggleHistoryPanel() {
+  historyPanelOpen.value = !historyPanelOpen.value;
+  if (historyPanelOpen.value) { toolbarAddOpen.value = false; myMaterialsOpen.value = false; }
 }
 function addLayerToMaterials(layer) {
   if (!layer || !layer.url) return;
@@ -3747,6 +3753,9 @@ function contextMenuAddToReference() {
         <button type="button" class="uc-sidebar-tool-btn" :class="{ active: myMaterialsOpen }" title="我的素材" @click.stop="toggleMyMaterials()">
           <i class="ri-folder-image-line" aria-hidden="true"></i>
         </button>
+        <button type="button" class="uc-sidebar-tool-btn" :class="{ active: historyPanelOpen }" title="历史记录" @click.stop="toggleHistoryPanel()">
+          <i class="ri-history-line" aria-hidden="true"></i>
+        </button>
       </nav>
 
       <aside v-if="rightPanelVisible" class="right-panel uc-left uc-rightpanel uc-floating uc-floating-panel" :style="{ width: `${panel.width}px`, ...(panel.x === null ? {} : { left: `${panel.x}px`, top: `${panel.y}px`, right: 'auto' }) }">
@@ -4115,6 +4124,41 @@ function contextMenuAddToReference() {
                 <span>{{ mat.name }}</span>
                 <button class="uc-materials-del" title="删除" @click.stop="removeMaterial(mat.id)"><i class="ri-delete-bin-line"></i></button>
               </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
+  <!-- 历史记录面板 -->
+  <Teleport to="body">
+    <div v-if="historyPanelOpen" class="uc-materials-backdrop" @click.self="historyPanelOpen = false">
+      <div class="uc-materials-panel uc-history-panel">
+        <header class="uc-materials-head">
+          <h2><i class="ri-history-line"></i> 历史记录 <b v-if="generationHistory.length">{{ generationHistory.length }}</b></h2>
+          <button @click="historyPanelOpen = false"><i class="ri-close-line"></i></button>
+        </header>
+        <div class="uc-materials-body">
+          <div v-if="!generationHistory.length" class="uc-materials-empty">
+            <i class="ri-image-add-line"></i>
+            <p>暂无生成记录</p>
+            <small>在对话窗口生图后自动记录</small>
+          </div>
+          <div v-else class="uc-history-grid">
+            <div v-for="record in [...generationHistory].reverse()" :key="record.id" class="uc-history-card" @click="addGenerationRecordToCanvas(record)">
+              <img v-if="record.imageUrl" :src="record.imageUrl" :alt="record.prompt" />
+              <div class="uc-history-card-footer">
+                <span class="uc-history-model">{{ record.model }}</span>
+                <span class="uc-history-ratio">{{ record.ratio }}</span>
+                <div class="uc-history-actions">
+                  <button class="uc-history-act" title="加到画布" @click.stop="addGenerationRecordToCanvas(record)"><i class="ri-add-line"></i></button>
+                  <button class="uc-history-act" title="作参考图" @click.stop="useGenerationRecordAsReference(record)"><i class="ri-image-add-line"></i></button>
+                  <button class="uc-history-act" title="复用提示词" @click.stop="reuseGenerationRecordPrompt(record)"><i class="ri-file-copy-line"></i></button>
+                  <button class="uc-history-act uc-history-act--danger" title="删除" @click.stop="removeGenerationRecord(record.id)"><i class="ri-delete-bin-line"></i></button>
+                </div>
+              </div>
+              <p class="uc-history-prompt" :title="record.prompt">{{ record.prompt }}</p>
             </div>
           </div>
         </div>
