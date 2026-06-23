@@ -3411,7 +3411,7 @@ function contextMenuAddToReference() {
           <span>点击画布元素 → 选中加入输入框</span>
           <span>其他工具下 <kbd>Ctrl+点击</kbd> 也可选中元素</span>
         </div>
-        <button type="button" class="annotate-banner-close" @click.stop="activeTool = 'select'">退出标记</button>
+        <button type="button" class="annotate-banner-close" @pointerdown.stop @click.stop="activeTool = 'select'">退出标记</button>
       </aside>
 
       <!-- 左侧 + 号分类菜单栏（已合并到 bottom-tools 的 uc-toolbar-add-btn 弹层） -->
