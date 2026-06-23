@@ -13135,8 +13135,8 @@ body {
 
 .uc-materials-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
 }
 .uc-materials-card {
   background: rgba(255, 255, 255, 0.04);
@@ -13162,15 +13162,25 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 8px;
+  padding: 8px 10px;
 }
-.uc-materials-card-footer span {
-  font-size: 11px;
-  color: #aaa;
+.uc-materials-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.uc-materials-card-name {
+  font-size: 12px;
+  color: #ddd;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex: 1;
+}
+.uc-materials-card-date {
+  font-size: 10px;
+  color: #777;
 }
 .uc-materials-del {
   background: none;

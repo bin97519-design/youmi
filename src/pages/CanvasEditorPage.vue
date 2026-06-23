@@ -4121,7 +4121,10 @@ function contextMenuAddToReference() {
             <div v-for="mat in myMaterials" :key="mat.id" class="uc-materials-card" @click="addMaterialToCanvas(mat)">
               <img :src="mat.url" :alt="mat.name" />
               <div class="uc-materials-card-footer">
-                <span>{{ mat.name }}</span>
+                <div class="uc-materials-card-info">
+                  <span class="uc-materials-card-name">{{ mat.name }}</span>
+                  <span class="uc-materials-card-date">{{ mat.addedAt ? new Date(mat.addedAt).toLocaleString() : '' }}</span>
+                </div>
                 <button class="uc-materials-del" title="删除" @click.stop="removeMaterial(mat.id)"><i class="ri-delete-bin-line"></i></button>
               </div>
             </div>
