@@ -13491,3 +13491,113 @@ body {
   background:
     radial-gradient(circle at 50% -6%, rgba(255, 179, 71, 0.12), transparent 15%), var(--yh-bg);
 }
+
+/* ---- 补充浅色主题覆盖：遗漏的硬编码深色组件 ---- */
+
+/* 欢迎卡片 */
+[data-theme="light"] .start-card { background: #ffffff; color: #111; border-color: rgba(0,0,0,0.08); }
+[data-theme="light"] .start-card p { color: #666; }
+[data-theme="light"] .start-card i { color: #b58a00; }
+
+/* 添加图片下拉菜单 */
+[data-theme="light"] .add-image > button.active { background: #fff8e1; border-color: #b58a00; color: #b58a00; }
+[data-theme="light"] .add-menu { background: #ffffff; border-color: #b58a00; }
+[data-theme="light"] .add-menu button { color: #333; }
+[data-theme="light"] .add-menu button:hover { background: #f0f2f5; }
+
+/* 对话气泡（通用/默认样式） */
+[data-theme="light"] .uc-chat-msg-bubble { color: #333; background: #f5f5f5; border-color: rgba(0,0,0,0.06); }
+[data-theme="light"] .uc-chat-msg--user .uc-chat-msg-bubble { color: #111; background: linear-gradient(135deg, #e8e8e8, #f5f5f5); }
+[data-theme="light"] .chat-msg-pill { background: rgba(99,102,241,0.1); border-color: rgba(99,102,241,0.25); color: #4338ca; }
+[data-theme="light"] .chat-pill-msg { background: rgba(99,102,241,0.1); border-color: rgba(99,102,241,0.25); }
+[data-theme="light"] .chat-pill-msg span { color: #4338ca; }
+
+/* 对话输入区 */
+[data-theme="light"] .chat-input.uc-chat-inputbar { background: #f5f5f5; }
+[data-theme="light"] .chat-box.uc-ref-panel { color: #333; background: rgba(255,255,255,0.98); box-shadow: 0 28px 70px rgba(0,0,0,0.08); }
+[data-theme="light"] .uc-home-dialog-main { background: rgba(255,255,255,0.98); }
+
+/* 聊天历史 */
+[data-theme="light"] .chat-history.uc-chat-history { background: transparent; }
+[data-theme="light"] .chat-history.uc-chat-history p { color: #333; }
+
+/* 上传图卡片 */
+[data-theme="light"] .uc-upload-tile.yh-upload-tile { background: #f5f5f5; border-color: rgba(0,0,0,0.08); color: #666; }
+[data-theme="light"] .uc-upload-tile.yh-upload-tile:hover { background: #e8e8e8; }
+
+/* 生图记录面板（右侧 tab） */
+[data-theme="light"] .generation-history-panel { background: #ffffff; }
+[data-theme="light"] .generation-history-panel h3 { color: #111; }
+[data-theme="light"] .generation-history-panel p { color: #555; }
+[data-theme="light"] .generation-history-meta strong { color: #333; }
+[data-theme="light"] .generation-history-meta span,
+[data-theme="light"] .generation-history-info small { color: #888; }
+[data-theme="light"] .generation-history-info p { color: #555; }
+[data-theme="light"] .generation-history-card { background: #f5f5f5; border-color: rgba(0,0,0,0.06); }
+[data-theme="light"] .generation-history-card footer button { color: #555; background: #e8e8e8; }
+[data-theme="light"] .generation-history-card footer button:hover { background: #ddd; }
+[data-theme="light"] .generation-history-card footer button.danger { color: #ef4444; }
+[data-theme="light"] .generation-history-empty strong { color: #555; }
+[data-theme="light"] .generation-history-empty span { color: #999; }
+
+/* 生成选项 */
+[data-theme="light"] .uc-chat-generate-options { background: #f0f2f5; border-color: rgba(0,0,0,0.06); }
+
+/* 小地图内部 */
+[data-theme="light"] .canvas-minimap-plane {
+  background:
+    linear-gradient(rgba(0,0,0,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,0,0,0.03) 1px, transparent 1px), #f0f2f5;
+}
+[data-theme="light"] .canvas-minimap-layer { border-color: rgba(0,0,0,0.25); background: rgba(100,116,139,0.25); }
+[data-theme="light"] .canvas-minimap-viewport { border-color: #333; background: rgba(0,0,0,0.04); box-shadow: 0 0 0 1px rgba(0,0,0,0.06); }
+
+/* 选中图层（非图片） */
+[data-theme="light"] .canvas-layer.selected { outline-color: #ccc; }
+
+/* 面板拖拽/关闭按钮 */
+[data-theme="light"] .uc-rightpanel-toggle-btn { color: #888; }
+
+/* 面板 resize handle */
+[data-theme="light"] .panel-resize-handle { background: rgba(0,0,0,0.04); }
+
+/* 右侧面板 tab badge */
+[data-theme="light"] .uc-left-tab b { color: #b58a00; }
+
+/* 帮助菜单 */
+[data-theme="light"] .zoom-bar-help-menu { background: rgba(255,255,255,0.96); }
+[data-theme="light"] .zoom-bar-help-menu button { color: #333; }
+[data-theme="light"] .zoom-bar-help-menu button:hover { background: #f0f2f5; }
+
+/* 图片查看器 */
+[data-theme="light"] .uc-image-viewer-overlay { background: rgba(255,255,255,0.85); }
+[data-theme="light"] .uc-image-viewer-close { color: #333; background: rgba(0,0,0,0.06); }
+
+/* 检测 loading overlay */
+[data-theme="light"] .layer-detecting-overlay { background: rgba(255,255,255,0.65); }
+[data-theme="light"] .layer-detecting-text { color: #333; }
+
+/* 素材/历史面板关闭按钮 */
+[data-theme="light"] .uc-materials-head button { color: #888; }
+[data-theme="light"] .uc-materials-head button:hover { color: #333; background: #f0f2f5; }
+[data-theme="light"] .uc-materials-empty i { color: #ccc; }
+[data-theme="light"] .uc-materials-body { background: transparent; }
+
+/* 快捷键面板关闭按钮 */
+[data-theme="light"] .shortcuts-head button { color: #888; }
+[data-theme="light"] .shortcuts-head button:hover { color: #333; background: #f0f2f5; }
+
+/* 反推卡片内部 */
+[data-theme="light"] .reverse-prompt-mini-card header { color: #333; }
+[data-theme="light"] .reverse-prompt-mini-card header button { color: #888; background: #f0f2f5; }
+[data-theme="light"] .reverse-prompt-mini-card header button:hover { background: #e8e8e8; }
+[data-theme="light"] .reverse-prompt-mini-card p { color: #555; }
+[data-theme="light"] .reverse-prompt-textarea { color: #111; background: #f5f5f5; border-color: rgba(0,0,0,0.08); }
+[data-theme="light"] .reverse-prompt-form input,
+[data-theme="light"] .reverse-prompt-form textarea { color: #111; background: #fff; border-color: rgba(0,0,0,0.1); }
+[data-theme="light"] .reverse-prompt-reference-slots { background: #f5f5f5; border-color: rgba(0,0,0,0.06); }
+[data-theme="light"] .reverse-prompt-reference-slots figcaption { color: #555; }
+
+/* 全局文字颜色兜底 */
+[data-theme="light"] .editor-body { color: #111; }
+[data-theme="light"] .stage { color: #111; }
