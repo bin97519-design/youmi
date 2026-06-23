@@ -682,7 +682,7 @@ input::placeholder {
   position: absolute;
   top: 14px;
   left: 12px;
-  z-index: 310;
+  z-index: 9100;
   gap: 8px;
 }
 .top-tools button,
@@ -1494,7 +1494,7 @@ input::placeholder {
   position: absolute;
   left: 16px;
   bottom: 64px;
-  z-index: 313;
+  z-index: 9100;
   box-sizing: border-box;
   overflow: hidden;
   padding: 8px;
@@ -1574,7 +1574,7 @@ input::placeholder {
   position: absolute;
   left: 16px;
   bottom: 16px;
-  z-index: 311;
+  z-index: 9100;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -1693,7 +1693,7 @@ input::placeholder {
 
 /* 帮助菜单下拉 */
 .zoom-bar-help-menu {
-  z-index: 110;
+  z-index: 9101;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -9172,7 +9172,7 @@ body {
 
 .reverse-prompt-mini-card {
   position: absolute;
-  z-index: 14;
+  z-index: 9300;
   display: grid;
   box-sizing: border-box;
   grid-template-rows: auto auto minmax(0, 1fr);
@@ -10841,7 +10841,7 @@ body {
   left: 14px;
   top: 50%;
   bottom: auto;
-  z-index: 1000;
+  z-index: 9200;
   box-sizing: border-box;
   width: 56px;
   height: auto;
@@ -11111,7 +11111,7 @@ body {
   position: absolute;
   top: 0;
   right: -1px;
-  z-index: 315;
+  z-index: 9500;
   display: flex;
   flex-direction: column;
   width: 320px;
@@ -12676,7 +12676,7 @@ body {
 .shortcuts-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 500;
+  z-index: 9800;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -13004,7 +13004,7 @@ body {
 
 .uc-context-menu {
   position: fixed;
-  z-index: 600;
+  z-index: 9700;
   min-width: 180px;
   background: rgba(20, 20, 30, 0.96);
   backdrop-filter: blur(16px);
@@ -13052,7 +13052,7 @@ body {
 .uc-materials-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 500;
+  z-index: 9600;
   display: flex;
   align-items: center;
   justify-content: center;
