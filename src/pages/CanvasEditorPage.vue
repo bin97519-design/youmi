@@ -246,6 +246,48 @@ function cancelConnection() {
   connecting.active = false
 }
 
+// stage pointerup/pointercancel: 停止选框 + 取消连接
+function onStagePointerUp(e) {
+  stopMarquee(e)
+  cancelConnection()
+}
+
+// 删除连接并取消选中
+function deleteSelectedConnection() {
+  removeConnection(selectedConnection.id)
+  deselectConnection()
+}
+
+// 选中图层
+function selectSingleLayer(layer) {
+  selectedLayerId.value = layer.id
+  selectedLayerIds.value = [layer.id]
+}
+
+// 帮助菜单 → 快捷键
+function openShortcutsFromHelp() {
+  helpMenuOpen.value = false
+  shortcutsOpen.value = true
+}
+
+// 添加文件/节点后关闭菜单
+function addFileAndClose() {
+  openImageUpload('canvas')
+  toolbarAddOpen.value = false
+}
+function addImageNodeAndClose() {
+  addImageNode()
+  toolbarAddOpen.value = false
+}
+function addVideoNodeAndClose() {
+  addVideoNode()
+  toolbarAddOpen.value = false
+}
+function addTextNodeAndClose() {
+  addTextNode()
+  toolbarAddOpen.value = false
+}
+
 // 删除连接
 function removeConnection(connId) {
   connections.value = connections.value.filter((c) => c.id !== connId)
@@ -4082,14 +4124,8 @@ function contextMenuAddToReference() {
         @wheel.prevent="wheelZoom"
         @pointerdown="startMarquee($event)"
         @pointermove="onStagePointerMove($event)"
-        @pointerup="
-          stopMarquee($event)
-          cancelConnection()
-        "
-        @pointercancel="
-          stopMarquee($event)
-          cancelConnection()
-        "
+        @pointerup="onStagePointerUp($event)"
+        @pointercancel="onStagePointerUp($event)"
         @contextmenu.prevent="onCanvasContextMenu($event)"
       >
         <!-- 上传进度条 -->
@@ -4494,10 +4530,7 @@ function contextMenuAddToReference() {
           class="connection-delete-btn"
           :style="{ left: selectedConnection.x + 'px', top: selectedConnection.y + 'px' }"
           @pointerdown.stop
-          @click.stop="
-            removeConnection(selectedConnection.id)
-            deselectConnection()
-          "
+          @click.stop="deleteSelectedConnection"
         >
           <i class="ri-scissors-line"></i>
           <span>删除</span>
@@ -4975,10 +5008,7 @@ function contextMenuAddToReference() {
             v-for="layer in [...layers].reverse()"
             :key="layer.id"
             :class="{ active: selectedLayerIds.includes(layer.id) }"
-            @click="
-              selectedLayerId = layer.id
-              selectedLayerIds = [layer.id]
-            "
+            @click="selectSingleLayer(layer)"
           >
             <span>◉</span>
             <img v-if="layer.thumbnailUrl" :src="layer.thumbnailUrl" alt="" />
@@ -5027,13 +5057,7 @@ function contextMenuAddToReference() {
           <i class="ri-guide-line"></i>
           <span>帮助</span>
         </button>
-        <button
-          class="help-menu-item"
-          @click.stop="
-            helpMenuOpen = false
-            shortcutsOpen = true
-          "
-        >
+        <button class="help-menu-item" @click.stop="openShortcutsFromHelp">
           <i class="ri-keyboard-line"></i>
           <span>快捷键</span>
         </button>
@@ -5139,12 +5163,7 @@ function contextMenuAddToReference() {
     <div v-if="toolbarAddOpen" class="uc-toolbar-add-menu" :style="addMenuPosition" @click.stop>
       <div class="uc-toolbar-add-group">
         <span class="uc-toolbar-add-group-label">添加文件</span>
-        <button
-          @click="
-            openImageUpload('canvas')
-            toolbarAddOpen = false
-          "
-        >
+        <button @click="addFileAndClose">
           <i class="ri-upload-2-line" aria-hidden="true"></i>
           <span class="uc-toolbar-add-text">本地上传</span>
           <span class="uc-toolbar-add-shortcut">拖拽</span>
@@ -5158,32 +5177,17 @@ function contextMenuAddToReference() {
       <div class="uc-toolbar-add-divider"></div>
       <div class="uc-toolbar-add-group">
         <span class="uc-toolbar-add-group-label">添加节点</span>
-        <button
-          @click="
-            addImageNode()
-            toolbarAddOpen = false
-          "
-        >
+        <button @click="addImageNodeAndClose">
           <i class="ri-image-line" aria-hidden="true"></i>
           <span class="uc-toolbar-add-text">图片</span>
           <span class="uc-toolbar-add-shortcut">I</span>
         </button>
-        <button
-          @click="
-            addVideoNode()
-            toolbarAddOpen = false
-          "
-        >
+        <button @click="addVideoNodeAndClose">
           <i class="ri-video-line" aria-hidden="true"></i>
           <span class="uc-toolbar-add-text">视频</span>
           <span class="uc-toolbar-add-shortcut">V</span>
         </button>
-        <button
-          @click="
-            addTextNode()
-            toolbarAddOpen = false
-          "
-        >
+        <button @click="addTextNodeAndClose">
           <i class="ri-text" aria-hidden="true"></i>
           <span class="uc-toolbar-add-text">文本</span>
           <span class="uc-toolbar-add-shortcut">T</span>
