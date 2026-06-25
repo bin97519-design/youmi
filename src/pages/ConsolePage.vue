@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useUserStore } from '../stores/user';
+import { apiPath } from '../utils/apiBase';
 
 const userStore = useUserStore();
 const activeTab = ref('accounts');
@@ -38,7 +39,7 @@ const roleOptions = computed(() => roles.value.map((role) => role.code));
 const summary = computed(() => stats.value?.summary || {});
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
+  const response = await fetch(apiPath(path), {
     ...options,
     headers: {
       'Content-Type': 'application/json',

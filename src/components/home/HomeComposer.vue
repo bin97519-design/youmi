@@ -1,8 +1,9 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useUserStore } from '../../stores/user';
+import { apiPath } from '../../utils/apiBase';
+import { uploadFileDirect } from '../../utils/ossUpload';
 
-const UPLOAD_ENDPOINT = 'http://101.133.149.214/prod-api/api/v1/file/upload';
 
 const props = defineProps({
   modelValue: {
@@ -467,7 +468,7 @@ async function openSplitIdea() {
   promptGenerating.value = true;
 
   try {
-    const response = await fetch('/api/detail-page/prompts', {
+    const response = await fetch(apiPath('/api/detail-page/prompts'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -551,26 +552,7 @@ function removeImage(imageId) {
 }
 
 async function uploadRemoteFile(file) {
-  const formData = new FormData();
-  formData.append('file', file);
-
-  const response = await fetch(UPLOAD_ENDPOINT, {
-    method: 'POST',
-    body: formData,
-  });
-
-  if (!response.ok) {
-    throw new Error(`上传失败：${response.status}`);
-  }
-
-  const result = await response.json().catch(() => ({}));
-  const remoteUrl = findUploadedUrl(result);
-
-  if (!remoteUrl) {
-    throw new Error('上传成功，但没有返回图片地址');
-  }
-
-  return remoteUrl;
+  return uploadFileDirect(file, { dir: 'youmi-home/uploads' });
 }
 
 async function uploadFile(file) {
@@ -864,7 +846,7 @@ async function executeCloneCut() {
   cloneLoading.value = 'cut-competitor';
   try {
     const data = await readCloneApiResponse(
-      await fetch('/api/detail-clone/cut-images', {
+      await fetch(apiPath('/api/detail-clone/cut-images'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -931,7 +913,7 @@ async function extractCompetitorImages() {
   cloneLoading.value = 'extract-competitor';
   try {
     const data = await readCloneApiResponse(
-      await fetch('/api/detail-clone/extract-images', {
+      await fetch(apiPath('/api/detail-clone/extract-images'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1196,7 +1178,7 @@ async function optimizeCloneProductInfo() {
   cloneOptimizingProductInfo.value = true;
   try {
     const data = await readCloneApiResponse(
-      await fetch('/api/ai/optimize-product-info', {
+      await fetch(apiPath('/api/ai/optimize-product-info'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -12,6 +12,8 @@ import {
 import { useRouter } from 'vue-router'
 import { layerName, useCanvasStore } from '../stores/canvas'
 import { useUserStore } from '../stores/user'
+import { apiPath } from '../utils/apiBase'
+import { uploadFileDirect } from '../utils/ossUpload'
 
 const props = defineProps({ id: { type: String, required: true } })
 const router = useRouter()
@@ -891,7 +893,7 @@ async function maybeAutoDetect(layer) {
 
   detectingLayerIds.value = new Set([...detectingLayerIds.value, layer.id])
   try {
-    const res = await fetch('/api/image/detect-elements', {
+    const res = await fetch(apiPath('/api/image/detect-elements'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...userStore.authHeaders() },
       body: JSON.stringify({ imageUrl: layer.url, layerId: layer.id }),
@@ -989,39 +991,9 @@ function extractUploadUrl(result) {
 }
 
 function uploadFile(file, onProgress) {
-  return new Promise((resolve, reject) => {
-    const form = new FormData()
-    form.append('file', file)
-    const xhr = new XMLHttpRequest()
-    xhr.open('POST', 'http://101.133.149.214/prod-api/api/v1/file/upload')
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable && onProgress) {
-        onProgress({
-          loaded: e.loaded,
-          total: e.total,
-          percent: Math.round((e.loaded / e.total) * 100),
-        })
-      }
-    }
-    xhr.onload = () => {
-      if (xhr.status < 200 || xhr.status >= 300) {
-        reject(new Error(`图片上传失败：${xhr.status}`))
-        return
-      }
-      try {
-        const result = JSON.parse(xhr.responseText)
-        const url = extractUploadUrl(result)
-        if (!url) {
-          reject(new Error('上传成功，但接口没有返回图片地址'))
-          return
-        }
-        resolve(url.startsWith('http') ? url : `http://101.133.149.214${url}`)
-      } catch (e) {
-        reject(new Error('解析上传响应失败'))
-      }
-    }
-    xhr.onerror = () => reject(new Error('网络错误，上传失败'))
-    xhr.send(form)
+  return uploadFileDirect(file, {
+    dir: 'youmi-canvas/uploads',
+    onProgress,
   })
 }
 
@@ -1058,7 +1030,7 @@ async function submitImageTask({ prompt, imageUrls }) {
   }
 
   const data = await readApiResponse(
-    await fetch('/api/image-tasks', {
+    await fetch(apiPath('/api/image-tasks'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
