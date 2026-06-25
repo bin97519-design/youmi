@@ -10739,11 +10739,12 @@ body {
   align-items: center;
   gap: 12px;
   padding: 10px 16px;
-  background: linear-gradient(135deg, rgba(34, 197, 94, 0.95), rgba(22, 163, 74, 0.95));
-  color: #ffffff;
+  background: linear-gradient(135deg, var(--color-bg-2), var(--color-bg-3));
+  color: var(--color-text-1);
+  border: 1px solid var(--color-border);
   border-radius: 12px;
   font-size: 12px;
-  box-shadow: 0 6px 20px rgba(34, 197, 94, 0.3);
+  box-shadow: var(--shadow-lg);
   user-select: none;
   pointer-events: auto;
   animation: annotateBannerIn 0.25s ease-out;
@@ -10758,17 +10759,19 @@ body {
 .annotate-banner-text strong {
   font-size: 13px;
   font-weight: 800;
-  color: #fff;
+  color: var(--color-text-1);
 }
 .annotate-banner-text span {
   font-size: 12px;
   font-weight: 500;
-  opacity: 0.92;
+  color: var(--color-text-2);
 }
 .annotate-banner-text kbd {
   padding: 1px 5px;
   border-radius: 3px;
-  background: rgba(255, 255, 255, 0.22);
+  background: var(--color-bg-3);
+  color: var(--color-text-1);
+  border: 1px solid var(--color-border);
   font-size: 11px;
   font-weight: 700;
   font-family: inherit;
@@ -12509,18 +12512,15 @@ body {
   position: fixed;
   min-width: 220px;
   padding: 6px;
-  /* 纯黑底 + 磨砂玻璃 */
-  background: rgba(10, 12, 20, 0.92);
+  background: var(--color-bg-1);
   -webkit-backdrop-filter: blur(24px) saturate(180%);
   backdrop-filter: blur(24px) saturate(180%);
-  /* 暖金描边 */
-  border: 1px solid rgba(255, 241, 166, 0.35);
+  border: 1px solid var(--color-border-strong);
   border-radius: 12px;
   box-shadow:
-    0 16px 48px rgba(0, 0, 0, 0.7),
-    0 0 0 1px rgba(255, 241, 166, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.03),
-    0 0 20px rgba(255, 241, 166, 0.06);
+    0 16px 48px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(255, 255, 255, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.03);
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -12536,9 +12536,9 @@ body {
   padding: 1px;
   background: linear-gradient(
     135deg,
-    rgba(255, 241, 166, 0.5) 0%,
-    rgba(242, 201, 0, 0.3) 50%,
-    rgba(255, 241, 166, 0.15) 100%
+    var(--color-brand-500) 0%,
+    var(--color-brand-300) 50%,
+    var(--color-brand-500) 100%
   );
   -webkit-mask:
     linear-gradient(#fff 0 0) content-box,
@@ -12558,9 +12558,8 @@ body {
   left: -7px;
   transform: translateY(-50%);
   border: 7px solid transparent;
-  border-right-color: rgba(10, 12, 20, 0.92);
+  border-right-color: var(--color-bg-1);
   z-index: -1;
-  filter: drop-shadow(0 0 3px rgba(255, 241, 166, 0.15));
 }
 /* 菜单项：3 列布局 图标 / 文字 / 快捷键 */
 .uc-toolbar-add-menu button {
@@ -12573,7 +12572,7 @@ body {
   background: transparent;
   border: none;
   border-radius: 8px;
-  color: #c8d5ea;
+  color: var(--color-text-2);
   font-size: 13px;
   text-align: left;
   cursor: pointer;
@@ -12584,7 +12583,7 @@ body {
   font-weight: 500;
   width: 100%;
 }
-/* 左侧高亮指示条：暖金渐变 */
+/* 左侧高亮指示条：品牌色渐变 */
 .uc-toolbar-add-menu button::before {
   content: '';
   position: absolute;
@@ -12593,32 +12592,32 @@ body {
   bottom: 25%;
   width: 3px;
   border-radius: 0 2px 2px 0;
-  background: linear-gradient(180deg, #fff1a6, #f2c900);
+  background: linear-gradient(180deg, var(--color-brand-500), var(--color-brand-300));
   transform: scaleY(0);
   transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   opacity: 0;
 }
-/* hover：暖金高亮 */
+/* hover：品牌色高亮 */
 .uc-toolbar-add-menu button:hover {
-  background: rgba(255, 241, 166, 0.1);
-  color: #fff1a6;
+  background: rgba(8, 145, 178, 0.1);
+  color: var(--color-brand-500);
 }
 .uc-toolbar-add-menu button:hover::before {
   transform: scaleY(1);
   opacity: 1;
 }
 .uc-toolbar-add-menu button:active {
-  background: rgba(255, 241, 166, 0.18);
+  background: rgba(8, 145, 178, 0.18);
 }
-/* 图标：默认暖金淡，hover 金亮 */
+/* 图标：默认品牌色淡，hover 品牌色亮 */
 .uc-toolbar-add-menu button i {
   font-size: 16px;
-  color: rgba(255, 241, 166, 0.55);
+  color: var(--color-text-3);
   text-align: center;
   transition: color 0.15s ease;
 }
 .uc-toolbar-add-menu button:hover i {
-  color: #fff1a6;
+  color: var(--color-brand-500);
 }
 /* 文字 */
 .uc-toolbar-add-text {
@@ -12628,9 +12627,9 @@ body {
 .uc-toolbar-add-shortcut {
   font-size: 11px;
   font-weight: 600;
-  color: rgba(255, 241, 166, 0.35);
-  background: rgba(255, 241, 166, 0.06);
-  border: 1px solid rgba(255, 241, 166, 0.12);
+  color: var(--color-text-3);
+  background: var(--color-bg-2);
+  border: 1px solid var(--color-border);
   border-radius: 4px;
   padding: 1px 6px;
   line-height: 1.4;
@@ -12638,9 +12637,9 @@ body {
   transition: all 0.15s ease;
 }
 .uc-toolbar-add-menu button:hover .uc-toolbar-add-shortcut {
-  color: rgba(255, 241, 166, 0.8);
-  background: rgba(255, 241, 166, 0.1);
-  border-color: rgba(255, 241, 166, 0.25);
+  color: var(--color-brand-500);
+  background: rgba(8, 145, 178, 0.1);
+  border-color: rgba(8, 145, 178, 0.25);
 }
 /* 分组标题 */
 .uc-toolbar-add-group {
@@ -12651,22 +12650,22 @@ body {
 .uc-toolbar-add-group-label {
   font-size: 10px;
   font-weight: 700;
-  color: rgba(255, 241, 166, 0.45);
+  color: var(--color-text-3);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   padding: 6px 10px 3px;
   user-select: none;
 }
-/* 分隔线：暖金渐变 */
+/* 分隔线：品牌色渐变 */
 .uc-toolbar-add-divider {
   height: 1px;
   margin: 4px 8px;
   background: linear-gradient(
     to right,
     transparent,
-    rgba(255, 241, 166, 0.2),
-    rgba(242, 201, 0, 0.12),
-    rgba(255, 241, 166, 0.2),
+    rgba(8, 145, 178, 0.2),
+    rgba(34, 211, 238, 0.12),
+    rgba(8, 145, 178, 0.2),
     transparent
   );
 }
@@ -12729,20 +12728,20 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 16px 20px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--color-border);
 }
 .shortcuts-head h2 {
   font-size: 15px;
   font-weight: 600;
-  color: #e0e0e0;
+  color: var(--color-text-1);
   margin: 0;
 }
 .shortcuts-head button {
   width: 28px;
   height: 28px;
   border: none;
-  background: rgba(255, 255, 255, 0.06);
-  color: #999;
+  background: var(--color-bg-2);
+  color: var(--color-text-3);
   border-radius: 6px;
   font-size: 13px;
   cursor: pointer;
@@ -12754,8 +12753,8 @@ body {
     color 0.15s;
 }
 .shortcuts-head button:hover {
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
+  background: var(--color-bg-3);
+  color: var(--color-text-1);
 }
 .shortcuts-body {
   padding: 16px 20px 20px;
@@ -13749,8 +13748,16 @@ body {
 
 /* 标注模式横幅 */
 [data-theme='light'] .annotate-banner {
-  background: #ecfeff;
+  background: linear-gradient(135deg, #ecfeff, #e0f7fa);
   color: #333;
+  border: 1px solid rgba(8, 145, 178, 0.2);
+  box-shadow: 0 6px 20px rgba(8, 145, 178, 0.15);
+}
+[data-theme='light'] .annotate-banner-text strong {
+  color: #111;
+}
+[data-theme='light'] .annotate-banner-text span {
+  color: #555;
 }
 
 /* 主题切换按钮 */
