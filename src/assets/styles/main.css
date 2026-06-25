@@ -10902,7 +10902,7 @@ body {
   margin: 0;
   border: 1px solid transparent;
   border-radius: 10px;
-  color: #f0f0f0;
+  color: var(--color-text-2);
   background: transparent;
   box-shadow: none;
   font-size: 16px;
@@ -10934,7 +10934,7 @@ body {
   top: -1px;
   height: 3px;
   border-radius: 2px;
-  background: #fff1a6;
+  background: var(--color-brand-500);
   opacity: 0;
   transform: scaleX(0.4);
   transition:
@@ -10949,20 +10949,19 @@ body {
   color: currentColor;
   font-size: 20px;
   line-height: 30px;
-  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.35));
 }
 
 .bottom-tools.uc-sidebar-tools .uc-sidebar-tool-btn:hover {
-  border-color: rgba(255, 241, 166, 0.2);
-  color: #fff1a6;
-  background: rgba(255, 241, 166, 0.08);
+  border-color: rgba(8, 145, 178, 0.2);
+  color: var(--color-brand-500);
+  background: rgba(8, 145, 178, 0.08);
 }
 
 .bottom-tools.uc-sidebar-tools .uc-sidebar-tool-btn.active {
-  color: #fff1a6;
-  border-color: rgba(255, 241, 166, 0.35);
-  background: linear-gradient(135deg, rgba(255, 241, 166, 0.18), rgba(242, 201, 0, 0.08));
-  box-shadow: 0 4px 14px rgba(255, 241, 166, 0.15);
+  color: var(--color-brand-500);
+  border-color: rgba(8, 145, 178, 0.35);
+  background: linear-gradient(135deg, rgba(8, 145, 178, 0.18), rgba(34, 211, 238, 0.08));
+  box-shadow: 0 4px 14px rgba(8, 145, 178, 0.15);
 }
 
 .bottom-tools.uc-sidebar-tools .uc-sidebar-tool-btn.active::before {
@@ -10971,7 +10970,7 @@ body {
 }
 
 .bottom-tools.uc-sidebar-tools .uc-sidebar-tool-btn.active i {
-  color: #fff1a6;
+  color: var(--color-brand-500);
 }
 
 .bottom-tools.uc-sidebar-tools .uc-sidebar-tool-key {
@@ -10979,16 +10978,15 @@ body {
   right: 4px;
   bottom: 4px;
   display: block;
-  color: rgba(240, 240, 240, 0.7);
+  color: var(--color-text-3);
   font-size: 9px;
   font-weight: 700;
   line-height: 13.5px;
   pointer-events: none;
-  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.4);
 }
 
 .bottom-tools.uc-sidebar-tools .uc-sidebar-tool-btn.active .uc-sidebar-tool-key {
-  color: #ffffff;
+  color: var(--color-brand-500);
 }
 
 .bottom-tools.uc-sidebar-tools .uc-floating-drag-grip {
