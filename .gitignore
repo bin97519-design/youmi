@@ -31,11 +31,20 @@ Thumbs.db
 # Backend
 backend/target/
 backend/start-dev.ps1
+backend/backend_java/target/
+backend/backend_java/BOOT-INF/
+backend/backend_java/logs/
+backend/backend_java/tmp/
+backend/backend_java/uploads/
+backend/backend_java/data/
 tmp/
 server/data/
 
 # Build artifacts
 *.tsbuildinfo
+*.jar
+*.zip
+release/
 
 # Cache
 .eslintcache

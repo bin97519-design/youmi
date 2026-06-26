@@ -9,6 +9,7 @@ import ReversePromptPanel from '../components/prompt/ReversePromptPanel.vue';
 import { useUserStore } from '../stores/user';
 import { useCanvasStore } from '../stores/canvas';
 import { useTheme } from '../composables/useTheme';
+import { apiPath } from '../utils/apiBase';
 
 const railExpanded = ref(false);
 const prompt = ref('');
@@ -183,7 +184,7 @@ async function submitImageTask(payload, promptOverride, countOverride = null, im
   };
 
   const data = await readApiResponse(
-    await fetch('/api/image-tasks', {
+    await fetch(apiPath('/api/image-tasks'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -200,7 +201,7 @@ async function submitImageTask(payload, promptOverride, countOverride = null, im
 }
 
 async function fetchImageTask(taskId) {
-  return readApiResponse(await fetch(`/api/image-tasks/${encodeURIComponent(taskId)}`));
+  return readApiResponse(await fetch(apiPath(`/api/image-tasks/${encodeURIComponent(taskId)}`)));
 }
 
 function failGeneration(error) {
@@ -382,7 +383,7 @@ function handleShortcut(item) {
 
 async function loadReversePromptCategories() {
   try {
-    const data = await readApiResponse(await fetch('/api/prompt/categories'));
+    const data = await readApiResponse(await fetch(apiPath('/api/prompt/categories')));
     if (Array.isArray(data) && data.length) reversePromptCategories.value = data;
   } catch (error) {
     reversePromptError.value = error instanceof Error ? error.message : String(error || '反推品类加载失败');
@@ -394,7 +395,7 @@ async function analyzeReversePrompt(payload) {
   reversePromptError.value = '';
   try {
     const data = await readApiResponse(
-      await fetch('/api/prompt/analyze-image', {
+      await fetch(apiPath('/api/prompt/analyze-image'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

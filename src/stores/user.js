@@ -1,10 +1,11 @@
 import { defineStore } from 'pinia';
+import { apiPath } from '../utils/apiBase';
 
 const TOKEN_KEY = 'youmi_token';
 const PROFILE_KEY = 'youmi_profile';
 
 async function requestApi(path, options = {}) {
-  const response = await fetch(path, {
+  const response = await fetch(apiPath(path), {
     ...options,
     headers: {
       'Content-Type': 'application/json',

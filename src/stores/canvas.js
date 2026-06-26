@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import { useUserStore } from './user';
+import { apiPath } from '../utils/apiBase';
 
 const STORAGE_KEY = 'youmi_canvas_documents_v3';
 const OFFLINE_QUEUE_KEY = 'youmi_canvas_offline_queue_v1';
@@ -185,7 +186,7 @@ async function syncToServer(doc, { skipQueue = false } = {}) {
   // 检查 localStorage 里是否已有离线队列（说明之前保存失败过），如果有就直接跳过避免刷屏
   if (!skipQueue && loadOfflineQueue().length > 0) return;
   try {
-    const res = await fetch('/api/canvas/save', {
+    const res = await fetch(apiPath('/api/canvas/save'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...headers },
       body: JSON.stringify({
@@ -221,7 +222,7 @@ async function flushOfflineQueue() {
   const remaining = [];
   for (const item of queue) {
     try {
-      const res = await fetch('/api/canvas/save', {
+      const res = await fetch(apiPath('/api/canvas/save'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
         body: JSON.stringify({
@@ -251,7 +252,7 @@ async function syncDeleteFromServer(docId) {
   const headers = getAuthHeaders();
   if (!headers.Authorization) return;
   try {
-    await fetch(`/api/canvas/${docId}`, {
+    await fetch(apiPath(`/api/canvas/${docId}`), {
       method: 'DELETE',
       headers: { ...headers },
     });
@@ -264,7 +265,7 @@ async function loadFromServer() {
   const headers = getAuthHeaders();
   if (!headers.Authorization) return [];
   try {
-    const response = await fetch('/api/canvas/list', { headers: { ...headers } });
+    const response = await fetch(apiPath('/api/canvas/list'), { headers: { ...headers } });
     const payload = await response.json().catch(() => ({}));
     if (payload.code !== 0 || !Array.isArray(payload.data)) return [];
     return payload.data.map((item) => ({
@@ -465,7 +466,7 @@ export const useCanvasStore = defineStore('canvas', {
 
       try {
         const headers = getAuthHeaders();
-        const res = await fetch('/api/image/detect-elements', {
+        const res = await fetch(apiPath('/api/image/detect-elements'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...headers },
           body: JSON.stringify({ imageUrl: layer.url, layerId }),
