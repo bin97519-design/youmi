@@ -1,5 +1,5 @@
-import { defineConfig } from 'vite';
-import vue from '@vitejs/plugin-vue';
+import { defineConfig } from 'vite'
+import vue from '@vitejs/plugin-vue'
 
 export default defineConfig({
   plugins: [vue()],
@@ -10,9 +10,9 @@ export default defineConfig({
         changeOrigin: true,
       },
       '/api': {
-        target: 'http://127.0.0.1:8083',
+        target: 'http://127.0.0.1:8085',
         changeOrigin: true,
       },
     },
   },
-});
+})

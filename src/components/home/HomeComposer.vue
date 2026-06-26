@@ -1,50 +1,50 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
-import { useUserStore } from '../../stores/user';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useUserStore } from '../../stores/user'
 
-const UPLOAD_ENDPOINT = 'http://101.133.149.214/prod-api/api/v1/file/upload';
+const UPLOAD_ENDPOINT = '/api/file/upload'
 
 const props = defineProps({
   modelValue: {
     type: String,
     default: '',
   },
-});
+})
 
-const emit = defineEmits(['update:modelValue', 'generate']);
-const userStore = useUserStore();
+const emit = defineEmits(['update:modelValue', 'generate'])
+const userStore = useUserStore()
 
 const prompt = computed({
   get: () => props.modelValue,
   set: (value) => emit('update:modelValue', value),
-});
+})
 
-const selectedMode = ref('生成详情页');
-const open = ref(false);
-const modes = ['生成详情页', '生成主图', '竞品复刻', '生成视频', 'AI运营'];
-const fileInput = ref(null);
-const cloneCompetitorInput = ref(null);
-const clonePreviewInput = ref(null);
-const cloneProductInput = ref(null);
-const images = ref([]);
-const activeImageId = ref('');
-const uploadError = ref('');
-const uploading = ref(false);
-const ratioOpen = ref(false);
-const selectedRatio = ref('智能比例');
-const ratioOptions = ['1:1', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'];
-const modelOpen = ref(false);
-const selectedModel = ref('gpt image 2');
-const modelOptions = ['gpt image 2', 'banana2', 'banana pro'];
-const qualityOpen = ref(false);
-const selectedQuality = ref('2K');
-const qualityOptions = ['1K', '2K', '4K'];
-const cloneResolutionOptions = ['1K', '2K', '4K'];
-const countOpen = ref(false);
-const selectedCount = ref('生成1张');
-const countOptions = ['生成1张', '生成2张', '生成3张', '生成4张'];
-const detailModalOpen = ref(false);
-const splitIdeaOpen = ref(false);
+const selectedMode = ref('生成详情页')
+const open = ref(false)
+const modes = ['生成详情页', '生成主图', '竞品复刻', '生成视频', 'AI运营']
+const fileInput = ref(null)
+const cloneCompetitorInput = ref(null)
+const clonePreviewInput = ref(null)
+const cloneProductInput = ref(null)
+const images = ref([])
+const activeImageId = ref('')
+const uploadError = ref('')
+const uploading = ref(false)
+const ratioOpen = ref(false)
+const selectedRatio = ref('智能比例')
+const ratioOptions = ['1:1', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
+const modelOpen = ref(false)
+const selectedModel = ref('gpt image 2')
+const modelOptions = ['gpt image 2', 'banana2', 'banana pro']
+const qualityOpen = ref(false)
+const selectedQuality = ref('2K')
+const qualityOptions = ['1K', '2K', '4K']
+const cloneResolutionOptions = ['1K', '2K', '4K']
+const countOpen = ref(false)
+const selectedCount = ref('生成1张')
+const countOptions = ['生成1张', '生成2张', '生成3张', '生成4张']
+const detailModalOpen = ref(false)
+const splitIdeaOpen = ref(false)
 const detailDraft = ref({
   productInfo: '',
   method: 'split',
@@ -55,26 +55,26 @@ const detailDraft = ref({
   screens: '3 屏',
   style: '',
   splitPlan: [],
-});
-const splitPlans = ref([]);
-const selectedSplitIds = ref([]);
-const promptGenerating = ref(false);
-const promptError = ref('');
-const cloneModalOpen = ref(false);
-const cloneLoading = ref('');
-const cloneError = ref('');
-const cloneOptimizingProductInfo = ref(false);
-const cloneProductInfoPreview = ref(false);
-const cloneExtractRequestId = ref('');
-const cloneBridgeReady = ref(false);
-const clonePreviewZoom = ref(96);
-const clonePreviewMerged = ref(false);
-const cloneCutMode = ref(false);
-const cloneCutLines = ref([]);
-const cloneDraggingCutLine = ref(null);
-const clonePreviewDragId = ref('');
-const clonePreviewDragOverId = ref('');
-const clonePreviewActiveImageId = ref('');
+})
+const splitPlans = ref([])
+const selectedSplitIds = ref([])
+const promptGenerating = ref(false)
+const promptError = ref('')
+const cloneModalOpen = ref(false)
+const cloneLoading = ref('')
+const cloneError = ref('')
+const cloneOptimizingProductInfo = ref(false)
+const cloneProductInfoPreview = ref(false)
+const cloneExtractRequestId = ref('')
+const cloneBridgeReady = ref(false)
+const clonePreviewZoom = ref(96)
+const clonePreviewMerged = ref(false)
+const cloneCutMode = ref(false)
+const cloneCutLines = ref([])
+const cloneDraggingCutLine = ref(null)
+const clonePreviewDragId = ref('')
+const clonePreviewDragOverId = ref('')
+const clonePreviewActiveImageId = ref('')
 const cloneDraft = ref({
   productInfo: '',
   ratio: '9:16',
@@ -87,10 +87,10 @@ const cloneDraft = ref({
   productImages: [],
   sliceContracts: [],
   mappingContracts: [],
-});
-let cloneExtractTimer = 0;
-let cloneBridgeTimer = 0;
-let cloneCutDragContext = null;
+})
+let cloneExtractTimer = 0
+let cloneBridgeTimer = 0
+let cloneCutDragContext = null
 const splitTemplates = [
   {
     key: 'hero',
@@ -148,35 +148,37 @@ const splitTemplates = [
     copy: '售后保障 + 用户评价 + 行动引导',
     visual: '信任背书卡片、服务图标、品牌收尾画面。',
   },
-];
-const isMainImageMode = computed(() => selectedMode.value === '生成主图');
-const isDetailCloneMode = computed(() => selectedMode.value === '竞品复刻');
-const cloneWebpageImages = computed(() => cloneDraft.value.competitorImages.filter((image) => image.source === 'webpage'));
-const primaryModeLabel = computed(() => (isMainImageMode.value ? '生成图片' : selectedMode.value));
+]
+const isMainImageMode = computed(() => selectedMode.value === '生成主图')
+const isDetailCloneMode = computed(() => selectedMode.value === '竞品复刻')
+const cloneWebpageImages = computed(() =>
+  cloneDraft.value.competitorImages.filter((image) => image.source === 'webpage'),
+)
+const primaryModeLabel = computed(() => (isMainImageMode.value ? '生成图片' : selectedMode.value))
 const placeholder = computed(() =>
   isMainImageMode.value
     ? '描述你想生成的图片...'
     : isDetailCloneMode.value
       ? '描述产品信息并上传产品图，点击右侧进入竞品复刻...'
-    : '描述产品信息（卖点、材质、适用场景等），AI 将优化并生成详情页...',
-);
-const hasComposerContent = computed(() => prompt.value.trim().length > 0 || images.value.length > 0);
+      : '描述产品信息（卖点、材质、适用场景等），AI 将优化并生成详情页...',
+)
+const hasComposerContent = computed(() => prompt.value.trim().length > 0 || images.value.length > 0)
 
 function chooseMode(mode) {
-  selectedMode.value = mode;
-  open.value = false;
-  ratioOpen.value = false;
-  modelOpen.value = false;
-  qualityOpen.value = false;
-  countOpen.value = false;
+  selectedMode.value = mode
+  open.value = false
+  ratioOpen.value = false
+  modelOpen.value = false
+  qualityOpen.value = false
+  countOpen.value = false
 }
 
 function closeToolMenus(except = '') {
-  open.value = except === 'mode' ? open.value : false;
-  ratioOpen.value = except === 'ratio' ? ratioOpen.value : false;
-  modelOpen.value = except === 'model' ? modelOpen.value : false;
-  qualityOpen.value = except === 'quality' ? qualityOpen.value : false;
-  countOpen.value = except === 'count' ? countOpen.value : false;
+  open.value = except === 'mode' ? open.value : false
+  ratioOpen.value = except === 'ratio' ? ratioOpen.value : false
+  modelOpen.value = except === 'model' ? modelOpen.value : false
+  qualityOpen.value = except === 'quality' ? qualityOpen.value : false
+  countOpen.value = except === 'count' ? countOpen.value : false
 }
 
 function toggleMenu(menu) {
@@ -186,59 +188,59 @@ function toggleMenu(menu) {
     model: modelOpen,
     quality: qualityOpen,
     count: countOpen,
-  };
-  const target = stateMap[menu];
-  const nextValue = !target.value;
-  closeToolMenus();
-  target.value = nextValue;
+  }
+  const target = stateMap[menu]
+  const nextValue = !target.value
+  closeToolMenus()
+  target.value = nextValue
 }
 
 function closeAllMenus() {
-  closeToolMenus();
+  closeToolMenus()
 }
 
 onMounted(() => {
-  document.addEventListener('click', closeAllMenus);
-  window.addEventListener('message', handleTmallExtractMessage);
-  pingCloneBridge();
-});
+  document.addEventListener('click', closeAllMenus)
+  window.addEventListener('message', handleTmallExtractMessage)
+  pingCloneBridge()
+})
 
 onBeforeUnmount(() => {
-  document.removeEventListener('click', closeAllMenus);
-  window.removeEventListener('message', handleTmallExtractMessage);
-  window.clearTimeout(cloneExtractTimer);
-  window.clearTimeout(cloneBridgeTimer);
-  stopCloneCutDrag();
-});
+  document.removeEventListener('click', closeAllMenus)
+  window.removeEventListener('message', handleTmallExtractMessage)
+  window.clearTimeout(cloneExtractTimer)
+  window.clearTimeout(cloneBridgeTimer)
+  stopCloneCutDrag()
+})
 
 function chooseRatio(ratio) {
-  selectedRatio.value = ratio;
-  ratioOpen.value = false;
+  selectedRatio.value = ratio
+  ratioOpen.value = false
 }
 
 function chooseModel(model) {
-  selectedModel.value = model;
-  modelOpen.value = false;
+  selectedModel.value = model
+  modelOpen.value = false
 }
 
 function chooseQuality(quality) {
-  selectedQuality.value = quality;
-  qualityOpen.value = false;
+  selectedQuality.value = quality
+  qualityOpen.value = false
 }
 
 function chooseCount(count) {
-  selectedCount.value = count;
-  countOpen.value = false;
+  selectedCount.value = count
+  countOpen.value = false
 }
 
 function openFilePicker() {
-  if (!userStore.requireLogin()) return;
-  fileInput.value?.click();
+  if (!userStore.requireLogin()) return
+  fileInput.value?.click()
 }
 
 function submitGenerate() {
-  if (!hasComposerContent.value) return;
-  if (!userStore.requireLogin()) return;
+  if (!hasComposerContent.value) return
+  if (!userStore.requireLogin()) return
 
   emit('generate', {
     flow: 'main-image',
@@ -253,17 +255,20 @@ function submitGenerate() {
       name: image.name,
       url: image.url,
     })),
-  });
+  })
 }
 
 function openDetailModal() {
-  if (!hasComposerContent.value) return;
-  if (!userStore.requireLogin()) return;
+  if (!hasComposerContent.value) return
+  if (!userStore.requireLogin()) return
 
-  const imageBrief = images.value.map((image) => image.name).filter(Boolean).join('、');
-  detailDraft.value.productInfo = prompt.value.trim() || imageBrief || '参考图产品';
-  detailDraft.value.splitPlan = [];
-  detailModalOpen.value = true;
+  const imageBrief = images.value
+    .map((image) => image.name)
+    .filter(Boolean)
+    .join('、')
+  detailDraft.value.productInfo = prompt.value.trim() || imageBrief || '参考图产品'
+  detailDraft.value.splitPlan = []
+  detailModalOpen.value = true
 }
 
 function syncCloneProductImages() {
@@ -276,37 +281,44 @@ function syncCloneProductImages() {
       localUrl: image.localUrl,
       uploading: false,
       source: 'composer',
-    }));
-  const currentUrls = new Set(currentImages.map((image) => image.url));
-  const manualImages = cloneDraft.value.productImages
-    .filter((image) => image.source !== 'composer' && !currentUrls.has(image.url));
+    }))
+  const currentUrls = new Set(currentImages.map((image) => image.url))
+  const manualImages = cloneDraft.value.productImages.filter(
+    (image) => image.source !== 'composer' && !currentUrls.has(image.url),
+  )
 
-  cloneDraft.value.productImages = [...currentImages, ...manualImages];
+  cloneDraft.value.productImages = [...currentImages, ...manualImages]
 }
 
 function openCloneModal() {
-  if (!userStore.requireLogin()) return;
-  selectedMode.value = '竞品复刻';
-  const imageBrief = images.value.map((image) => image.name).filter(Boolean).join('、');
-  cloneDraft.value.productInfo = prompt.value.trim() || cloneDraft.value.productInfo || imageBrief || '';
-  cloneDraft.value.ratio = '9:16';
-  syncCloneProductImages();
-  cloneError.value = '';
-  cloneLoading.value = '';
-  cloneModalOpen.value = true;
+  if (!userStore.requireLogin()) return
+  selectedMode.value = '竞品复刻'
+  const imageBrief = images.value
+    .map((image) => image.name)
+    .filter(Boolean)
+    .join('、')
+  cloneDraft.value.productInfo =
+    prompt.value.trim() || cloneDraft.value.productInfo || imageBrief || ''
+  cloneDraft.value.ratio = '9:16'
+  syncCloneProductImages()
+  cloneError.value = ''
+  cloneLoading.value = ''
+  cloneModalOpen.value = true
 }
 
 function openCloneModalFromShortcut() {
-  openCloneModal();
+  openCloneModal()
 }
 
-defineExpose({ openCloneModalFromShortcut });
+defineExpose({ openCloneModalFromShortcut })
 
 function submitDetailGenerate() {
-  if (!userStore.requireLogin()) return;
+  if (!userStore.requireLogin()) return
   const activePlan =
-    detailDraft.value.splitPlan.length === getScreenCount() ? detailDraft.value.splitPlan : createSplitPlans();
-  detailModalOpen.value = false;
+    detailDraft.value.splitPlan.length === getScreenCount()
+      ? detailDraft.value.splitPlan
+      : createSplitPlans()
+  detailModalOpen.value = false
   emit('generate', {
     flow: 'detail-page',
     prompt: detailDraft.value.productInfo,
@@ -324,32 +336,32 @@ function submitDetailGenerate() {
       name: image.name,
       url: image.url,
     })),
-  });
+  })
 }
 
 function getScreenCount() {
-  return Number.parseInt(detailDraft.value.screens, 10) || 3;
+  return Number.parseInt(detailDraft.value.screens, 10) || 3
 }
 
 function pickTemplates(count) {
   if (count <= 3) {
-    return ['hero', 'core-selling', 'trust'];
+    return ['hero', 'core-selling', 'trust']
   }
   if (count <= 5) {
-    return ['hero', 'pain-point', 'core-selling', 'detail', 'trust'];
+    return ['hero', 'pain-point', 'core-selling', 'detail', 'trust']
   }
-  return ['hero', 'pain-point', 'core-selling', 'detail', 'scene', 'compare', 'spec', 'trust'];
+  return ['hero', 'pain-point', 'core-selling', 'detail', 'scene', 'compare', 'spec', 'trust']
 }
 
 function inferProductFocus(productInfo) {
-  const text = productInfo.toLowerCase();
+  const text = productInfo.toLowerCase()
   if (/床|枕|家居|沙发|桌|椅|柜|垫/.test(text)) {
     return {
       category: '家居生活',
       audience: '注重舒适度、质感和耐用性的家庭用户',
       scene: '温暖、干净、有生活感的室内空间',
       proof: '材质、结构、尺寸、承托或耐用性',
-    };
+    }
   }
   if (/食品|饮|茶|咖啡|零食|坚果|果|粮|奶/.test(text)) {
     return {
@@ -357,7 +369,7 @@ function inferProductFocus(productInfo) {
       audience: '关注口感、原料和健康感的消费人群',
       scene: '明亮餐桌、原料飞溅、自然光美食场景',
       proof: '原料、口感、产地、配料和安全感',
-    };
+    }
   }
   if (/护肤|美妆|面膜|精华|口红|洗护|香/.test(text)) {
     return {
@@ -365,7 +377,7 @@ function inferProductFocus(productInfo) {
       audience: '关注功效、成分和肤感的人群',
       scene: '干净高级的浴室、梳妆台或棚拍场景',
       proof: '成分、功效、肤感、使用前后和安全背书',
-    };
+    }
   }
   if (/衣|裤|鞋|包|穿|服装|模特/.test(text)) {
     return {
@@ -373,7 +385,7 @@ function inferProductFocus(productInfo) {
       audience: '关注版型、面料和上身效果的用户',
       scene: '模特上身、街拍、棚拍或生活穿搭场景',
       proof: '版型、面料、细节、尺码和搭配效果',
-    };
+    }
   }
   if (/手机|电脑|耳机|灯|电器|数码|充电|智能/.test(text)) {
     return {
@@ -381,20 +393,20 @@ function inferProductFocus(productInfo) {
       audience: '关注功能、参数和效率提升的用户',
       scene: '科技感桌面、办公、居家或户外使用场景',
       proof: '核心功能、参数、兼容性、效率和质保',
-    };
+    }
   }
   return {
     category: '通用商品',
     audience: '关注产品价值、使用体验和购买安全感的用户',
     scene: '干净真实的产品使用场景',
     proof: '核心卖点、细节、场景、参数和服务保障',
-  };
+  }
 }
 
 function buildImagePrompt(template, productInfo, focus) {
-  const style = detailDraft.value.style.trim() || '高端、干净、真实、有电商转化感';
-  const textInstruction = `主标题表达“${template.copy}”，文案应短、清晰、适合电商详情页，不要堆满文字`;
-  const layoutInstruction = `版式：${template.visual}；保留清晰标题区、产品展示区、卖点说明区，层级从上到下阅读顺畅`;
+  const style = detailDraft.value.style.trim() || '高端、干净、真实、有电商转化感'
+  const textInstruction = `主标题表达“${template.copy}”，文案应短、清晰、适合电商详情页，不要堆满文字`
+  const layoutInstruction = `版式：${template.visual}；保留清晰标题区、产品展示区、卖点说明区，层级从上到下阅读顺畅`
   const positivePrompt = [
     `${detailDraft.value.platform}电商详情页分屏设计，第${template.index}屏，${detailDraft.value.ratio}竖版构图`,
     `产品：${productInfo}`,
@@ -407,7 +419,7 @@ function buildImagePrompt(template, productInfo, focus) {
     textInstruction,
     `整体风格：${style}`,
     '画面要求：商业摄影质感，产品主体准确，细节清晰，背景干净，光影自然，适合淘宝/天猫详情页，高清，高完成度',
-  ].join('。');
+  ].join('。')
   const negativePrompt = [
     '不要乱码文字',
     '不要错误中文',
@@ -419,7 +431,7 @@ function buildImagePrompt(template, productInfo, focus) {
     '不要过度炫光',
     '不要遮挡产品核心结构',
     '不要欧美海报式大段英文排版',
-  ].join('，');
+  ].join('，')
 
   return {
     positive: positivePrompt,
@@ -427,21 +439,21 @@ function buildImagePrompt(template, productInfo, focus) {
     layout: layoutInstruction,
     text: textInstruction,
     modelInput: `${positivePrompt}\n\n负向提示词：${negativePrompt}`,
-  };
+  }
 }
 
 function createSplitPlans() {
-  const count = getScreenCount();
-  const productInfo = detailDraft.value.productInfo.trim() || prompt.value.trim() || '产品';
-  const focus = inferProductFocus(productInfo);
-  const keys = pickTemplates(count);
+  const count = getScreenCount()
+  const productInfo = detailDraft.value.productInfo.trim() || prompt.value.trim() || '产品'
+  const focus = inferProductFocus(productInfo)
+  const keys = pickTemplates(count)
 
   return keys.map((key, index) => {
-    const base = splitTemplates.find((template) => template.key === key) || splitTemplates[0];
+    const base = splitTemplates.find((template) => template.key === key) || splitTemplates[0]
     const template = {
       ...base,
       index: index + 1,
-    };
+    }
 
     return {
       id: `${template.key}-${index + 1}`,
@@ -453,18 +465,18 @@ function createSplitPlans() {
       category: focus.category,
       proof: focus.proof,
       prompts: buildImagePrompt(template, productInfo, focus),
-    };
-  });
+    }
+  })
 }
 
 async function openSplitIdea() {
-  if (!userStore.requireLogin()) return;
-  const plans = createSplitPlans();
-  splitPlans.value = plans;
-  selectedSplitIds.value = splitPlans.value.map((item) => item.id);
-  splitIdeaOpen.value = true;
-  promptError.value = '';
-  promptGenerating.value = true;
+  if (!userStore.requireLogin()) return
+  const plans = createSplitPlans()
+  splitPlans.value = plans
+  selectedSplitIds.value = splitPlans.value.map((item) => item.id)
+  splitIdeaOpen.value = true
+  promptError.value = ''
+  promptGenerating.value = true
 
   try {
     const response = await fetch('/api/detail-page/prompts', {
@@ -481,258 +493,259 @@ async function openSplitIdea() {
         screens: detailDraft.value.screens,
         plans: plans.map(({ prompts, ...plan }) => plan),
       }),
-    });
-    const result = await response.json();
+    })
+    const result = await response.json()
     if (!response.ok || result.code !== 0) {
-      throw new Error(result.message || '提示词生成失败');
+      throw new Error(result.message || '提示词生成失败')
     }
 
-    const promptMap = new Map((result.data?.prompts || []).map((item) => [item.id, item]));
+    const promptMap = new Map((result.data?.prompts || []).map((item) => [item.id, item]))
     splitPlans.value = splitPlans.value.map((plan) => ({
       ...plan,
       prompts: promptMap.get(plan.id) || plan.prompts,
       promptProvider: result.data?.provider || 'fallback',
-    }));
+    }))
   } catch (error) {
-    promptError.value = error instanceof Error ? error.message : '提示词生成失败，已保留本地提示词';
+    promptError.value = error instanceof Error ? error.message : '提示词生成失败，已保留本地提示词'
   } finally {
-    promptGenerating.value = false;
+    promptGenerating.value = false
   }
 }
 
 function toggleSplitPlan(planId) {
   if (selectedSplitIds.value.includes(planId)) {
-    selectedSplitIds.value = selectedSplitIds.value.filter((id) => id !== planId);
-    return;
+    selectedSplitIds.value = selectedSplitIds.value.filter((id) => id !== planId)
+    return
   }
-  selectedSplitIds.value = [...selectedSplitIds.value, planId];
+  selectedSplitIds.value = [...selectedSplitIds.value, planId]
 }
 
 function applySplitIdea() {
-  const selectedPlans = splitPlans.value.filter((item) => selectedSplitIds.value.includes(item.id));
-  if (!selectedPlans.length) return;
+  const selectedPlans = splitPlans.value.filter((item) => selectedSplitIds.value.includes(item.id))
+  if (!selectedPlans.length) return
 
   detailDraft.value.splitPlan = selectedPlans.map((item, index) => ({
     ...item,
     index: index + 1,
-  }));
-  detailDraft.value.screens = `${selectedPlans.length} 屏`;
-  splitIdeaOpen.value = false;
+  }))
+  detailDraft.value.screens = `${selectedPlans.length} 屏`
+  splitIdeaOpen.value = false
 }
 
 function findUploadedUrl(payload) {
-  if (!payload || typeof payload !== 'object') return '';
+  if (!payload || typeof payload !== 'object') return ''
 
-  const directKeys = ['url', 'fileUrl', 'filePath', 'path', 'src', 'link'];
+  const directKeys = ['url', 'fileUrl', 'filePath', 'path', 'src', 'link']
   for (const key of directKeys) {
     if (typeof payload[key] === 'string' && /^https?:\/\//i.test(payload[key])) {
-      return payload[key];
+      return payload[key]
     }
   }
 
   for (const value of Object.values(payload)) {
     if (typeof value === 'string' && /^https?:\/\//i.test(value)) {
-      return value;
+      return value
     }
-    const nested = findUploadedUrl(value);
-    if (nested) return nested;
+    const nested = findUploadedUrl(value)
+    if (nested) return nested
   }
 
-  return '';
+  return ''
 }
 
 function removeImage(imageId) {
-  const image = images.value.find((item) => item.id === imageId);
+  const image = images.value.find((item) => item.id === imageId)
   if (image?.localUrl?.startsWith('blob:')) {
-    URL.revokeObjectURL(image.localUrl);
+    URL.revokeObjectURL(image.localUrl)
   }
-  images.value = images.value.filter((item) => item.id !== imageId);
-  activeImageId.value = images.value.at(-1)?.id || '';
+  images.value = images.value.filter((item) => item.id !== imageId)
+  activeImageId.value = images.value.at(-1)?.id || ''
 }
 
 async function uploadRemoteFile(file) {
-  const formData = new FormData();
-  formData.append('file', file);
+  const formData = new FormData()
+  formData.append('file', file)
 
   const response = await fetch(UPLOAD_ENDPOINT, {
     method: 'POST',
     body: formData,
-  });
+  })
 
   if (!response.ok) {
-    throw new Error(`上传失败：${response.status}`);
+    throw new Error(`上传失败：${response.status}`)
   }
 
-  const result = await response.json().catch(() => ({}));
-  const remoteUrl = findUploadedUrl(result);
+  const result = await response.json().catch(() => ({}))
+  const remoteUrl = findUploadedUrl(result)
 
   if (!remoteUrl) {
-    throw new Error('上传成功，但没有返回图片地址');
+    throw new Error('上传成功，但没有返回图片地址')
   }
 
-  return remoteUrl;
+  return remoteUrl
 }
 
 async function uploadFile(file) {
-  const localUrl = URL.createObjectURL(file);
+  const localUrl = URL.createObjectURL(file)
   const image = {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     name: file.name,
     localUrl,
     url: localUrl,
     uploading: true,
-  };
+  }
 
-  images.value.push(image);
-  activeImageId.value = image.id;
+  images.value.push(image)
+  activeImageId.value = image.id
 
-  image.url = await uploadRemoteFile(file);
-  image.uploading = false;
+  image.url = await uploadRemoteFile(file)
+  image.uploading = false
 }
 
 async function handleFileChange(event) {
-  const files = Array.from(event.target.files || []);
-  if (!files.length) return;
+  const files = Array.from(event.target.files || [])
+  if (!files.length) return
 
-  uploadError.value = '';
-  uploading.value = true;
+  uploadError.value = ''
+  uploading.value = true
 
   try {
     for (const file of files) {
-      await uploadFile(file);
+      await uploadFile(file)
     }
   } catch (error) {
-    uploadError.value = error instanceof Error ? error.message : '上传失败';
+    uploadError.value = error instanceof Error ? error.message : '上传失败'
   } finally {
-    uploading.value = false;
-    event.target.value = '';
+    uploading.value = false
+    event.target.value = ''
   }
 }
 
 function cloneImages(type) {
-  return type === 'competitor' ? cloneDraft.value.competitorImages : cloneDraft.value.productImages;
+  return type === 'competitor' ? cloneDraft.value.competitorImages : cloneDraft.value.productImages
 }
 
 function setCloneImages(type, nextImages) {
-  if (type === 'competitor') cloneDraft.value.competitorImages = nextImages;
-  else cloneDraft.value.productImages = nextImages;
+  if (type === 'competitor') cloneDraft.value.competitorImages = nextImages
+  else cloneDraft.value.productImages = nextImages
 }
 
 function setCloneCompetitorSource(source) {
-  cloneDraft.value.competitorSource = source;
-  cloneError.value = '';
+  cloneDraft.value.competitorSource = source
+  cloneError.value = ''
 }
 
 function openCloneCompetitorPicker() {
-  cloneCompetitorInput.value?.click();
+  cloneCompetitorInput.value?.click()
 }
 
 function openClonePreviewPicker() {
-  clonePreviewInput.value?.click();
+  clonePreviewInput.value?.click()
 }
 
 function openCloneProductPicker() {
-  cloneProductInput.value?.click();
+  cloneProductInput.value?.click()
 }
 
 function parseCompetitorProductId(value) {
-  const raw = String(value || '').trim();
-  if (!raw) return '';
-  if (/^\d{5,}$/.test(raw)) return raw;
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  if (/^\d{5,}$/.test(raw)) return raw
 
-  const decodedValues = new Set([raw]);
+  const decodedValues = new Set([raw])
   try {
-    decodedValues.add(decodeURIComponent(raw));
+    decodedValues.add(decodeURIComponent(raw))
   } catch {
     // Keep the original value when decoding fails.
   }
 
   for (const item of decodedValues) {
     try {
-      const withScheme = /^https?:\/\//i.test(item) ? item : `https://${item}`;
-      const url = new URL(withScheme);
-      const id = url.searchParams.get('id') || url.searchParams.get('itemId');
-      if (id && /^\d+$/.test(id)) return id;
+      const withScheme = /^https?:\/\//i.test(item) ? item : `https://${item}`
+      const url = new URL(withScheme)
+      const id = url.searchParams.get('id') || url.searchParams.get('itemId')
+      if (id && /^\d+$/.test(id)) return id
     } catch {
       // Fall back to regex extraction below.
     }
 
-    const match = item.match(/(?:[?&#]|^)(?:id|itemId)=?(\d{5,})\b/i) || item.match(/\bid[=:](\d{5,})\b/i);
-    if (match) return match[1];
+    const match =
+      item.match(/(?:[?&#]|^)(?:id|itemId)=?(\d{5,})\b/i) || item.match(/\bid[=:](\d{5,})\b/i)
+    if (match) return match[1]
   }
 
-  return '';
+  return ''
 }
 
 function tmallDetailUrl(productId) {
-  return `https://detail.tmall.com/item.htm?b_s_f=sycm&id=${productId}`;
+  return `https://detail.tmall.com/item.htm?b_s_f=sycm&id=${productId}`
 }
 
 function normalizeCompetitorPageTarget(value) {
-  const raw = String(value || '').trim();
-  if (!raw) return { url: '', productId: '' };
-  const productId = parseCompetitorProductId(raw);
-  if (productId) return { url: tmallDetailUrl(productId), productId };
+  const raw = String(value || '').trim()
+  if (!raw) return { url: '', productId: '' }
+  const productId = parseCompetitorProductId(raw)
+  if (productId) return { url: tmallDetailUrl(productId), productId }
 
-  const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`
   try {
-    const url = new URL(withScheme);
+    const url = new URL(withScheme)
     return ['http:', 'https:'].includes(url.protocol) && url.hostname
       ? { url: url.href, productId: '' }
-      : { url: '', productId: '' };
+      : { url: '', productId: '' }
   } catch {
-    return { url: '', productId: '' };
+    return { url: '', productId: '' }
   }
 }
 
 function competitorImageName(url, index) {
   try {
-    const pathname = new URL(url).pathname;
-    const filename = decodeURIComponent(pathname.split('/').filter(Boolean).at(-1) || '');
-    return filename || `网页提取图片 ${index + 1}`;
+    const pathname = new URL(url).pathname
+    const filename = decodeURIComponent(pathname.split('/').filter(Boolean).at(-1) || '')
+    return filename || `网页提取图片 ${index + 1}`
   } catch {
-    return `网页提取图片 ${index + 1}`;
+    return `网页提取图片 ${index + 1}`
   }
 }
 
 function openCompetitorPageTab(url, keepOpener = false) {
-  const features = keepOpener ? '' : 'noopener,noreferrer';
-  const opened = window.open(url, '_blank', features);
-  if (opened) return true;
+  const features = keepOpener ? '' : 'noopener,noreferrer'
+  const opened = window.open(url, '_blank', features)
+  if (opened) return true
 
-  const link = document.createElement('a');
-  link.href = url;
-  link.target = '_blank';
-  if (!keepOpener) link.rel = 'noopener noreferrer';
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  return true;
+  const link = document.createElement('a')
+  link.href = url
+  link.target = '_blank'
+  if (!keepOpener) link.rel = 'noopener noreferrer'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  return true
 }
 
 function pingCloneBridge() {
-  cloneBridgeReady.value = false;
-  window.clearTimeout(cloneBridgeTimer);
-  window.postMessage({ type: 'youmi:extension-bridge-ping' }, window.location.origin);
+  cloneBridgeReady.value = false
+  window.clearTimeout(cloneBridgeTimer)
+  window.postMessage({ type: 'youmi:extension-bridge-ping' }, window.location.origin)
   cloneBridgeTimer = window.setTimeout(() => {
-    cloneBridgeReady.value = false;
-  }, 1200);
+    cloneBridgeReady.value = false
+  }, 1200)
 }
 
 function buildTmallExtractorUrl(pageUrl, requestId) {
-  const url = new URL(pageUrl);
-  const hash = new URLSearchParams();
-  hash.set('youmiExtractDescV8', '1');
-  hash.set('requestId', requestId);
-  hash.set('returnOrigin', window.location.origin);
-  url.hash = hash.toString();
-  return url.href;
+  const url = new URL(pageUrl)
+  const hash = new URLSearchParams()
+  hash.set('youmiExtractDescV8', '1')
+  hash.set('requestId', requestId)
+  hash.set('returnOrigin', window.location.origin)
+  url.hash = hash.toString()
+  return url.href
 }
 
 function applyCompetitorImageUrls(imageUrls, imageSource, productId = '', pageUrl = '') {
-  const uniqueUrls = Array.from(new Set(imageUrls || [])).filter(Boolean);
-  const manualImages = cloneImages('competitor').filter((image) => image.source !== imageSource);
-  const manualUrls = new Set(manualImages.map((image) => image.url));
+  const uniqueUrls = Array.from(new Set(imageUrls || [])).filter(Boolean)
+  const manualImages = cloneImages('competitor').filter((image) => image.source !== imageSource)
+  const manualUrls = new Set(manualImages.map((image) => image.url))
   const extractedImages = uniqueUrls
     .filter((url) => !manualUrls.has(url))
     .map((url, index) => ({
@@ -745,123 +758,128 @@ function applyCompetitorImageUrls(imageUrls, imageSource, productId = '', pageUr
       source: imageSource,
       productId,
       pageUrl,
-    }));
+    }))
 
-  setCloneImages('competitor', [...manualImages, ...extractedImages]);
-  cloneDraft.value.sliceContracts = [];
-  cloneDraft.value.mappingContracts = [];
-  clonePreviewMerged.value = false;
-  cloneCutMode.value = false;
-  cloneCutLines.value = [];
-  clonePreviewZoom.value = 96;
-  return extractedImages.length;
+  setCloneImages('competitor', [...manualImages, ...extractedImages])
+  cloneDraft.value.sliceContracts = []
+  cloneDraft.value.mappingContracts = []
+  clonePreviewMerged.value = false
+  cloneCutMode.value = false
+  cloneCutLines.value = []
+  clonePreviewZoom.value = 96
+  return extractedImages.length
 }
 
 function handleTmallExtractMessage(event) {
-  if (![window.location.origin, 'https://detail.tmall.com'].includes(event.origin)) return;
-  const data = event.data || {};
+  if (![window.location.origin, 'https://detail.tmall.com'].includes(event.origin)) return
+  const data = event.data || {}
   if (data.type === 'youmi:extension-bridge-ready') {
-    cloneBridgeReady.value = true;
-    window.clearTimeout(cloneBridgeTimer);
-    return;
+    cloneBridgeReady.value = true
+    window.clearTimeout(cloneBridgeTimer)
+    return
   }
-  if (data.type !== 'youmi:tmall-descv8-images') return;
-  if (!data.requestId || data.requestId !== cloneExtractRequestId.value) return;
+  if (data.type !== 'youmi:tmall-descv8-images') return
+  if (!data.requestId || data.requestId !== cloneExtractRequestId.value) return
 
-  window.clearTimeout(cloneExtractTimer);
-  const imageUrls = Array.from(new Set(data.imageUrls || []));
+  window.clearTimeout(cloneExtractTimer)
+  const imageUrls = Array.from(new Set(data.imageUrls || []))
   if (!imageUrls.length) {
     cloneError.value = data.foundContainer
       ? '详情页已打开，但 descV8-container 下没有提取到图片'
-      : '详情页已打开，但没有找到 descV8-container';
-    cloneLoading.value = '';
-    return;
+      : '详情页已打开，但没有找到 descV8-container'
+    cloneLoading.value = ''
+    return
   }
 
-  const productId = parseCompetitorProductId(data.pageUrl || cloneDraft.value.competitorPageUrl);
-  applyCompetitorImageUrls(imageUrls, 'webpage', productId, data.pageUrl || cloneDraft.value.competitorPageUrl);
-  cloneDraft.value.competitorPageUrl = data.pageUrl || cloneDraft.value.competitorPageUrl;
-  cloneError.value = '';
-  cloneLoading.value = '';
+  const productId = parseCompetitorProductId(data.pageUrl || cloneDraft.value.competitorPageUrl)
+  applyCompetitorImageUrls(
+    imageUrls,
+    'webpage',
+    productId,
+    data.pageUrl || cloneDraft.value.competitorPageUrl,
+  )
+  cloneDraft.value.competitorPageUrl = data.pageUrl || cloneDraft.value.competitorPageUrl
+  cloneError.value = ''
+  cloneLoading.value = ''
 }
 
 function mergeClonePreview() {
-  if (!cloneWebpageImages.value.length) return;
-  clonePreviewMerged.value = true;
-  cloneCutMode.value = false;
-  cloneCutLines.value = [];
-  clonePreviewZoom.value = 96;
+  if (!cloneWebpageImages.value.length) return
+  clonePreviewMerged.value = true
+  cloneCutMode.value = false
+  cloneCutLines.value = []
+  clonePreviewZoom.value = 96
 }
 
 function restoreClonePreview() {
-  clonePreviewMerged.value = false;
-  cloneCutMode.value = false;
-  cloneCutLines.value = [];
-  clonePreviewZoom.value = 96;
+  clonePreviewMerged.value = false
+  cloneCutMode.value = false
+  cloneCutLines.value = []
+  clonePreviewZoom.value = 96
 }
 
 function toggleCloneCutMode() {
-  if (!clonePreviewMerged.value) return;
-  cloneCutMode.value = !cloneCutMode.value;
+  if (!clonePreviewMerged.value) return
+  cloneCutMode.value = !cloneCutMode.value
 }
 
 function addCloneCutLine(event) {
-  if (!clonePreviewMerged.value || !cloneCutMode.value) return;
-  const target = event.currentTarget;
-  const rect = target.getBoundingClientRect();
-  const y = event.clientY - rect.top + target.scrollTop;
-  const percent = Math.max(2, Math.min(98, Math.round((y / target.scrollHeight) * 1000) / 10));
-  if (cloneCutLines.value.some((line) => Math.abs(line - percent) < 1)) return;
-  cloneCutLines.value = [...cloneCutLines.value, percent].sort((a, b) => a - b);
+  if (!clonePreviewMerged.value || !cloneCutMode.value) return
+  const target = event.currentTarget
+  const rect = target.getBoundingClientRect()
+  const y = event.clientY - rect.top + target.scrollTop
+  const percent = Math.max(2, Math.min(98, Math.round((y / target.scrollHeight) * 1000) / 10))
+  if (cloneCutLines.value.some((line) => Math.abs(line - percent) < 1)) return
+  cloneCutLines.value = [...cloneCutLines.value, percent].sort((a, b) => a - b)
 }
 
 function percentFromCutPointer(event, canvas) {
-  const rect = canvas.getBoundingClientRect();
-  const y = event.clientY - rect.top;
-  return Math.max(2, Math.min(98, Math.round((y / rect.height) * 1000) / 10));
+  const rect = canvas.getBoundingClientRect()
+  const y = event.clientY - rect.top
+  return Math.max(2, Math.min(98, Math.round((y / rect.height) * 1000) / 10))
 }
 
 function moveCloneCutLine(fromLine, toLine) {
   cloneCutLines.value = cloneCutLines.value
     .map((line) => (line === fromLine ? toLine : line))
-    .sort((a, b) => a - b);
+    .sort((a, b) => a - b)
 }
 
 function removeCloneCutLine(targetLine) {
-  cloneCutLines.value = cloneCutLines.value.filter((line) => line !== targetLine);
+  cloneCutLines.value = cloneCutLines.value.filter((line) => line !== targetLine)
 }
 
 function handleCloneCutDrag(event) {
-  if (!cloneCutDragContext?.canvas) return;
-  const nextLine = percentFromCutPointer(event, cloneCutDragContext.canvas);
-  moveCloneCutLine(cloneCutDragContext.line, nextLine);
-  cloneCutDragContext.line = nextLine;
-  cloneDraggingCutLine.value = nextLine;
+  if (!cloneCutDragContext?.canvas) return
+  const nextLine = percentFromCutPointer(event, cloneCutDragContext.canvas)
+  moveCloneCutLine(cloneCutDragContext.line, nextLine)
+  cloneCutDragContext.line = nextLine
+  cloneDraggingCutLine.value = nextLine
 }
 
 function stopCloneCutDrag() {
-  document.removeEventListener('pointermove', handleCloneCutDrag);
-  document.removeEventListener('pointerup', stopCloneCutDrag);
-  cloneCutDragContext = null;
-  cloneDraggingCutLine.value = null;
+  document.removeEventListener('pointermove', handleCloneCutDrag)
+  document.removeEventListener('pointerup', stopCloneCutDrag)
+  cloneCutDragContext = null
+  cloneDraggingCutLine.value = null
 }
 
 function startCloneCutDrag(line, event) {
-  const canvas = event.currentTarget.closest('.yh-copycat-merged-canvas');
-  if (!canvas) return;
-  cloneCutDragContext = { line, canvas };
-  cloneDraggingCutLine.value = line;
-  document.addEventListener('pointermove', handleCloneCutDrag);
-  document.addEventListener('pointerup', stopCloneCutDrag, { once: true });
+  const canvas = event.currentTarget.closest('.yh-copycat-merged-canvas')
+  if (!canvas) return
+  cloneCutDragContext = { line, canvas }
+  cloneDraggingCutLine.value = line
+  document.addEventListener('pointermove', handleCloneCutDrag)
+  document.addEventListener('pointerup', stopCloneCutDrag, { once: true })
 }
 
 async function executeCloneCut() {
-  if (!cloneCutLines.value.length) return;
-  const sourceImages = cloneWebpageImages.value.map((image) => image.url).filter(Boolean);
-  if (!sourceImages.length) return;
+  if (!cloneCutLines.value.length) return
+  const sourceImages = cloneWebpageImages.value.map((image) => image.url).filter(Boolean)
+  if (!sourceImages.length) return
 
-  cloneError.value = '';
-  cloneLoading.value = 'cut-competitor';
+  cloneError.value = ''
+  cloneLoading.value = 'cut-competitor'
   try {
     const data = await readCloneApiResponse(
       await fetch('/api/detail-clone/cut-images', {
@@ -875,60 +893,63 @@ async function executeCloneCut() {
           cutLines: cloneCutLines.value,
         }),
       }),
-    );
+    )
 
-    const cutUrls = Array.from(new Set(data?.imageUrls || []));
-    if (!cutUrls.length) throw new Error('裁切完成但没有返回图片地址');
-    const productId = parseCompetitorProductId(cloneDraft.value.competitorPageUrl);
-    applyCompetitorImageUrls(cutUrls, 'webpage', productId, cloneDraft.value.competitorPageUrl);
-    clonePreviewMerged.value = false;
-    cloneCutMode.value = false;
-    cloneCutLines.value = [];
-    cloneError.value = '';
+    const cutUrls = Array.from(new Set(data?.imageUrls || []))
+    if (!cutUrls.length) throw new Error('裁切完成但没有返回图片地址')
+    const productId = parseCompetitorProductId(cloneDraft.value.competitorPageUrl)
+    applyCompetitorImageUrls(cutUrls, 'webpage', productId, cloneDraft.value.competitorPageUrl)
+    clonePreviewMerged.value = false
+    cloneCutMode.value = false
+    cloneCutLines.value = []
+    cloneError.value = ''
   } catch (error) {
-    cloneError.value = error instanceof Error ? error.message : '裁切失败';
+    cloneError.value = error instanceof Error ? error.message : '裁切失败'
   } finally {
-    cloneLoading.value = '';
+    cloneLoading.value = ''
   }
 }
 
 async function extractCompetitorImages() {
-  const target = normalizeCompetitorPageTarget(cloneDraft.value.competitorPageUrl);
-  const pageUrl = target.url;
+  const target = normalizeCompetitorPageTarget(cloneDraft.value.competitorPageUrl)
+  const pageUrl = target.url
   if (!pageUrl) {
-    cloneError.value = '请输入有效的商品ID或竞品网页链接';
-    return;
+    cloneError.value = '请输入有效的商品ID或竞品网页链接'
+    return
   }
 
-  cloneDraft.value.competitorPageUrl = pageUrl;
+  cloneDraft.value.competitorPageUrl = pageUrl
   if (target.productId) {
     if (!cloneBridgeReady.value) {
-      pingCloneBridge();
-      cloneError.value = '未检测到本地扩展桥，请在浏览器扩展页重新加载 Youmi Site Structure Recorder 后刷新本页';
-      return;
+      pingCloneBridge()
+      cloneError.value =
+        '未检测到本地扩展桥，请在浏览器扩展页重新加载 Youmi Site Structure Recorder 后刷新本页'
+      return
     }
 
-    cloneError.value = '';
-    cloneLoading.value = 'extract-competitor';
-    const requestId = `tmall-${target.productId}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    cloneExtractRequestId.value = requestId;
-    const opened = openCompetitorPageTab(buildTmallExtractorUrl(pageUrl, requestId), true);
+    cloneError.value = ''
+    cloneLoading.value = 'extract-competitor'
+    const requestId = `tmall-${target.productId}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    cloneExtractRequestId.value = requestId
+    const opened = openCompetitorPageTab(buildTmallExtractorUrl(pageUrl, requestId), true)
     if (!opened) {
-      cloneLoading.value = '';
-      cloneError.value = '浏览器阻止了新标签页，请允许弹窗后再点击提取';
-      return;
+      cloneLoading.value = ''
+      cloneError.value = '浏览器阻止了新标签页，请允许弹窗后再点击提取'
+      return
     }
-    window.clearTimeout(cloneExtractTimer);
+    window.clearTimeout(cloneExtractTimer)
     cloneExtractTimer = window.setTimeout(() => {
-      if (cloneExtractRequestId.value !== requestId || cloneLoading.value !== 'extract-competitor') return;
-      cloneLoading.value = '';
-      cloneError.value = '已打开天猫详情页，但没有收到图片结果。请确认扩展已重新加载，并且天猫标签页地址带有 youmiExtractDescV8 参数。';
-    }, 45000);
-    return;
+      if (cloneExtractRequestId.value !== requestId || cloneLoading.value !== 'extract-competitor')
+        return
+      cloneLoading.value = ''
+      cloneError.value =
+        '已打开天猫详情页，但没有收到图片结果。请确认扩展已重新加载，并且天猫标签页地址带有 youmiExtractDescV8 参数。'
+    }, 45000)
+    return
   }
 
-  cloneError.value = '';
-  cloneLoading.value = 'extract-competitor';
+  cloneError.value = ''
+  cloneLoading.value = 'extract-competitor'
   try {
     const data = await readCloneApiResponse(
       await fetch('/api/detail-clone/extract-images', {
@@ -939,96 +960,101 @@ async function extractCompetitorImages() {
         },
         body: JSON.stringify({ url: pageUrl }),
       }),
-    );
-    const imageUrls = Array.from(new Set(data?.imageUrls || []));
+    )
+    const imageUrls = Array.from(new Set(data?.imageUrls || []))
     if (!imageUrls.length) {
-      cloneError.value = '未从该网页提取到图片，请换链接或直接上传竞品图';
-      return;
+      cloneError.value = '未从该网页提取到图片，请换链接或直接上传竞品图'
+      return
     }
 
-    applyCompetitorImageUrls(imageUrls, 'webpage', target.productId, pageUrl);
+    applyCompetitorImageUrls(imageUrls, 'webpage', target.productId, pageUrl)
   } catch (error) {
-    cloneError.value = error instanceof Error ? error.message : '网页提取失败';
+    cloneError.value = error instanceof Error ? error.message : '网页提取失败'
   } finally {
-    cloneLoading.value = '';
+    cloneLoading.value = ''
   }
 }
 
 function removeCloneImage(type, imageId) {
-  const image = cloneImages(type).find((item) => item.id === imageId);
+  const image = cloneImages(type).find((item) => item.id === imageId)
   if (image?.localUrl?.startsWith('blob:') && image.source !== 'composer') {
-    URL.revokeObjectURL(image.localUrl);
+    URL.revokeObjectURL(image.localUrl)
   }
-  setCloneImages(type, cloneImages(type).filter((item) => item.id !== imageId));
+  setCloneImages(
+    type,
+    cloneImages(type).filter((item) => item.id !== imageId),
+  )
 }
 
 function removeClonePreviewImage(imageId) {
-  removeCloneImage('competitor', imageId);
+  removeCloneImage('competitor', imageId)
   if (clonePreviewActiveImageId.value === imageId) {
-    clonePreviewActiveImageId.value = '';
+    clonePreviewActiveImageId.value = ''
   }
-  cloneDraft.value.sliceContracts = [];
-  cloneDraft.value.mappingContracts = [];
+  cloneDraft.value.sliceContracts = []
+  cloneDraft.value.mappingContracts = []
   if (!cloneWebpageImages.value.length) {
-    restoreClonePreview();
+    restoreClonePreview()
   }
 }
 
 function startClonePreviewDrag(imageId, event) {
-  if (clonePreviewMerged.value) return;
-  clonePreviewDragId.value = imageId;
-  clonePreviewActiveImageId.value = imageId;
-  event.dataTransfer.effectAllowed = 'move';
-  event.dataTransfer.setData('text/plain', imageId);
+  if (clonePreviewMerged.value) return
+  clonePreviewDragId.value = imageId
+  clonePreviewActiveImageId.value = imageId
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData('text/plain', imageId)
 }
 
 function enterClonePreviewDrag(targetId, event) {
-  if (!clonePreviewDragId.value || clonePreviewDragId.value === targetId) return;
-  clonePreviewDragOverId.value = targetId;
-  event.dataTransfer.dropEffect = 'move';
+  if (!clonePreviewDragId.value || clonePreviewDragId.value === targetId) return
+  clonePreviewDragOverId.value = targetId
+  event.dataTransfer.dropEffect = 'move'
 }
 
 function leaveClonePreviewDrag(targetId, event) {
-  const nextTarget = event.relatedTarget;
-  if (event.currentTarget.contains(nextTarget)) return;
+  const nextTarget = event.relatedTarget
+  if (event.currentTarget.contains(nextTarget)) return
   if (clonePreviewDragOverId.value === targetId) {
-    clonePreviewDragOverId.value = '';
+    clonePreviewDragOverId.value = ''
   }
 }
 
 function endClonePreviewDrag() {
-  clonePreviewDragId.value = '';
-  clonePreviewDragOverId.value = '';
+  clonePreviewDragId.value = ''
+  clonePreviewDragOverId.value = ''
 }
 
 function dropClonePreviewImage(targetId) {
-  const sourceId = clonePreviewDragId.value;
+  const sourceId = clonePreviewDragId.value
   if (!sourceId || sourceId === targetId) {
-    endClonePreviewDrag();
-    return;
+    endClonePreviewDrag()
+    return
   }
 
-  const webpageImages = cloneWebpageImages.value.slice();
-  const fromIndex = webpageImages.findIndex((image) => image.id === sourceId);
-  const toIndex = webpageImages.findIndex((image) => image.id === targetId);
+  const webpageImages = cloneWebpageImages.value.slice()
+  const fromIndex = webpageImages.findIndex((image) => image.id === sourceId)
+  const toIndex = webpageImages.findIndex((image) => image.id === targetId)
   if (fromIndex < 0 || toIndex < 0) {
-    endClonePreviewDrag();
-    return;
+    endClonePreviewDrag()
+    return
   }
 
-  const [moved] = webpageImages.splice(fromIndex, 1);
-  const insertIndex = fromIndex < toIndex ? toIndex : toIndex;
-  webpageImages.splice(insertIndex, 0, moved);
-  const reorderedWebpageIds = new Set(webpageImages.map((image) => image.id));
-  const otherImages = cloneDraft.value.competitorImages.filter((image) => !reorderedWebpageIds.has(image.id));
-  setCloneImages('competitor', [...otherImages, ...webpageImages]);
-  cloneDraft.value.sliceContracts = [];
-  cloneDraft.value.mappingContracts = [];
-  endClonePreviewDrag();
+  const [moved] = webpageImages.splice(fromIndex, 1)
+  const insertIndex = fromIndex < toIndex ? toIndex : toIndex
+  webpageImages.splice(insertIndex, 0, moved)
+  const reorderedWebpageIds = new Set(webpageImages.map((image) => image.id))
+  const otherImages = cloneDraft.value.competitorImages.filter(
+    (image) => !reorderedWebpageIds.has(image.id),
+  )
+  setCloneImages('competitor', [...otherImages, ...webpageImages])
+  cloneDraft.value.sliceContracts = []
+  cloneDraft.value.mappingContracts = []
+  endClonePreviewDrag()
 }
 
 async function uploadCloneImage(file, type) {
-  const localUrl = URL.createObjectURL(file);
+  const localUrl = URL.createObjectURL(file)
   const image = {
     id: `${type}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     name: file.name,
@@ -1037,21 +1063,21 @@ async function uploadCloneImage(file, type) {
     uploading: true,
     error: '',
     source: 'modal',
-  };
-  setCloneImages(type, [...cloneImages(type), image]);
+  }
+  setCloneImages(type, [...cloneImages(type), image])
 
   try {
-    image.url = await uploadRemoteFile(file);
-    image.uploading = false;
+    image.url = await uploadRemoteFile(file)
+    image.uploading = false
   } catch (error) {
-    image.uploading = false;
-    image.error = error instanceof Error ? error.message : '上传失败';
-    throw error;
+    image.uploading = false
+    image.error = error instanceof Error ? error.message : '上传失败'
+    throw error
   }
 }
 
 async function uploadClonePreviewImage(file) {
-  const localUrl = URL.createObjectURL(file);
+  const localUrl = URL.createObjectURL(file)
   const image = {
     id: `competitor-webpage-upload-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     name: file.name,
@@ -1062,66 +1088,66 @@ async function uploadClonePreviewImage(file) {
     source: 'webpage',
     productId: parseCompetitorProductId(cloneDraft.value.competitorPageUrl),
     pageUrl: cloneDraft.value.competitorPageUrl,
-  };
-  setCloneImages('competitor', [...cloneImages('competitor'), image]);
+  }
+  setCloneImages('competitor', [...cloneImages('competitor'), image])
 
   try {
-    image.url = await uploadRemoteFile(file);
-    image.uploading = false;
+    image.url = await uploadRemoteFile(file)
+    image.uploading = false
   } catch (error) {
-    image.uploading = false;
-    image.error = error instanceof Error ? error.message : '上传失败';
-    throw error;
+    image.uploading = false
+    image.error = error instanceof Error ? error.message : '上传失败'
+    throw error
   }
 }
 
 async function handleCloneFiles(event, type) {
-  const files = Array.from(event.target.files || []);
-  if (!files.length) return;
-  cloneError.value = '';
-  cloneLoading.value = type === 'competitor' ? 'upload-competitor' : 'upload-product';
+  const files = Array.from(event.target.files || [])
+  if (!files.length) return
+  cloneError.value = ''
+  cloneLoading.value = type === 'competitor' ? 'upload-competitor' : 'upload-product'
   try {
     for (const file of files) {
-      await uploadCloneImage(file, type);
+      await uploadCloneImage(file, type)
     }
     if (type === 'competitor') {
-      cloneDraft.value.sliceContracts = [];
-      cloneDraft.value.mappingContracts = [];
+      cloneDraft.value.sliceContracts = []
+      cloneDraft.value.mappingContracts = []
     }
   } catch (error) {
-    cloneError.value = error instanceof Error ? error.message : '上传失败';
+    cloneError.value = error instanceof Error ? error.message : '上传失败'
   } finally {
-    cloneLoading.value = '';
-    event.target.value = '';
+    cloneLoading.value = ''
+    event.target.value = ''
   }
 }
 
 async function handleClonePreviewFiles(event) {
-  const files = Array.from(event.target.files || []);
-  if (!files.length) return;
-  cloneError.value = '';
-  cloneLoading.value = 'upload-competitor';
+  const files = Array.from(event.target.files || [])
+  if (!files.length) return
+  cloneError.value = ''
+  cloneLoading.value = 'upload-competitor'
   try {
     for (const file of files) {
-      await uploadClonePreviewImage(file);
+      await uploadClonePreviewImage(file)
     }
-    cloneDraft.value.sliceContracts = [];
-    cloneDraft.value.mappingContracts = [];
-    clonePreviewMerged.value = false;
-    cloneCutMode.value = false;
-    cloneCutLines.value = [];
+    cloneDraft.value.sliceContracts = []
+    cloneDraft.value.mappingContracts = []
+    clonePreviewMerged.value = false
+    cloneCutMode.value = false
+    cloneCutLines.value = []
   } catch (error) {
-    cloneError.value = error instanceof Error ? error.message : '上传失败';
+    cloneError.value = error instanceof Error ? error.message : '上传失败'
   } finally {
-    cloneLoading.value = '';
-    event.target.value = '';
+    cloneLoading.value = ''
+    event.target.value = ''
   }
 }
 
 function cloneImageUrls(type) {
   return cloneImages(type)
     .filter((image) => image.url && !image.uploading && !image.error)
-    .map((image) => image.url);
+    .map((image) => image.url)
 }
 
 function escapeHtml(value) {
@@ -1130,70 +1156,70 @@ function escapeHtml(value) {
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
+    .replaceAll("'", '&#39;')
 }
 
 function renderProductInfoMarkdown(markdown) {
-  const source = String(markdown || '').trim();
-  if (!source) return '<p class="empty">优化后的 Markdown 产品信息会显示在这里</p>';
+  const source = String(markdown || '').trim()
+  if (!source) return '<p class="empty">优化后的 Markdown 产品信息会显示在这里</p>'
 
-  const lines = source.split(/\r?\n/);
-  let html = '';
-  let listOpen = false;
+  const lines = source.split(/\r?\n/)
+  let html = ''
+  let listOpen = false
   const closeList = () => {
     if (listOpen) {
-      html += '</ol>';
-      listOpen = false;
+      html += '</ol>'
+      listOpen = false
     }
-  };
-  const inline = (text) => escapeHtml(text).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  }
+  const inline = (text) => escapeHtml(text).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
 
   for (const rawLine of lines) {
-    const line = rawLine.trim();
+    const line = rawLine.trim()
     if (!line) {
-      closeList();
-      continue;
+      closeList()
+      continue
     }
-    const heading = line.match(/^#{1,3}\s+(.+)$/);
+    const heading = line.match(/^#{1,3}\s+(.+)$/)
     if (heading) {
-      closeList();
-      html += `<h4>${inline(heading[1])}</h4>`;
-      continue;
+      closeList()
+      html += `<h4>${inline(heading[1])}</h4>`
+      continue
     }
-    const ordered = line.match(/^\d+[.、]\s*(.+)$/);
+    const ordered = line.match(/^\d+[.、]\s*(.+)$/)
     if (ordered) {
       if (!listOpen) {
-        html += '<ol>';
-        listOpen = true;
+        html += '<ol>'
+        listOpen = true
       }
-      html += `<li>${inline(ordered[1])}</li>`;
-      continue;
+      html += `<li>${inline(ordered[1])}</li>`
+      continue
     }
-    const unordered = line.match(/^[-*]\s+(.+)$/);
+    const unordered = line.match(/^[-*]\s+(.+)$/)
     if (unordered) {
       if (!listOpen) {
-        html += '<ol>';
-        listOpen = true;
+        html += '<ol>'
+        listOpen = true
       }
-      html += `<li>${inline(unordered[1])}</li>`;
-      continue;
+      html += `<li>${inline(unordered[1])}</li>`
+      continue
     }
-    closeList();
-    html += `<p>${inline(line)}</p>`;
+    closeList()
+    html += `<p>${inline(line)}</p>`
   }
-  closeList();
-  return html;
+  closeList()
+  return html
 }
 
 async function optimizeCloneProductInfo() {
-  const productImages = cloneImageUrls('product');
+  const productImages = cloneImageUrls('product')
   if (!productImages.length) {
-    cloneError.value = '请先上传产品图片，再优化产品信息';
-    return;
+    cloneError.value = '请先上传产品图片，再优化产品信息'
+    return
   }
 
-  cloneError.value = '';
-  cloneOptimizingProductInfo.value = true;
+  cloneError.value = ''
+  cloneOptimizingProductInfo.value = true
   try {
     const data = await readCloneApiResponse(
       await fetch('/api/ai/optimize-product-info', {
@@ -1207,55 +1233,59 @@ async function optimizeCloneProductInfo() {
           productImages,
         }),
       }),
-    );
-    const optimized = String(data?.productInfo || '').trim();
-    if (!optimized) throw new Error('模型没有返回可用的产品信息');
-    cloneDraft.value.productInfo = optimized;
-    cloneProductInfoPreview.value = true;
-    cloneDraft.value.mappingContracts = [];
+    )
+    const optimized = String(data?.productInfo || '').trim()
+    if (!optimized) throw new Error('模型没有返回可用的产品信息')
+    cloneDraft.value.productInfo = optimized
+    cloneProductInfoPreview.value = true
+    cloneDraft.value.mappingContracts = []
   } catch (error) {
-    cloneError.value = error instanceof Error ? error.message : '优化产品信息失败';
+    cloneError.value = error instanceof Error ? error.message : '优化产品信息失败'
   } finally {
-    cloneOptimizingProductInfo.value = false;
+    cloneOptimizingProductInfo.value = false
   }
 }
 
 async function readCloneApiResponse(response) {
-  const result = await response.json().catch(() => null);
+  const result = await response.json().catch(() => null)
   if (!response.ok || !result || result.code !== 0) {
-    throw new Error(result?.message || `接口请求失败：${response.status}`);
+    throw new Error(result?.message || `接口请求失败：${response.status}`)
   }
-  return result.data;
+  return result.data
 }
 
 function slotText(slots, key) {
-  const value = slots?.[key];
-  if (Array.isArray(value)) return value.join('、');
-  if (value && typeof value === 'object') return Object.values(value).filter(Boolean).join('、');
-  return value ? String(value) : '';
+  const value = slots?.[key]
+  if (Array.isArray(value)) return value.join('、')
+  if (value && typeof value === 'object') return Object.values(value).filter(Boolean).join('、')
+  return value ? String(value) : ''
 }
 
 function textList(value) {
-  return Array.isArray(value) ? value.filter(Boolean).join('、') : String(value || '');
+  return Array.isArray(value) ? value.filter(Boolean).join('、') : String(value || '')
 }
 
 function fallbackCloneRole(pageNo) {
-  return [
-    '首屏：核心利益点和产品第一印象',
-    '痛点/场景：说明用户为什么需要它',
-    '核心卖点：集中展示 1 到 3 个高转化优势',
-    '材质/结构：用细节证明产品真实可靠',
-    '使用场景：展示人群、空间或用途',
-    '规格/参数：辅助购买决策',
-    '品质/工艺：建立信任和安心感',
-    '收尾转化：强化选择理由',
-  ][pageNo - 1] || `第 ${pageNo} 屏：延续竞品该屏的信息职责`;
+  return (
+    [
+      '首屏：核心利益点和产品第一印象',
+      '痛点/场景：说明用户为什么需要它',
+      '核心卖点：集中展示 1 到 3 个高转化优势',
+      '材质/结构：用细节证明产品真实可靠',
+      '使用场景：展示人群、空间或用途',
+      '规格/参数：辅助购买决策',
+      '品质/工艺：建立信任和安心感',
+      '收尾转化：强化选择理由',
+    ][pageNo - 1] || `第 ${pageNo} 屏：延续竞品该屏的信息职责`
+  )
 }
 
 function cloneStrengthText() {
-  if (cloneDraft.value.cloneStrength === 'LIGHT') return '轻度：只借鉴信息顺序、模块类型和页面职责，视觉重新设计。';
-  if (cloneDraft.value.cloneStrength === 'HIGH') return '高度：贴近参考屏构图、模块组织、色彩层级和视觉语言，但全部替换产品与事实内容。';
-  return '中度：借鉴参考屏布局结构、视觉节奏和模块类型，再按当前产品重写。';
+  if (cloneDraft.value.cloneStrength === 'LIGHT')
+    return '轻度：只借鉴信息顺序、模块类型和页面职责，视觉重新设计。'
+  if (cloneDraft.value.cloneStrength === 'HIGH')
+    return '高度：贴近参考屏构图、模块组织、色彩层级和视觉语言，但全部替换产品与事实内容。'
+  return '中度：借鉴参考屏布局结构、视觉节奏和模块类型，再按当前产品重写。'
 }
 
 function cloneGlobalStandard(competitorCount) {
@@ -1267,11 +1297,11 @@ function cloneGlobalStandard(competitorCount) {
     '参考图 2 是当前竞品单屏详情图，只用于借鉴布局骨架、信息顺序、视觉节奏和构图关系。',
     '不要重新切屏，不要把多张长图压缩到一张画面，不要复制竞品品牌、Logo、证书、排名、价格、销量、医疗功效、未验证证明或平台水印。',
     '使用简体中文电商文案，文字清晰可读，输出一张完整 9:16 电商详情页单屏。',
-  ].join('\n');
+  ].join('\n')
 }
 
 function mappingPromptFields(mapping = {}, index = 0) {
-  const sliceIndex = Number(mapping.sliceIndex || index + 1);
+  const sliceIndex = Number(mapping.sliceIndex || index + 1)
   return {
     theme: mapping.theme || fallbackCloneRole(sliceIndex),
     designIdea:
@@ -1283,13 +1313,14 @@ function mappingPromptFields(mapping = {}, index = 0) {
     copyContent:
       mapping.copyContent ||
       `围绕当前产品信息重写本屏标题、卖点和说明，不照抄竞品文案。产品信息：${cloneDraft.value.productInfo || '参考产品图判断外观与品类'}`,
-  };
+  }
 }
 
 function composeGenerationHint(mapping = {}, index = 0) {
-  const sliceIndex = Number(mapping.sliceIndex || index + 1);
-  const fields = mappingPromptFields(mapping, index);
-  const competitorUrl = cloneImageUrls('competitor')[sliceIndex - 1] || cloneImageUrls('competitor')[0] || '';
+  const sliceIndex = Number(mapping.sliceIndex || index + 1)
+  const fields = mappingPromptFields(mapping, index)
+  const competitorUrl =
+    cloneImageUrls('competitor')[sliceIndex - 1] || cloneImageUrls('competitor')[0] || ''
   return [
     cloneGlobalStandard(cloneImageUrls('competitor').length),
     '',
@@ -1302,22 +1333,23 @@ function composeGenerationHint(mapping = {}, index = 0) {
     `当前产品信息：${cloneDraft.value.productInfo || '参考图产品'}`,
     `模特保持一致：${cloneDraft.value.keepModel ? '开启，需要保持产品图/已有参考中的人物风格一致' : '关闭，可根据该屏需要重新组织场景'}`,
     '生成要求：替换为参考图 1 的当前产品；参考图 2 仅作本屏布局与视觉结构参考；输出一张完整 9:16 电商详情页单屏。',
-  ].join('\n');
+  ].join('\n')
 }
 
 function clonePromptForMapping(mapping, index) {
-  return mapping.generationHint || composeGenerationHint(mapping, index);
+  return mapping.generationHint || composeGenerationHint(mapping, index)
 }
 
 function buildClonePlan(mapping, index) {
-  const sliceIndex = Number(mapping.sliceIndex || index + 1);
-  const fields = mappingPromptFields(mapping, index);
-  const headline = fields.theme || `复刻分屏 ${sliceIndex}`;
-  const competitorUrl = cloneImageUrls('competitor')[sliceIndex - 1] || cloneImageUrls('competitor')[0] || '';
-  const productUrls = cloneImageUrls('product');
-  const [primaryProductUrl, ...extraProductUrls] = productUrls;
-  const imageUrls = [primaryProductUrl, competitorUrl, ...extraProductUrls].filter(Boolean);
-  const positivePrompt = clonePromptForMapping(mapping, index);
+  const sliceIndex = Number(mapping.sliceIndex || index + 1)
+  const fields = mappingPromptFields(mapping, index)
+  const headline = fields.theme || `复刻分屏 ${sliceIndex}`
+  const competitorUrl =
+    cloneImageUrls('competitor')[sliceIndex - 1] || cloneImageUrls('competitor')[0] || ''
+  const productUrls = cloneImageUrls('product')
+  const [primaryProductUrl, ...extraProductUrls] = productUrls
+  const imageUrls = [primaryProductUrl, competitorUrl, ...extraProductUrls].filter(Boolean)
+  const positivePrompt = clonePromptForMapping(mapping, index)
 
   return {
     id: `clone-${sliceIndex}`,
@@ -1331,21 +1363,23 @@ function buildClonePlan(mapping, index) {
     imageUrls,
     prompts: {
       positive: positivePrompt,
-      negative: textList(mapping.forbidden) || '竞品品牌、Logo、虚假证书、未验证排名、价格标签、销量数据、平台水印、乱码文字、虚假功效',
+      negative:
+        textList(mapping.forbidden) ||
+        '竞品品牌、Logo、虚假证书、未验证排名、价格标签、销量数据、平台水印、乱码文字、虚假功效',
       layout: fields.visualScene,
       text: fields.copyContent,
       modelInput: positivePrompt,
     },
-  };
+  }
 }
 
 function mappingBySliceIndex(mappings) {
-  const map = new Map();
+  const map = new Map()
   for (const item of mappings || []) {
-    const index = Number(item?.sliceIndex || 0);
-    if (index > 0 && !map.has(index)) map.set(index, item);
+    const index = Number(item?.sliceIndex || 0)
+    if (index > 0 && !map.has(index)) map.set(index, item)
   }
-  return map;
+  return map
 }
 
 function createFallbackMapping(sliceIndex, sliceContract = {}) {
@@ -1355,7 +1389,7 @@ function createFallbackMapping(sliceIndex, sliceContract = {}) {
       theme: sliceContract.role || fallbackCloneRole(sliceIndex),
     },
     sliceIndex - 1,
-  );
+  )
   return {
     sliceIndex,
     aRole: `竞品第 ${sliceIndex} 屏`,
@@ -1366,84 +1400,88 @@ function createFallbackMapping(sliceIndex, sliceContract = {}) {
     variableSlots: {},
     forbidden: ['竞品品牌', '虚假证书', '未验证排名', '价格标签', '乱码文字', '虚假功效'],
     generationHint: '',
-  };
+  }
 }
 
 function normalizeCloneMappings(mappings) {
-  const competitorImages = cloneImageUrls('competitor');
-  const byIndex = mappingBySliceIndex(mappings);
-  const sliceByIndex = new Map((cloneDraft.value.sliceContracts || []).map((item) => [Number(item.index || 0), item]));
+  const competitorImages = cloneImageUrls('competitor')
+  const byIndex = mappingBySliceIndex(mappings)
+  const sliceByIndex = new Map(
+    (cloneDraft.value.sliceContracts || []).map((item) => [Number(item.index || 0), item]),
+  )
   return competitorImages.map((_, index) => {
-    const sliceIndex = index + 1;
-    const existing = byIndex.get(sliceIndex) || createFallbackMapping(sliceIndex, sliceByIndex.get(sliceIndex));
-    const fields = mappingPromptFields(existing, index);
+    const sliceIndex = index + 1
+    const existing =
+      byIndex.get(sliceIndex) || createFallbackMapping(sliceIndex, sliceByIndex.get(sliceIndex))
+    const fields = mappingPromptFields(existing, index)
     return {
       ...existing,
       sliceIndex,
       ...fields,
-      generationHint: existing.generationHint || composeGenerationHint({ ...existing, ...fields }, index),
-    };
-  });
+      generationHint:
+        existing.generationHint || composeGenerationHint({ ...existing, ...fields }, index),
+    }
+  })
 }
 
 function refreshCloneMappingHint(mapping, index) {
-  mapping.generationHint = composeGenerationHint(mapping, index);
+  mapping.generationHint = composeGenerationHint(mapping, index)
 }
 
 async function prepareClonePrompts() {
-  const competitorImages = cloneImageUrls('competitor');
+  const competitorImages = cloneImageUrls('competitor')
   if (!competitorImages.length) {
-    cloneError.value = '请先上传或提取竞品详情图';
-    return false;
+    cloneError.value = '请先上传或提取竞品详情图'
+    return false
   }
   if (!cloneDraft.value.productInfo.trim() && !cloneImageUrls('product').length) {
-    cloneError.value = '请填写产品信息或上传产品白底图';
-    return false;
+    cloneError.value = '请填写产品信息或上传产品白底图'
+    return false
   }
 
-  cloneError.value = '';
-  cloneLoading.value = 'prompt';
+  cloneError.value = ''
+  cloneLoading.value = 'prompt'
   try {
-    cloneDraft.value.mappingContracts = normalizeCloneMappings(cloneDraft.value.mappingContracts);
-    return cloneDraft.value.mappingContracts.length > 0;
+    cloneDraft.value.mappingContracts = normalizeCloneMappings(cloneDraft.value.mappingContracts)
+    return cloneDraft.value.mappingContracts.length > 0
   } finally {
-    cloneLoading.value = '';
+    cloneLoading.value = ''
   }
 }
 
 async function submitCloneGenerate() {
-  if (!userStore.requireLogin()) return;
-  const competitorImagesForPlan = cloneImageUrls('competitor');
+  if (!userStore.requireLogin()) return
+  const competitorImagesForPlan = cloneImageUrls('competitor')
   if (!competitorImagesForPlan.length) {
-    cloneError.value = '请先上传或提取竞品详情图';
-    return;
+    cloneError.value = '请先上传或提取竞品详情图'
+    return
   }
   if (!cloneDraft.value.productInfo.trim() && !cloneImageUrls('product').length) {
-    cloneError.value = '请填写产品信息或上传产品白底图';
-    return;
+    cloneError.value = '请填写产品信息或上传产品白底图'
+    return
   }
 
-  cloneError.value = '';
-  const mappings = normalizeCloneMappings(cloneDraft.value.mappingContracts);
-  const splitPlan = mappings.map(buildClonePlan);
+  cloneError.value = ''
+  const mappings = normalizeCloneMappings(cloneDraft.value.mappingContracts)
+  const splitPlan = mappings.map(buildClonePlan)
 
-  const validCloneImage = (image) => image.url && !image.uploading && !image.error;
+  const validCloneImage = (image) => image.url && !image.uploading && !image.error
   const productImages = cloneImages('product')
     .filter(validCloneImage)
     .map((image) => ({
       id: image.id,
       name: image.name,
       url: image.url,
-    }));
+    }))
   const competitorImages = cloneImages('competitor')
     .filter(validCloneImage)
     .map((image) => ({
       id: image.id,
       name: image.name,
       url: image.url,
-    }));
+    }))
 
-  cloneModalOpen.value = false;
+  cloneModalOpen.value = false
   emit('generate', {
     flow: 'detail-clone',
     prompt: cloneDraft.value.productInfo || prompt.value || '参考图产品',
@@ -1459,13 +1497,20 @@ async function submitCloneGenerate() {
     splitPlan,
     images: [...productImages, ...competitorImages],
     competitorImages,
-  });
+  })
 }
 </script>
 
 <template>
-  <section :class="['yh-composer', { 'is-main-image': isMainImageMode }]" aria-label="AI 生成输入框">
-    <div class="yh-upload-deck" :class="{ 'has-images': images.length }" :style="{ '--deck-count': images.length }">
+  <section
+    :class="['yh-composer', { 'is-main-image': isMainImageMode }]"
+    aria-label="AI 生成输入框"
+  >
+    <div
+      class="yh-upload-deck"
+      :class="{ 'has-images': images.length }"
+      :style="{ '--deck-count': images.length }"
+    >
       <button
         v-for="(image, index) in images"
         :key="image.id"
@@ -1479,10 +1524,22 @@ async function submitCloneGenerate() {
         <img :src="image.url" :alt="image.name || '参考图'" />
         <span v-if="image.uploading" class="yh-upload-card-status">上传中</span>
         <span class="yh-image-count">{{ index + 1 }}</span>
-        <span class="yh-remove-image" role="button" tabindex="0" @click.stop="removeImage(image.id)">×</span>
+        <span
+          class="yh-remove-image"
+          role="button"
+          tabindex="0"
+          @click.stop="removeImage(image.id)"
+        >
+          ×
+        </span>
       </button>
 
-      <button class="yh-upload-tile" type="button" :class="{ compact: images.length }" @click="openFilePicker">
+      <button
+        class="yh-upload-tile"
+        type="button"
+        :class="{ compact: images.length }"
+        @click="openFilePicker"
+      >
         <span v-if="uploading && !images.length" class="yh-uploading">上传中</span>
         <span v-else>{{ images.length ? '+' : '＋' }}</span>
       </button>
@@ -1528,7 +1585,10 @@ async function submitCloneGenerate() {
               <button
                 v-for="(ratio, index) in ratioOptions"
                 :key="ratio"
-                :class="{ active: selectedRatio === ratio, featured: index === 0 && selectedRatio === '智能比例' }"
+                :class="{
+                  active: selectedRatio === ratio,
+                  featured: index === 0 && selectedRatio === '智能比例',
+                }"
                 type="button"
                 @click="chooseRatio(ratio)"
               >
@@ -1556,7 +1616,11 @@ async function submitCloneGenerate() {
             </div>
           </div>
           <div class="yh-tool-dropdown">
-            <button class="yh-tool-select yh-tool-select-small" type="button" @click="toggleMenu('quality')">
+            <button
+              class="yh-tool-select yh-tool-select-small"
+              type="button"
+              @click="toggleMenu('quality')"
+            >
               {{ selectedQuality }}
               <span>{{ qualityOpen ? '⌃' : '⌄' }}</span>
             </button>
@@ -1600,7 +1664,10 @@ async function submitCloneGenerate() {
       <div class="yh-action-area">
         <template v-if="isMainImageMode">
           <span class="yh-discount">限时优惠</span>
-          <span class="yh-main-cost">15米值/张 <s>20</s></span>
+          <span class="yh-main-cost">
+            15米值/张
+            <s>20</s>
+          </span>
           <button
             :class="['yh-generate', 'yh-generate-primary', { 'is-ready': hasComposerContent }]"
             type="button"
@@ -1613,7 +1680,11 @@ async function submitCloneGenerate() {
         <template v-else>
           <span class="yh-cost">{{ isDetailCloneMode ? '按切片计费' : '按屏数计费' }}</span>
           <button
-            :class="['yh-generate', 'yh-generate-detail', { 'is-ready': hasComposerContent || isDetailCloneMode }]"
+            :class="[
+              'yh-generate',
+              'yh-generate-detail',
+              { 'is-ready': hasComposerContent || isDetailCloneMode },
+            ]"
             type="button"
             :disabled="!hasComposerContent && !isDetailCloneMode"
             @click="isDetailCloneMode ? openCloneModal() : openDetailModal()"
@@ -1652,7 +1723,8 @@ async function submitCloneGenerate() {
                 type="button"
                 @click="detailDraft.method = 'long'"
               >
-                整版长图 <small>NEW</small>
+                整版长图
+                <small>NEW</small>
               </button>
             </div>
 
@@ -1699,8 +1771,14 @@ async function submitCloneGenerate() {
             </div>
 
             <label class="yh-detail-field yh-detail-field-full">
-              <span>风格参考 <em>（可选）</em></span>
-              <input v-model="detailDraft.style" placeholder="描述期望的风格，如：暖色调、极简风、复古感" />
+              <span>
+                风格参考
+                <em>（可选）</em>
+              </span>
+              <input
+                v-model="detailDraft.style"
+                placeholder="描述期望的风格，如：暖色调、极简风、复古感"
+              />
             </label>
 
             <button class="yh-split-idea" type="button" @click="openSplitIdea">▦ 分屏构思</button>
@@ -1715,11 +1793,20 @@ async function submitCloneGenerate() {
           </footer>
         </section>
 
-        <section v-if="splitIdeaOpen" class="yh-split-modal" role="dialog" aria-modal="true" aria-label="分屏构思">
+        <section
+          v-if="splitIdeaOpen"
+          class="yh-split-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="分屏构思"
+        >
           <header class="yh-split-head">
             <div>
               <h2>分屏构思</h2>
-              <button type="button">选择模板 <span>⌄</span></button>
+              <button type="button">
+                选择模板
+                <span>⌄</span>
+              </button>
             </div>
             <button type="button" @click="splitIdeaOpen = false">×</button>
           </header>
@@ -1730,7 +1817,8 @@ async function submitCloneGenerate() {
           </div>
 
           <p class="yh-split-note">
-            已按“{{ detailDraft.productInfo || '产品' }}”生成 {{ splitPlans.length }} 屏策划。勾选要保留的分屏，确认后会同步到生成方案。
+            已按“{{ detailDraft.productInfo || '产品' }}”生成
+            {{ splitPlans.length }} 屏策划。勾选要保留的分屏，确认后会同步到生成方案。
           </p>
           <p v-if="promptGenerating" class="yh-split-status">正在调用大语言模型生成生图提示词...</p>
           <p v-else-if="promptError" class="yh-split-status error">{{ promptError }}</p>
@@ -1769,20 +1857,29 @@ async function submitCloneGenerate() {
                 </div>
               </dl>
               <small>{{ item.category }} / {{ item.proof }}</small>
-              <small v-if="item.promptProvider" class="yh-prompt-provider">提示词来源：{{ item.promptProvider }}</small>
+              <small v-if="item.promptProvider" class="yh-prompt-provider">
+                提示词来源：{{ item.promptProvider }}
+              </small>
             </article>
           </div>
 
           <footer class="yh-split-foot">
             <button type="button" @click="splitIdeaOpen = false">取消</button>
             <button type="button" class="outline" @click="openSplitIdea">重新规划</button>
-            <button type="button" :disabled="!selectedSplitIds.length" @click="applySplitIdea">确认保存并使用</button>
+            <button type="button" :disabled="!selectedSplitIds.length" @click="applySplitIdea">
+              确认保存并使用
+            </button>
           </footer>
         </section>
       </div>
 
       <div v-if="cloneModalOpen" class="yh-modal-backdrop yh-clone-backdrop">
-        <section class="yh-detail-modal yh-clone-modal yh-copycat-panel" role="dialog" aria-modal="true" aria-label="竞品复刻">
+        <section
+          class="yh-detail-modal yh-clone-modal yh-copycat-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-label="竞品复刻"
+        >
           <header class="yh-detail-modal-head yh-copycat-head">
             <h2>竞品复刻</h2>
             <button type="button" @click="cloneModalOpen = false">×</button>
@@ -1841,12 +1938,17 @@ async function submitCloneGenerate() {
                     <span>{{ index + 1 }}</span>
                     <em v-if="image.uploading">上传中</em>
                     <em v-else-if="image.error">{{ image.error }}</em>
-                    <button type="button" @click.stop="removeCloneImage('competitor', image.id)">×</button>
+                    <button type="button" @click.stop="removeCloneImage('competitor', image.id)">
+                      ×
+                    </button>
                   </figure>
                 </div>
                 <template v-else>
                   <i aria-hidden="true">☁</i>
-                  <strong>点击上传 <small>或拖拽上传</small></strong>
+                  <strong>
+                    点击上传
+                    <small>或拖拽上传</small>
+                  </strong>
                   <em>从生成历史导入</em>
                 </template>
               </div>
@@ -1858,12 +1960,27 @@ async function submitCloneGenerate() {
                     placeholder="输入商品ID或粘贴商品链接"
                     @keydown.enter.prevent="extractCompetitorImages"
                   />
-                  <button type="button" :disabled="cloneLoading === 'extract-competitor' || cloneLoading === 'cut-competitor'" @click="extractCompetitorImages">
+                  <button
+                    type="button"
+                    :disabled="
+                      cloneLoading === 'extract-competitor' || cloneLoading === 'cut-competitor'
+                    "
+                    @click="extractCompetitorImages"
+                  >
                     {{ cloneLoading === 'extract-competitor' ? '提取中' : '提取' }}
                   </button>
                 </div>
-                <small>输入商品ID会新开标签页打开天猫详情页；粘贴完整链接会自动识别 id，生成比例固定为 9:16。</small>
-                <button type="button" class="yh-copycat-link-btn" @click="openCloneCompetitorPicker">补充上传</button>
+                <small>
+                  输入商品ID会新开标签页打开天猫详情页；粘贴完整链接会自动识别 id，生成比例固定为
+                  9:16。
+                </small>
+                <button
+                  type="button"
+                  class="yh-copycat-link-btn"
+                  @click="openCloneCompetitorPicker"
+                >
+                  补充上传
+                </button>
               </div>
             </section>
 
@@ -1880,19 +1997,30 @@ async function submitCloneGenerate() {
                 hidden
                 @change="handleCloneFiles($event, 'product')"
               />
-              <div class="yh-copycat-upload" role="button" tabindex="0" @click="openCloneProductPicker" @keydown.enter.prevent="openCloneProductPicker">
+              <div
+                class="yh-copycat-upload"
+                role="button"
+                tabindex="0"
+                @click="openCloneProductPicker"
+                @keydown.enter.prevent="openCloneProductPicker"
+              >
                 <div v-if="cloneImages('product').length" class="yh-copycat-thumbs">
                   <figure v-for="(image, index) in cloneImages('product')" :key="image.id">
                     <img :src="image.url" :alt="image.name || '产品图'" />
                     <span>{{ index + 1 }}</span>
                     <em v-if="image.uploading">上传中</em>
                     <em v-else-if="image.error">{{ image.error }}</em>
-                    <button type="button" @click.stop="removeCloneImage('product', image.id)">×</button>
+                    <button type="button" @click.stop="removeCloneImage('product', image.id)">
+                      ×
+                    </button>
                   </figure>
                 </div>
                 <template v-else>
                   <i aria-hidden="true">☁</i>
-                  <strong>点击上传 <small>或拖拽上传</small></strong>
+                  <strong>
+                    点击上传
+                    <small>或拖拽上传</small>
+                  </strong>
                   <em>从生成历史导入</em>
                 </template>
               </div>
@@ -1904,8 +2032,20 @@ async function submitCloneGenerate() {
               </div>
               <div class="yh-copycat-info">
                 <div class="yh-copycat-info-tabs" aria-label="产品信息显示模式">
-                  <button type="button" :class="{ active: !cloneProductInfoPreview }" @click="cloneProductInfoPreview = false">编辑</button>
-                  <button type="button" :class="{ active: cloneProductInfoPreview }" @click="cloneProductInfoPreview = true">预览</button>
+                  <button
+                    type="button"
+                    :class="{ active: !cloneProductInfoPreview }"
+                    @click="cloneProductInfoPreview = false"
+                  >
+                    编辑
+                  </button>
+                  <button
+                    type="button"
+                    :class="{ active: cloneProductInfoPreview }"
+                    @click="cloneProductInfoPreview = true"
+                  >
+                    预览
+                  </button>
                 </div>
                 <textarea
                   v-if="!cloneProductInfoPreview"
@@ -1930,8 +2070,13 @@ async function submitCloneGenerate() {
 
             <section class="yh-copycat-switch-field">
               <div>
-                <strong>模特保持一致 <em>(可选)</em></strong>
-                <p>仅当竞品图中含有模特时本设置才会生效；竞品图中无模特则忽略本设置。开启：保留与竞品图同一个模特；关闭：生成不同模特。</p>
+                <strong>
+                  模特保持一致
+                  <em>(可选)</em>
+                </strong>
+                <p>
+                  仅当竞品图中含有模特时本设置才会生效；竞品图中无模特则忽略本设置。开启：保留与竞品图同一个模特；关闭：生成不同模特。
+                </p>
               </div>
               <label class="yh-copycat-toggle">
                 <input v-model="cloneDraft.keepModel" type="checkbox" />
@@ -1963,7 +2108,10 @@ async function submitCloneGenerate() {
                 <button type="button" aria-label="复刻提示词说明">?</button>
               </div>
               <div class="yh-copycat-prompt-head">
-                <p>竞品预览有 {{ cloneImageUrls('competitor').length }} 张图，将生成 {{ cloneImageUrls('competitor').length }} 屏；每屏提示词可编辑。</p>
+                <p>
+                  竞品预览有 {{ cloneImageUrls('competitor').length }} 张图，将生成
+                  {{ cloneImageUrls('competitor').length }} 屏；每屏提示词可编辑。
+                </p>
                 <button
                   type="button"
                   :disabled="cloneLoading === 'prompt' || cloneLoading === 'upload-product'"
@@ -1973,7 +2121,10 @@ async function submitCloneGenerate() {
                 </button>
               </div>
               <div v-if="cloneDraft.mappingContracts.length" class="yh-copycat-prompt-list">
-                <article v-for="(mapping, index) in cloneDraft.mappingContracts" :key="`mapping-${mapping.sliceIndex || index}`">
+                <article
+                  v-for="(mapping, index) in cloneDraft.mappingContracts"
+                  :key="`mapping-${mapping.sliceIndex || index}`"
+                >
                   <header>
                     <strong>第 {{ index + 1 }} 屏</strong>
                     <span>{{ mapping.newProductRole || mapping.aRole || '产品信息映射' }}</span>
@@ -1982,23 +2133,40 @@ async function submitCloneGenerate() {
                     <div class="yh-copycat-prompt-fields">
                       <label>
                         <span>每屏主题</span>
-                        <input v-model="mapping.theme" type="text" @input="refreshCloneMappingHint(mapping, index)" />
+                        <input
+                          v-model="mapping.theme"
+                          type="text"
+                          @input="refreshCloneMappingHint(mapping, index)"
+                        />
                       </label>
                       <label>
                         <span>设计思路</span>
-                        <textarea v-model="mapping.designIdea" @input="refreshCloneMappingHint(mapping, index)"></textarea>
+                        <textarea
+                          v-model="mapping.designIdea"
+                          @input="refreshCloneMappingHint(mapping, index)"
+                        ></textarea>
                       </label>
                       <label>
                         <span>视觉画面</span>
-                        <textarea v-model="mapping.visualScene" @input="refreshCloneMappingHint(mapping, index)"></textarea>
+                        <textarea
+                          v-model="mapping.visualScene"
+                          @input="refreshCloneMappingHint(mapping, index)"
+                        ></textarea>
                       </label>
                       <label>
                         <span>文案内容</span>
-                        <textarea v-model="mapping.copyContent" @input="refreshCloneMappingHint(mapping, index)"></textarea>
+                        <textarea
+                          v-model="mapping.copyContent"
+                          @input="refreshCloneMappingHint(mapping, index)"
+                        ></textarea>
                       </label>
                       <label>
                         <span>生图提示词</span>
-                        <textarea v-model="mapping.generationHint" class="full" placeholder="编辑本屏完整图生图提示词"></textarea>
+                        <textarea
+                          v-model="mapping.generationHint"
+                          class="full"
+                          placeholder="编辑本屏完整图生图提示词"
+                        ></textarea>
                       </label>
                     </div>
                     <figure class="yh-copycat-prompt-image">
@@ -2007,24 +2175,44 @@ async function submitCloneGenerate() {
                         :src="cloneImageUrls('competitor')[index]"
                         :alt="`竞品第 ${index + 1} 屏`"
                       />
-                      <figcaption v-if="cloneImageUrls('competitor')[index]">竞品第 {{ index + 1 }} 屏</figcaption>
+                      <figcaption v-if="cloneImageUrls('competitor')[index]">
+                        竞品第 {{ index + 1 }} 屏
+                      </figcaption>
                       <span v-else>暂无对应竞品图</span>
                     </figure>
                   </div>
                 </article>
               </div>
-              <div v-else class="yh-copycat-prompt-empty">点击生成后，会按竞品图片数量生成每屏可编辑提示词。</div>
+              <div v-else class="yh-copycat-prompt-empty">
+                点击生成后，会按竞品图片数量生成每屏可编辑提示词。
+              </div>
             </section>
 
-            <p v-if="['upload-competitor', 'upload-product'].includes(cloneLoading)" class="yh-split-status">正在上传图片...</p>
-            <p v-if="cloneLoading === 'extract-competitor'" class="yh-split-status">正在从网页提取竞品图片...</p>
-            <p v-if="cloneLoading === 'cut-competitor'" class="yh-split-status">正在合并并裁切竞品图片...</p>
-            <p v-if="cloneLoading === 'prompt'" class="yh-split-status">正在按竞品图片生成每屏提示词...</p>
+            <p
+              v-if="['upload-competitor', 'upload-product'].includes(cloneLoading)"
+              class="yh-split-status"
+            >
+              正在上传图片...
+            </p>
+            <p v-if="cloneLoading === 'extract-competitor'" class="yh-split-status">
+              正在从网页提取竞品图片...
+            </p>
+            <p v-if="cloneLoading === 'cut-competitor'" class="yh-split-status">
+              正在合并并裁切竞品图片...
+            </p>
+            <p v-if="cloneLoading === 'prompt'" class="yh-split-status">
+              正在按竞品图片生成每屏提示词...
+            </p>
             <p v-if="cloneError" class="yh-split-status error">{{ cloneError }}</p>
           </div>
 
           <footer class="yh-detail-modal-foot yh-copycat-foot">
-            <button type="button" class="primary" :disabled="cloneLoading !== ''" @click="submitCloneGenerate">
+            <button
+              type="button"
+              class="primary"
+              :disabled="cloneLoading !== ''"
+              @click="submitCloneGenerate"
+            >
               {{ cloneLoading ? '处理中...' : '立即生成' }}
             </button>
             <div>
@@ -2035,7 +2223,10 @@ async function submitCloneGenerate() {
         </section>
 
         <aside
-          v-if="cloneDraft.competitorSource === 'webpage' && (cloneLoading === 'extract-competitor' || cloneWebpageImages.length)"
+          v-if="
+            cloneDraft.competitorSource === 'webpage' &&
+            (cloneLoading === 'extract-competitor' || cloneWebpageImages.length)
+          "
           class="yh-copycat-preview-rail"
           aria-label="竞品预览"
         >
@@ -2053,7 +2244,9 @@ async function submitCloneGenerate() {
           <div v-if="cloneWebpageImages.length" class="yh-copycat-preview-tools">
             <template v-if="clonePreviewMerged">
               <button type="button" @click="restoreClonePreview">还原</button>
-              <button type="button" :class="{ active: cloneCutMode }" @click="toggleCloneCutMode">添加裁切线</button>
+              <button type="button" :class="{ active: cloneCutMode }" @click="toggleCloneCutMode">
+                添加裁切线
+              </button>
               <button
                 v-if="cloneCutLines.length"
                 type="button"
@@ -2071,12 +2264,19 @@ async function submitCloneGenerate() {
           </div>
           <div
             v-if="cloneWebpageImages.length"
-            :class="['yh-copycat-preview-list', { merged: clonePreviewMerged, cutting: cloneCutMode }]"
+            :class="[
+              'yh-copycat-preview-list',
+              { merged: clonePreviewMerged, cutting: cloneCutMode },
+            ]"
             :style="{ '--preview-image-width': `${clonePreviewZoom}%` }"
             @click="addCloneCutLine"
           >
             <div v-if="clonePreviewMerged" class="yh-copycat-merged-canvas">
-              <figure v-for="(image, index) in cloneWebpageImages" :key="image.id" :title="image.url">
+              <figure
+                v-for="(image, index) in cloneWebpageImages"
+                :key="image.id"
+                :title="image.url"
+              >
                 <img :src="image.url" :alt="image.name || '详情页图片'" />
                 <figcaption>{{ index + 1 }}</figcaption>
               </figure>
@@ -2124,7 +2324,15 @@ async function submitCloneGenerate() {
                 <figcaption>{{ index + 1 }}</figcaption>
                 <em v-if="image.uploading">上传中</em>
                 <em v-else-if="image.error">{{ image.error }}</em>
-                <button type="button" class="yh-copycat-preview-delete" aria-label="删除图片" title="删除图片" @click.stop="removeClonePreviewImage(image.id)">×</button>
+                <button
+                  type="button"
+                  class="yh-copycat-preview-delete"
+                  aria-label="删除图片"
+                  title="删除图片"
+                  @click.stop="removeClonePreviewImage(image.id)"
+                >
+                  ×
+                </button>
               </figure>
             </template>
           </div>

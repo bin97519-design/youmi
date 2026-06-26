@@ -897,19 +897,27 @@ async function maybeAutoDetect(layer) {
       headers: { 'Content-Type': 'application/json', ...userStore.authHeaders() },
       body: JSON.stringify({ imageUrl: layer.url, layerId: layer.id }),
     })
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      console.error(`[detect] HTTP ${res.status}: ${text.slice(0, 200)}`)
+      if (res.status === 502) {
+        console.error('[detect] Java后端(8085)可能未启动或已崩溃')
+      }
+      throw new Error(`HTTP ${res.status}`)
+    }
     const data = await res.json()
     console.log('[detect] API 返回:', {
       code: data.code,
       elementCount: (data.data?.elements || data.data?.imageInfo)?.length,
     })
     if ((data.code === 0 || data.code === 200) && (data.data?.elements || data.data?.imageInfo)) {
-      // 归一化 box_2d: 后端 proxy_log.py 统一返回 0-1000 千分数
+      // Java 后端直接返回 0-1 归一化坐标，无需再除以 1000
       const normalizeBox = (raw) => {
         if (!Array.isArray(raw) || raw.length !== 4) return null
-        // 如果所有值都 ≤ 1.05，说明已经是 0-1 归一化格式
+        // 值范围检查：如果所有值都 ≤ 1.05，已经是 0-1
         const allSmall = raw.every((v) => Math.abs(v) <= 1.05)
         if (allSmall) return raw
-        // 否则统一除以 1000（千分数 → 0-1）
+        // 否则除以 1000（兼容旧版 Python 代理的千分数格式）
         return raw.map((v) => v / 1000)
       }
       const els = (data.data.elements || data.data.imageInfo).map((e, i) => {
@@ -930,6 +938,13 @@ async function maybeAutoDetect(layer) {
         els.length,
         '个元素',
       )
+      // 逐元素坐标调试日志
+      for (const el of els) {
+        const b = el.box_2d || el.box2d || [0, 0, 1, 1]
+        console.log(
+          `[detect] ${el.object_name || el.name}: t=${b[0]} l=${b[1]} b=${b[2]} r=${b[3]}`,
+        )
+      }
       console.log('[detect] 第一个元素完整数据:', JSON.stringify(els[0]))
       console.log('[detect] 当前 layer 信息:', {
         id: layer.id,
@@ -994,7 +1009,10 @@ function uploadFile(file, onProgress) {
     const form = new FormData()
     form.append('file', file)
     const xhr = new XMLHttpRequest()
-    xhr.open('POST', 'http://101.133.149.214/prod-api/api/v1/file/upload')
+    // 走 Java 后端代理上传（/api → Vite proxy → 8085），避免 Vite 转发大文件到远端 nginx 时的 ERR_CONNECTION_RESET
+    xhr.open('POST', '/api/file/upload')
+    xhr.timeout = 120000 // 2 分钟超时
+    xhr.withCredentials = false
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) {
         onProgress({
@@ -1006,22 +1024,38 @@ function uploadFile(file, onProgress) {
     }
     xhr.onload = () => {
       if (xhr.status < 200 || xhr.status >= 300) {
+        console.error('[upload] HTTP error:', xhr.status, xhr.responseText?.slice(0, 200))
         reject(new Error(`图片上传失败：${xhr.status}`))
         return
       }
       try {
         const result = JSON.parse(xhr.responseText)
-        const url = extractUploadUrl(result)
+        // Java 后端代理返回格式: { code: 0, data: { url, fileName, fileSize } }
+        const url = result?.data?.url || extractUploadUrl(result)
         if (!url) {
           reject(new Error('上传成功，但接口没有返回图片地址'))
           return
         }
-        resolve(url.startsWith('http') ? url : `http://101.133.149.214${url}`)
+        resolve(url.startsWith('http') ? url : `https://101.133.149.214${url}`)
       } catch (e) {
         reject(new Error('解析上传响应失败'))
       }
     }
-    xhr.onerror = () => reject(new Error('网络错误，上传失败'))
+    xhr.ontimeout = () => {
+      console.error('[upload] XHR timeout after', xhr.timeout, 'ms')
+      reject(new Error('上传超时，请检查网络或换张小图重试'))
+    }
+    xhr.onerror = () => {
+      console.error(
+        '[upload] XHR onerror triggered. status=',
+        xhr.status,
+        'readyState=',
+        xhr.readyState,
+        'responseText=',
+        xhr.responseText?.slice(0, 200),
+      )
+      reject(new Error('网络错误，上传失败（Java后端8085可能未启动）'))
+    }
     xhr.send(form)
   })
 }
