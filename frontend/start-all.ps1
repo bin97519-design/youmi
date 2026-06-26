@@ -107,28 +107,66 @@ if (-not (Get-ListeningProcessId -Port $BackendPort)) {
       throw "Backend jar not found: $jarPath"
     }
     $backendCommand = @"
-`$env:MYSQL_URL = [Environment]::GetEnvironmentVariable('MYSQL_URL', 'User')
-`$env:MYSQL_USER = [Environment]::GetEnvironmentVariable('MYSQL_USER', 'User')
-`$env:MYSQL_PASSWORD = [Environment]::GetEnvironmentVariable('MYSQL_PASSWORD', 'User')
-`$env:REDIS_HOST = [Environment]::GetEnvironmentVariable('REDIS_HOST', 'User')
-`$env:REDIS_PASSWORD = [Environment]::GetEnvironmentVariable('REDIS_PASSWORD', 'User')
-`$env:GETTOKEN_API_KEY = [Environment]::GetEnvironmentVariable('GETTOKEN_API_KEY', 'User')
+function Set-EnvFromScopes {
+  param([string]`$Name, [string]`$Default = '')
+  `$value = [Environment]::GetEnvironmentVariable(`$Name, 'Process')
+  if (-not `$value) { `$value = [Environment]::GetEnvironmentVariable(`$Name, 'User') }
+  if (-not `$value) { `$value = [Environment]::GetEnvironmentVariable(`$Name, 'Machine') }
+  if (-not `$value) { `$value = `$Default }
+  if (`$value) { [Environment]::SetEnvironmentVariable(`$Name, `$value, 'Process') }
+}
+Set-EnvFromScopes 'MYSQL_URL'
+Set-EnvFromScopes 'MYSQL_USER'
+Set-EnvFromScopes 'MYSQL_PASSWORD'
+Set-EnvFromScopes 'REDIS_HOST'
+Set-EnvFromScopes 'REDIS_PASSWORD'
+Set-EnvFromScopes 'YOUMI_IMAGE_API_KEY'
+if (-not `$env:YOUMI_IMAGE_API_KEY) { Set-EnvFromScopes 'APIMART_API_KEY'; `$env:YOUMI_IMAGE_API_KEY = `$env:APIMART_API_KEY }
+if (-not `$env:YOUMI_IMAGE_API_KEY) { Set-EnvFromScopes 'APIMART_IMAGE_API_KEY'; `$env:YOUMI_IMAGE_API_KEY = `$env:APIMART_IMAGE_API_KEY }
+Set-EnvFromScopes 'MINIMAX_API_KEY'
+Set-EnvFromScopes 'GETTOKEN_API_KEY'
+Set-EnvFromScopes 'OSS_ENDPOINT' 'oss-cn-shanghai.aliyuncs.com'
+Set-EnvFromScopes 'OSS_ACCESS_KEY_ID'
+Set-EnvFromScopes 'OSS_ACCESS_KEY_SECRET'
+Set-EnvFromScopes 'OSS_BUCKET_NAME' 'huami-canvas'
+Set-EnvFromScopes 'OSS_STS_REGION_ID' 'cn-shanghai'
+Set-EnvFromScopes 'OSS_STS_ENDPOINT' 'sts.cn-shanghai.aliyuncs.com'
+Set-EnvFromScopes 'OSS_STS_ROLE_ARN'
+Set-EnvFromScopes 'OSS_STS_ROLE_SESSION_NAME' 'youmi-upload'
+Set-EnvFromScopes 'OSS_STS_DURATION_SECONDS' '3600'
 java -jar '..\backend\backend_java\target\youmi-api-0.1.0.jar'
 "@
   } else {
     $mavenRepo = Join-Path $Root "..\.m2\repository"
     New-Item -ItemType Directory -Force -Path $mavenRepo | Out-Null
     $backendCommand = @"
-`$env:MYSQL_URL = [Environment]::GetEnvironmentVariable('MYSQL_URL', 'User')
-`$env:MYSQL_USER = [Environment]::GetEnvironmentVariable('MYSQL_USER', 'User')
-`$env:MYSQL_PASSWORD = [Environment]::GetEnvironmentVariable('MYSQL_PASSWORD', 'User')
-`$env:REDIS_HOST = [Environment]::GetEnvironmentVariable('REDIS_HOST', 'User')
-`$env:REDIS_PASSWORD = [Environment]::GetEnvironmentVariable('REDIS_PASSWORD', 'User')
-`$env:YOUMI_IMAGE_API_KEY = [Environment]::GetEnvironmentVariable('YOUMI_IMAGE_API_KEY', 'User')
-if (-not `$env:YOUMI_IMAGE_API_KEY) { `$env:YOUMI_IMAGE_API_KEY = [Environment]::GetEnvironmentVariable('APIMART_API_KEY', 'User') }
-if (-not `$env:YOUMI_IMAGE_API_KEY) { `$env:YOUMI_IMAGE_API_KEY = [Environment]::GetEnvironmentVariable('APIMART_IMAGE_API_KEY', 'User') }
-`$env:MINIMAX_API_KEY = [Environment]::GetEnvironmentVariable('MINIMAX_API_KEY', 'User')
-`$env:GETTOKEN_API_KEY = [Environment]::GetEnvironmentVariable('GETTOKEN_API_KEY', 'User')
+function Set-EnvFromScopes {
+  param([string]`$Name, [string]`$Default = '')
+  `$value = [Environment]::GetEnvironmentVariable(`$Name, 'Process')
+  if (-not `$value) { `$value = [Environment]::GetEnvironmentVariable(`$Name, 'User') }
+  if (-not `$value) { `$value = [Environment]::GetEnvironmentVariable(`$Name, 'Machine') }
+  if (-not `$value) { `$value = `$Default }
+  if (`$value) { [Environment]::SetEnvironmentVariable(`$Name, `$value, 'Process') }
+}
+Set-EnvFromScopes 'MYSQL_URL'
+Set-EnvFromScopes 'MYSQL_USER'
+Set-EnvFromScopes 'MYSQL_PASSWORD'
+Set-EnvFromScopes 'REDIS_HOST'
+Set-EnvFromScopes 'REDIS_PASSWORD'
+Set-EnvFromScopes 'YOUMI_IMAGE_API_KEY'
+if (-not `$env:YOUMI_IMAGE_API_KEY) { Set-EnvFromScopes 'APIMART_API_KEY'; `$env:YOUMI_IMAGE_API_KEY = `$env:APIMART_API_KEY }
+if (-not `$env:YOUMI_IMAGE_API_KEY) { Set-EnvFromScopes 'APIMART_IMAGE_API_KEY'; `$env:YOUMI_IMAGE_API_KEY = `$env:APIMART_IMAGE_API_KEY }
+Set-EnvFromScopes 'MINIMAX_API_KEY'
+Set-EnvFromScopes 'GETTOKEN_API_KEY'
+Set-EnvFromScopes 'OSS_ENDPOINT' 'oss-cn-shanghai.aliyuncs.com'
+Set-EnvFromScopes 'OSS_ACCESS_KEY_ID'
+Set-EnvFromScopes 'OSS_ACCESS_KEY_SECRET'
+Set-EnvFromScopes 'OSS_BUCKET_NAME' 'huami-canvas'
+Set-EnvFromScopes 'OSS_STS_REGION_ID' 'cn-shanghai'
+Set-EnvFromScopes 'OSS_STS_ENDPOINT' 'sts.cn-shanghai.aliyuncs.com'
+Set-EnvFromScopes 'OSS_STS_ROLE_ARN'
+Set-EnvFromScopes 'OSS_STS_ROLE_SESSION_NAME' 'youmi-upload'
+Set-EnvFromScopes 'OSS_STS_DURATION_SECONDS' '3600'
 mvn "-Dmaven.repo.local=$($mavenRepo)" -f ../backend/backend_java/pom.xml spring-boot:run
 "@
   }

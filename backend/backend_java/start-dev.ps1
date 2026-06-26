@@ -1,26 +1,41 @@
-$env:MYSQL_URL = [Environment]::GetEnvironmentVariable("MYSQL_URL", "User")
-$env:MYSQL_USER = [Environment]::GetEnvironmentVariable("MYSQL_USER", "User")
-$env:MYSQL_PASSWORD = [Environment]::GetEnvironmentVariable("MYSQL_PASSWORD", "User")
-$env:REDIS_HOST = [Environment]::GetEnvironmentVariable("REDIS_HOST", "User")
-$env:REDIS_PASSWORD = [Environment]::GetEnvironmentVariable("REDIS_PASSWORD", "User")
-$env:YOUMI_IMAGE_API_KEY = [Environment]::GetEnvironmentVariable("YOUMI_IMAGE_API_KEY", "User")
+function Set-EnvFromScopes {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [string]$Default = ""
+  )
+
+  $value = [Environment]::GetEnvironmentVariable($Name, "Process")
+  if (-not $value) { $value = [Environment]::GetEnvironmentVariable($Name, "User") }
+  if (-not $value) { $value = [Environment]::GetEnvironmentVariable($Name, "Machine") }
+  if (-not $value) { $value = $Default }
+  if ($value) { [Environment]::SetEnvironmentVariable($Name, $value, "Process") }
+}
+
+Set-EnvFromScopes "MYSQL_URL"
+Set-EnvFromScopes "MYSQL_USER"
+Set-EnvFromScopes "MYSQL_PASSWORD"
+Set-EnvFromScopes "REDIS_HOST"
+Set-EnvFromScopes "REDIS_PASSWORD"
+Set-EnvFromScopes "YOUMI_IMAGE_API_KEY"
 if (-not $env:YOUMI_IMAGE_API_KEY) {
-  $env:YOUMI_IMAGE_API_KEY = [Environment]::GetEnvironmentVariable("APIMART_API_KEY", "User")
+  Set-EnvFromScopes "APIMART_API_KEY"
+  $env:YOUMI_IMAGE_API_KEY = $env:APIMART_API_KEY
 }
 if (-not $env:YOUMI_IMAGE_API_KEY) {
-  $env:YOUMI_IMAGE_API_KEY = [Environment]::GetEnvironmentVariable("APIMART_IMAGE_API_KEY", "User")
+  Set-EnvFromScopes "APIMART_IMAGE_API_KEY"
+  $env:YOUMI_IMAGE_API_KEY = $env:APIMART_IMAGE_API_KEY
 }
-$env:MINIMAX_API_KEY = [Environment]::GetEnvironmentVariable("MINIMAX_API_KEY", "User")
-$env:GETTOKEN_API_KEY = [Environment]::GetEnvironmentVariable("GETTOKEN_API_KEY", "User")
-$env:OSS_ENDPOINT = [Environment]::GetEnvironmentVariable("OSS_ENDPOINT", "User")
-$env:OSS_ACCESS_KEY_ID = [Environment]::GetEnvironmentVariable("OSS_ACCESS_KEY_ID", "User")
-$env:OSS_ACCESS_KEY_SECRET = [Environment]::GetEnvironmentVariable("OSS_ACCESS_KEY_SECRET", "User")
-$env:OSS_BUCKET_NAME = [Environment]::GetEnvironmentVariable("OSS_BUCKET_NAME", "User")
-$env:OSS_STS_REGION_ID = [Environment]::GetEnvironmentVariable("OSS_STS_REGION_ID", "User")
-$env:OSS_STS_ENDPOINT = [Environment]::GetEnvironmentVariable("OSS_STS_ENDPOINT", "User")
-$env:OSS_STS_ROLE_ARN = [Environment]::GetEnvironmentVariable("OSS_STS_ROLE_ARN", "User")
-$env:OSS_STS_ROLE_SESSION_NAME = [Environment]::GetEnvironmentVariable("OSS_STS_ROLE_SESSION_NAME", "User")
-$env:OSS_STS_DURATION_SECONDS = [Environment]::GetEnvironmentVariable("OSS_STS_DURATION_SECONDS", "User")
+Set-EnvFromScopes "MINIMAX_API_KEY"
+Set-EnvFromScopes "GETTOKEN_API_KEY"
+Set-EnvFromScopes "OSS_ENDPOINT" "oss-cn-shanghai.aliyuncs.com"
+Set-EnvFromScopes "OSS_ACCESS_KEY_ID"
+Set-EnvFromScopes "OSS_ACCESS_KEY_SECRET"
+Set-EnvFromScopes "OSS_BUCKET_NAME" "huami-canvas"
+Set-EnvFromScopes "OSS_STS_REGION_ID" "cn-shanghai"
+Set-EnvFromScopes "OSS_STS_ENDPOINT" "sts.cn-shanghai.aliyuncs.com"
+Set-EnvFromScopes "OSS_STS_ROLE_ARN"
+Set-EnvFromScopes "OSS_STS_ROLE_SESSION_NAME" "youmi-upload"
+Set-EnvFromScopes "OSS_STS_DURATION_SECONDS" "3600"
 
 $backendDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $pomPath = Join-Path $backendDir 'pom.xml'
