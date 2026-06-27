@@ -1,8 +1,8 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
-import { useUserStore } from '../../stores/user';
-import { apiPath } from '../../utils/apiBase';
-import { uploadFileDirect } from '../../utils/ossUpload';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useUserStore } from '../../stores/user'
+import { apiPath } from '../../utils/apiBase'
+import { uploadFileDirect } from '../../utils/ossUpload'
 
 const UPLOAD_ENDPOINT = '/api/file/upload'
 
@@ -565,26 +565,31 @@ function removeImage(imageId) {
 }
 
 async function uploadRemoteFile(file) {
-  // 优先使用 OSS 直传，失败则 fallback 到 Java 后端中转
+  // 优先 OSS 直传，失败则 fallback 到 Java 后端中转
   try {
-    return await uploadFileDirect(file, { dir: 'youmi-home/uploads' });
+    return await uploadFileDirect(file, { dir: 'youmi-home/uploads' })
   } catch (ossError) {
-    console.warn('[upload] OSS 直传失败，fallback 到 Java 后端中转:', ossError.message);
-    const formData = new FormData();
-    formData.append('file', file);
+    console.warn('[upload] OSS 直传失败，fallback 到 Java 后端中转:', ossError.message)
+    const formData = new FormData()
+    formData.append('file', file)
     const response = await fetch(UPLOAD_ENDPOINT, {
       method: 'POST',
       body: formData,
-    });
+    })
     if (!response.ok) {
-      throw new Error(`上传失败：${response.status}`);
+      throw new Error(`上传失败：${response.status}`)
     }
-    const result = await response.json().catch(() => ({}));
-    const remoteUrl = findUploadedUrl(result);
+    const result = await response.json().catch(() => ({}))
+    let remoteUrl = findUploadedUrl(result)
+    // local storage 返回相对路径，需拼完整 URL
+    if (!remoteUrl && result?.data?.url) {
+      const u = result.data.url
+      remoteUrl = u.startsWith('http') ? u : `http://127.0.0.1:8085${u}`
+    }
     if (!remoteUrl) {
-      throw new Error('上传成功，但没有返回图片地址');
+      throw new Error('上传成功，但没有返回图片地址')
     }
-    return remoteUrl;
+    return remoteUrl
   }
 }
 

@@ -32,6 +32,9 @@ const myMaterialsOpen = ref(false)
 const historyPanelOpen = ref(false)
 const myMaterials = ref(JSON.parse(localStorage.getItem('youmi_my_materials') || '[]'))
 
+// 视频播放状态
+const playingVideoLayerId = ref(null)
+
 // + 号弹层位置（fixed 定位 + Teleport to body，彻底脱离 transform 父级）
 const addMenuWrapEl = ref(null)
 const addMenuPosition = ref({})
@@ -384,10 +387,10 @@ const PLACEHOLDER_WIDTH = 360
 const PLACEHOLDER_HEIGHT = 480
 const CANVAS_IMAGE_WIDTH = 360 // 画布中图片统一展示宽度（相同比例的图显示大小一致）
 const PLACEHOLDER_STATUS_TEXTS = [
-  '正在加载超导级创作资源池...',
-  '正在校准粒子精度与材质细节...',
-  '正在计算光影层次与空间氛围...',
-  '正在封装生成结果，即将呈现...',
+  '灵感信号已捕获，创意引擎启动中...',
+  '正在构色与铺光，拆解视觉元素...',
+  '渲染像素级细节，融合风格笔触...',
+  '最终校色定稿，即将跃然屏上...',
 ]
 function addReversePromptReference(imageUrl, layerId) {
   canvas.updateDocument(props.id, (draft) => {
@@ -493,11 +496,11 @@ function isElementBlocked(layerId, elBox) {
   const myZ = myLayer.zIndex || 0
   const vs = viewScale.value
   const vo = viewOffset.value
-  // 元素屏幕矩形
-  const eLeft = (myLayer.x + elBox[1] * myLayer.width) * vs + vo.x
-  const eTop = (myLayer.y + elBox[0] * myLayer.height) * vs + vo.y
-  const eRight = eLeft + (elBox[3] - elBox[1]) * myLayer.width * vs
-  const eBottom = eTop + (elBox[2] - elBox[0]) * myLayer.height * vs
+  // 元素屏幕矩形 — elBox = [x1, y1, x2, y2]
+  const eLeft = (myLayer.x + elBox[0] * myLayer.width) * vs + vo.x
+  const eTop = (myLayer.y + elBox[1] * myLayer.height) * vs + vo.y
+  const eRight = eLeft + (elBox[2] - elBox[0]) * myLayer.width * vs
+  const eBottom = eTop + (elBox[3] - elBox[1]) * myLayer.height * vs
 
   for (const l of layers.value) {
     const lz = l.zIndex || 0
@@ -882,7 +885,7 @@ function videoSize(src) {
 }
 
 async function maybeAutoDetect(layer) {
-  if (!layer || !layer.url || layer.type === 'placeholder') return
+  if (!layer || !layer.url || layer.type === 'placeholder' || layer.type === 'video') return
   if (!autoDetectionEnabled.value) return
   if (_undoRestoring.value) return // 撤销恢复期间不触发自动检测
   if (detectingLayerIds.value.has(layer.id)) return
@@ -944,7 +947,7 @@ async function maybeAutoDetect(layer) {
       for (const el of els) {
         const b = el.box_2d || el.box2d || [0, 0, 1, 1]
         console.log(
-          `[detect] ${el.object_name || el.name}: t=${b[0]} l=${b[1]} b=${b[2]} r=${b[3]}`,
+          `[detect] ${el.object_name || el.name}: x1=${b[0]} y1=${b[1]} x2=${b[2]} y2=${b[3]}`,
         )
       }
       console.log('[detect] 第一个元素完整数据:', JSON.stringify(els[0]))
@@ -1012,7 +1015,7 @@ function uploadFile(file, onProgress) {
     dir: 'youmi-canvas/uploads',
     onProgress,
   }).catch((ossError) => {
-    console.warn('[upload] OSS 直传失败，fallback 到 Java 后端中转:', ossError.message);
+    console.warn('[upload] OSS 直传失败，fallback 到 Java 后端中转:', ossError.message)
     return new Promise((resolve, reject) => {
       const form = new FormData()
       form.append('file', file)
@@ -1041,7 +1044,7 @@ function uploadFile(file, onProgress) {
             reject(new Error('上传成功，但接口没有返回图片地址'))
             return
           }
-          resolve(url.startsWith('http') ? url : `https://101.133.149.214${url}`)
+          resolve(url.startsWith('http') ? url : `http://127.0.0.1:8085${url}`)
         } catch (e) {
           reject(new Error('解析上传响应失败'))
         }
@@ -1414,8 +1417,8 @@ function addVideoNode() {
       type: 'video',
       url: '',
       thumbnailUrl: '',
-      width: 320,
-      height: 240,
+      width: CANVAS_IMAGE_WIDTH,
+      height: Math.round((CANVAS_IMAGE_WIDTH * 9) / 16),
       x: base ? base.x + 30 : fallbackX,
       y: base ? base.y + 30 : fallbackY,
       zIndex: maxZ + 1,
@@ -1556,6 +1559,153 @@ const imageViewer = reactive({
   dragStartTranslateY: 0,
 })
 
+// ========== 视频查看器 ==========
+const videoViewer = reactive({
+  show: false,
+  url: '',
+  name: '',
+  playing: false,
+  muted: true,
+  volume: 0.8, // 0~1
+  currentTime: 0, // 秒
+  duration: 0, // 秒
+  playbackRate: 1, // 播放速度
+  isSeeking: false,
+  showControls: true,
+  _controlsTimer: null,
+})
+const videoViewerRef = ref(null) // video DOM
+
+function openVideoViewer(url, name) {
+  videoViewer.show = true
+  videoViewer.url = url
+  videoViewer.name = name || '视频'
+  videoViewer.playing = false
+  videoViewer.muted = true
+  videoViewer.volume = 0.8
+  videoViewer.currentTime = 0
+  videoViewer.duration = 0
+  videoViewer.playbackRate = 1
+  videoViewer.isSeeking = false
+  videoViewer.showControls = true
+  nextTick(() => {
+    const v = videoViewerRef.value
+    if (v) {
+      v.volume = videoViewer.volume
+      v.muted = videoViewer.muted
+      v.playbackRate = videoViewer.playbackRate
+    }
+  })
+}
+
+function closeVideoViewer() {
+  const v = videoViewerRef.value
+  if (v && !v.paused) v.pause()
+  videoViewer.show = false
+  videoViewer.url = ''
+  clearTimeout(videoViewer._controlsTimer)
+}
+
+function toggleVideoViewerPlay() {
+  const v = videoViewerRef.value
+  if (!v) return
+  if (v.paused) {
+    v.play().catch(() => {})
+  } else {
+    v.pause()
+  }
+}
+
+function onVideoViewerPlay() {
+  videoViewer.playing = true
+}
+function onVideoViewerPause() {
+  videoViewer.playing = false
+}
+function onVideoViewerTimeUpdate() {
+  const v = videoViewerRef.value
+  if (!v || videoViewer.isSeeking) return
+  videoViewer.currentTime = v.currentTime
+}
+function onVideoViewerDurationChange() {
+  const v = videoViewerRef.value
+  if (v) videoViewer.duration = v.duration || 0
+}
+function onVideoViewerEnded() {
+  videoViewer.playing = false
+  videoViewer.currentTime = 0
+}
+
+// 进度条 seek
+function onVideoSeekStart() {
+  videoViewer.isSeeking = true
+}
+function onVideoSeekEnd() {
+  videoViewer.isSeeking = false
+}
+function onVideoSeekInput(e) {
+  const v = videoViewerRef.value
+  if (!v) return
+  const val = parseFloat(e.target.value)
+  v.currentTime = val
+  videoViewer.currentTime = val
+}
+
+// 音量
+function onVideoVolumeInput(e) {
+  const v = videoViewerRef.value
+  const vol = parseFloat(e.target.value)
+  videoViewer.volume = vol
+  if (v) v.volume = vol
+  if (vol > 0 && videoViewer.muted) {
+    videoViewer.muted = false
+    if (v) v.muted = false
+  }
+}
+function toggleVideoMute() {
+  const v = videoViewerRef.value
+  videoViewer.muted = !videoViewer.muted
+  if (v) v.muted = videoViewer.muted
+}
+
+// 播放速度
+const playbackRates = [0.5, 0.75, 1, 1.25, 1.5, 2]
+function setPlaybackRate(rate) {
+  const v = videoViewerRef.value
+  videoViewer.playbackRate = rate
+  if (v) v.playbackRate = rate
+}
+
+// 全屏
+function toggleVideoFullscreen() {
+  const container = document.querySelector('.uc-video-viewer-container')
+  if (!container) return
+  if (document.fullscreenElement) {
+    document.exitFullscreen()
+  } else {
+    container.requestFullscreen().catch(() => {})
+  }
+}
+
+// 格式化时间 mm:ss
+function formatVideoTime(sec) {
+  if (!sec || isNaN(sec)) return '0:00'
+  const m = Math.floor(sec / 60)
+  const s = Math.floor(sec % 60)
+  return `${m}:${s.toString().padStart(2, '0')}`
+}
+
+// 控制栏自动隐藏（播放3秒后淡出）
+function showVideoControlsTemporarily() {
+  videoViewer.showControls = true
+  clearTimeout(videoViewer._controlsTimer)
+  if (videoViewer.playing) {
+    videoViewer._controlsTimer = setTimeout(() => {
+      videoViewer.showControls = false
+    }, 3000)
+  }
+}
+
 // 打开图片查看器
 function openImageViewer(url, name) {
   imageViewer.show = true
@@ -1628,12 +1778,23 @@ function downloadImage() {
   a.click()
 }
 
+function downloadVideo() {
+  const a = document.createElement('a')
+  a.href = videoViewer.url
+  a.download = videoViewer.name || 'video'
+  a.target = '_blank'
+  a.click()
+}
+
 // figure 上的 dblclick 统一入口（因为 setPointerCapture 会劫持内层事件）
 function onLayerDblClick(event, layer) {
   if (layer.type === 'text') {
     startEditText(layer)
   } else if (layer.type === 'image-placeholder' || (layer.type === 'video' && !layer.url)) {
     uploadNodeMedia(layer)
+  } else if (layer.type === 'video' && layer.url) {
+    // 双击视频：打开视频查看器
+    openVideoViewer(layer.url, layer.name)
   } else if (layer.url && (layer.type === 'image' || (layer.url && !layer.type))) {
     // 双击图片：打开查看器
     openImageViewer(layer.url, layer.name)
@@ -1667,9 +1828,49 @@ function formatLayerTime(layer) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
-// 播放视频节点（在新窗口打开视频）
+// 播放/暂停视频节点（画布内播放）
 function playVideoNode(layer) {
-  if (layer.url) window.open(layer.url, '_blank')
+  if (!layer.url) return
+  // 在画布内播放/暂停视频
+  const videoEl = document.querySelector(`[data-layer-id="${layer.id}"] video.uc-video-node-video`)
+  if (!videoEl) return
+  if (videoEl.paused) {
+    // 先暂停其他正在播放的视频
+    if (playingVideoLayerId.value && playingVideoLayerId.value !== layer.id) {
+      const otherEl = document.querySelector(
+        `[data-layer-id="${playingVideoLayerId.value}"] video.uc-video-node-video`,
+      )
+      if (otherEl && !otherEl.paused) otherEl.pause()
+    }
+    videoEl.play().catch(() => {})
+  } else {
+    videoEl.pause()
+  }
+}
+
+// 鼠标悬停自动播放视频
+const _hoverPlayingIds = new Set() // 记录因悬停而播放的视频，手动暂停时不自动恢复
+function hoverPlayVideo(layer) {
+  if (!layer.url) return
+  const videoEl = document.querySelector(`[data-layer-id="${layer.id}"] video.uc-video-node-video`)
+  if (!videoEl || !videoEl.paused) return
+  // 先暂停其他悬停播放的视频
+  for (const id of _hoverPlayingIds) {
+    if (id !== layer.id) {
+      const otherEl = document.querySelector(`[data-layer-id="${id}"] video.uc-video-node-video`)
+      if (otherEl && !otherEl.paused) otherEl.pause()
+    }
+  }
+  videoEl.play().catch(() => {})
+  _hoverPlayingIds.add(layer.id)
+}
+
+function hoverPauseVideo(layer) {
+  if (!layer.url) return
+  const videoEl = document.querySelector(`[data-layer-id="${layer.id}"] video.uc-video-node-video`)
+  if (!videoEl || videoEl.paused) return
+  videoEl.pause()
+  _hoverPlayingIds.delete(layer.id)
 }
 
 function toggleAddMenu() {
@@ -1685,9 +1886,12 @@ function removeChatReferenceImage(imageId) {
 }
 
 async function addFiles(fileList, options = {}) {
-  const files = [...fileList].filter((file) => file.type.startsWith('image/'))
+  const files = [...fileList].filter(
+    (file) => file.type.startsWith('image/') || file.type.startsWith('video/'),
+  )
   let uploadedCount = 0
   for (const file of files) {
+    const isVideo = file.type.startsWith('video/')
     let referenceImage = null
     if (options.addToChatDeck) {
       const localUrl = URL.createObjectURL(file)
@@ -1721,34 +1925,76 @@ async function addFiles(fileList, options = {}) {
         referenceImage.localUrl = ''
       }
 
-      const size = await imageSize(url)
-      let layerId = ''
-      canvas.updateDocument(props.id, (draft) => {
-        const index = draft.payload.layers.length
-        const width = size.width > size.height ? CANVAS_IMAGE_WIDTH : CANVAS_IMAGE_WIDTH
-        const layer = {
-          id: `layer-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          name: layerName(index),
-          url,
-          thumbnailUrl: url,
-          naturalWidth: size.width,
-          naturalHeight: size.height,
-          width,
-          height: Math.round((width * size.height) / size.width),
-          x: 80 + index * 36,
-          y: 110 + index * 32,
-          zIndex: index + 1,
-          visible: true,
-          locked: false,
-        }
-        layerId = layer.id
-        draft.payload.layers.push(layer)
-        selectedLayerId.value = layer.id
-        selectedLayerIds.value = [layer.id]
-        return draft
-      })
-      if (referenceImage) referenceImage.layerId = layerId
-      uploadedCount += 1
+      if (isVideo) {
+        // 视频文件：创建视频图层，按真实比例适配
+        const size = await videoSize(url).catch(() => ({ width: 16, height: 9 }))
+        const layerW = CANVAS_IMAGE_WIDTH
+        const layerH = Math.round((layerW * size.height) / size.width)
+        let layerId = ''
+        canvas.updateDocument(props.id, (draft) => {
+          const index = draft.payload.layers.length
+          const cx = (viewportSize.width / 2 - viewOffset.value.x) / viewScale.value
+          const cy = (viewportSize.height / 2 - viewOffset.value.y) / viewScale.value
+          const base = selectedLayer.value
+          const layer = {
+            id: `layer-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            type: 'video',
+            name: layerName(index),
+            url,
+            thumbnailUrl: '',
+            naturalWidth: size.width,
+            naturalHeight: size.height,
+            width: layerW,
+            height: layerH,
+            x: base ? base.x + Math.min(40, base.width / 2) : cx - layerW / 2 + index * 30,
+            y: base ? base.y + 30 : cy - layerH / 2 + index * 25,
+            zIndex: index + 1,
+            visible: true,
+            locked: false,
+          }
+          layerId = layer.id
+          draft.payload.layers.push(layer)
+          selectedLayerId.value = layer.id
+          selectedLayerIds.value = [layer.id]
+          return draft
+        })
+        if (referenceImage) referenceImage.layerId = layerId
+        uploadedCount += 1
+      } else {
+        // 图片文件：原逻辑
+        const size = await imageSize(url)
+        let layerId = ''
+        canvas.updateDocument(props.id, (draft) => {
+          const index = draft.payload.layers.length
+          const width = size.width > size.height ? CANVAS_IMAGE_WIDTH : CANVAS_IMAGE_WIDTH
+          const layerH = Math.round((width * size.height) / size.width)
+          const cx = (viewportSize.width / 2 - viewOffset.value.x) / viewScale.value
+          const cy = (viewportSize.height / 2 - viewOffset.value.y) / viewScale.value
+          const base = selectedLayer.value
+          const layer = {
+            id: `layer-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            name: layerName(index),
+            url,
+            thumbnailUrl: url,
+            naturalWidth: size.width,
+            naturalHeight: size.height,
+            width,
+            height: layerH,
+            x: base ? base.x + Math.min(40, base.width / 2) : cx - width / 2 + index * 30,
+            y: base ? base.y + 30 : cy - layerH / 2 + index * 25,
+            zIndex: index + 1,
+            visible: true,
+            locked: false,
+          }
+          layerId = layer.id
+          draft.payload.layers.push(layer)
+          selectedLayerId.value = layer.id
+          selectedLayerIds.value = [layer.id]
+          return draft
+        })
+        if (referenceImage) referenceImage.layerId = layerId
+        uploadedCount += 1
+      }
     } catch (error) {
       uploadProgress.value = null
       if (referenceImage) {
@@ -1764,7 +2010,7 @@ async function addFiles(fileList, options = {}) {
       draft.payload.chat.push({
         id: `msg-${Date.now()}-upload`,
         role: 'assistant',
-        text: `已添加 ${uploadedCount} 张参考图到画布。`,
+        text: `已添加 ${uploadedCount} 个文件到画布。`,
         createdAt: Date.now(),
       })
       return draft
@@ -1806,6 +2052,8 @@ function updateLayer(id, patch) {
 
 function removeLayer(id) {
   if (!userStore.requireLogin()) return
+  // 如果正在播放该视频，清理播放状态
+  if (playingVideoLayerId.value === id) playingVideoLayerId.value = null
   pushUndo()
   // 删除关联的连接线
   connections.value = connections.value.filter((c) => c.fromLayerId !== id && c.toLayerId !== id)
@@ -1919,11 +2167,11 @@ function smartToggleElement(layerId, elementId, event) {
       const vs = viewScale.value
       const vo = viewOffset.value
 
-      // 元素框的像素坐标
-      const boxLeft = (layer.x + box[1] * layer.width) * vs + vo.x
-      const boxTop = (layer.y + box[0] * layer.height) * vs + vo.y
-      const boxWidth = (box[3] - box[1]) * layer.width * vs
-      const boxHeight = (box[2] - box[0]) * layer.height * vs
+      // 元素框的像素坐标 — box_2d = [x1, y1, x2, y2] = [left, top, right, bottom]
+      const boxLeft = (layer.x + box[0] * layer.width) * vs + vo.x
+      const boxTop = (layer.y + box[1] * layer.height) * vs + vo.y
+      const boxWidth = (box[2] - box[0]) * layer.width * vs
+      const boxHeight = (box[3] - box[1]) * layer.height * vs
 
       // 计算相对位置（0-1）
       const relX = boxWidth > 0 ? Math.max(0, Math.min(1, (clickX - boxLeft) / boxWidth)) : 0.5
@@ -1979,16 +2227,16 @@ function findElementsAtPoint(clientX, clientY) {
     if (!layer) continue
     for (const el of elements) {
       const box = el.box_2d || el.box2d || [0, 0, 1, 1]
-      const left = (layer.x + box[1] * layer.width) * vs + vo.x
-      const top = (layer.y + box[0] * layer.height) * vs + vo.y
-      const right = left + (box[3] - box[1]) * layer.width * vs
-      const bottom = top + (box[2] - box[0]) * layer.height * vs
+      const left = (layer.x + box[0] * layer.width) * vs + vo.x
+      const top = (layer.y + box[1] * layer.height) * vs + vo.y
+      const right = left + (box[2] - box[0]) * layer.width * vs
+      const bottom = top + (box[3] - box[1]) * layer.height * vs
       if (cx >= left && cx <= right && cy >= top && cy <= bottom) {
         results.push({
           layerId,
           el,
           box_2d: box,
-          area: (box[3] - box[1]) * (box[2] - box[0]),
+          area: (box[2] - box[0]) * (box[3] - box[1]),
           id: el.object_name || el.name || el.id,
           name: el.object_name || el.name || '',
         })
@@ -2007,17 +2255,17 @@ function findOverlappingElements(targetLayerId, targetBox) {
   if (!elements) return results
   for (const el of elements) {
     const box = el.box_2d || el.box2d || [0, 0, 1, 1]
-    // 检查两框是否相交
-    const il = Math.max(targetBox[1], box[1])
-    const it = Math.max(targetBox[0], box[0])
-    const ir = Math.min(targetBox[3], box[3])
-    const ib = Math.min(targetBox[2], box[2])
+    // 检查两框是否相交 — box = [x1, y1, x2, y2]
+    const il = Math.max(targetBox[0], box[0])
+    const it = Math.max(targetBox[1], box[1])
+    const ir = Math.min(targetBox[2], box[2])
+    const ib = Math.min(targetBox[3], box[3])
     if (il < ir && it < ib) {
       results.push({
         layerId: targetLayerId,
         el,
         box_2d: box,
-        area: (box[3] - box[1]) * (box[2] - box[0]),
+        area: (box[2] - box[0]) * (box[3] - box[1]),
         id: el.object_name || el.name || el.id,
         name: el.object_name || el.name || '',
       })
@@ -2657,12 +2905,12 @@ function createManualElement() {
   const wTop = (minY - vo.y) / vs
   const wBottom = (maxY - vo.y) / vs
 
-  // 图层相对归一化 0-1
-  const top = (wTop - layer.y) / layer.height
-  const left = (wLeft - layer.x) / layer.width
-  const bottom = (wBottom - layer.y) / layer.height
-  const right = (wRight - layer.x) / layer.width
-  const box_2d = [top, left, bottom, right].map((v) => Math.max(0, Math.min(1, v)))
+  // 图层相对归一化 0-1 — box_2d = [x1, y1, x2, y2] = [left, top, right, bottom]
+  const x1 = (wLeft - layer.x) / layer.width
+  const y1 = (wTop - layer.y) / layer.height
+  const x2 = (wRight - layer.x) / layer.width
+  const y2 = (wBottom - layer.y) / layer.height
+  const box_2d = [x1, y1, x2, y2].map((v) => Math.max(0, Math.min(1, v)))
 
   // 弹出命名输入框（屏幕坐标，置于框上方）
   manualNameInput.visible = true
@@ -2861,19 +3109,19 @@ function buildElementLocationHint() {
     const layer = layers.value.find((l) => l.id === el.layerId)
     if (!layer) continue
     const box = normalizeBoxVal(el.box_2d || el.box2d || [0, 0, 1, 1])
-    // 转换为像素坐标
-    const pxLeft = Math.round(box[1] * layer.width)
-    const pxTop = Math.round(box[0] * layer.height)
-    const pxRight = Math.round(box[3] * layer.width)
-    const pxBottom = Math.round(box[2] * layer.height)
+    // 转换为像素坐标 — box = [x1, y1, x2, y2]
+    const pxLeft = Math.round(box[0] * layer.width)
+    const pxTop = Math.round(box[1] * layer.height)
+    const pxRight = Math.round(box[2] * layer.width)
+    const pxBottom = Math.round(box[3] * layer.height)
     const width = pxRight - pxLeft
     const height = pxBottom - pxTop
 
-    // 计算相对位置（百分比，保留1位小数）
-    const relLeft = (box[1] * 100).toFixed(1)
-    const relTop = (box[0] * 100).toFixed(1)
-    const relRight = (box[3] * 100).toFixed(1)
-    const relBottom = (box[2] * 100).toFixed(1)
+    // 计算相对位置（百分比，保留1位小数）— box = [x1, y1, x2, y2]
+    const relLeft = (box[0] * 100).toFixed(1)
+    const relTop = (box[1] * 100).toFixed(1)
+    const relRight = (box[2] * 100).toFixed(1)
+    const relBottom = (box[3] * 100).toFixed(1)
 
     lines.push({
       name: el.name || '元素',
@@ -2899,7 +3147,7 @@ function buildElementPill(el, order) {
   const eId = el.object_name || el.name || el.id
   const box = el.box_2d || []
   const imgTag = thumb
-    ? `<img src="${escHtml(thumb)}" alt="" style="object-position:${box.length === 4 ? `${(box[1] + (box[3] - box[1]) / 2) * 100}% ${(box[0] + (box[2] - box[0]) / 2) * 100}%` : 'center'};object-fit:cover" />`
+    ? `<img src="${escHtml(thumb)}" alt="" style="object-position:${box.length === 4 ? `${(box[0] + (box[2] - box[0]) / 2) * 100}% ${(box[1] + (box[3] - box[1]) / 2) * 100}%` : 'center'};object-fit:cover" />`
     : ''
   return `<span class="chat-pill" contenteditable="false" data-el-id="${escHtml(eId)}" data-el-name="${escHtml(el.object_name || el.name || '')}" data-el-layer="${escHtml(el.layerId)}" data-el-box="${box.join(',')}"><span class="chat-pill-num">${order}</span>${imgTag}${escHtml(el.object_name || el.name || '')}<em title="切换重叠元素" data-action="pick-overlap">&#x25BC;</em></span>&nbsp;`
 }
@@ -3015,10 +3263,10 @@ function getElementClickStyle(key) {
 
   // 如果有归一化的点击位置，使用它
   if (pos && pos.relX !== undefined && pos.relY !== undefined) {
-    const boxLeft = (layer.x + pad + box[1] * innerW) * vs + vo.x
-    const boxTop = (layer.y + pad + box[0] * innerH) * vs + vo.y
-    const boxWidth = (box[3] - box[1]) * innerW * vs
-    const boxHeight = (box[2] - box[0]) * innerH * vs
+    const boxLeft = (layer.x + pad + box[0] * innerW) * vs + vo.x
+    const boxTop = (layer.y + pad + box[1] * innerH) * vs + vo.y
+    const boxWidth = (box[2] - box[0]) * innerW * vs
+    const boxHeight = (box[3] - box[1]) * innerH * vs
 
     return {
       left: `${boxLeft + pos.relX * boxWidth}px`,
@@ -3026,9 +3274,9 @@ function getElementClickStyle(key) {
     }
   }
 
-  // 否则使用元素框中心点
-  const centerX = box[1] + (box[3] - box[1]) / 2
-  const centerY = box[0] + (box[2] - box[0]) / 2
+  // 否则使用元素框中心点 — box = [x1, y1, x2, y2]
+  const centerX = box[0] + (box[2] - box[0]) / 2
+  const centerY = box[1] + (box[3] - box[1]) / 2
   return {
     left: `${(layer.x + pad + centerX * innerW) * vs + vo.x}px`,
     top: `${(layer.y + pad + centerY * innerH) * vs + vo.y}px`,
@@ -3181,7 +3429,7 @@ ${text || '请根据元素类型进行适当修改'}
           referenceImageUrls: imageUrls,
           createdAt: Date.now(),
         })
-        if (generationHistory.value.length > 50) generationHistory.value.shift()
+        if (generationHistory.value.length > 200) generationHistory.value.shift()
         return
       }
     }
@@ -3930,6 +4178,11 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   _mounted.value = false
+  // 暂停所有正在播放的视频
+  document.querySelectorAll('video.uc-video-node-video').forEach((v) => {
+    if (!v.paused) v.pause()
+  })
+  playingVideoLayerId.value = null
   chatReferenceImages.value.forEach((image) => {
     if (image.localUrl?.startsWith('blob:')) URL.revokeObjectURL(image.localUrl)
   })
@@ -4121,12 +4374,12 @@ function contextMenuAddToReference() {
           <input
             ref="fileInput"
             type="file"
-            accept="image/*"
+            accept="image/*,video/*"
             multiple
             hidden
             @change="onFileChange"
           />
-          <button :class="{ active: addOpen }" @click="toggleAddMenu">▧ 添加图片</button>
+          <button :class="{ active: addOpen }" @click="toggleAddMenu">▧ 添加文件</button>
           <div v-if="addOpen" class="add-menu">
             <button @click="openImageUpload('canvas')">⇧ 本地上传</button>
             <button>▤ 从历史生成导入</button>
@@ -4275,16 +4528,82 @@ function contextMenuAddToReference() {
               <div class="loading-card-container size-md">
                 <div class="virtual-progress-bar">
                   <div
-                    class="virtual-progress-fill dark"
+                    class="virtual-progress-fill"
                     :style="{ width: `${Math.max(3, Math.min(100, layer.progress || 0))}%` }"
                   />
                 </div>
                 <div class="logo-wrapper">
-                  <strong class="uc-placeholder-logo">YOUMI</strong>
+                  <svg
+                    class="uc-placeholder-icon-svg"
+                    viewBox="0 0 80 80"
+                    fill="none"
+                    aria-label="生成中"
+                  >
+                    <circle
+                      cx="40"
+                      cy="40"
+                      r="36"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                      opacity="0.15"
+                    />
+                    <circle
+                      cx="40"
+                      cy="40"
+                      r="36"
+                      stroke="currentColor"
+                      stroke-width="2.5"
+                      stroke-dasharray="70 156"
+                      stroke-linecap="round"
+                      class="uc-icon-spin-ring"
+                    />
+                    <path
+                      d="M28 34a12 12 0 0 1 24 0"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      fill="none"
+                      class="uc-icon-pulse-arc"
+                    />
+                    <circle
+                      cx="32"
+                      cy="40"
+                      r="2"
+                      fill="currentColor"
+                      opacity="0.6"
+                      class="uc-icon-dot1"
+                    />
+                    <circle
+                      cx="40"
+                      cy="38"
+                      r="2.5"
+                      fill="currentColor"
+                      opacity="0.8"
+                      class="uc-icon-dot2"
+                    />
+                    <circle
+                      cx="48"
+                      cy="40"
+                      r="2"
+                      fill="currentColor"
+                      opacity="0.6"
+                      class="uc-icon-dot3"
+                    />
+                    <path
+                      d="M34 48c2 3 10 3 12 0"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                      fill="none"
+                      opacity="0.5"
+                    />
+                  </svg>
                 </div>
-                <span class="progress-percent dark">{{ Math.round(layer.progress || 0) }}%</span>
-                <p class="dynamic-text dark">
-                  {{ layer.statusText || '正在校准粒子精度与材质细节...' }}
+                <span class="progress-percent">
+                  {{ Math.min(99, Math.round(layer.progress || 0)) }}%
+                </span>
+                <p class="dynamic-text">
+                  {{ layer.statusText || '灵感信号已捕获，创意引擎启动中...' }}
                 </p>
               </div>
               <button
@@ -4413,20 +4732,38 @@ function contextMenuAddToReference() {
               </div>
               <template v-if="layer.url">
                 <!-- 有视频内容 -->
-                <div class="uc-video-node-inner">
+                <div
+                  class="uc-video-node-inner"
+                  :class="{ 'is-playing': playingVideoLayerId === layer.id }"
+                  @mouseenter="hoverPlayVideo(layer)"
+                  @mouseleave="hoverPauseVideo(layer)"
+                >
                   <video
                     :src="layer.url"
                     muted
+                    loop
                     preload="metadata"
+                    playsinline
                     class="uc-video-node-video"
                     @pointerdown.stop
+                    @play="playingVideoLayerId = layer.id"
+                    @pause="
+                      playingVideoLayerId =
+                        playingVideoLayerId === layer.id ? null : playingVideoLayerId
+                    "
+                    @ended="
+                      playingVideoLayerId =
+                        playingVideoLayerId === layer.id ? null : playingVideoLayerId
+                    "
                   ></video>
                   <button
                     class="uc-video-play-btn"
                     @pointerdown.stop
                     @click.stop="playVideoNode(layer)"
                   >
-                    <i class="ri-play-fill"></i>
+                    <i
+                      :class="playingVideoLayerId === layer.id ? 'ri-pause-fill' : 'ri-play-fill'"
+                    ></i>
                   </button>
                 </div>
               </template>
@@ -4628,15 +4965,15 @@ function contextMenuAddToReference() {
                   (function () {
                     const layer = layers.find((l) => l.id === layerId)
                     const box = el.box_2d || el.box2d || [0, 0, 1, 1]
-                    // 节点类型 padding 已移除（CSS padding:0），框选原点即 layer.x/y
+                    // box_2d = [x1, y1, x2, y2] = [left, top, right, bottom]
                     const pad = 0
                     const innerW = layer.width - pad * 2
                     const innerH = layer.height - pad * 2
                     return {
-                      left: `${(layer.x + pad + box[1] * innerW) * viewScale + viewOffset.x}px`,
-                      top: `${(layer.y + pad + box[0] * innerH) * viewScale + viewOffset.y}px`,
-                      width: `${Math.max(2, (box[3] - box[1]) * innerW * viewScale)}px`,
-                      height: `${Math.max(2, (box[2] - box[0]) * innerH * viewScale)}px`,
+                      left: `${(layer.x + pad + box[0] * innerW) * viewScale + viewOffset.x}px`,
+                      top: `${(layer.y + pad + box[1] * innerH) * viewScale + viewOffset.y}px`,
+                      width: `${Math.max(2, (box[2] - box[0]) * innerW * viewScale)}px`,
+                      height: `${Math.max(2, (box[3] - box[1]) * innerH * viewScale)}px`,
                     }
                   })()
                 "
@@ -4700,6 +5037,7 @@ function contextMenuAddToReference() {
             :key="layer.id"
             :class="[
               'canvas-minimap-layer',
+              'minimap-type-' + (layer.type || 'image'),
               { selected: layer.selected, placeholder: layer.type === 'placeholder' },
             ]"
             :style="layer.style"
@@ -4835,15 +5173,6 @@ function contextMenuAddToReference() {
           >
             <i class="ri-stack-line" aria-hidden="true"></i>
             <span>图层窗口</span>
-          </button>
-          <button
-            class="uc-left-tab"
-            :class="{ active: rightTab === 'history' }"
-            @click="rightTab = 'history'"
-          >
-            <i class="ri-image-circle-line" aria-hidden="true"></i>
-            <span>生图记录</span>
-            <b v-if="generationHistory.length">{{ generationHistory.length }}</b>
           </button>
           <button
             class="panel-drag uc-rightpanel-toggle-btn uc-floating uc-floating-toggle is-docked"
@@ -5362,73 +5691,132 @@ function contextMenuAddToReference() {
     </div>
   </Teleport>
 
-  <!-- 右键菜单 -->
+  <!-- 视频查看器 -->
   <Teleport to="body">
     <div
-      v-if="contextMenu.visible"
-      class="uc-context-menu"
-      :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
-      @click.stop
+      v-if="videoViewer.show"
+      class="uc-video-viewer-overlay"
+      @keydown.escape="closeVideoViewer"
+      @mousemove="showVideoControlsTemporarily"
     >
-      <button class="uc-context-menu-item" @click="contextMenuAddToReference">
-        <i class="ri-image-add-line"></i>
-        添加到参考图
-      </button>
-      <button class="uc-context-menu-item" @click="contextMenuAddToMaterials">
-        <i class="ri-folder-image-line"></i>
-        添加到我的素材
-      </button>
-      <button class="uc-context-menu-item" @click="contextMenuDownloadLayer">
-        <i class="ri-download-2-line"></i>
-        下载图片
-      </button>
-      <div class="uc-context-menu-divider"></div>
-      <button
-        class="uc-context-menu-item uc-context-menu-item--danger"
-        @click="contextMenuDeleteLayer"
-      >
-        <i class="ri-delete-bin-line"></i>
-        删除图片
-      </button>
-    </div>
-  </Teleport>
+      <div class="uc-video-viewer-container">
+        <!-- 关闭按钮 -->
+        <button class="uc-video-viewer-close" @click="closeVideoViewer">
+          <i class="ri-close-line"></i>
+        </button>
 
-  <!-- 我的素材面板 -->
-  <Teleport to="body">
-    <div v-if="myMaterialsOpen" class="uc-materials-backdrop" @click.self="myMaterialsOpen = false">
-      <div class="uc-materials-panel">
-        <header class="uc-materials-head">
-          <h2>
-            <i class="ri-folder-image-line"></i>
-            我的素材
-          </h2>
-          <button @click="myMaterialsOpen = false"><i class="ri-close-line"></i></button>
-        </header>
-        <div class="uc-materials-body">
-          <div v-if="!myMaterials.length" class="uc-materials-empty">
-            <i class="ri-image-add-line"></i>
-            <p>暂无素材</p>
-            <small>右键画布中的图片 → 添加到我的素材</small>
+        <!-- 视频显示区域 -->
+        <div class="uc-video-viewer-content" @click="toggleVideoViewerPlay">
+          <video
+            ref="videoViewerRef"
+            :src="videoViewer.url"
+            :muted="videoViewer.muted"
+            loop
+            playsinline
+            preload="metadata"
+            class="uc-video-viewer-video"
+            @play="onVideoViewerPlay"
+            @pause="onVideoViewerPause"
+            @timeupdate="onVideoViewerTimeUpdate"
+            @durationchange="onVideoViewerDurationChange"
+            @ended="onVideoViewerEnded"
+            @click.stop="toggleVideoViewerPlay"
+          ></video>
+          <!-- 未播放时的大播放按钮 -->
+          <div
+            v-if="!videoViewer.playing"
+            class="uc-video-viewer-big-play"
+            @click.stop="toggleVideoViewerPlay"
+          >
+            <i class="ri-play-fill"></i>
           </div>
-          <div v-else class="uc-materials-grid">
-            <div
-              v-for="mat in myMaterials"
-              :key="mat.id"
-              class="uc-materials-card"
-              @click="addMaterialToCanvas(mat)"
-            >
-              <img :src="mat.url" :alt="mat.name" />
-              <div class="uc-materials-card-footer">
-                <div class="uc-materials-card-info">
-                  <span class="uc-materials-card-name">{{ mat.name }}</span>
-                  <span class="uc-materials-card-date">
-                    {{ mat.addedAt ? new Date(mat.addedAt).toLocaleString() : '' }}
-                  </span>
-                </div>
-                <button class="uc-materials-del" title="删除" @click.stop="removeMaterial(mat.id)">
-                  <i class="ri-delete-bin-line"></i>
+        </div>
+
+        <!-- 控制栏 -->
+        <div
+          class="uc-video-viewer-controls"
+          :class="{ 'uc-video-controls-hidden': !videoViewer.showControls }"
+        >
+          <!-- 进度条 -->
+          <div class="uc-video-controls-progress">
+            <input
+              type="range"
+              class="uc-video-seek-bar"
+              min="0"
+              :max="videoViewer.duration || 0"
+              step="0.1"
+              :value="videoViewer.currentTime"
+              @input="onVideoSeekInput"
+              @mousedown="onVideoSeekStart"
+              @mouseup="onVideoSeekEnd"
+            />
+          </div>
+
+          <!-- 底部按钮行 -->
+          <div class="uc-video-controls-row">
+            <!-- 左侧：播放/暂停 + 时间 -->
+            <div class="uc-video-controls-left">
+              <button
+                class="uc-video-ctrl-btn"
+                :title="videoViewer.playing ? '暂停' : '播放'"
+                @click="toggleVideoViewerPlay"
+              >
+                <i :class="videoViewer.playing ? 'ri-pause-fill' : 'ri-play-fill'"></i>
+              </button>
+              <span class="uc-video-time">
+                {{ formatVideoTime(videoViewer.currentTime) }} /
+                {{ formatVideoTime(videoViewer.duration) }}
+              </span>
+            </div>
+
+            <!-- 右侧：音量 + 速度 + 全屏 -->
+            <div class="uc-video-controls-right">
+              <button
+                class="uc-video-ctrl-btn"
+                :title="videoViewer.muted ? '取消静音' : '静音'"
+                @click="toggleVideoMute"
+              >
+                <i
+                  :class="
+                    videoViewer.muted || videoViewer.volume === 0
+                      ? 'ri-volume-mute-fill'
+                      : videoViewer.volume < 0.5
+                        ? 'ri-volume-down-fill'
+                        : 'ri-volume-up-fill'
+                  "
+                ></i>
+              </button>
+              <input
+                type="range"
+                class="uc-video-volume-bar"
+                min="0"
+                max="1"
+                step="0.05"
+                :value="videoViewer.muted ? 0 : videoViewer.volume"
+                @input="onVideoVolumeInput"
+              />
+              <div class="uc-video-speed-group">
+                <button class="uc-video-ctrl-btn uc-video-speed-btn" title="播放速度">
+                  {{ videoViewer.playbackRate }}x
                 </button>
+                <div class="uc-video-speed-menu">
+                  <button
+                    v-for="rate in playbackRates"
+                    :key="rate"
+                    class="uc-video-speed-item"
+                    :class="{ active: videoViewer.playbackRate === rate }"
+                    @click="setPlaybackRate(rate)"
+                  >
+                    {{ rate }}x
+                  </button>
+                </div>
               </div>
+              <button class="uc-video-ctrl-btn" title="全屏" @click="toggleVideoFullscreen">
+                <i class="ri-fullscreen-line"></i>
+              </button>
+              <button class="uc-video-ctrl-btn" title="下载" @click="downloadVideo">
+                <i class="ri-download-line"></i>
+              </button>
             </div>
           </div>
         </div>
@@ -5501,6 +5889,80 @@ function contextMenuAddToReference() {
                 </div>
               </div>
               <p class="uc-history-prompt" :title="record.prompt">{{ record.prompt }}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
+  <!-- 右键菜单 -->
+  <Teleport to="body">
+    <div
+      v-if="contextMenu.visible"
+      class="uc-context-menu"
+      :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+      @click.stop
+    >
+      <button class="uc-context-menu-item" @click="contextMenuAddToReference">
+        <i class="ri-image-add-line"></i>
+        添加到参考图
+      </button>
+      <button class="uc-context-menu-item" @click="contextMenuAddToMaterials">
+        <i class="ri-folder-image-line"></i>
+        添加到我的素材
+      </button>
+      <button class="uc-context-menu-item" @click="contextMenuDownloadLayer">
+        <i class="ri-download-2-line"></i>
+        下载图片
+      </button>
+      <div class="uc-context-menu-divider"></div>
+      <button
+        class="uc-context-menu-item uc-context-menu-item--danger"
+        @click="contextMenuDeleteLayer"
+      >
+        <i class="ri-delete-bin-line"></i>
+        删除图片
+      </button>
+    </div>
+  </Teleport>
+
+  <!-- 我的素材面板 -->
+  <Teleport to="body">
+    <div v-if="myMaterialsOpen" class="uc-materials-backdrop" @click.self="myMaterialsOpen = false">
+      <div class="uc-materials-panel">
+        <header class="uc-materials-head">
+          <h2>
+            <i class="ri-folder-image-line"></i>
+            我的素材
+          </h2>
+          <button @click="myMaterialsOpen = false"><i class="ri-close-line"></i></button>
+        </header>
+        <div class="uc-materials-body">
+          <div v-if="!myMaterials.length" class="uc-materials-empty">
+            <i class="ri-image-add-line"></i>
+            <p>暂无素材</p>
+            <small>右键画布中的图片 → 添加到我的素材</small>
+          </div>
+          <div v-else class="uc-materials-grid">
+            <div
+              v-for="mat in myMaterials"
+              :key="mat.id"
+              class="uc-materials-card"
+              @click="addMaterialToCanvas(mat)"
+            >
+              <img :src="mat.url" :alt="mat.name" />
+              <div class="uc-materials-card-footer">
+                <div class="uc-materials-card-info">
+                  <span class="uc-materials-card-name">{{ mat.name }}</span>
+                  <span class="uc-materials-card-date">
+                    {{ mat.addedAt ? new Date(mat.addedAt).toLocaleString() : '' }}
+                  </span>
+                </div>
+                <button class="uc-materials-del" title="删除" @click.stop="removeMaterial(mat.id)">
+                  <i class="ri-delete-bin-line"></i>
+                </button>
+              </div>
             </div>
           </div>
         </div>
