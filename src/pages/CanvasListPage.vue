@@ -35,7 +35,7 @@ function openDocument(id) {
 
 function removeDocument(id) {
   if (!userStore.requireLogin()) return;
-  canvas.removeDocument(id);
+  canvas.removeDocumentAsync(id);
 }
 </script>
 

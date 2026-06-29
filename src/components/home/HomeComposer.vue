@@ -36,8 +36,8 @@ const ratioOpen = ref(false)
 const selectedRatio = ref('智能比例')
 const ratioOptions = ['1:1', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
 const modelOpen = ref(false)
-const selectedModel = ref('gpt image 2')
-const modelOptions = ['gpt image 2', 'banana2', 'banana pro']
+const selectedModel = ref('gpt-image-2')
+const modelOptions = ['gpt-image-2', 'banana2', 'banana-pro']
 const qualityOpen = ref(false)
 const selectedQuality = ref('2K')
 const qualityOptions = ['1K', '2K', '4K']
@@ -50,7 +50,7 @@ const splitIdeaOpen = ref(false)
 const detailDraft = ref({
   productInfo: '',
   method: 'split',
-  model: 'gpt image 2',
+  model: 'gpt-image-2',
   ratio: '9:16',
   resolution: '2K',
   platform: '淘宝',
@@ -1740,9 +1740,9 @@ async function submitCloneGenerate() {
               <label class="yh-detail-field">
                 <span>模型</span>
                 <select v-model="detailDraft.model">
-                  <option>gpt image 2</option>
+                  <option>gpt-image-2</option>
                   <option>banana2</option>
-                  <option>banana pro</option>
+                  <option>banana-pro</option>
                 </select>
               </label>
               <label class="yh-detail-field">

@@ -270,16 +270,32 @@ async function loadFromServer() {
     const response = await fetch(apiPath('/api/canvas/list'), { headers: { ...headers } });
     const payload = await response.json().catch(() => ({}));
     if (payload.code !== 0 || !Array.isArray(payload.data)) return [];
-    return payload.data.map((item) => ({
-      id: item.docId,
-      title: item.title,
-      updatedAt: item.updatedAt,
-      createdAt: item.createdAt || item.updatedAt,
-      lastOpenedAt: item.updatedAt,
-      thumbnailUrl: item.thumbnailUrl || '',
-      payload: item.payload || { schemaVersion: 1, view: { scale: 0.68, offset: { x: 0, y: 0 } }, layers: [], chat: [] },
-      meta: {},
-    }));
+    // 并行请求每个文档的完整 payload（list 只返回 summary，不含 payload）
+    const docs = await Promise.all(
+      payload.data.map(async (item) => {
+        let fullPayload = item.payload || null;
+        if (!fullPayload) {
+          try {
+            const detailRes = await fetch(apiPath(`/api/canvas/${item.docId}`), { headers: { ...headers } });
+            const detail = await detailRes.json().catch(() => ({}));
+            fullPayload = detail.data?.payload || null;
+          } catch {
+            // 单个文档拉取失败不影响其他
+          }
+        }
+        return {
+          id: item.docId,
+          title: item.title,
+          updatedAt: item.updatedAt,
+          createdAt: item.createdAt || item.updatedAt,
+          lastOpenedAt: item.updatedAt,
+          thumbnailUrl: item.thumbnailUrl || '',
+          payload: fullPayload || { schemaVersion: 1, view: { scale: 0.68, offset: { x: 0, y: 0 } }, layers: [], chat: [] },
+          meta: {},
+        };
+      })
+    );
+    return docs;
   } catch (e) {
     console.warn('Load canvas from server failed:', e);
     return [];
@@ -336,6 +352,16 @@ export const useCanvasStore = defineStore('canvas', {
             continue;  // 不覆盖
           }
 
+          // updatedAt 比较策略：谁更新就听谁的
+          const localUpdatedAt = localDoc.updatedAt || 0;
+          const serverUpdatedAt = serverDoc.updatedAt || 0;
+
+          // 本地比服务器更新 → 保留本地，触发同步让服务器跟上
+          if (localUpdatedAt > serverUpdatedAt && localLayerCount > 0) {
+            needFlush = true;
+            continue;
+          }
+
           // 服务器有数据 → 覆盖本地；仅保留 detection 缓存
           const mergedDoc = { ...serverDoc };
           if (serverDoc.payload?.layers && localDoc.payload?.layers) {
@@ -390,9 +416,20 @@ export const useCanvasStore = defineStore('canvas', {
     removeDocument(id) {
       this.documents = this.documents.filter((doc) => doc.id !== id);
       saveLocal(this.documents);
-      // 同步删除服务器记录
+      // 同步删除服务器记录（await 确保删除完成，避免刷新时又被拉回来）
       syncDeleteFromServer(id);
       // 从离线队列中也移除
+      const queue = loadOfflineQueue().filter((item) => item.id !== id);
+      saveOfflineQueue(queue);
+    },
+
+    /**
+     * 删除画布（等待服务器删除完成后再返回，防止刷新后被拉回）
+     */
+    async removeDocumentAsync(id) {
+      this.documents = this.documents.filter((doc) => doc.id !== id);
+      saveLocal(this.documents);
+      await syncDeleteFromServer(id);
       const queue = loadOfflineQueue().filter((item) => item.id !== id);
       saveOfflineQueue(queue);
     },

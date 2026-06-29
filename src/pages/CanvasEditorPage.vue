@@ -391,7 +391,9 @@ const generationHistory = ref([])
 const chatModel = ref('banana2')
 const chatRatio = ref('9:16')
 const chatResolution = ref('2K')
-const chatModelOptions = ['banana2', 'banana pro', 'GPT imag 2']
+// 注意：model 字符串必须和后端 alias 表（ImageGenerationProperties.defaultModelAliases）保持一致
+// 后端会对空格/横线/下划线做归一化容错，但 UI 上用标准写法更专业
+const chatModelOptions = ['banana2', 'banana-pro', 'gpt-image-2']
 const chatRatioOptions = ['1:1', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
 const chatResolutionOptions = ['1K', '2K', '4K']
 const TASK_POLL_INTERVAL = 2500
@@ -678,6 +680,7 @@ watch(
     () => reversePromptCard.width,
     () => reversePromptCard.height,
     connections,
+    () => generationHistory.value,
   ],
   debounceSaveLayout,
   { deep: true },
@@ -3436,36 +3439,11 @@ async function sendChat() {
   // 优化后的提示词格式 - 坐标清晰明确
   let fullPrompt
   if (elementHint && elementHint.length > 0) {
-    const selected = getSelectedDetectedElements()
-
-    // 构建元素描述列表
-    const elementList = elementHint
-      .map((el, i) => {
-        return `${i + 1}. 【${el.name}】坐标：${el.box}（相对位置：${el.relBox}）`
-      })
-      .join('\n')
-
-    // 构建坐标区域描述
-    const regionDesc = elementHint
-      .map((el, i) => {
-        return `区域${i + 1}（${el.name}）：像素坐标 ${el.box}`
-      })
-      .join('；')
-
-    fullPrompt = `【图像编辑指令】
-
-原图尺寸：${elementHint[0] ? '已提供' : '未知'}
-
-【待修改元素坐标】
-${elementList}
-
-【修改要求】
-${text || '请根据元素类型进行适当修改'}
-
-【执行说明】
-请根据以上坐标信息，精确修改原图中对应区域的元素。
-坐标格式为 [左上角X, 左上角Y, 右下角X, 右下角Y]，单位为像素。
-修改时请保持其他区域完全不变，只修改指定坐标范围内的内容。`
+    // GPT image 模型能直接"看到"参考图中的元素，不需要像素坐标
+    // 只需用元素名称做定位指引，坐标信息对 GPT image 是噪声
+    const elementNames = elementHint.map((el) => el.name).join('、')
+    const userInstruction = text || '请根据元素类型进行适当修改'
+    fullPrompt = `Edit the image: modify ${elementNames} — ${userInstruction}. Keep everything else unchanged.`
   } else {
     fullPrompt = text
   }
@@ -3864,11 +3842,27 @@ function fitCanvasView() {
 
 function wheelZoom(event) {
   event.preventDefault()
-  const rect = event.currentTarget.getBoundingClientRect()
-  const delta = event.deltaY > 0 ? -0.05 : 0.05
-  zoom(delta, {
-    x: event.clientX - rect.left,
-    y: event.clientY - rect.top,
+  // Ctrl/Cmd + 滚轮 → 缩放画布
+  if (event.ctrlKey || event.metaKey) {
+    const rect = event.currentTarget.getBoundingClientRect()
+    const delta = event.deltaY > 0 ? -0.05 : 0.05
+    zoom(delta, {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+    })
+    nextTick(() => refreshConnections())
+    return
+  }
+  // 普通滚轮 → 平移画布
+  const dx = event.deltaX || 0
+  const dy = event.deltaY || 0
+  canvas.updateDocument(props.id, (draft) => {
+    const offset = draft.payload.view.offset || { x: 0, y: 0 }
+    draft.payload.view.offset = {
+      x: Math.round(offset.x - dx),
+      y: Math.round(offset.y - dy),
+    }
+    return draft
   })
   nextTick(() => refreshConnections())
 }
@@ -4237,6 +4231,7 @@ function reuseGenerationRecordPrompt(record) {
 
 function removeGenerationRecord(id) {
   generationHistory.value = generationHistory.value.filter((r) => r.id !== id)
+  debounceSaveLayout()
 }
 
 onMounted(() => {
@@ -5670,6 +5665,10 @@ function contextMenuAddToReference() {
             <dl>
               <div>
                 <dt>滚轮</dt>
+                <dd>平移画布</dd>
+              </div>
+              <div>
+                <dt>Ctrl + 滚轮</dt>
                 <dd>缩放画布</dd>
               </div>
               <div>

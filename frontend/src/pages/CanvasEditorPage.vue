@@ -253,7 +253,7 @@ function debounceSaveLayout() {
   clearTimeout(_layoutSaveTimer);
   _layoutSaveTimer = setTimeout(saveUILayout, LAYOUT_SAVE_DEBOUNCE);
 }
-watch([() => panel.x, () => panel.y, () => panel.width, () => panel.chatHeight, rightTab, rightPanelVisible, minimapVisible, () => reversePromptCard.x, () => reversePromptCard.y, () => reversePromptCard.width, () => reversePromptCard.height], debounceSaveLayout, { deep: true });
+watch([() => panel.x, () => panel.y, () => panel.width, () => panel.chatHeight, rightTab, rightPanelVisible, minimapVisible, () => reversePromptCard.x, () => reversePromptCard.y, () => reversePromptCard.width, () => reversePromptCard.height, () => generationHistory.value], debounceSaveLayout, { deep: true });
 
 // 帮助菜单定位
 const helpMenuStyle = ref({});
@@ -2024,11 +2024,26 @@ function fitCanvasView() {
 
 function wheelZoom(event) {
   event.preventDefault();
-  const rect = event.currentTarget.getBoundingClientRect();
-  const delta = event.deltaY > 0 ? -0.05 : 0.05;
-  zoom(delta, {
-    x: event.clientX - rect.left,
-    y: event.clientY - rect.top,
+  // Ctrl/Cmd + 滚轮 → 缩放画布
+  if (event.ctrlKey || event.metaKey) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const delta = event.deltaY > 0 ? -0.05 : 0.05;
+    zoom(delta, {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+    });
+    return;
+  }
+  // 普通滚轮 → 平移画布
+  const dx = event.deltaX || 0;
+  const dy = event.deltaY || 0;
+  canvas.updateDocument(props.id, (draft) => {
+    const offset = draft.payload.view.offset || { x: 0, y: 0 };
+    draft.payload.view.offset = {
+      x: Math.round(offset.x - dx),
+      y: Math.round(offset.y - dy),
+    };
+    return draft;
   });
 }
 
@@ -2240,6 +2255,7 @@ function reuseGenerationRecordPrompt(record) {
 
 function removeGenerationRecord(id) {
   generationHistory.value = generationHistory.value.filter((r) => r.id !== id);
+  debounceSaveLayout();
 }
 
 onMounted(() => {
@@ -2721,7 +2737,8 @@ watch(() => doc.value?.payload?.layers?.length, () => syncDetectionFromLayers())
           <div class="shortcuts-group">
             <h3>🖱 画布操作</h3>
             <dl>
-              <div><dt>滚轮</dt><dd>缩放画布</dd></div>
+              <div><dt>滚轮</dt><dd>平移画布</dd></div>
+              <div><dt>Ctrl + 滚轮</dt><dd>缩放画布</dd></div>
               <div><dt>空格 + 拖拽</dt><dd>平移画布</dd></div>
               <div><dt>拖入图片/文件</dt><dd>添加图片到画布</dd></div>
               <div><dt>Ctrl + 点击</dt><dd>任意工具下临时选中元素</dd></div>
