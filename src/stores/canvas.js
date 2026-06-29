@@ -238,7 +238,9 @@ async function flushOfflineQueue() {
         try {
           const body = await res.json().catch(() => ({}));
           if (body.message === '未登录' || body.message === '登录已过期') { authFailed = true; saveOfflineQueue([]); continue; }
-        } catch {}
+        } catch {
+          /* 静默：响应非 JSON 时忽略 */
+        }
         remaining.push(item);
       }
     } catch {
@@ -489,6 +491,9 @@ export const useCanvasStore = defineStore('canvas', {
                 try { bx = JSON.parse(bx); } catch { bx = null; }
               }
               if (!Array.isArray(bx) || bx.length !== 4) bx = [0, 0, 100, 100];
+              // Qwen 输出 [top, left, bottom, right] → swap 为 [left, top, right, bottom]
+              // 即 [bx[1], bx[0], bx[3], bx[2]]
+              bx = [bx[1], bx[0], bx[3], bx[2]];
               // 自适应归一化: 0-1 浮点 → ×1000 转 0-1000 整数
               const mx = Math.max(...bx.map((v) => Math.abs(v)));
               if (mx > 0 && mx <= 1.5) bx = bx.map((v) => v * 1000);

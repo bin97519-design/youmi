@@ -58,8 +58,9 @@ function toggleToolbarAdd() {
   }
 }
 
-// 归一化 box_2d 到 0-1
-// proxy_log.py 已经统一输出 0-1 范围的浮点数
+// 归一化 box_2d 到 0-1，格式统一为 [x1, y1, x2, y2] = [left, top, right, bottom]
+// 数据来源（canvas.js runDetection）已在存储时做 [top,left,bottom,right] → [left,top,right,bottom] 的 swap
+// 此处只需做归一化和 clamp
 function normalizeBoxVal(raw) {
   if (!Array.isArray(raw) || raw.length !== 4) return [0, 0, 1, 1]
   // 确保所有值都是数字
@@ -255,6 +256,25 @@ function cancelConnection() {
 function onStagePointerUp(e) {
   stopMarquee(e)
   cancelConnection()
+  // 释放右键拖动
+  if (rightPanState.value && e.button === 2) {
+    rightPanState.value = null
+  }
+}
+
+// 右键按下：开始拖动画布
+function onStageRightDown(event) {
+  // 如果右键点在图层上，走右键菜单逻辑（不拖动）
+  const layerEl = event.target.closest('.canvas-layer')
+  if (layerEl) return
+  event.preventDefault()
+  const offset = doc.value.payload.view.offset || { x: 0, y: 0 }
+  rightPanState.value = {
+    startX: event.clientX,
+    startY: event.clientY,
+    x: offset.x,
+    y: offset.y,
+  }
 }
 
 // 删除连接并取消选中
@@ -361,6 +381,12 @@ const activeChatReferenceId = ref('')
 const chatUploading = ref(false)
 const uploadProgress = ref(null) // { fileName, loaded, total, percent } | null
 const chatGenerating = ref(false)
+const chatSelectOpen = ref(null) // 'model' | 'ratio' | 'resolution' | null
+
+function toggleChatSelect(name) {
+  if (chatGenerating.value) return
+  chatSelectOpen.value = chatSelectOpen.value === name ? null : name
+}
 const generationHistory = ref([])
 const chatModel = ref('banana2')
 const chatRatio = ref('9:16')
@@ -435,6 +461,7 @@ const canvasTools = [
 ]
 const dragState = ref(null)
 const panState = ref(null)
+const rightPanState = ref(null) // 右键拖动画布
 const resizeState = ref(null)
 const marquee = reactive({ active: false, startX: 0, startY: 0, currentX: 0, currentY: 0 })
 const annotationInput = reactive({
@@ -2112,8 +2139,14 @@ function startLayerDrag(event, layer) {
 function moveLayer(event) {
   if (!dragState.value) return
   const scale = doc.value.payload.view.scale || 1
-  const dx = (event.clientX - dragState.value.startX) / scale
-  const dy = (event.clientY - dragState.value.startY) / scale
+  let dx = (event.clientX - dragState.value.startX) / scale
+  let dy = (event.clientY - dragState.value.startY) / scale
+
+  // 智能对齐：计算对齐吸附
+  const snapResult = calcSnapAlign(dragState.value.ids, dx, dy)
+  dx = snapResult.dx
+  dy = snapResult.dy
+
   canvas.updateDocument(props.id, (draft) => {
     draft.payload.layers = draft.payload.layers.map((layer) => {
       const origin = dragState.value.origins.find((item) => item.id === layer.id)
@@ -2131,6 +2164,120 @@ function stopLayerDrag(event) {
   if (event.currentTarget.hasPointerCapture(dragState.value.pointerId))
     event.currentTarget.releasePointerCapture(dragState.value.pointerId)
   dragState.value = null
+  snapGuides.value = [] // 清除对齐辅助线
+}
+
+// ========== 智能对齐（吸附线+辅助线） ==========
+const SNAP_THRESHOLD = 16 // 吸附阈值（画布像素）
+const snapGuides = ref([]) // 当前显示的对齐辅助线 [{ type:'h'|'v', pos: number }]
+
+function calcSnapAlign(dragIds, dx, dy) {
+  const draggedLayers = layers.value.filter((l) => dragIds.includes(l.id))
+  const otherLayers = layers.value.filter((l) => !dragIds.includes(l.id) && l.url)
+  if (!otherLayers.length) { snapGuides.value = []; return { dx, dy } }
+
+  const guides = []
+  let bestDx = dx
+  let bestDy = dy
+  let minDistX = SNAP_THRESHOLD + 1
+  let minDistY = SNAP_THRESHOLD + 1
+
+  for (const dragged of draggedLayers) {
+    const origin = dragState.value.origins.find((o) => o.id === dragged.id)
+    if (!origin) continue
+
+    const newX = origin.x + dx
+    const newY = origin.y + dy
+    const dragRight = newX + dragged.width
+    const dragBottom = newY + dragged.height
+    const dragCenterX = newX + dragged.width / 2
+    const dragCenterY = newY + dragged.height / 2
+
+    for (const other of otherLayers) {
+      const oLeft = other.x
+      const oRight = other.x + other.width
+      const oTop = other.y
+      const oBottom = other.y + other.height
+      const oCenterX = other.x + other.width / 2
+      const oCenterY = other.y + other.height / 2
+
+      // 垂直线对齐（x 轴）
+      const vChecks = [
+        { a: newX, b: oLeft, guide: oLeft },           // 左边对齐
+        { a: newX, b: oRight, guide: oRight },          // 左边对齐右边
+        { a: dragRight, b: oLeft, guide: oLeft - dragged.width },    // 右边对齐左边
+        { a: dragRight, b: oRight, guide: oRight - dragged.width },  // 右边对齐
+        { a: dragCenterX, b: oCenterX, guide: oCenterX - dragged.width / 2 }, // 水平居中
+      ]
+      for (const chk of vChecks) {
+        const dist = Math.abs(chk.a - chk.b)
+        if (dist < SNAP_THRESHOLD && dist < minDistX) {
+          minDistX = dist
+          bestDx = chk.guide - origin.x
+        }
+      }
+
+      // 水平线对齐（y 轴）
+      const hChecks = [
+        { a: newY, b: oTop, guide: oTop },
+        { a: newY, b: oBottom, guide: oBottom },
+        { a: dragBottom, b: oTop, guide: oTop - dragged.height },
+        { a: dragBottom, b: oBottom, guide: oBottom - dragged.height },
+        { a: dragCenterY, b: oCenterY, guide: oCenterY - dragged.height / 2 },
+      ]
+      for (const chk of hChecks) {
+        const dist = Math.abs(chk.a - chk.b)
+        if (dist < SNAP_THRESHOLD && dist < minDistY) {
+          minDistY = dist
+          bestDy = chk.guide - origin.y
+        }
+      }
+    }
+  }
+
+  // 计算辅助线位置（用吸附后的坐标）
+  if (minDistX <= SNAP_THRESHOLD) {
+    // 找出对齐的 x 位置
+    for (const dragged of draggedLayers) {
+      const origin = dragState.value.origins.find((o) => o.id === dragged.id)
+      if (!origin) continue
+      const newX = origin.x + bestDx
+      const dragRight = newX + dragged.width
+      const dragCenterX = newX + dragged.width / 2
+      for (const other of otherLayers) {
+        const oLeft = other.x
+        const oRight = other.x + other.width
+        const oCenterX = other.x + other.width / 2
+        if (Math.abs(newX - oLeft) < 1) { guides.push({ type: 'v', pos: oLeft }); break }
+        if (Math.abs(newX - oRight) < 1) { guides.push({ type: 'v', pos: oRight }); break }
+        if (Math.abs(dragRight - oLeft) < 1) { guides.push({ type: 'v', pos: oLeft }); break }
+        if (Math.abs(dragRight - oRight) < 1) { guides.push({ type: 'v', pos: oRight }); break }
+        if (Math.abs(dragCenterX - oCenterX) < 1) { guides.push({ type: 'v', pos: oCenterX }); break }
+      }
+    }
+  }
+  if (minDistY <= SNAP_THRESHOLD) {
+    for (const dragged of draggedLayers) {
+      const origin = dragState.value.origins.find((o) => o.id === dragged.id)
+      if (!origin) continue
+      const newY = origin.y + bestDy
+      const dragBottom = newY + dragged.height
+      const dragCenterY = newY + dragged.height / 2
+      for (const other of otherLayers) {
+        const oTop = other.y
+        const oBottom = other.y + other.height
+        const oCenterY = other.y + other.height / 2
+        if (Math.abs(newY - oTop) < 1) { guides.push({ type: 'h', pos: oTop }); break }
+        if (Math.abs(newY - oBottom) < 1) { guides.push({ type: 'h', pos: oBottom }); break }
+        if (Math.abs(dragBottom - oTop) < 1) { guides.push({ type: 'h', pos: oTop }); break }
+        if (Math.abs(dragBottom - oBottom) < 1) { guides.push({ type: 'h', pos: oBottom }); break }
+        if (Math.abs(dragCenterY - oCenterY) < 1) { guides.push({ type: 'h', pos: oCenterY }); break }
+      }
+    }
+  }
+
+  snapGuides.value = guides
+  return { dx: bestDx, dy: bestDy }
 }
 
 function smartToggleElement(layerId, elementId, event) {
@@ -3714,6 +3861,7 @@ function fitCanvasView() {
   })
 }
 
+
 function wheelZoom(event) {
   event.preventDefault()
   const rect = event.currentTarget.getBoundingClientRect()
@@ -3831,6 +3979,19 @@ function startMarquee(event) {
 function onStagePointerMove(event) {
   moveMarquee(event)
   updateConnectionDrag(event)
+  // 右键拖动画布
+  if (rightPanState.value) {
+    const dx = event.clientX - rightPanState.value.startX
+    const dy = event.clientY - rightPanState.value.startY
+    canvas.updateDocument(props.id, (draft) => {
+      draft.payload.view.offset = {
+        x: Math.round(rightPanState.value.x + dx),
+        y: Math.round(rightPanState.value.y + dy),
+      }
+      return draft
+    })
+    return
+  }
   // 拖拽节点时持续刷新连接线位置
   if (dragState.value) {
     nextTick(() => refreshConnections())
@@ -4140,6 +4301,7 @@ onMounted(() => {
   }
   window.addEventListener('keydown', onCtrlDown)
   window.addEventListener('keyup', onCtrlUp)
+  // Ctrl+滚轮缩放已移除，不再需要 capture 监听
   // 连接模式下全局 mousemove 跟踪，确保拖拽线始终跟随鼠标
   const onGlobalMouseMove = (e) => {
     if (connecting.active) {
@@ -4154,6 +4316,7 @@ onMounted(() => {
     if (e.target.closest?.('.shortcuts-backdrop, .shortcuts-panel')) return
     toolbarAddOpen.value = false
     helpMenuOpen.value = false
+    chatSelectOpen.value = null
     // 关闭右键菜单
     if (contextMenu.visible) contextMenu.visible = false
     // 点击历史面板外部关闭（面板内 click.stop 已阻止冒泡，这里捕获不到）
@@ -4266,6 +4429,11 @@ function addMaterialToCanvas(mat) {
 // 右键菜单
 const contextMenu = reactive({ visible: false, x: 0, y: 0, layerId: null, layer: null })
 function onCanvasContextMenu(event) {
+  // 右键拖动画布后不弹菜单
+  if (rightPanState.value) {
+    rightPanState.value = null
+    return
+  }
   // 找到右键点击的图层
   const layerEl = event.target.closest('.canvas-layer')
   if (!layerEl) return
@@ -4411,7 +4579,7 @@ function contextMenuAddToReference() {
           {
             'hand-tool': activeTool === 'hand',
             'annotate-tool': activeTool === 'annotate',
-            'is-panning': panState,
+            'is-panning': panState || rightPanState,
             'is-connecting': connecting.active,
           },
         ]"
@@ -4421,7 +4589,10 @@ function contextMenuAddToReference() {
         @pointerup="onStagePointerUp($event)"
         @pointercancel="onStagePointerUp($event)"
         @contextmenu.prevent="onCanvasContextMenu($event)"
+        @pointerdown.right="onStageRightDown($event)"
       >
+        <!-- 智能对齐辅助线 -->
+        <div v-for="(guide, idx) in snapGuides" :key="'snap-'+idx" class="uc-snap-guide" :class="'uc-snap-guide--' + guide.type" :style="guide.type === 'v' ? { left: guide.pos + 'px' } : { top: guide.pos + 'px' }" />
         <!-- 上传进度条 -->
         <div v-if="uploadProgress" class="upload-progress-overlay">
           <div class="upload-progress-card">
@@ -5326,31 +5497,57 @@ function contextMenuAddToReference() {
               <div class="uc-chat-generate-options" @click.stop>
                 <label>
                   <span>模型</span>
-                  <select v-model="chatModel" :disabled="chatGenerating">
-                    <option v-for="model in chatModelOptions" :key="model" :value="model">
-                      {{ model }}
-                    </option>
-                  </select>
+                  <div class="uc-custom-select" :class="{ open: chatSelectOpen === 'model', disabled: chatGenerating }">
+                    <button type="button" class="uc-custom-select-trigger" @click.stop="toggleChatSelect('model')">
+                      {{ chatModel }}
+                      <i class="ri-arrow-down-s-line"></i>
+                    </button>
+                    <div v-if="chatSelectOpen === 'model'" class="uc-custom-select-menu">
+                      <button
+                        v-for="model in chatModelOptions" :key="model"
+                        type="button"
+                        class="uc-custom-select-item"
+                        :class="{ active: chatModel === model }"
+                        @click.stop="chatModel = model; chatSelectOpen = null"
+                      >{{ model }}</button>
+                    </div>
+                  </div>
                 </label>
                 <label>
                   <span>比例</span>
-                  <select v-model="chatRatio" :disabled="chatGenerating">
-                    <option v-for="ratio in chatRatioOptions" :key="ratio" :value="ratio">
-                      {{ ratio }}
-                    </option>
-                  </select>
+                  <div class="uc-custom-select" :class="{ open: chatSelectOpen === 'ratio', disabled: chatGenerating }">
+                    <button type="button" class="uc-custom-select-trigger" @click.stop="toggleChatSelect('ratio')">
+                      {{ chatRatio }}
+                      <i class="ri-arrow-down-s-line"></i>
+                    </button>
+                    <div v-if="chatSelectOpen === 'ratio'" class="uc-custom-select-menu">
+                      <button
+                        v-for="ratio in chatRatioOptions" :key="ratio"
+                        type="button"
+                        class="uc-custom-select-item"
+                        :class="{ active: chatRatio === ratio }"
+                        @click.stop="chatRatio = ratio; chatSelectOpen = null"
+                      >{{ ratio }}</button>
+                    </div>
+                  </div>
                 </label>
                 <label>
                   <span>分辨率</span>
-                  <select v-model="chatResolution" :disabled="chatGenerating">
-                    <option
-                      v-for="resolution in chatResolutionOptions"
-                      :key="resolution"
-                      :value="resolution"
-                    >
-                      {{ resolution }}
-                    </option>
-                  </select>
+                  <div class="uc-custom-select" :class="{ open: chatSelectOpen === 'resolution', disabled: chatGenerating }">
+                    <button type="button" class="uc-custom-select-trigger" @click.stop="toggleChatSelect('resolution')">
+                      {{ chatResolution }}
+                      <i class="ri-arrow-down-s-line"></i>
+                    </button>
+                    <div v-if="chatSelectOpen === 'resolution'" class="uc-custom-select-menu">
+                      <button
+                        v-for="resolution in chatResolutionOptions" :key="resolution"
+                        type="button"
+                        class="uc-custom-select-item"
+                        :class="{ active: chatResolution === resolution }"
+                        @click.stop="chatResolution = resolution; chatSelectOpen = null"
+                      >{{ resolution }}</button>
+                    </div>
+                  </div>
                 </label>
               </div>
               <footer class="uc-bottom-toolbar">
