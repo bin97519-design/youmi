@@ -37,7 +37,7 @@ const selectedRatio = ref('智能比例')
 const ratioOptions = ['1:1', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
 const modelOpen = ref(false)
 const selectedModel = ref('gpt-image-2')
-const modelOptions = ['gpt-image-2', 'banana2', 'banana-pro']
+const modelOptions = ['gpt-image-2', 'banana2', 'banana-pro', 'agnes-image-2.1-flash']
 const qualityOpen = ref(false)
 const selectedQuality = ref('2K')
 const qualityOptions = ['1K', '2K', '4K']
@@ -584,7 +584,7 @@ async function uploadRemoteFile(file) {
     // local storage 返回相对路径，需拼完整 URL
     if (!remoteUrl && result?.data?.url) {
       const u = result.data.url
-      remoteUrl = u.startsWith('http') ? u : `http://127.0.0.1:8085${u}`
+      remoteUrl = u.startsWith('http') ? u : `http://127.0.0.1:8083${u}`
     }
     if (!remoteUrl) {
       throw new Error('上传成功，但没有返回图片地址')
@@ -1743,6 +1743,7 @@ async function submitCloneGenerate() {
                   <option>gpt-image-2</option>
                   <option>banana2</option>
                   <option>banana-pro</option>
+                  <option>agnes-image-2.1-flash</option>
                 </select>
               </label>
               <label class="yh-detail-field">

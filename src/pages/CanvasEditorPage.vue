@@ -393,7 +393,7 @@ const chatRatio = ref('9:16')
 const chatResolution = ref('2K')
 // 注意：model 字符串必须和后端 alias 表（ImageGenerationProperties.defaultModelAliases）保持一致
 // 后端会对空格/横线/下划线做归一化容错，但 UI 上用标准写法更专业
-const chatModelOptions = ['banana2', 'banana-pro', 'gpt-image-2']
+const chatModelOptions = ['banana2', 'banana-pro', 'gpt-image-2', 'agnes-image-2.1-flash']
 const chatRatioOptions = ['1:1', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
 const chatResolutionOptions = ['1K', '2K', '4K']
 const TASK_POLL_INTERVAL = 2500
@@ -936,7 +936,7 @@ async function maybeAutoDetect(layer) {
       const text = await res.text().catch(() => '')
       console.error(`[detect] HTTP ${res.status}: ${text.slice(0, 200)}`)
       if (res.status === 502) {
-        console.error('[detect] Java后端(8085)可能未启动或已崩溃')
+        console.error('[detect] Java后端(8083)可能未启动或已崩溃')
       }
       throw new Error(`HTTP ${res.status}`)
     }
@@ -1074,7 +1074,7 @@ function uploadFile(file, onProgress) {
             reject(new Error('上传成功，但接口没有返回图片地址'))
             return
           }
-          resolve(url.startsWith('http') ? url : `http://127.0.0.1:8085${url}`)
+          resolve(url.startsWith('http') ? url : `http://127.0.0.1:8083${url}`)
         } catch (e) {
           reject(new Error('解析上传响应失败'))
         }
@@ -1587,6 +1587,9 @@ const imageViewer = reactive({
   dragStartY: 0,
   dragStartTranslateX: 0,
   dragStartTranslateY: 0,
+  // 多图切换
+  images: [], // [{url, name}]
+  currentIndex: 0,
 })
 
 // ========== 视频查看器 ==========
@@ -1738,21 +1741,73 @@ function showVideoControlsTemporarily() {
 
 // 打开图片查看器
 function openImageViewer(url, name) {
+  // 收集所有选中图层中的图片，支持多图切换
+  const imageLayers = selectedLayerIds.value
+    .map((id) => layers.value.find((l) => l.id === id))
+    .filter((l) => l && l.url && (l.type === 'image' || (!l.type && l.url)))
+
+  let images = []
+  let currentIndex = 0
+
+  if (imageLayers.length > 1) {
+    // 多图模式：按画布上的位置排序（从左到右、从上到下）
+    images = imageLayers
+      .slice()
+      .sort((a, b) => a.y - b.y || a.x - b.x)
+      .map((l) => ({ url: l.url, name: l.name || '图片' }))
+    // 找到当前点击的图片在列表中的位置
+    currentIndex = images.findIndex((img) => img.url === url)
+    if (currentIndex < 0) currentIndex = 0
+  } else {
+    // 单图模式
+    images = [{ url, name: name || '图片' }]
+    currentIndex = 0
+  }
+
+  imageViewer.images = images
+  imageViewer.currentIndex = currentIndex
   imageViewer.show = true
-  imageViewer.url = url
-  imageViewer.name = name || '图片'
+  imageViewer.url = images[currentIndex].url
+  imageViewer.name = images[currentIndex].name
   imageViewer.rotation = 0
   imageViewer.flipX = false
   imageViewer.flipY = false
   imageViewer.scale = 1
   imageViewer.translateX = 0
   imageViewer.translateY = 0
+
+  // 立即聚焦 overlay，确保键盘事件能被接收
+  nextTick(() => {
+    const overlay = document.querySelector('.uc-image-viewer-overlay')
+    if (overlay) overlay.focus()
+  })
 }
 
 // 关闭图片查看器
 function closeImageViewer() {
   imageViewer.show = false
   imageViewer.url = ''
+  imageViewer.images = []
+  imageViewer.currentIndex = 0
+}
+
+// 多图切换：上一张 / 下一张
+function switchImageViewer(dir) {
+  const len = imageViewer.images.length
+  if (len <= 1) return
+  let next = imageViewer.currentIndex + dir
+  if (next < 0) next = len - 1
+  if (next >= len) next = 0
+  imageViewer.currentIndex = next
+  imageViewer.url = imageViewer.images[next].url
+  imageViewer.name = imageViewer.images[next].name
+  // 重置视图状态（旋转/缩放/偏移）
+  imageViewer.rotation = 0
+  imageViewer.flipX = false
+  imageViewer.flipY = false
+  imageViewer.scale = 1
+  imageViewer.translateX = 0
+  imageViewer.translateY = 0
 }
 
 // 旋转图片 — 直接累加，不取模，避免跨越0/360边界时动画反向
@@ -1800,20 +1855,112 @@ function stopViewerDrag() {
   imageViewer.isDragging = false
 }
 
-// 下载图片
-function downloadImage() {
-  const a = document.createElement('a')
-  a.href = imageViewer.url
-  a.download = imageViewer.name || 'image'
-  a.click()
+// 下载图片（优先 fetch+blob，大文件/跨域 fallback 新标签页打开）
+let downloadToastId = 0
+async function downloadImage() {
+  const url = imageViewer.url
+  const name = imageViewer.name || 'image'
+  console.log('[downloadImage] url:', url, 'name:', name)
+  try {
+    await downloadFileByUrl(url, name)
+    console.log('[downloadImage] done')
+  } catch (err) {
+    console.error('[downloadImage] error:', err)
+  }
+}
+
+/**
+ * 通用文件下载：通过后端代理下载跨域图片，解决 a.download 对跨域 URL 无效的问题。
+ * 后端代理使用流式传输，边从 CDN 接收边向前端发送，大图片也能快速开始下载。
+ * 超大文件（>30MB）直接新标签页打开。
+ */
+async function downloadFileByUrl(url, filename) {
+  const toastId = ++downloadToastId
+  const isCrossOrigin = url.startsWith('http') && !url.startsWith(location.origin)
+
+  // 策略1：跨域图片直接用 <a download> 触发浏览器原生下载（现代浏览器都支持）
+  // 比走代理快得多（代理需要 CDN→后端→前端，大图耗时 70s+）
+  if (isCrossOrigin) {
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename || 'image.png'
+    a.target = '_blank'
+    a.rel = 'noopener'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    showDownloadToast('正在下载…', toastId)
+    return
+  }
+
+  // 同域图片：直接 fetch + blob 下载
+  showDownloadToast('正在下载…', toastId, true)
+  try {
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(`下载失败: HTTP ${res.status}`)
+    const blob = await res.blob()
+    if (blob.size > 30 * 1024 * 1024) {
+      window.open(url, '_blank')
+      showDownloadToast('文件较大（>30MB），已在新标签页打开', toastId)
+      return
+    }
+    const blobUrl = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = blobUrl
+    const ext =
+      blob.type === 'image/png'
+        ? '.png'
+        : blob.type === 'image/jpeg'
+          ? '.jpg'
+          : blob.type === 'image/webp'
+            ? '.webp'
+            : ''
+    if (ext && !filename.toLowerCase().endsWith(ext)) filename += ext
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 5000)
+    showDownloadToast('下载完成', toastId)
+  } catch (err) {
+    console.error('[download] error:', err)
+    window.open(url, '_blank')
+    showDownloadToast('已在新标签页打开图片', toastId)
+  }
+}
+
+/** 显示下载状态提示（轻量 toast，persistent 模式下不自动消失） */
+function showDownloadToast(msg, toastId, persistent = false) {
+  // 复用已有的 toast 元素，避免堆积
+  const existing = document.getElementById('download-toast')
+  if (existing) existing.remove()
+  const el = document.createElement('div')
+  el.id = 'download-toast'
+  el.textContent = msg
+  Object.assign(el.style, {
+    position: 'fixed',
+    bottom: '24px',
+    right: '24px',
+    zIndex: '99999',
+    background: 'rgba(0,0,0,0.75)',
+    color: '#fff',
+    padding: '10px 20px',
+    borderRadius: '8px',
+    fontSize: '14px',
+    transition: 'opacity 0.3s',
+    boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+  })
+  document.body.appendChild(el)
+  if (!persistent) {
+    setTimeout(() => {
+      el.style.opacity = '0'
+      setTimeout(() => el.remove(), 400)
+    }, 3000)
+  }
 }
 
 function downloadVideo() {
-  const a = document.createElement('a')
-  a.href = videoViewer.url
-  a.download = videoViewer.name || 'video'
-  a.target = '_blank'
-  a.click()
+  downloadFileByUrl(videoViewer.url, videoViewer.name || 'video')
 }
 
 // figure 上的 dblclick 统一入口（因为 setPointerCapture 会劫持内层事件）
@@ -2177,7 +2324,10 @@ const snapGuides = ref([]) // 当前显示的对齐辅助线 [{ type:'h'|'v', po
 function calcSnapAlign(dragIds, dx, dy) {
   const draggedLayers = layers.value.filter((l) => dragIds.includes(l.id))
   const otherLayers = layers.value.filter((l) => !dragIds.includes(l.id) && l.url)
-  if (!otherLayers.length) { snapGuides.value = []; return { dx, dy } }
+  if (!otherLayers.length) {
+    snapGuides.value = []
+    return { dx, dy }
+  }
 
   const guides = []
   let bestDx = dx
@@ -2206,10 +2356,10 @@ function calcSnapAlign(dragIds, dx, dy) {
 
       // 垂直线对齐（x 轴）
       const vChecks = [
-        { a: newX, b: oLeft, guide: oLeft },           // 左边对齐
-        { a: newX, b: oRight, guide: oRight },          // 左边对齐右边
-        { a: dragRight, b: oLeft, guide: oLeft - dragged.width },    // 右边对齐左边
-        { a: dragRight, b: oRight, guide: oRight - dragged.width },  // 右边对齐
+        { a: newX, b: oLeft, guide: oLeft }, // 左边对齐
+        { a: newX, b: oRight, guide: oRight }, // 左边对齐右边
+        { a: dragRight, b: oLeft, guide: oLeft - dragged.width }, // 右边对齐左边
+        { a: dragRight, b: oRight, guide: oRight - dragged.width }, // 右边对齐
         { a: dragCenterX, b: oCenterX, guide: oCenterX - dragged.width / 2 }, // 水平居中
       ]
       for (const chk of vChecks) {
@@ -2251,11 +2401,26 @@ function calcSnapAlign(dragIds, dx, dy) {
         const oLeft = other.x
         const oRight = other.x + other.width
         const oCenterX = other.x + other.width / 2
-        if (Math.abs(newX - oLeft) < 1) { guides.push({ type: 'v', pos: oLeft }); break }
-        if (Math.abs(newX - oRight) < 1) { guides.push({ type: 'v', pos: oRight }); break }
-        if (Math.abs(dragRight - oLeft) < 1) { guides.push({ type: 'v', pos: oLeft }); break }
-        if (Math.abs(dragRight - oRight) < 1) { guides.push({ type: 'v', pos: oRight }); break }
-        if (Math.abs(dragCenterX - oCenterX) < 1) { guides.push({ type: 'v', pos: oCenterX }); break }
+        if (Math.abs(newX - oLeft) < 1) {
+          guides.push({ type: 'v', pos: oLeft })
+          break
+        }
+        if (Math.abs(newX - oRight) < 1) {
+          guides.push({ type: 'v', pos: oRight })
+          break
+        }
+        if (Math.abs(dragRight - oLeft) < 1) {
+          guides.push({ type: 'v', pos: oLeft })
+          break
+        }
+        if (Math.abs(dragRight - oRight) < 1) {
+          guides.push({ type: 'v', pos: oRight })
+          break
+        }
+        if (Math.abs(dragCenterX - oCenterX) < 1) {
+          guides.push({ type: 'v', pos: oCenterX })
+          break
+        }
       }
     }
   }
@@ -2270,11 +2435,26 @@ function calcSnapAlign(dragIds, dx, dy) {
         const oTop = other.y
         const oBottom = other.y + other.height
         const oCenterY = other.y + other.height / 2
-        if (Math.abs(newY - oTop) < 1) { guides.push({ type: 'h', pos: oTop }); break }
-        if (Math.abs(newY - oBottom) < 1) { guides.push({ type: 'h', pos: oBottom }); break }
-        if (Math.abs(dragBottom - oTop) < 1) { guides.push({ type: 'h', pos: oTop }); break }
-        if (Math.abs(dragBottom - oBottom) < 1) { guides.push({ type: 'h', pos: oBottom }); break }
-        if (Math.abs(dragCenterY - oCenterY) < 1) { guides.push({ type: 'h', pos: oCenterY }); break }
+        if (Math.abs(newY - oTop) < 1) {
+          guides.push({ type: 'h', pos: oTop })
+          break
+        }
+        if (Math.abs(newY - oBottom) < 1) {
+          guides.push({ type: 'h', pos: oBottom })
+          break
+        }
+        if (Math.abs(dragBottom - oTop) < 1) {
+          guides.push({ type: 'h', pos: oTop })
+          break
+        }
+        if (Math.abs(dragBottom - oBottom) < 1) {
+          guides.push({ type: 'h', pos: oBottom })
+          break
+        }
+        if (Math.abs(dragCenterY - oCenterY) < 1) {
+          guides.push({ type: 'h', pos: oCenterY })
+          break
+        }
       }
     }
   }
@@ -3839,7 +4019,6 @@ function fitCanvasView() {
   })
 }
 
-
 function wheelZoom(event) {
   event.preventDefault()
   // Ctrl/Cmd + 滚轮 → 缩放画布
@@ -4456,10 +4635,8 @@ function contextMenuDeleteLayer() {
 function contextMenuDownloadLayer() {
   const layer = contextMenu.layer
   if (!layer || !layer.url) return
-  const a = document.createElement('a')
-  a.href = layer.url
-  a.download = layer.name || 'image'
-  a.click()
+  console.log('[contextMenuDownloadLayer] url:', layer.url, 'name:', layer.name)
+  downloadFileByUrl(layer.url, layer.name || 'image')
   closeContextMenu()
 }
 function contextMenuAddToReference() {
@@ -4587,7 +4764,13 @@ function contextMenuAddToReference() {
         @pointerdown.right="onStageRightDown($event)"
       >
         <!-- 智能对齐辅助线 -->
-        <div v-for="(guide, idx) in snapGuides" :key="'snap-'+idx" class="uc-snap-guide" :class="'uc-snap-guide--' + guide.type" :style="guide.type === 'v' ? { left: guide.pos + 'px' } : { top: guide.pos + 'px' }" />
+        <div
+          v-for="(guide, idx) in snapGuides"
+          :key="'snap-' + idx"
+          class="uc-snap-guide"
+          :class="'uc-snap-guide--' + guide.type"
+          :style="guide.type === 'v' ? { left: guide.pos + 'px' } : { top: guide.pos + 'px' }"
+        />
         <!-- 上传进度条 -->
         <div v-if="uploadProgress" class="upload-progress-overlay">
           <div class="upload-progress-card">
@@ -5492,55 +5675,94 @@ function contextMenuAddToReference() {
               <div class="uc-chat-generate-options" @click.stop>
                 <label>
                   <span>模型</span>
-                  <div class="uc-custom-select" :class="{ open: chatSelectOpen === 'model', disabled: chatGenerating }">
-                    <button type="button" class="uc-custom-select-trigger" @click.stop="toggleChatSelect('model')">
+                  <div
+                    class="uc-custom-select"
+                    :class="{ open: chatSelectOpen === 'model', disabled: chatGenerating }"
+                  >
+                    <button
+                      type="button"
+                      class="uc-custom-select-trigger"
+                      @click.stop="toggleChatSelect('model')"
+                    >
                       {{ chatModel }}
                       <i class="ri-arrow-down-s-line"></i>
                     </button>
                     <div v-if="chatSelectOpen === 'model'" class="uc-custom-select-menu">
                       <button
-                        v-for="model in chatModelOptions" :key="model"
+                        v-for="model in chatModelOptions"
+                        :key="model"
                         type="button"
                         class="uc-custom-select-item"
                         :class="{ active: chatModel === model }"
-                        @click.stop="chatModel = model; chatSelectOpen = null"
-                      >{{ model }}</button>
+                        @click.stop="
+                          chatModel = model
+                          chatSelectOpen = null
+                        "
+                      >
+                        {{ model }}
+                      </button>
                     </div>
                   </div>
                 </label>
                 <label>
                   <span>比例</span>
-                  <div class="uc-custom-select" :class="{ open: chatSelectOpen === 'ratio', disabled: chatGenerating }">
-                    <button type="button" class="uc-custom-select-trigger" @click.stop="toggleChatSelect('ratio')">
+                  <div
+                    class="uc-custom-select"
+                    :class="{ open: chatSelectOpen === 'ratio', disabled: chatGenerating }"
+                  >
+                    <button
+                      type="button"
+                      class="uc-custom-select-trigger"
+                      @click.stop="toggleChatSelect('ratio')"
+                    >
                       {{ chatRatio }}
                       <i class="ri-arrow-down-s-line"></i>
                     </button>
                     <div v-if="chatSelectOpen === 'ratio'" class="uc-custom-select-menu">
                       <button
-                        v-for="ratio in chatRatioOptions" :key="ratio"
+                        v-for="ratio in chatRatioOptions"
+                        :key="ratio"
                         type="button"
                         class="uc-custom-select-item"
                         :class="{ active: chatRatio === ratio }"
-                        @click.stop="chatRatio = ratio; chatSelectOpen = null"
-                      >{{ ratio }}</button>
+                        @click.stop="
+                          chatRatio = ratio
+                          chatSelectOpen = null
+                        "
+                      >
+                        {{ ratio }}
+                      </button>
                     </div>
                   </div>
                 </label>
                 <label>
                   <span>分辨率</span>
-                  <div class="uc-custom-select" :class="{ open: chatSelectOpen === 'resolution', disabled: chatGenerating }">
-                    <button type="button" class="uc-custom-select-trigger" @click.stop="toggleChatSelect('resolution')">
+                  <div
+                    class="uc-custom-select"
+                    :class="{ open: chatSelectOpen === 'resolution', disabled: chatGenerating }"
+                  >
+                    <button
+                      type="button"
+                      class="uc-custom-select-trigger"
+                      @click.stop="toggleChatSelect('resolution')"
+                    >
                       {{ chatResolution }}
                       <i class="ri-arrow-down-s-line"></i>
                     </button>
                     <div v-if="chatSelectOpen === 'resolution'" class="uc-custom-select-menu">
                       <button
-                        v-for="resolution in chatResolutionOptions" :key="resolution"
+                        v-for="resolution in chatResolutionOptions"
+                        :key="resolution"
                         type="button"
                         class="uc-custom-select-item"
                         :class="{ active: chatResolution === resolution }"
-                        @click.stop="chatResolution = resolution; chatSelectOpen = null"
-                      >{{ resolution }}</button>
+                        @click.stop="
+                          chatResolution = resolution
+                          chatSelectOpen = null
+                        "
+                      >
+                        {{ resolution }}
+                      </button>
                     </div>
                   </div>
                 </label>
@@ -5805,8 +6027,11 @@ function contextMenuAddToReference() {
     <div
       v-if="imageViewer.show"
       class="uc-image-viewer-overlay"
+      tabindex="0"
       @click.self="closeImageViewer"
       @keydown.escape="closeImageViewer"
+      @keydown.left="switchImageViewer(-1)"
+      @keydown.right="switchImageViewer(1)"
     >
       <div class="uc-image-viewer-container">
         <!-- 关闭按钮 -->
@@ -5824,6 +6049,16 @@ function contextMenuAddToReference() {
           @pointerup="stopViewerDrag"
           @pointerleave="stopViewerDrag"
         >
+          <!-- 上一张按钮 -->
+          <button
+            v-if="imageViewer.images.length > 1"
+            class="uc-image-viewer-nav uc-image-viewer-nav-prev"
+            title="上一张 (←)"
+            @click.stop="switchImageViewer(-1)"
+          >
+            <i class="ri-arrow-left-s-line"></i>
+          </button>
+
           <img
             :src="imageViewer.url"
             :alt="imageViewer.name"
@@ -5835,6 +6070,16 @@ function contextMenuAddToReference() {
             }"
             draggable="false"
           />
+
+          <!-- 下一张按钮 -->
+          <button
+            v-if="imageViewer.images.length > 1"
+            class="uc-image-viewer-nav uc-image-viewer-nav-next"
+            title="下一张 (→)"
+            @click.stop="switchImageViewer(1)"
+          >
+            <i class="ri-arrow-right-s-line"></i>
+          </button>
         </div>
 
         <!-- 底部工具栏 -->
@@ -5882,7 +6127,9 @@ function contextMenuAddToReference() {
         </div>
 
         <!-- 页码指示器 -->
-        <div class="uc-image-viewer-page">1 / 1</div>
+        <div v-if="imageViewer.images.length > 1" class="uc-image-viewer-page">
+          {{ imageViewer.currentIndex + 1 }} / {{ imageViewer.images.length }}
+        </div>
       </div>
     </div>
   </Teleport>

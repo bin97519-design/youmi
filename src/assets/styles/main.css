@@ -11836,7 +11836,9 @@ body {
   display: flex;
   align-items: center;
   font-family: inherit;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
 }
 .uc-custom-select-trigger i {
   position: absolute;
@@ -11895,7 +11897,9 @@ body {
   text-align: left;
   cursor: pointer;
   font-family: inherit;
-  transition: background 0.1s, color 0.1s;
+  transition:
+    background 0.1s,
+    color 0.1s;
 }
 .uc-custom-select-item:hover {
   background: var(--color-bg-2);
@@ -13183,6 +13187,7 @@ body {
   justify-content: center;
   overflow: hidden;
   padding: 20px 20px 80px;
+  position: relative;
 }
 
 .uc-image-viewer-content img {
@@ -13192,6 +13197,42 @@ body {
   border-radius: 10px;
   user-select: none;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+/* 多图切换导航按钮 */
+.uc-image-viewer-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 22px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  z-index: 5;
+}
+.uc-image-viewer-nav:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+  transform: translateY(-50%) scale(1.08);
+}
+.uc-image-viewer-nav:active {
+  transform: translateY(-50%) scale(0.95);
+}
+.uc-image-viewer-nav-prev {
+  left: 16px;
+}
+.uc-image-viewer-nav-next {
+  right: 16px;
 }
 
 .uc-image-viewer-toolbar {
@@ -14321,6 +14362,14 @@ body {
 [data-theme='light'] .uc-image-viewer-close {
   color: #333;
   background: rgba(0, 0, 0, 0.06);
+}
+[data-theme='light'] .uc-image-viewer-nav {
+  background: rgba(0, 0, 0, 0.06);
+  color: rgba(0, 0, 0, 0.6);
+}
+[data-theme='light'] .uc-image-viewer-nav:hover {
+  background: rgba(0, 0, 0, 0.1);
+  color: #333;
 }
 
 /* 检测 loading overlay */
