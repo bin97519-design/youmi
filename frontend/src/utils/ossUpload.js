@@ -59,3 +59,45 @@ export async function uploadFileDirect(file, options = {}) {
   }
   return sign.url;
 }
+
+/**
+ * 将远端 URL 的图片转存到自有 OSS，返回永久 URL。
+ * 用于生图完成后，将临时签名 URL / CDN 链接转存为永久 OSS URL，
+ * 防止签名过期后图片裂图。
+ * @param {string} url 远端图片 URL
+ * @param {object} [options]
+ * @param {string} [options.dir] OSS 目录，默认 'youmi/ai'
+ * @param {number} [options.timeout] 超时毫秒，默认 30000
+ * @returns {Promise<string>} 永久 OSS URL；转存失败则返回原始 URL（降级不中断）
+ */
+export async function persistToOss(url, options = {}) {
+  if (!url || !url.startsWith('http')) return url
+  // 已经是自有 OSS 永久 URL（无签名参数），无需转存
+  try {
+    const u = new URL(url)
+    const isOwnOss = u.hostname.includes('huami-canvas') && u.search === ''
+    if (isOwnOss) return url
+  } catch { /* ignore */ }
+
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), options.timeout || 30000)
+    const resp = await fetch(apiPath('/api/v1/file/upload-from-url'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, dir: options.dir || 'youmi/ai' }),
+      signal: controller.signal,
+    })
+    clearTimeout(timer)
+    const data = await resp.json().catch(() => ({}))
+    if (data.code === 0 && data.data?.url) {
+      console.log('[persistToOss] 转存成功:', url.substring(0, 60) + '... →', data.data.url.substring(0, 60) + '...')
+      return data.data.url
+    }
+    console.warn('[persistToOss] 转存返回非成功:', data.message || 'unknown')
+    return url // 降级：返回原始 URL
+  } catch (e) {
+    console.warn('[persistToOss] 转存失败，使用原始 URL:', e.message)
+    return url // 降级：返回原始 URL
+  }
+}

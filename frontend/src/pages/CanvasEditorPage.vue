@@ -14,7 +14,7 @@ import { layerName, useCanvasStore } from '../stores/canvas'
 import { useUserStore } from '../stores/user'
 import { apiPath } from '../utils/apiBase'
 import { cachedImgHtml } from '../utils/imageCache'
-import { uploadFileDirect } from '../utils/ossUpload'
+import { uploadFileDirect, persistToOss } from '../utils/ossUpload'
 
 const props = defineProps({ id: { type: String, required: true } })
 const router = useRouter()
@@ -1307,6 +1307,8 @@ function scrollChatToBottom() {
 
 async function addImageLayerFromUrl(url, name = 'AI生成图片', detectPrompt = '') {
   try {
+    // 将临时 URL 转存到自有 OSS（永久 URL 自动跳过，不重复转存）
+    url = await persistToOss(url)
     const size = await imageSize(url)
     let layerId = ''
     canvas.updateDocument(props.id, (draft) => {
@@ -4121,8 +4123,15 @@ async function sendChat() {
       }
 
       if (isTaskDone(status.status)) {
-        const url = extractTaskImageUrl(status)
+        let url = extractTaskImageUrl(status)
         if (!url) throw new Error('任务完成，但没有返回图片地址')
+        // 将临时 URL 转存到自有 OSS，获取永久 URL（防签名过期裂图）
+        updateGeneratingPlaceholder(placeholderId, {
+          progress: 98,
+          status: 'completed',
+          statusText: '生成完成，正在转存到云存储...',
+        })
+        url = await persistToOss(url)
         updateGeneratingPlaceholder(placeholderId, {
           progress: 100,
           status: 'completed',
