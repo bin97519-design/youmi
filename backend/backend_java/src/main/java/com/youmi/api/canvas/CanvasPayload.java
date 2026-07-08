@@ -71,6 +71,15 @@ public class CanvasPayload {
     public String role;
     public String text;
     public long createdAt;
+    // 以下字段后端仅做透传，不解析内部结构
+    public String model;              // 生图模型（如 banana2, agnes-image-2.1-flash）
+    public String ratio;              // 生图比例（如 9:16）
+    public String resolution;         // 生图分辨率（如 2K）
+    public String imageUrl;           // 生图结果 URL
+    public String targetLayerId;      // 目标图层 ID
+    public String taskId;             // 生图任务 ID
+    public Object referenceImages;    // 参考图数组 [{url}]
+    public Object elements;           // pill 元素数组 [{id, name, layerId, thumb, box, order}]
   }
 
   @JsonIgnoreProperties(ignoreUnknown = true)
