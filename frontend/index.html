@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/remixicon@4.5.0/fonts/remixicon.min.css" />
+    <script>
+      // 首屏内联脚本：避免主题闪烁 + 默认 .dark
+      (function () {
+        try {
+          var t = localStorage.getItem('youmi-theme');
+          var sys = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+          var effective = (t === 'light' || t === 'dark') ? t : (t === 'system' ? sys : 'dark');
+          if (effective === 'dark') document.documentElement.classList.add('dark');
+          document.documentElement.setAttribute('data-theme', effective);
+        } catch (e) { document.documentElement.classList.add('dark'); }
+      })();
+    </script>
+    <title>有米AI - 电商AI系统</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

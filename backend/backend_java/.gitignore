@@ -1,0 +1,36 @@
+# Build
+target/
+*.jar
+*.class
+
+# Runtime data
+data/
+uploads/
+logs/
+tmp/
+_nul
+backend.log
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Maven wrapper (already in .mvn/)
+BOOT-INF/
+**/apache-maven-*/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.*
+
+# 本地/含密钥配置（不入库，防泄露）
+config/
+temp_jar/
+gettoken-override.yml
+**/application-dev.yml
+config-external/

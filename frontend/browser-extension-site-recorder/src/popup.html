@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Site Recorder</title>
+    <link rel="stylesheet" href="./popup.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <strong>Site Recorder</strong>
+        <label>
+          <input id="enabled" type="checkbox" />
+          记录
+        </label>
+      </header>
+      <section class="stats">
+        <span id="count">0 logs</span>
+        <span id="last">No events</span>
+      </section>
+      <section class="reverse-settings">
+        <label>
+          <span>反推品类</span>
+          <select id="reverseCategory">
+            <option value="general">通用</option>
+            <option value="mattress">床垫</option>
+            <option value="curtain">窗帘</option>
+            <option value="solid_wood_bed">实木床</option>
+          </select>
+        </label>
+      </section>
+      <section id="kinds" class="kinds"></section>
+      <div class="actions">
+        <button id="download">导出 JSON</button>
+        <button id="clear">清空</button>
+      </div>
+      <pre id="preview"></pre>
+    </main>
+    <script src="./popup.js"></script>
+  </body>
+</html>

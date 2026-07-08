@@ -1,0 +1,69 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: youmi-api
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://127.0.0.1:3306/youmi_ai?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${MYSQL_USER:root}
+    password: ${MYSQL_PASSWORD:123456}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+  sql:
+    init:
+      mode: always
+      encoding: utf-8
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+
+youmi:
+  auth:
+    token-ttl-seconds: 604800
+  ai:
+    base-url: https://api.deepseek.com
+    chat-path: /chat/completions
+    api-key: ${YOUMI_AI_API_KEY:}
+    model: deepseek-v4-flash
+    temperature: 0.35
+    timeout-seconds: 45
+  image:
+    base-url: https://api.apimart.ai
+    generation-path: /v1/images/generations
+    task-path: /v1/tasks
+    api-key: ${YOUMI_IMAGE_API_KEY:${APIMART_API_KEY:${APIMART_IMAGE_API_KEY:}}}
+    fallback-enabled: ${YOUMI_IMAGE_FALLBACK_ENABLED:true}
+    fallback-provider: gettoken
+    get-token-base-url: https://nb.gettoken.cn/openapi/v1
+    get-token-api-key: ${GETTOKEN_API_KEY:${YOUMI_GETTOKEN_API_KEY:}}
+    get-token-query-path: /query
+    model: gpt-image-2
+    default-size: "9:16"
+    default-resolution: 2K
+    language: zh
+    persist-generated-images: true
+    upload-endpoint: http://101.133.149.214/youmi-api/api/v1/file/upload
+    upload-field-name: file
+    timeout-seconds: 60
+    upload-timeout-seconds: 120
+  minimax:
+    base-url: https://api.minimaxi.com/anthropic
+    messages-path: /v1/messages
+    api-key: ${MINIMAX_API_KEY:}
+    model: MiniMax-M3
+    max-tokens: 1600
+    temperature: 0.6
+    timeout-seconds: 60
+  ecommerce-set:
+    max-concurrent: 3
+    retry-count: 2
+    default-model: gpt-image-2
+    planning-model: qwen3.7-plus
+    poll-interval-ms: 2000

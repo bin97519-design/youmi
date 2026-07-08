@@ -1,0 +1,423 @@
+{
+  "capturedAt": "2026-05-30T00:59:27.226Z",
+  "page": "https://youqianai.com/",
+  "title": "由前AI - 一站式电商AI设计平台 | YOOQIAN AI",
+  "count": 68,
+  "countsByKind": {
+    "stylesheet": 2,
+    "script": 3,
+    "font": 18,
+    "other": 12,
+    "image": 33
+  },
+  "assets": [
+    {
+      "id": "fb35f8cde8a9627f",
+      "kind": "stylesheet",
+      "name": "css2",
+      "url": "https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@300;400;500;600;700&family=Long+Cang&display=swap"
+    },
+    {
+      "id": "db5ba6b7286c7565",
+      "kind": "script",
+      "name": "index-BeAGyMHu.js",
+      "url": "https://youqianai.com/assets/index-BeAGyMHu.js"
+    },
+    {
+      "id": "4b05e99f7cf7bf28",
+      "kind": "stylesheet",
+      "name": "index-BuaDN6oG.css",
+      "url": "https://youqianai.com/assets/index-BuaDN6oG.css"
+    },
+    {
+      "id": "c1051d48b718ff91",
+      "kind": "font",
+      "name": "LYjAdGP8kkgoTec8zkRgqBgxXsWsMfnCm1_q1j3gcsptb8OMg_Z2HVZhDbPBCIyx.117.woff2",
+      "url": "https://fonts.gstatic.com/s/longcang/v21/LYjAdGP8kkgoTec8zkRgqBgxXsWsMfnCm1_q1j3gcsptb8OMg_Z2HVZhDbPBCIyx.117.woff2"
+    },
+    {
+      "id": "fa22589049ee570d",
+      "kind": "font",
+      "name": "LYjAdGP8kkgoTec8zkRgqBgxXsWsMfnCm1_q1j3gcsptb8OMg_Z2HVZhDbPBCIyx.118.woff2",
+      "url": "https://fonts.gstatic.com/s/longcang/v21/LYjAdGP8kkgoTec8zkRgqBgxXsWsMfnCm1_q1j3gcsptb8OMg_Z2HVZhDbPBCIyx.118.woff2"
+    },
+    {
+      "id": "972ce2d0242c553c",
+      "kind": "font",
+      "name": "LYjAdGP8kkgoTec8zkRgqBgxXsWsMfnCm1_q1j3gcsptb8OMg_Z2HVZhDbPBCIyx.119.woff2",
+      "url": "https://fonts.gstatic.com/s/longcang/v21/LYjAdGP8kkgoTec8zkRgqBgxXsWsMfnCm1_q1j3gcsptb8OMg_Z2HVZhDbPBCIyx.119.woff2"
+    },
+    {
+      "id": "c235a2e6d89a3ffe",
+      "kind": "font",
+      "name": "LYjAdGP8kkgoTec8zkRQqnoq.woff2",
+      "url": "https://fonts.gstatic.com/s/longcang/v21/LYjAdGP8kkgoTec8zkRQqnoq.woff2"
+    },
+    {
+      "id": "f7b2e0e32562f2ee",
+      "kind": "font",
+      "name": "k3kXo84MPvpLmixcA63oeALhLOCT-xWNm8Hqd37g1OkDRZe7lR4sg1IzSy-MNbE9VH8V.103.woff2",
+      "url": "https://fonts.gstatic.com/s/notosanssc/v40/k3kXo84MPvpLmixcA63oeALhLOCT-xWNm8Hqd37g1OkDRZe7lR4sg1IzSy-MNbE9VH8V.103.woff2"
+    },
+    {
+      "id": "4f9677a4373c1c14",
+      "kind": "font",
+      "name": "k3kXo84MPvpLmixcA63oeALhLOCT-xWNm8Hqd37g1OkDRZe7lR4sg1IzSy-MNbE9VH8V.110.woff2",
+      "url": "https://fonts.gstatic.com/s/notosanssc/v40/k3kXo84MPvpLmixcA63oeALhLOCT-xWNm8Hqd37g1OkDRZe7lR4sg1IzSy-MNbE9VH8V.110.woff2"
+    },
+    {
+      "id": "9550dd0bd06acc7c",
+      "kind": "font",
+      "name": "k3kXo84MPvpLmixcA63oeALhLOCT-xWNm8Hqd37g1OkDRZe7lR4sg1IzSy-MNbE9VH8V.111.woff2",
+      "url": "https://fonts.gstatic.com/s/notosanssc/v40/k3kXo84MPvpLmixcA63oeALhLOCT-xWNm8Hqd37g1OkDRZe7lR4sg1IzSy-MNbE9VH8V.111.woff2"
+    },
+    {
+      "id": "1d57717e8c632ed3",
+      "kind": "font",
+      "name": "k3kXo84MPvpLmixcA63oeALhLOCT-xWNm8Hqd37g1OkDRZe7lR4sg1IzSy-MNbE9VH8V.112.woff2",
+      "url": "https://fonts.gstatic.com/s/notosanssc/v40/k3kXo84MPvpLmixcA63oeALhLOCT-xWNm8Hqd37g1OkDRZe7lR4sg1IzSy-MNbE9VH8V.112.woff2"
+    },
+    {
+      "id": "eaee82cb341451f7",
+      "kind": "font",
+      "name": "k3kXo84MPvpLmixcA63oeALhLOCT-xWNm8Hqd37g1OkDRZe7lR4sg1IzSy-MNbE9VH8V.113.woff2",
+      "url": "https://fonts.gstatic.com/s/notosanssc/v40/k3kXo84MPvpLmixcA63oeALhLOCT-xWNm8Hqd37g1OkDRZe7lR4sg1IzSy-MNbE9VH8V.113.woff2"
+    },
+    {
+      "id": "ce1c27f68f43ef39",
+      "kind": "font",
+      "name": "k3kXo84MPvpLmixcA63oeALhLOCT-xWNm8Hqd37g1OkDRZe7lR4sg1IzSy-MNbE9VH8V.114.woff2",
+      "url": "https://fonts.gstatic.com/s/notosanssc/v40/k3kXo84MPvpLmixcA63oeALhLOCT-xWNm8Hqd37g1OkDRZe7lR4sg1IzSy-MNbE9VH8V.114.woff2"
+    },
+    {
+      "id": "25bd190778a77b11",
+      "kind": "font",
+      "name": "k3kXo84MPvpLmixcA63oeALhLOCT-xWNm8Hqd37g1OkDRZe7lR4sg1IzSy-MNbE9VH8V.115.woff2",
+      "url": "https://fonts.gstatic.com/s/notosanssc/v40/k3kXo84MPvpLmixcA63oeALhLOCT-xWNm8Hqd37g1OkDRZe7lR4sg1IzSy-MNbE9VH8V.115.woff2"
+    },
+    {
+      "id": "f68452c58c3d26be",
+      "kind": "font",
+      "name": "k3kXo84MPvpLmixcA63oeALhLOCT-xWNm8Hqd37g1OkDRZe7lR4sg1IzSy-MNbE9VH8V.116.woff2",
+      "url": "https://fonts.gstatic.com/s/notosanssc/v40/k3kXo84MPvpLmixcA63oeALhLOCT-xWNm8Hqd37g1OkDRZe7lR4sg1IzSy-MNbE9VH8V.116.woff2"
+    },
+    {
+      "id": "031bdd855231701a",
+      "kind": "font",
+      "name": "k3kXo84MPvpLmixcA63oeALhLOCT-xWNm8Hqd37g1OkDRZe7lR4sg1IzSy-MNbE9VH8V.117.woff2",
+      "url": "https://fonts.gstatic.com/s/notosanssc/v40/k3kXo84MPvpLmixcA63oeALhLOCT-xWNm8Hqd37g1OkDRZe7lR4sg1IzSy-MNbE9VH8V.117.woff2"
+    },
+    {
+      "id": "867dff64941113cb",
+      "kind": "font",
+      "name": "k3kXo84MPvpLmixcA63oeALhLOCT-xWNm8Hqd37g1OkDRZe7lR4sg1IzSy-MNbE9VH8V.118.woff2",
+      "url": "https://fonts.gstatic.com/s/notosanssc/v40/k3kXo84MPvpLmixcA63oeALhLOCT-xWNm8Hqd37g1OkDRZe7lR4sg1IzSy-MNbE9VH8V.118.woff2"
+    },
+    {
+      "id": "c929f58c6d9d1528",
+      "kind": "font",
+      "name": "k3kXo84MPvpLmixcA63oeALhLOCT-xWNm8Hqd37g1OkDRZe7lR4sg1IzSy-MNbE9VH8V.119.woff2",
+      "url": "https://fonts.gstatic.com/s/notosanssc/v40/k3kXo84MPvpLmixcA63oeALhLOCT-xWNm8Hqd37g1OkDRZe7lR4sg1IzSy-MNbE9VH8V.119.woff2"
+    },
+    {
+      "id": "6918b74fa16e439d",
+      "kind": "font",
+      "name": "k3kXo84MPvpLmixcA63oeALRLoKI.woff2",
+      "url": "https://fonts.gstatic.com/s/notosanssc/v40/k3kXo84MPvpLmixcA63oeALRLoKI.woff2"
+    },
+    {
+      "id": "0b86590d9958dcb5",
+      "kind": "font",
+      "name": "8vIH7w4qzmVxm2BL9A.woff2",
+      "url": "https://fonts.gstatic.com/s/syne/v24/8vIH7w4qzmVxm2BL9A.woff2"
+    },
+    {
+      "id": "722b24ab5a8d2454",
+      "kind": "font",
+      "name": "remixicon-CZw4FkzQ.woff2",
+      "url": "https://youqianai.com/assets/remixicon-CZw4FkzQ.woff2?t=1769685282643"
+    },
+    {
+      "id": "97595d19223b3020",
+      "kind": "other",
+      "name": "config",
+      "url": "https://api.youqianai.com/api/config"
+    },
+    {
+      "id": "dd9ec8e6a2cbd29d",
+      "kind": "other",
+      "name": "me",
+      "url": "https://api.youqianai.com/api/auth/me"
+    },
+    {
+      "id": "4ce570e90164aa99",
+      "kind": "script",
+      "name": "desktop-BP8VJ8l8.js",
+      "url": "https://youqianai.com/assets/desktop-BP8VJ8l8.js"
+    },
+    {
+      "id": "4833a213a0871bb3",
+      "kind": "image",
+      "name": "yoqian.png",
+      "url": "https://youqianai.com/yoqian.png"
+    },
+    {
+      "id": "36bd835e72528b67",
+      "kind": "image",
+      "name": "ai-detail.png",
+      "url": "https://youqianai.com/shortcut-icons/ai-detail.png"
+    },
+    {
+      "id": "5444c0e7b40b4fa2",
+      "kind": "image",
+      "name": "ai-main.png",
+      "url": "https://youqianai.com/shortcut-icons/ai-main.png"
+    },
+    {
+      "id": "48d642ef3acabec3",
+      "kind": "image",
+      "name": "product-scene.png",
+      "url": "https://youqianai.com/shortcut-icons/product-scene.png"
+    },
+    {
+      "id": "684e268de8098786",
+      "kind": "image",
+      "name": "tryon.png",
+      "url": "https://youqianai.com/shortcut-icons/tryon.png"
+    },
+    {
+      "id": "cb6b52c4f9ef124f",
+      "kind": "image",
+      "name": "1.webp",
+      "url": "https://youqianai.com/case-images/1.webp"
+    },
+    {
+      "id": "1c9e2c3d8f45f35a",
+      "kind": "image",
+      "name": "2.webp",
+      "url": "https://youqianai.com/case-images/2.webp"
+    },
+    {
+      "id": "b5c3c778f65feb91",
+      "kind": "image",
+      "name": "3.webp",
+      "url": "https://youqianai.com/case-images/3.webp"
+    },
+    {
+      "id": "e98f080354eb784b",
+      "kind": "image",
+      "name": "4.webp",
+      "url": "https://youqianai.com/case-images/4.webp"
+    },
+    {
+      "id": "4067267f5e8fc408",
+      "kind": "image",
+      "name": "6.webp",
+      "url": "https://youqianai.com/case-images/6.webp"
+    },
+    {
+      "id": "2ba5de43469cac75",
+      "kind": "image",
+      "name": "5.webp",
+      "url": "https://youqianai.com/case-images/5.webp"
+    },
+    {
+      "id": "36019d535fed4bee",
+      "kind": "image",
+      "name": "7.webp",
+      "url": "https://youqianai.com/case-images/7.webp"
+    },
+    {
+      "id": "d3a8442351dc19f6",
+      "kind": "image",
+      "name": "8.webp",
+      "url": "https://youqianai.com/case-images/8.webp"
+    },
+    {
+      "id": "fbb79f7af295a183",
+      "kind": "image",
+      "name": "10.webp",
+      "url": "https://youqianai.com/case-images/10.webp"
+    },
+    {
+      "id": "e83fde6599b45ec8",
+      "kind": "image",
+      "name": "9.webp",
+      "url": "https://youqianai.com/case-images/9.webp"
+    },
+    {
+      "id": "1ca3112c8e020bb6",
+      "kind": "image",
+      "name": "11.webp",
+      "url": "https://youqianai.com/case-images/11.webp"
+    },
+    {
+      "id": "d512e71d2042e296",
+      "kind": "image",
+      "name": "12.webp",
+      "url": "https://youqianai.com/case-images/12.webp"
+    },
+    {
+      "id": "a9bf6c15f0b966f5",
+      "kind": "image",
+      "name": "13.webp",
+      "url": "https://youqianai.com/case-images/13.webp"
+    },
+    {
+      "id": "0527909b2e0440b4",
+      "kind": "image",
+      "name": "14.webp",
+      "url": "https://youqianai.com/case-images/14.webp"
+    },
+    {
+      "id": "b301a74e66193d51",
+      "kind": "image",
+      "name": "15.webp",
+      "url": "https://youqianai.com/case-images/15.webp"
+    },
+    {
+      "id": "9d215d530ca76171",
+      "kind": "image",
+      "name": "16.webp",
+      "url": "https://youqianai.com/case-images/16.webp"
+    },
+    {
+      "id": "6cdd8fa2302f1736",
+      "kind": "image",
+      "name": "17.webp",
+      "url": "https://youqianai.com/case-images/17.webp"
+    },
+    {
+      "id": "a8e6c1f79fc1dc4d",
+      "kind": "image",
+      "name": "18.webp",
+      "url": "https://youqianai.com/case-images/18.webp"
+    },
+    {
+      "id": "581128367773a800",
+      "kind": "image",
+      "name": "19.webp",
+      "url": "https://youqianai.com/case-images/19.webp"
+    },
+    {
+      "id": "7391a8ca6c7ed67e",
+      "kind": "image",
+      "name": "20.webp",
+      "url": "https://youqianai.com/case-images/20.webp"
+    },
+    {
+      "id": "c631ffb7d739f0ca",
+      "kind": "image",
+      "name": "21.webp",
+      "url": "https://youqianai.com/case-images/21.webp"
+    },
+    {
+      "id": "8cfa31693423bfcf",
+      "kind": "image",
+      "name": "22.webp",
+      "url": "https://youqianai.com/case-images/22.webp"
+    },
+    {
+      "id": "3a86fe40a8241a16",
+      "kind": "image",
+      "name": "23.webp",
+      "url": "https://youqianai.com/case-images/23.webp"
+    },
+    {
+      "id": "c75c6504b4aee1e3",
+      "kind": "image",
+      "name": "24.webp",
+      "url": "https://youqianai.com/case-images/24.webp"
+    },
+    {
+      "id": "6149002ae65c86a4",
+      "kind": "other",
+      "name": "packages",
+      "url": "https://api.youqianai.com/api/point/packages"
+    },
+    {
+      "id": "85df13e708bbc03e",
+      "kind": "other",
+      "name": "plan-cancel-quota",
+      "url": "https://api.youqianai.com/api/ai-design/plan-cancel-quota"
+    },
+    {
+      "id": "6bd80746cab2b4b8",
+      "kind": "other",
+      "name": "sessions",
+      "url": "https://api.youqianai.com/api/canvas/sessions"
+    },
+    {
+      "id": "f830ad3c3a78ab0d",
+      "kind": "other",
+      "name": "tasks",
+      "url": "https://api.youqianai.com/api/ai-design/tasks?sessionId=default&page=1&pageSize=30"
+    },
+    {
+      "id": "6f1aea89bb53bc20",
+      "kind": "other",
+      "name": "concurrent-status",
+      "url": "https://api.youqianai.com/api/ai-design/concurrent-status"
+    },
+    {
+      "id": "aa7df80bf7427f6f",
+      "kind": "image",
+      "name": "zaixiankefu.jpg",
+      "url": "https://youqianai.com/zaixiankefu.jpg"
+    },
+    {
+      "id": "f225387a9bee458d",
+      "kind": "script",
+      "name": "fp.esm-CC7Y-WsD.js",
+      "url": "https://youqianai.com/assets/fp.esm-CC7Y-WsD.js"
+    },
+    {
+      "id": "7b639facf64dab97",
+      "kind": "image",
+      "name": "1780040674695_a003c35a-7592-42ae-9a69-bcae7156c3bf.png",
+      "url": "https://img.youqianai.com/generated/detail/task_85296258_1780040351789_8853/1780040674695_a003c35a-7592-42ae-9a69-bcae7156c3bf.png"
+    },
+    {
+      "id": "164ef6c6f4300ef5",
+      "kind": "image",
+      "name": "1780040584339_6fd15155-2051-4c0c-bf83-5e32fd8201a8.png",
+      "url": "https://img.youqianai.com/generated/detail/task_85296258_1780040351789_8853/1780040584339_6fd15155-2051-4c0c-bf83-5e32fd8201a8.png"
+    },
+    {
+      "id": "bfde9412f4ce193f",
+      "kind": "image",
+      "name": "1780040599143_7bd9c869-2fa9-48f7-9947-9dbf481a9686.png",
+      "url": "https://img.youqianai.com/generated/detail/task_85296258_1780040351789_8853/1780040599143_7bd9c869-2fa9-48f7-9947-9dbf481a9686.png"
+    },
+    {
+      "id": "6cbfb7d40149e028",
+      "kind": "other",
+      "name": "features",
+      "url": "https://api.youqianai.com/api/auth/features"
+    },
+    {
+      "id": "effd5ae3a4374e7f",
+      "kind": "other",
+      "name": "sync",
+      "url": "https://api.youqianai.com/api/canvas/sessions/sync"
+    },
+    {
+      "id": "86940c9b8ba1594a",
+      "kind": "other",
+      "name": "all",
+      "url": "https://api.youqianai.com/api/canvas/all?sessionId=default"
+    },
+    {
+      "id": "0089a19479694f76",
+      "kind": "other",
+      "name": "signed-urls",
+      "url": "https://api.youqianai.com/api/task/signed-urls"
+    },
+    {
+      "id": "b22b5ed9688807f3",
+      "kind": "other",
+      "name": "active",
+      "url": "https://api.youqianai.com/api/announcements/active?include_expired=1"
+    }
+  ]
+}
