@@ -35,6 +35,7 @@ const userSearch = ref('')
 const roleSearch = ref('')
 const taskStatusFilter = ref('')
 const taskModelFilter = ref('')
+const taskUserFilter = ref('')
 
 const filteredUsers = computed(() => {
   const q = userSearch.value.trim().toLowerCase()
@@ -60,12 +61,19 @@ const filteredTasks = computed(() => {
   if (taskStatusFilter.value) list = list.filter((t) => t.status === taskStatusFilter.value)
   if (taskModelFilter.value)
     list = list.filter((t) => (t.requestedModel || t.model) === taskModelFilter.value)
+  if (taskUserFilter.value)
+    list = list.filter((t) => String(t.userId) === taskUserFilter.value)
   return list
 })
 
 const taskModelOptions = computed(() => {
   const set = new Set((stats.value?.tasks || []).map((t) => t.requestedModel || t.model))
   return [...set].filter(Boolean)
+})
+
+const taskUserOptions = computed(() => {
+  const userIds = new Set((stats.value?.tasks || []).map((t) => String(t.userId)).filter(Boolean))
+  return users.value.filter((u) => userIds.has(String(u.id)))
 })
 
 const tabs = computed(() => {
@@ -923,6 +931,10 @@ onUnmounted(() => {})
             <select v-model="taskModelFilter" class="console-filter-select">
               <option value="">全部模型</option>
               <option v-for="m in taskModelOptions" :key="m" :value="m">{{ m }}</option>
+            </select>
+            <select v-model="taskUserFilter" class="console-filter-select">
+              <option value="">全部用户</option>
+              <option v-for="u in taskUserOptions" :key="u.id" :value="String(u.id)">{{ u.nickname || u.account || u.id }}</option>
             </select>
           </div>
         </div>

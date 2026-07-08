@@ -32,6 +32,7 @@ public class ImageGenerationClient {
   private static final String PROXY_TASK_PREFIX = PROVIDER_PROXY + ":";
   private static final String AGNES_TASK_PREFIX = PROVIDER_ANNES + ":";
   private static final String APIMART_DIRECT_TASK_PREFIX = "apimart-direct:";
+  private static final long PROVIDER_TIMEOUT_MS = 120_000L; // 2 分钟超时阈值（自任务创建起算）
   private static final String BROWSER_USER_AGENT =
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
           + "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36";
@@ -40,6 +41,7 @@ public class ImageGenerationClient {
   private final ImageGenerationProperties properties;
   private final HttpClient httpClient;
   private final Map<String, List<String>> persistedImageCache = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<String, FailoverState> failoverStates = new ConcurrentHashMap<>();
 
   public ImageGenerationClient(ObjectMapper objectMapper, ImageGenerationProperties properties) {
     this.objectMapper = objectMapper;
@@ -173,6 +175,7 @@ public class ImageGenerationClient {
       throw new ApiException(502, "APIMart did not return task_id");
     }
 
+    registerFailoverState(tasks.get(0).taskId(), request, PROVIDER_APIMART);
     return new ImageGenerationDtos.CreateTaskResponse(
         PROVIDER_APIMART,
         request.model(),
@@ -296,6 +299,7 @@ public class ImageGenerationClient {
       throw new ApiException(502, "APIMart direct did not return task_id");
     }
 
+    registerFailoverState(tasks.get(0).taskId(), request, "apimart-direct");
     return new ImageGenerationDtos.CreateTaskResponse(
         "apimart-direct",
         request.model(),
@@ -492,6 +496,7 @@ public class ImageGenerationClient {
       throw new ApiException(502, "GetToken did not return taskId");
     }
 
+    registerFailoverState(tasks.get(0).taskId(), request, PROVIDER_GETTOKEN);
     return new ImageGenerationDtos.CreateTaskResponse(
         PROVIDER_GETTOKEN,
         request.model(),
@@ -507,6 +512,79 @@ public class ImageGenerationClient {
     if (taskId == null || taskId.isBlank()) {
       throw new ApiException(400, "taskId is required");
     }
+    String cleanTaskId = taskId.trim();
+
+    // ===== 故障转移检测（透明切换，对调用方完全无感）=====
+    FailoverState state = failoverStates.get(cleanTaskId);
+    if (state != null && !PROVIDER_ANNES.equals(state.primaryProvider)) {
+      long elapsed = System.currentTimeMillis() - state.createdAt;
+      boolean timeout = elapsed > PROVIDER_TIMEOUT_MS;
+
+      // 1) 超时即触发切换（无需先查询主任务，避免无谓等待）
+      if (!state.failoverTriggered && timeout) {
+        triggerBackup(state, "timeout");
+      }
+
+      // 2) 已触发且备份任务已创建：直接返回备份任务状态（taskId 仍用原始值，前端无感知）
+      if (state.failoverTriggered && state.backupTaskId != null) {
+        if (!state.failoverLogged) {
+          state.failoverLogged = true;
+          System.out.println("[image-failover] " + new java.util.Date()
+              + " | reason=provider_" + state.failoverReason + "(" + (elapsed / 1000) + "s)"
+              + " | from=" + state.primaryProvider
+              + " | to=" + state.backupProvider
+              + " | originalTaskId=" + cleanTaskId
+              + " | backupTaskId=" + state.backupTaskId);
+        }
+        ImageGenerationDtos.TaskStatusResponse backupResp = getTaskInternal(state.backupTaskId);
+        if (isTerminalStatus(backupResp.status())) {
+          failoverStates.remove(cleanTaskId); // 备份已终态，清理防内存泄漏
+        }
+        return new ImageGenerationDtos.TaskStatusResponse(
+            backupResp.provider(),
+            cleanTaskId, // 保持原始 taskId，前端不知道发生了切换
+            backupResp.status(),
+            backupResp.progress(),
+            backupResp.imageUrls(),
+            backupResp.error(),
+            backupResp.raw());
+      }
+    }
+    // ===== 故障转移检测结束 =====
+
+    // 查询主任务状态（纯查询，不含故障转移逻辑，不会递归进入上面分支）
+    ImageGenerationDtos.TaskStatusResponse primaryResp = getTaskInternal(cleanTaskId);
+
+    // 3) 轮询中发现主任务返回失败/错误：同样触发切换（需求 2）
+    if (state != null && !PROVIDER_ANNES.equals(state.primaryProvider) && !state.failoverTriggered) {
+      if (isTerminalErrorStatus(primaryResp.status(), primaryResp.error())) {
+        triggerBackup(state, "error");
+        if (state.failoverTriggered && state.backupTaskId != null) {
+          ImageGenerationDtos.TaskStatusResponse backupResp = getTaskInternal(state.backupTaskId);
+          if (isTerminalStatus(backupResp.status())) {
+            failoverStates.remove(cleanTaskId);
+          }
+          return new ImageGenerationDtos.TaskStatusResponse(
+              backupResp.provider(),
+              cleanTaskId,
+              backupResp.status(),
+              backupResp.progress(),
+              backupResp.imageUrls(),
+              backupResp.error(),
+              backupResp.raw());
+        }
+      }
+    }
+
+    // 主任务已终态（完成或最终失败）：清理追踪状态，防止内存泄漏
+    if (state != null && isTerminalStatus(primaryResp.status())) {
+      failoverStates.remove(cleanTaskId);
+    }
+    return primaryResp;
+  }
+
+  /** 纯查询（不含故障转移逻辑）：根据 taskId 前缀分发到各 provider 查询实现 */
+  private ImageGenerationDtos.TaskStatusResponse getTaskInternal(String taskId) throws Exception {
     String cleanTaskId = taskId.trim();
     // Agnes 同步任务：从缓存直接返回
     if (cleanTaskId.startsWith(AGNES_TASK_PREFIX)) {
@@ -843,7 +921,24 @@ public class ImageGenerationClient {
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
         JsonNode root = parseBody(response.body());
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
-          throw new ApiException(502, providerLabel + " request failed: " + response.statusCode() + " " + compact(response.body()));
+          String body = compact(response.body());
+          if (response.statusCode() == 400 && body != null
+              && body.toLowerCase().contains("prompt length")
+              && (body.toLowerCase().contains("must less than")
+                  || body.toLowerCase().contains("exceed")
+                  || body.toLowerCase().contains("too long")
+                  || body.toLowerCase().contains("maximum input length"))) {
+            // 尝试提取实际长度与上限
+            java.util.regex.Pattern p = java.util.regex.Pattern.compile(
+                "(?i)prompt length\\s*(\\d+)[^\\d]*?(\\d+)");
+            java.util.regex.Matcher m = p.matcher(body);
+            String detail = "";
+            if (m.find()) {
+              detail = "（约 " + m.group(1) + " 字，模型上限约 " + m.group(2) + " 字）";
+            }
+            throw new ApiException(413, "提示词过长" + detail + "，请精简描述或拆分为多次生成后重试。");
+          }
+          throw new ApiException(502, providerLabel + " request failed: " + response.statusCode() + " " + body);
         }
         return root;
       } catch (java.net.http.HttpTimeoutException e) {
@@ -1193,6 +1288,108 @@ public class ImageGenerationClient {
     return trimmed.startsWith("http://")
         || trimmed.startsWith("https://")
         || trimmed.startsWith("/");
+  }
+
+  /**
+   * 故障转移内部追踪状态：记录主任务的创建时间、原始请求与主中转站，
+   * 用于超时/错误后「透明」切换到备用中转站（重新发起原始请求）。
+   */
+  private static final class FailoverState {
+    final long createdAt;                                     // 主任务创建时间 (System.currentTimeMillis())
+    final ImageGenerationDtos.CreateTaskRequest originalRequest; // 原始请求（用于重试备份）
+    final String primaryProvider;                             // 主中转站名称
+    String backupProvider = null;                             // 备用中转站
+    String backupTaskId = null;                               // 备份任务 taskId（懒创建）
+    boolean failoverTriggered = false;                        // 是否已触发切换
+    boolean failoverLogged = false;                           // 切换日志是否已打印
+    String failoverReason = "timeout";                        // 触发原因：timeout / error
+
+    FailoverState(long createdAt, ImageGenerationDtos.CreateTaskRequest originalRequest, String primaryProvider) {
+      this.createdAt = createdAt;
+      this.originalRequest = originalRequest;
+      this.primaryProvider = primaryProvider;
+    }
+  }
+
+  /** 根据主 provider 与解析后的模型决定备用 provider；无可用备用链时返回 null */
+  private String determineBackupProvider(String primaryProvider, String resolvedModel) {
+    return switch (primaryProvider) {
+      case "apimart-direct" -> isProxyConfigured() ? PROVIDER_PROXY : null;
+      case PROVIDER_GETTOKEN -> isProxyConfigured() ? PROVIDER_PROXY : null;
+      case PROVIDER_APIMART -> properties.isGetTokenConfigured() ? PROVIDER_GETTOKEN
+          : (isProxyConfigured() ? PROVIDER_PROXY : null);
+      default -> null; // agnes / proxy 无备用
+    };
+  }
+
+  /** 按需创建备份任务（懒创建），将返回的 taskId 写入 state.backupTaskId */
+  private void createBackupTask(FailoverState state) throws Exception {
+    ImageGenerationDtos.CreateTaskResponse response;
+    if (PROVIDER_PROXY.equals(state.backupProvider)) {
+      response = createProxyTask(state.originalRequest);
+    } else if (PROVIDER_GETTOKEN.equals(state.backupProvider)) {
+      response = createGetTokenTask(state.originalRequest);
+    } else {
+      throw new IllegalStateException("未知的备用中转站: " + state.backupProvider);
+    }
+    if (response.tasks() == null || response.tasks().isEmpty()) {
+      throw new ApiException(502, "备用中转站未返回任务");
+    }
+    String backupTaskId = response.tasks().get(0).taskId();
+    state.backupTaskId = backupTaskId;
+    String model = state.originalRequest == null ? "unknown"
+        : properties.resolveModel(state.originalRequest.model());
+    System.out.println("[image-failover] " + new java.util.Date()
+        + " | reason=timeout_or_error"
+        + " | from=" + state.primaryProvider
+        + " | to=" + state.backupProvider
+        + " | model=" + model
+        + " | backupTaskId=" + backupTaskId);
+  }
+
+  /** 触发故障转移：计算备用 provider 并创建备份任务；失败则重置以便下次轮询重试 */
+  private void triggerBackup(FailoverState state, String reason) {
+    String backup = determineBackupProvider(
+        state.primaryProvider, properties.resolveModel(state.originalRequest.model()));
+    if (backup == null) return;
+    state.backupProvider = backup;
+    state.failoverReason = reason;
+    try {
+      createBackupTask(state);
+      state.failoverTriggered = true;
+    } catch (Exception e) {
+      System.out.println("[image-failover] 备份任务创建失败: " + e.getMessage());
+      state.backupProvider = null;
+      state.failoverReason = "timeout"; // 复位，下一次轮询可重试
+    }
+  }
+
+  /**
+   * 注册故障转移追踪状态。仅对「存在可用备用链」的异步 provider 注册，
+   * 避免 proxy / agnes（无备用或同步）任务在 map 中泄漏。
+   */
+  private void registerFailoverState(
+      String taskId, ImageGenerationDtos.CreateTaskRequest request, String provider) {
+    if (taskId == null || taskId.isBlank()) return;
+    if (PROVIDER_PROXY.equals(provider) || PROVIDER_ANNES.equals(provider)) return;
+    String backup = determineBackupProvider(provider, properties.resolveModel(request.model()));
+    if (backup == null) return; // 无可用备用链，无需追踪
+    failoverStates.put(taskId, new FailoverState(System.currentTimeMillis(), request, provider));
+  }
+
+  /** 是否为终态（完成或失败）：用于清理追踪状态，防止内存泄漏 */
+  private boolean isTerminalStatus(String status) {
+    return isDoneStatus(status) || isTerminalErrorStatus(status, null);
+  }
+
+  /** 主任务是否返回失败/错误（含 error 字段），用于提前触发切换 */
+  private boolean isTerminalErrorStatus(String status, String error) {
+    if (error != null && !error.isBlank()) return true;
+    if (status == null) return false;
+    String s = status.trim().toLowerCase();
+    return s.equals("failed") || s.equals("error") || s.equals("cancelled")
+        || s.equals("canceled") || s.equals("expired") || s.equals("aborted")
+        || s.contains("error") || s.contains("fail");
   }
 
   private boolean isDoneStatus(String status) {

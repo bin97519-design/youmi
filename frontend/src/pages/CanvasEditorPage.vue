@@ -448,7 +448,7 @@ const hoverPreview = reactive({
 const hoverPreviewTimer = ref(null)
 const hoverPreviewImageSize = reactive({ width: 0, height: 0 })
 const hoverPreviewDims = reactive({ w: 220, h: 180 }) // 预览弹窗实际宽高，用于边界自适应
-const TASK_MAX_POLLS = 120
+const TASK_MAX_POLLS = 160 // 后端 2 分钟超时自动切换备用中转站，留足余量（160×2.5s≈400s）
 const PLACEHOLDER_WIDTH = 360
 const PLACEHOLDER_HEIGHT = 480
 const CANVAS_IMAGE_WIDTH = 360 // 画布中图片统一展示宽度（相同比例的图显示大小一致）
@@ -1279,6 +1279,39 @@ function placeholderStatusText(progress, status = '') {
   return PLACEHOLDER_STATUS_TEXTS[0]
 }
 
+// 把生图失败的后端/上游原始报错翻译成用户可懂的中文提示
+function friendlyImageError(raw) {
+  const msg = String(raw || '').trim()
+  if (!msg) return '生图失败，请稍后重试'
+  const lower = msg.toLowerCase()
+  // prompt 过长（兼容后端已清洗的「提示词过长」与未清洗的 ModelArts 原始报文）
+  if (lower.includes('提示词过长') || lower.includes('prompt length')) {
+    const m = msg.match(/(\d[\d,]*)\D*?(\d[\d,]*)/)
+    if (lower.includes('提示词过长') && m) {
+      return `提示词过长（约 ${m[1]} 字，模型上限约 ${m[2]} 字），请精简描述或拆分为多次生成后重试。`
+    }
+    return '提示词过长，请精简描述或拆分为多次生成后重试。'
+  }
+  if (lower.includes('exceed') || lower.includes('too long') || lower.includes('maximum input length')) {
+    return '提示词过长，请精简描述或拆分为多次生成后重试。'
+  }
+  if (lower.includes('not configured') || lower.includes('api key')) {
+    return '生图服务未配置密钥，请联系管理员。'
+  }
+  if (lower.includes('timeout') || lower.includes('timed out')) {
+    return '生图服务响应超时，请稍后重试。'
+  }
+  if (lower.includes('rate') || lower.includes('ratelimit') || lower.includes('429') || lower.includes('too many')) {
+    return '生图请求过于频繁，请稍候再试。'
+  }
+  // 兜底：剥掉 "XXX request failed: 4xx " 这类内部前缀，尽量保留可读信息
+  const cleaned = msg.replace(/^[^:：]+request failed:\s*\d+\s*/i, '').trim()
+  if (cleaned && cleaned.length < 120 && !/^[A-Za-z0-9_.-]+$/.test(cleaned)) {
+    return '生图失败：' + cleaned
+  }
+  return '生图失败，请稍后重试或调整提示词。'
+}
+
 function updateChatMessage(messageId, patch) {
   canvas.updateDocument(props.id, (draft) => {
     draft.payload.chat = draft.payload.chat || []
@@ -1662,7 +1695,7 @@ async function replaceGeneratingPlaceholder(layerId, url, skipAutoDetect = false
     updateLayer(layerId, {
       progress: 1,
       status: 'failed',
-      statusText: `渲染失败：${error.message || '未知错误'}`,
+      statusText: `渲染失败：${friendlyImageError(error.message || '未知错误')}`,
     })
     return ''
   }
@@ -4092,9 +4125,11 @@ async function sendChat() {
   elementClickPositions.value = {}
   chatGenerating.value = true
   const placeholderId = addGeneratingPlaceholderLayer(fullPrompt)
+  let submitted = false
 
   try {
     const taskId = await submitImageTask({ prompt: fullPrompt, imageUrls })
+    submitted = true
     updateChatMessage(assistantId, {
       taskId,
       text: `任务已提交，模型 ${chatModel.value}｜${chatRatio.value}｜${chatResolution.value}，正在生成...`,
@@ -4119,7 +4154,7 @@ async function sendChat() {
       }
 
       if (isTaskFailed(status.status)) {
-        throw new Error(status.error || 'APIMart 生图任务失败')
+        throw new Error(friendlyImageError(status.error || 'APIMart 生图任务失败'))
       }
 
       if (isTaskDone(status.status)) {
@@ -4165,12 +4200,19 @@ async function sendChat() {
 
     throw new Error('轮询超时，任务仍未完成')
   } catch (error) {
-    updateGeneratingPlaceholder(placeholderId, {
-      progress: 1,
-      status: 'failed',
-      statusText: `生成失败：${error.message || error}`,
-    })
-    updateChatMessage(assistantId, { text: `生成失败：${error.message || error}` })
+    const friendly = friendlyImageError(error.message || error)
+    if (!submitted) {
+      // 提交阶段失败：根本没有后台任务，自动移除占位卡，避免画布留下死卡
+      removeLayer(placeholderId)
+      showCopyPasteToast(friendly)
+    } else {
+      updateGeneratingPlaceholder(placeholderId, {
+        progress: 1,
+        status: 'failed',
+        statusText: friendly,
+      })
+    }
+    updateChatMessage(assistantId, { text: `生成失败：${friendly}` })
   } finally {
     chatGenerating.value = false
   }
