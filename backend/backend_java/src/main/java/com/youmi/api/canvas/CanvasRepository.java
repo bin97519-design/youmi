@@ -64,6 +64,41 @@ public class CanvasRepository {
     jdbcTemplate.update("DELETE FROM ym_canvas_document WHERE doc_id = ? AND user_id = ?", docId, userId);
   }
 
+  /**
+   * 管理员全局查询：返回全部画布（跨用户）。
+   * 注意：本方法不做 userId 过滤，必须仅在 requireAdmin 校验通过后由管理端调用。
+   */
+  public List<CanvasDocument> findAll() {
+    String sql = """
+        SELECT id, doc_id, user_id, title, payload_json, thumbnail_url, is_reverse_prompt, created_at, updated_at
+        FROM ym_canvas_document
+        ORDER BY updated_at DESC
+        """;
+    return jdbcTemplate.query(sql, this::mapRow);
+  }
+
+  /**
+   * 管理员按 docId 全局查询单条画布（不限定 owner）。
+   * 必须仅在 requireAdmin 校验通过后调用。
+   */
+  public Optional<CanvasDocument> findByDocId(String docId) {
+    String sql = """
+        SELECT id, doc_id, user_id, title, payload_json, thumbnail_url, is_reverse_prompt, created_at, updated_at
+        FROM ym_canvas_document
+        WHERE doc_id = ?
+        LIMIT 1
+        """;
+    return jdbcTemplate.query(sql, this::mapRow, docId).stream().findFirst();
+  }
+
+  /**
+   * 管理员按 docId 全局删除（不限定 owner）。
+   * 必须仅在 requireAdmin 校验通过后调用。
+   */
+  public void deleteByDocId(String docId) {
+    jdbcTemplate.update("DELETE FROM ym_canvas_document WHERE doc_id = ?", docId);
+  }
+
   private CanvasDocument mapRow(ResultSet rs, int rowNum) throws SQLException {
     String payloadJson = rs.getString("payload_json");
     CanvasPayload payload;
