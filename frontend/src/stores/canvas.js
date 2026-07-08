@@ -36,6 +36,12 @@ export function makeCanvasDocument(id = String(Date.now()).slice(-4)) {
       view: { scale: 0.68, offset: { x: 0, y: 0 } },
       layers: [],
       chat: [],
+      // 连接线（按文档隔离，随 payload 持久化）
+      connections: [],
+      // 生图历史（含 model/ratio/resolution/createdAt/imageUrl，随 payload 持久化）
+      generationHistory: [],
+      // 对话窗口选中的模型参数（随 payload 持久化）
+      chatConfig: {},
       ui: { detectionVisible: true },
     },
   };
@@ -363,7 +369,7 @@ export const useCanvasStore = defineStore('canvas', {
             continue;
           }
 
-          // 服务器有数据 → 覆盖本地；仅保留 detection 缓存
+          // 服务器有数据 → 覆盖本地；保留 detection 缓存 + 本地独有字段（connections/generationHistory/chatConfig）
           const mergedDoc = { ...serverDoc };
           if (serverDoc.payload?.layers && localDoc.payload?.layers) {
             mergedDoc.payload = { ...serverDoc.payload };
@@ -374,6 +380,26 @@ export const useCanvasStore = defineStore('canvas', {
               }
               return sl;
             });
+          }
+          // 保留本地独有字段：服务端旧数据可能不含这些字段或为空，直接覆盖会丢失
+          // 策略：服务端有实质数据则用服务端的，服务端为空/缺失但本地有数据则保留本地的
+          if (localDoc.payload) {
+            if (!mergedDoc.payload) mergedDoc.payload = {};
+            const localConns = localDoc.payload.connections;
+            const serverConns = mergedDoc.payload.connections;
+            if ((!serverConns || !serverConns.length) && localConns && localConns.length) {
+              mergedDoc.payload.connections = localConns;
+            }
+            const localHistory = localDoc.payload.generationHistory;
+            const serverHistory = mergedDoc.payload.generationHistory;
+            if ((!serverHistory || !serverHistory.length) && localHistory && localHistory.length) {
+              mergedDoc.payload.generationHistory = localHistory;
+            }
+            const localChatCfg = localDoc.payload.chatConfig;
+            const serverChatCfg = mergedDoc.payload.chatConfig;
+            if ((!serverChatCfg || !Object.keys(serverChatCfg).length) && localChatCfg && Object.keys(localChatCfg).length) {
+              mergedDoc.payload.chatConfig = localChatCfg;
+            }
           }
           merged[existingIndex] = mergedDoc;
         } else {

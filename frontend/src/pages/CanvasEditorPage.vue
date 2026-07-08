@@ -121,7 +121,16 @@ const clipboardImage = ref(null)
 const rightTab = ref('chat')
 
 // ========== 连接线系统 ==========
-const connections = ref([]) // { id, fromLayerId, fromPort, toLayerId, toPort }
+// 连接线归属画布文档：从按文档隔离的 payload 读取（旧文档无该字段则默认 []）
+const connections = ref([...(doc.value?.payload?.connections || [])]) // { id, fromLayerId, fromPort, toLayerId, toPort }
+
+// 把当前连接线落库到按文档隔离的 payload（localStorage 立即写 + 防抖同步服务端）
+function persistConnections() {
+  canvas.updateDocument(props.id, (draft) => {
+    draft.payload.connections = connections.value
+    return draft
+  })
+}
 const connecting = reactive({
   active: false,
   fromLayerId: '',
@@ -227,6 +236,7 @@ function finishConnection(event, layerId, port) {
     toLayerId: layerId,
     toPort: port,
   })
+  persistConnections()
   debounceSaveLayout()
   // 标记刚完成连接，防止 stage pointerup 立即 cancelConnection
   _justFinishedConnection = true
@@ -304,6 +314,7 @@ function addTextNodeAndClose() {
 // 删除连接
 function removeConnection(connId) {
   connections.value = connections.value.filter((c) => c.id !== connId)
+  persistConnections()
   debounceSaveLayout()
 }
 
@@ -383,16 +394,46 @@ const chatSelectOpen = ref(null) // 'model' | 'ratio' | 'resolution' | null
 function toggleChatSelect(name) {
   chatSelectOpen.value = chatSelectOpen.value === name ? null : name
 }
-const generationHistory = ref([])
-const chatModel = ref('banana2')
-const chatRatio = ref('9:16')
-const chatResolution = ref('2K')
+// 生成历史归属画布文档：从 payload 读取（旧文档无该字段则默认 []）
+const generationHistory = ref([...(doc.value?.payload?.generationHistory || [])])
+// 对话窗口选中的模型参数也归属文档（payload.chatConfig），未持久化过则保持默认
+const initialChatConfig = doc.value?.payload?.chatConfig || {}
+const chatModel = ref(initialChatConfig.model || 'banana2')
+const chatRatio = ref(initialChatConfig.ratio || '9:16')
+const chatResolution = ref(initialChatConfig.resolution || '2K')
 // 注意：model 字符串必须和后端 alias 表（ImageGenerationProperties.defaultModelAliases）保持一致
 // 后端会对空格/横线/下划线做归一化容错，但 UI 上用标准写法更专业
 const chatModelOptions = ['banana2', 'banana-pro', 'gpt-image-2', 'agnes-image-2.1-flash']
 const chatRatioOptions = ['auto', '1:1', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
 const chatResolutionOptions = ['1K', '2K', '4K']
 const TASK_POLL_INTERVAL = 2500
+// 对话窗口选中的模型参数变化时，落库到按文档隔离的 payload.chatConfig
+watch([chatModel, chatRatio, chatResolution], () => {
+  canvas.updateDocument(props.id, (draft) => {
+    draft.payload.chatConfig = {
+      model: chatModel.value,
+      ratio: chatRatio.value,
+      resolution: chatResolution.value,
+    }
+    return draft
+  })
+})
+// 切换画布文档（SPA 复用组件实例、props.id 变化时）重新从新文档 payload 同步本地状态，
+// 避免把上一个文档的连接线/历史错写到新文档（准则 D：互不串扰）
+watch(
+  () => props.id,
+  () => {
+    connecting.active = false
+    selectedConnection.id = ''
+    connections.value = [...(doc.value?.payload?.connections || [])]
+    generationHistory.value = [...(doc.value?.payload?.generationHistory || [])]
+    const cfg = doc.value?.payload?.chatConfig || {}
+    chatModel.value = cfg.model || 'banana2'
+    chatRatio.value = cfg.ratio || '9:16'
+    chatResolution.value = cfg.resolution || '2K'
+    initDocState()
+  },
+)
 // 聊天消息中元素 pill 的悬停预览
 const hoverPreview = reactive({
   visible: false,
@@ -667,17 +708,21 @@ function loadUILayout() {
       if (s.reversePromptCard.height != null)
         reversePromptCard.height = Math.max(200, Math.min(700, s.reversePromptCard.height))
     }
-    if (s.generationHistory != null) generationHistory.value = s.generationHistory
-    if (s.connections != null) connections.value = s.connections
-    // 加载时清理孤儿连接线：关联图层已不存在的连接线直接移除
-    if (connections.value.length && doc.value?.payload?.layers) {
-      const layerIds = new Set(doc.value.payload.layers.map((l) => l.id))
-      connections.value = connections.value.filter(
-        (c) => layerIds.has(c.fromLayerId) && layerIds.has(c.toLayerId),
-      )
-    }
   } catch (_) {
     /* ignore */
+  }
+}
+
+// 初始化从 payload 恢复的文档级状态，并就地清洗孤儿连接线（关联图层已不存在的连接线移除并落库）
+function initDocState() {
+  if (!connections.value.length || !doc.value?.payload?.layers) return
+  const layerIds = new Set(doc.value.payload.layers.map((l) => l.id))
+  const cleaned = connections.value.filter(
+    (c) => layerIds.has(c.fromLayerId) && layerIds.has(c.toLayerId),
+  )
+  if (cleaned.length !== connections.value.length) {
+    connections.value = cleaned
+    persistConnections()
   }
 }
 function saveUILayout() {
@@ -700,9 +745,6 @@ function saveUILayout() {
           width: reversePromptCard.width,
           height: reversePromptCard.height,
         },
-        // 完整保留 generationHistory（含 imageUrl），不再裁剪
-        generationHistory: generationHistory.value.slice(),
-        connections: connections.value,
       }),
     )
   } catch (_) {
@@ -726,8 +768,6 @@ watch(
     () => reversePromptCard.y,
     () => reversePromptCard.width,
     () => reversePromptCard.height,
-    connections,
-    () => generationHistory.value.length,
   ],
   debounceSaveLayout,
   { deep: false },
@@ -2484,6 +2524,7 @@ function removeLayer(id) {
   connections.value = connections.value.filter((c) => c.fromLayerId !== id && c.toLayerId !== id)
   canvas.updateDocument(props.id, (draft) => {
     draft.payload.layers = draft.payload.layers.filter((layer) => layer.id !== id)
+    draft.payload.connections = connections.value
     return draft
   })
   selectedLayerId.value = layers.value[0]?.id || ''
@@ -4103,6 +4144,11 @@ async function sendChat() {
           createdAt: Date.now(),
         })
         if (generationHistory.value.length > 200) generationHistory.value.shift()
+        // 生成历史归属文档：落库到 payload（保留最近 200 条）
+        canvas.updateDocument(props.id, (draft) => {
+          draft.payload.generationHistory = generationHistory.value.slice(-200)
+          return draft
+        })
         return
       }
     }
@@ -4712,6 +4758,7 @@ function onGlobalKeydown(event) {
       canvas.updateDocument(props.id, (draft) => {
         const deleteSet = new Set(idsToDelete)
         draft.payload.layers = draft.payload.layers.filter((layer) => !deleteSet.has(layer.id))
+        draft.payload.connections = connections.value
         return draft
       })
       selectedLayerId.value = layers.value[0]?.id || ''
@@ -4768,6 +4815,11 @@ function onGlobalKeydown(event) {
       // 恢复连接线数据
       if (!Array.isArray(snapshot) && snapshot.connections) {
         connections.value = snapshot.connections
+        // 撤销后把连接线落库到 payload
+        canvas.updateDocument(props.id, (draft) => {
+          draft.payload.connections = connections.value
+          return draft
+        })
       }
       // 只删除已不存在的图层的检测数据
       const currentLayerIds = new Set(layersData.map((l) => l.id))
@@ -4853,6 +4905,10 @@ function reuseGenerationRecordPrompt(record) {
 
 function removeGenerationRecord(id) {
   generationHistory.value = generationHistory.value.filter((r) => r.id !== id)
+  canvas.updateDocument(props.id, (draft) => {
+    draft.payload.generationHistory = generationHistory.value.slice(-200)
+    return draft
+  })
   debounceSaveLayout()
 }
 
@@ -4862,6 +4918,8 @@ onMounted(() => {
   window.addEventListener('resize', updateViewportSize)
   window.addEventListener('keydown', onGlobalKeydown)
   loadUILayout()
+  // 连接线/历史/模型参数已从 payload 初始化，这里仅做孤儿连接线清洗
+  initDocState()
   // 建立 pill 删除监听 — MutationObserver 比 @input 更可靠
   nextTick(() => setupPillObserver())
   // 恢复已缓存的检测元素（清除旧版错误归一化的缓存）
@@ -4952,7 +5010,12 @@ onMounted(() => {
     window.removeEventListener('keydown', onGlobalKeydown)
     // 清理所有定时器
     clearTimeout(_manualBlurTimer)
-    clearTimeout(_layoutSaveTimer)
+    // 卸载前确保全局 UI 布局已落库（避免 300ms 防抖未触发导致丢失）
+    if (_layoutSaveTimer) {
+      clearTimeout(_layoutSaveTimer)
+      _layoutSaveTimer = null
+      saveUILayout()
+    }
   })
 })
 
