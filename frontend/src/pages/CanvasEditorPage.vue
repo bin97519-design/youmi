@@ -13,6 +13,7 @@ import { useRouter } from 'vue-router'
 import { layerName, useCanvasStore } from '../stores/canvas'
 import { useUserStore } from '../stores/user'
 import { apiPath } from '../utils/apiBase'
+import { cachedImgHtml } from '../utils/imageCache'
 import { uploadFileDirect } from '../utils/ossUpload'
 
 const props = defineProps({ id: { type: String, required: true } })
@@ -3023,12 +3024,12 @@ function pickBestElement(candidates) {
 // 将消息文本中的 [元素名] 替换为结构化元素标签
 function renderMessageContent(message) {
   let html = escHtml(message.text || '').replace(/\n/g, '<br>')
-  // 参考图缩略图
+  // 参考图缩略图（使用缓存，防签名 URL 过期裂图）
   if (message.referenceImages?.length) {
     const thumbs = message.referenceImages
       .map(
         (img, i) =>
-          `<span class="chat-ref-thumb" style="--i:${i}"><img src="${escHtml(img.url)}" alt="" /></span>`,
+          `<span class="chat-ref-thumb" style="--i:${i}">${cachedImgHtml(escHtml(img.url))}</span>`,
       )
       .join('')
     html = `<div class="chat-ref-thumbs">${thumbs}</div>` + html
@@ -3043,7 +3044,7 @@ function renderMessageContent(message) {
         thumb && box.length === 4
           ? ` style="object-position:${(box[0] + (box[2] - box[0]) / 2) * 100}% ${(box[1] + (box[3] - box[1]) / 2) * 100}%;object-fit:cover"`
           : ''
-      const pillHtml = `<span class="chat-pill chat-pill-msg" contenteditable="false" data-el-layer="${escHtml(el.layerId)}" data-el-name="${escHtml(el.name)}" data-el-order="${order}"><span class="chat-pill-num">${order}</span>${thumb ? `<img src="${thumb}" alt=""${imgStyle} />` : ''}${name}</span>`
+      const pillHtml = `<span class="chat-pill chat-pill-msg" contenteditable="false" data-el-layer="${escHtml(el.layerId)}" data-el-name="${escHtml(el.name)}" data-el-order="${order}"><span class="chat-pill-num">${order}</span>${thumb ? cachedImgHtml(thumb, `alt=""${imgStyle}`) : ''}${name}</span>`
       html = html.replace(`[${name}]`, pillHtml)
     }
   }
