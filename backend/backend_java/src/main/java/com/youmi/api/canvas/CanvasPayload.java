@@ -14,6 +14,12 @@ public class CanvasPayload {
   public String reversePromptLastAppliedKey;
   public CanvasUi ui = new CanvasUi();  // 画布级 UI 偏好（视觉框开关等）
 
+  // 以下字段后端仅做透传（序列化/反序列化原样保留），不解析内部结构
+  public Object connections;           // 连接线数组 [{id, fromLayerId, fromPort, toLayerId, toPort}]
+  public Object generationHistory;     // 生图历史数组 [{id, prompt, model, ratio, resolution, imageUrl, ...}]
+  public Object chatConfig;            // 对话窗口模型参数 {model, ratio, resolution}
+  public Object detectedElements;      // 视觉框检测结果缓存（按图层ID索引的对象）
+
   /** 画布级 UI 状态，独立于图层。 */
   @JsonIgnoreProperties(ignoreUnknown = true)
   public static class CanvasUi {
