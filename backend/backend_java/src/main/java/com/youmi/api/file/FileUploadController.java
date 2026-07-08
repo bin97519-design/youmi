@@ -166,6 +166,31 @@ public class FileUploadController {
     }
   }
 
+  /**
+   * 刷新签名 URL：前端传入过期或即将过期的 URL，后端反推 objectName 后重新签名返回新 URL。
+   * 用于对话窗口缩略图等场景，防止签名过期导致图片裂图。
+   */
+  @PostMapping("/refresh-url")
+  public ApiResponse<Map<String, Object>> refreshUrl(@RequestBody Map<String, String> request) {
+    String url = request == null ? "" : request.get("url");
+    if (url == null || url.isBlank()) {
+      throw new ApiException(400, "url 不能为空");
+    }
+    if (!ossStorageService.isConfigured()) {
+      throw new ApiException(400, "OSS 未配置");
+    }
+    String objectName = ossStorageService.objectNameFromFileUrl(url);
+    if (objectName == null || objectName.isBlank()) {
+      throw new ApiException(400, "无法从 URL 解析 objectName");
+    }
+    // 重新签名，7 天有效期
+    String freshUrl = ossStorageService.getPresignedFileUrl(objectName);
+    Map<String, Object> data = new LinkedHashMap<>();
+    data.put("url", freshUrl);
+    data.put("objectName", objectName);
+    return ApiResponse.ok(data);
+  }
+
   private Map<String, Object> saveLocalFile(MultipartFile file) throws Exception {
     return saveLocalStream(
         file.getInputStream(),
