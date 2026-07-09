@@ -68,10 +68,10 @@ async function handleStartGeneration() {
   try {
     // 策划/优化是可选动作：若尚未创建 setId，则先创建再生成
     if (!store.setId) {
-      if (!store.productImageUrl && !store.productDescription) {
-        window.alert('请先上传产品图或填写产品描述')
-        return
-      }
+    if (!store.productImageUrl || !store.productDescription) {
+      window.alert('请同时上传产品图并填写产品描述（两者均为必填）')
+      return
+    }
       await store.createPlanning()
     }
     await store.startGeneration()

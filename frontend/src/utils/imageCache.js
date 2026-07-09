@@ -9,6 +9,8 @@
  * 缓存 key 用 URL 的 path 部分（去掉签名参数），这样同张图片的不同签名 URL 共享一条缓存。
  */
 
+import { persistToOss } from './ossUpload'
+
 const CACHE_NAME = 'youmi-image-cache-v1'
 const MAX_CACHE_ENTRIES = 500
 
@@ -148,11 +150,60 @@ export async function refreshExpiredUrl(url) {
 }
 
 /**
- * 创建一个带自动刷新的 img 标签 HTML。
- * 当图片加载失败时，尝试调后端重新签名。
+ * 聊天气泡图片加载失败时的兜底处理（供内联 onerror 调用）：
+ * 1) 先尝试后端重新签名（对自有 OSS 签名 URL 有效）；
+ * 2) 若刷新无效（agnes/apimart/unsplash 等第三方临时链，refresh 返回 null），
+ *    则懒转存到自有 OSS 永久 URL（persistToOss 内部已降级，不会抛异常）。
+ * 仅处理一次，避免无限重试。
+ * @param {HTMLImageElement} imgEl
+ * @param {string} url 原始图片 URL
+ */
+async function handleImgError(imgEl, url) {
+  if (!imgEl || imgEl._handled) return
+  imgEl._handled = true
+  // 1) 尝试刷新签名 URL
+  try {
+    const resp = await fetch('/api/v1/file/refresh-url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    })
+    const data = await resp.json().catch(() => ({}))
+    if (data.code === 0 && data.data?.url) {
+      imgEl.src = data.data.url
+      return
+    }
+  } catch {
+    // 忽略，进入兜底转存
+  }
+  // 2) 刷新无效 → 懒转存到 OSS 永久 URL（防历史脏数据裂图）
+  try {
+    const persisted = await persistToOss(url)
+    if (persisted && persisted !== url) {
+      imgEl.src = persisted
+      return
+    }
+  } catch {
+    // 忽略
+  }
+  imgEl.style.display = 'none'
+}
+
+// 暴露给内联 onerror 字符串调用（内联事件处理器运行在全局作用域，无法直接访问模块函数）
+if (typeof window !== 'undefined') {
+  window.__youmiHandleImgError = handleImgError
+}
+
+/**
+ * 创建一个带自动刷新 / 懒转存兜底的 img 标签 HTML。
+ * 当图片加载失败时：先尝试后端重新签名；若无效（第三方临时链），再懒转存到 OSS 永久 URL。
  */
 export function cachedImgHtml(url, attrs = '') {
   if (!url) return ''
-  const escapedUrl = url.replace(/"/g, '&quot;').replace(/</g, '&lt;')
-  return `<img src="${escapedUrl}"${attrs ? ' ' + attrs : ''} onerror="this._refreshAttempted || (this._refreshAttempted=true, fetch('/api/v1/file/refresh-url',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:'${escapedUrl}'})}).then(r=>r.json()).then(d=>{if(d.code===0&&d.data?.url)this.src=d.data.url;else this.style.display='none'}).catch(()=>this.style.display='none'))" />`
+  const escapedUrl = url
+    .replace(/\\/g, '\\\\')   // ① 反斜杠先转，避免吞掉后续转义
+    .replace(/'/g, "\\'")     // ② 单引号 → JS 转义，防破坏 onerror 单引号串
+    .replace(/"/g, '&quot;') // ③ 双引号 → HTML 实体，防破坏属性定界
+    .replace(/</g, '&lt;')   // ④ 尖括号 → HTML 实体，防标签注入
+  return `<img src="${escapedUrl}"${attrs ? ' ' + attrs : ''} onerror="window.__youmiHandleImgError && window.__youmiHandleImgError(this,'${escapedUrl}')" />`
 }

@@ -3931,6 +3931,18 @@ let _pillSyncLock = 0
 function syncPillsToEditor() {
   const editor = document.querySelector('.chat-editor')
   if (!editor) return
+
+  // 移除 "innerHTML='' 清空" 后浏览器自动插入、位于首位的裸 <br>，
+  // 否则 line-height:2 会把它撑成一行空白，使 pill 上方出现空行
+  const leadBr = editor.firstChild
+  if (leadBr && leadBr.nodeType === Node.ELEMENT_NODE && leadBr.tagName === 'BR') {
+    // 仅当编辑器直接子级文本节点中不存在真实文字时才移除，避免破坏用户已输入的文本
+    const hasDirectText = Array.from(editor.childNodes).some(
+      (n) => n.nodeType === Node.TEXT_NODE && n.textContent.trim().length > 0
+    )
+    if (!hasDirectText) leadBr.remove()
+  }
+
   _pillSyncLock++
   const lockId = _pillSyncLock
 
@@ -4129,6 +4141,18 @@ async function sendChat() {
   // 清空编辑器（pill + 文字）
   const editorEl = document.querySelector('.chat-editor')
   if (editorEl) editorEl.innerHTML = ''
+  // 清空后把焦点移回输入框，并把光标归位到开头（避免浏览器自动插入的 <br> 把光标推到第二行）
+  if (editorEl) {
+    editorEl.focus()
+    const sel = window.getSelection()
+    if (sel) {
+      const range = document.createRange()
+      range.selectNodeContents(editorEl)
+      range.collapse(true)   // true = 折叠到开头
+      sel.removeAllRanges()
+      sel.addRange(range)
+    }
+  }
   chatText.value = ''
   selectedDetectedElements.value = new Set()
   elementClickPositions.value = {}
@@ -4187,6 +4211,14 @@ async function sendChat() {
           fullPrompt && (fullPrompt.includes('买家秀') || hasGridKeywords(fullPrompt)),
         )
         updateChatMessage(assistantId, { text: '生成完成，已添加到画布。', imageUrl: url })
+        // 落库前将参考图临时链（agnes/apimart/unsplash 等 CDN 签名 URL）转存为 OSS 永久 URL，
+        // 防止签名过期后聊天气泡里的缩放图裂图。persistToOss 内置降级，转存失败返回原 URL 且不 reject。
+        let persistedReferenceImageUrls = imageUrls
+        if (imageUrls?.length) {
+          persistedReferenceImageUrls = await Promise.all(
+            imageUrls.map((u) => persistToOss(u)),
+          )
+        }
         generationHistory.value.push({
           id: `gen-${Date.now()}`,
           prompt: fullPrompt,
@@ -4194,7 +4226,7 @@ async function sendChat() {
           ratio: chatRatio.value,
           resolution: chatResolution.value,
           imageUrl: url,
-          referenceImageUrls: imageUrls,
+          referenceImageUrls: persistedReferenceImageUrls,
           createdAt: Date.now(),
         })
         if (generationHistory.value.length > 200) generationHistory.value.shift()
@@ -6587,7 +6619,6 @@ async function loadImageForCrop(layer) {
                   :class="{
                     'chat-editor-empty': !chatText.trim() && !getSelectedDetectedElements().length,
                   }"
-                  :data-placeholder="'描述你想生成的图片，或选中画布图片描述修改...'"
                   contenteditable="true"
                   @input="handleEditorInput"
                   @click="handleEditorPillClick"

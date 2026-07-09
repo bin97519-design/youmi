@@ -128,19 +128,13 @@ public class ImageGenerationClient {
       try {
         return createApimartTask(request);
       } catch (Exception exception) {
-        if (!shouldFallbackToGetToken()) throw exception;
+        if (!isProxyConfigured()) throw exception;
       }
     }
-    if (properties.isGetTokenConfigured()) {
-      return createGetTokenTask(request);
+    if (isProxyConfigured()) {
+      return createProxyTask(request);
     }
     throw new ApiException(502, "Image generation provider request failed");
-  }
-
-  private boolean shouldFallbackToGetToken() {
-    return properties.isFallbackEnabled()
-        && properties.isGetTokenConfigured()
-        && "gettoken".equalsIgnoreCase(String.valueOf(properties.getFallbackProvider()).trim());
   }
 
   private ImageGenerationDtos.CreateTaskResponse createApimartTask(ImageGenerationDtos.CreateTaskRequest request)
@@ -552,27 +546,33 @@ public class ImageGenerationClient {
     }
     // ===== 故障转移检测结束 =====
 
-    // 查询主任务状态（纯查询，不含故障转移逻辑，不会递归进入上面分支）
-    ImageGenerationDtos.TaskStatusResponse primaryResp = getTaskInternal(cleanTaskId);
+    // 查询主任务状态（纯查询，不含故障转移逻辑，不会递归进入上面分支）。
+    // 用 try/catch 包住：GetToken 轮询返回 HTTP 500/599 时，send() 会抛 ApiException
+    // 而非把错误放入 error 字段；这里捕获异常并兜底到 proxy，避免把异常原样甩给用户。
+    ImageGenerationDtos.TaskStatusResponse primaryResp;
+    try {
+      primaryResp = getTaskInternal(cleanTaskId);
+    } catch (Exception pollError) {
+      // 轮询主任务抛异常（如 GetToken 中转站 500/599）：满足前置条件则触发故障转移兜底
+      if (state != null && !PROVIDER_ANNES.equals(state.primaryProvider) && !state.failoverTriggered) {
+        System.out.println("[image-failover] poll exception, triggering backup: " + pollError.getMessage());
+        ImageGenerationDtos.TaskStatusResponse backupResp = pollBackupIfTriggered(cleanTaskId, state);
+        if (backupResp != null) {
+          return backupResp;
+        }
+      }
+      // 无可用备份（state 为 null / 已触发过 / 备份创建失败）：保持原行为，继续抛出原异常
+      throw pollError;
+    }
 
     // 3) 轮询中发现主任务返回失败/错误：同样触发切换（需求 2）
     if (state != null && !PROVIDER_ANNES.equals(state.primaryProvider) && !state.failoverTriggered) {
       if (isTerminalErrorStatus(primaryResp.status(), primaryResp.error())) {
-        triggerBackup(state, "error");
-        if (state.failoverTriggered && state.backupTaskId != null) {
-          ImageGenerationDtos.TaskStatusResponse backupResp = getTaskInternal(state.backupTaskId);
-          if (isTerminalStatus(backupResp.status())) {
-            failoverStates.remove(cleanTaskId);
-          }
-          return new ImageGenerationDtos.TaskStatusResponse(
-              backupResp.provider(),
-              cleanTaskId,
-              backupResp.status(),
-              backupResp.progress(),
-              backupResp.imageUrls(),
-              backupResp.error(),
-              backupResp.raw());
+        ImageGenerationDtos.TaskStatusResponse backupResp = pollBackupIfTriggered(cleanTaskId, state);
+        if (backupResp != null) {
+          return backupResp;
         }
+        // 兜底未成功（无可用备份链 / 备份创建失败）：继续返回主任务原始错误响应
       }
     }
 
@@ -581,6 +581,43 @@ public class ImageGenerationClient {
       failoverStates.remove(cleanTaskId);
     }
     return primaryResp;
+  }
+
+  /**
+   * 触发故障转移到备份中转站（如 gettoken → proxy），并立即轮询备份任务状态，
+   * 以原始 taskId 透传构造返回（对调用方完全无感）。
+   * 仅在「存在可用备份链且尚未触发过」时生效；否则返回 null（由调用方自行处理）。
+   */
+  private ImageGenerationDtos.TaskStatusResponse pollBackupIfTriggered(String cleanTaskId, FailoverState state)
+      throws Exception {
+    if (state == null || PROVIDER_ANNES.equals(state.primaryProvider) || state.failoverTriggered) {
+      return null;
+    }
+    triggerBackup(state, "error");
+    if (state.failoverTriggered && state.backupTaskId != null) {
+      if (!state.failoverLogged) {
+        state.failoverLogged = true;
+        System.out.println("[image-failover] " + new java.util.Date()
+            + " | reason=provider_" + state.failoverReason
+            + " | from=" + state.primaryProvider
+            + " | to=" + state.backupProvider
+            + " | originalTaskId=" + cleanTaskId
+            + " | backupTaskId=" + state.backupTaskId);
+      }
+      ImageGenerationDtos.TaskStatusResponse backupResp = getTaskInternal(state.backupTaskId);
+      if (isTerminalStatus(backupResp.status())) {
+        failoverStates.remove(cleanTaskId); // 备份已终态，清理防内存泄漏
+      }
+      return new ImageGenerationDtos.TaskStatusResponse(
+          backupResp.provider(),
+          cleanTaskId, // 保持原始 taskId，前端不知道发生了切换
+          backupResp.status(),
+          backupResp.progress(),
+          backupResp.imageUrls(),
+          backupResp.error(),
+          backupResp.raw());
+    }
+    return null;
   }
 
   /** 纯查询（不含故障转移逻辑）：根据 taskId 前缀分发到各 provider 查询实现 */
@@ -1316,8 +1353,7 @@ public class ImageGenerationClient {
     return switch (primaryProvider) {
       case "apimart-direct" -> isProxyConfigured() ? PROVIDER_PROXY : null;
       case PROVIDER_GETTOKEN -> isProxyConfigured() ? PROVIDER_PROXY : null;
-      case PROVIDER_APIMART -> properties.isGetTokenConfigured() ? PROVIDER_GETTOKEN
-          : (isProxyConfigured() ? PROVIDER_PROXY : null);
+      case PROVIDER_APIMART -> isProxyConfigured() ? PROVIDER_PROXY : null;
       default -> null; // agnes / proxy 无备用
     };
   }

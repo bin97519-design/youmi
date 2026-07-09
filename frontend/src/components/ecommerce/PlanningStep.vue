@@ -82,7 +82,7 @@ function importFromHistory() {
 
 /* 产品信息重新优化（复用原有 AI 策划能力） */
 async function handleOptimize() {
-  if (!store.productImageUrl && !store.productDescription) return
+  if (!store.productImageUrl || !store.productDescription) return
   try {
     await store.createPlanning()
   } catch (err) {
@@ -99,7 +99,7 @@ const sellingPoints = computed(() => store.planningData?.sellingPoints || [])
   <div class="es-planning-step">
     <!-- 产品图片上传 -->
     <div class="es-section">
-      <label class="es-label">产品图片</label>
+      <label class="es-label">产品图片<small class="es-req">* 必填</small></label>
       <div
         v-if="!store.productImageUrl"
         class="es-upload-zone"
@@ -133,19 +133,19 @@ const sellingPoints = computed(() => store.planningData?.sellingPoints || [])
 
     <!-- 产品描述 -->
     <div class="es-section">
-      <label class="es-label">产品描述</label>
+      <label class="es-label">产品描述<small class="es-req">* 必填</small></label>
       <textarea
         v-model="store.productDescription"
         class="es-textarea"
         rows="4"
-        placeholder="描述你的产品，如：成品窗帘，遮光隔音隔热..."
+        placeholder="产品名、核心卖点、材质、工艺、场景、风格调性（可选），如：成品窗帘，遮光隔音隔热，涤纶混纺，高温定型，卧室/母婴房，简约北欧"
       ></textarea>
     </div>
 
     <!-- 产品信息重新优化 -->
     <button
       class="es-primary-btn"
-      :disabled="(!store.productImageUrl && !store.productDescription) || store.planningLoading"
+      :disabled="(!store.productImageUrl || !store.productDescription) || store.planningLoading"
       @click="handleOptimize"
     >
       <i v-if="store.planningLoading" class="ri-loader-4-line es-spin" aria-hidden="true"></i>
@@ -218,6 +218,12 @@ const sellingPoints = computed(() => store.planningData?.sellingPoints || [])
   font-size: 13px;
   font-weight: 500;
   color: #475569;
+}
+.es-req {
+  font-size: 11px;
+  color: #ef4444;
+  font-weight: 400;
+  margin-left: 4px;
 }
 
 /* 上传区域 */
