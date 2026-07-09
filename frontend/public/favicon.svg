@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="有米AI">
+  <defs>
+    <linearGradient id="youmiBg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1e293b" />
+      <stop offset="1" stop-color="#0f172a" />
+    </linearGradient>
+    <linearGradient id="youmiGold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff7c2" />
+      <stop offset="0.55" stop-color="#fff1a6" />
+      <stop offset="1" stop-color="#f4d35e" />
+    </linearGradient>
+  </defs>
+
+  <!-- 中性暗色圆角磁贴背景（slate 色系，无紫色） -->
+  <rect x="0" y="0" width="32" height="32" rx="7" fill="url(#youmiBg)" />
+
+  <!-- 暖金「米」字意象：横、竖 + 上两点 + 下两捺，中心米粒 -->
+  <g fill="none" stroke="url(#youmiGold)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <!-- 横 -->
+    <path d="M8 16 H24" />
+    <!-- 竖 -->
+    <path d="M16 7 V25" />
+    <!-- 左上点 -->
+    <path d="M13.5 12 L9.5 8.5" />
+    <!-- 右上点 -->
+    <path d="M18.5 12 L22.5 8.5" />
+    <!-- 左下撇 -->
+    <path d="M16 16 L9.5 24" />
+    <!-- 右下捺 -->
+    <path d="M16 16 L22.5 24" />
+  </g>
+
+  <!-- 中心米粒（暖金实心，呼应「有米」品牌） -->
+  <circle cx="16" cy="16" r="2.1" fill="url(#youmiGold)" />
+</svg>
