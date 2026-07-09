@@ -531,6 +531,15 @@ const manualNameInput = reactive({
   box_2d: null,
   text: '',
 })
+// 图片加载失败追踪：OSS 故障/签名过期时显示占位而非白条
+const brokenImages = reactive(new Set())
+function markImageBroken(id) {
+  brokenImages.add(id)
+}
+function retryImage(id) {
+  // 从失败集合移除 → 触发模板重渲染 → img 重新发起加载（OSS 恢复后即可救回）
+  brokenImages.delete(id)
+}
 // 宫格裁图模式
 const cropMode = reactive({
   active: false,
@@ -5947,7 +5956,20 @@ async function loadImageForCrop(layer) {
                   <small>{{ formatLayerTime(layer) }}</small>
                 </div>
                 <div class="uc-image-node-inner">
-                  <img :src="layer.url" :alt="layer.name" draggable="false" />
+                  <img
+                    v-if="!brokenImages.has(layer.id)"
+                    :src="layer.url"
+                    :alt="layer.name"
+                    draggable="false"
+                    @error="markImageBroken(layer.id)"
+                  />
+                  <div v-else class="uc-image-broken">
+                    <i class="ri-image-line"></i>
+                    <span>图片加载失败</span>
+                    <button type="button" class="uc-broken-retry" @click="retryImage(layer.id)">
+                      重试
+                    </button>
+                  </div>
                 </div>
                 <div class="uc-text-node-hint" @pointerdown.stop @click.stop.exact>
                   <i class="ri-edit-line"></i>
@@ -6694,8 +6716,13 @@ async function loadImageForCrop(layer) {
             @click="selectSingleLayer(layer)"
           >
             <span>◉</span>
-            <img v-if="layer.thumbnailUrl" :src="layer.thumbnailUrl" alt="" />
-            <i v-else class="ri-ai-generate-2-line" aria-hidden="true"></i>
+            <img
+              v-if="layer.thumbnailUrl && !brokenImages.has('thumb-' + layer.id)"
+              :src="layer.thumbnailUrl"
+              alt=""
+              @error="markImageBroken('thumb-' + layer.id)"
+            />
+            <i v-else class="ri-image-line broken-icon" aria-hidden="true"></i>
             <strong>{{ layerName(layers.findIndex((item) => item.id === layer.id)) }}</strong>
             <small>{{ Math.round(layer.width) }} x {{ Math.round(layer.height) }}</small>
             <em>▣</em>
@@ -6712,7 +6739,12 @@ async function loadImageForCrop(layer) {
             :key="record.id"
             class="gh-record"
           >
-            <img v-if="record.imageUrl" :src="record.imageUrl" alt="" />
+            <img
+              v-if="record.imageUrl && !brokenImages.has('rec-' + record.id)"
+              :src="record.imageUrl"
+              alt=""
+              @error="markImageBroken('rec-' + record.id)"
+            />
             <strong>{{ record.model }} · {{ record.ratio }}</strong>
             <p>{{ record.prompt }}</p>
             <small v-if="record.referenceImageUrls?.length">
@@ -7199,7 +7231,12 @@ async function loadImageForCrop(layer) {
               class="uc-history-card"
               @click="addGenerationRecordToCanvas(record)"
             >
-              <img v-if="record.imageUrl" :src="record.imageUrl" :alt="record.prompt" />
+              <img
+                v-if="record.imageUrl && !brokenImages.has('rec-' + record.id)"
+                :src="record.imageUrl"
+                :alt="record.prompt"
+                @error="markImageBroken('rec-' + record.id)"
+              />
               <div class="uc-history-card-footer">
                 <span class="uc-history-model">{{ record.model }}</span>
                 <span class="uc-history-ratio">{{ record.ratio }}</span>
@@ -7397,3 +7434,40 @@ async function loadImageForCrop(layer) {
     </div>
   </Teleport>
 </template>
+
+<style>
+.uc-image-broken {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 120px;
+  width: 100%;
+  color: #94a3b8;
+  background: rgba(15, 23, 42, 0.4);
+  border: 1px dashed rgba(148, 163, 184, 0.3);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.uc-image-broken i {
+  font-size: 28px;
+  opacity: 0.6;
+}
+.uc-broken-retry {
+  padding: 3px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #e2e8f0;
+  cursor: pointer;
+  font-size: 12px;
+}
+.uc-broken-retry:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+.broken-icon {
+  color: #64748b;
+  font-size: 18px;
+}
+</style>
