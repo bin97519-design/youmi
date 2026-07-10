@@ -17,9 +17,11 @@ public class UserRepository {
 
   public Optional<UserAccount> findByLoginName(String loginName) {
     String sql = """
-        SELECT id, account, phone, nickname, password_hash, password_salt, status, mi_value, plan_name
-        FROM ym_sys_user
-        WHERE account = ? OR phone = ? OR CAST(id AS CHAR) = ?
+        SELECT u.id, u.account, u.phone, u.nickname, u.password_hash, u.password_salt, u.status,
+               u.mi_value, u.plan_name, u.shop_id, s.`name` AS shop_name
+        FROM ym_sys_user u
+        LEFT JOIN ym_shop s ON s.id = u.shop_id
+        WHERE u.account = ? OR u.phone = ? OR CAST(u.id AS CHAR) = ?
         LIMIT 1
         """;
     List<UserAccount> users = jdbcTemplate.query(sql, (rs, rowNum) -> mapUser(rs), loginName, loginName, loginName);
@@ -28,9 +30,11 @@ public class UserRepository {
 
   public Optional<UserAccount> findById(Long id) {
     String sql = """
-        SELECT id, account, phone, nickname, password_hash, password_salt, status, mi_value, plan_name
-        FROM ym_sys_user
-        WHERE id = ?
+        SELECT u.id, u.account, u.phone, u.nickname, u.password_hash, u.password_salt, u.status,
+               u.mi_value, u.plan_name, u.shop_id, s.`name` AS shop_name
+        FROM ym_sys_user u
+        LEFT JOIN ym_shop s ON s.id = u.shop_id
+        WHERE u.id = ?
         LIMIT 1
         """;
     List<UserAccount> users = jdbcTemplate.query(sql, (rs, rowNum) -> mapUser(rs), id);
@@ -47,10 +51,10 @@ public class UserRepository {
     );
   }
 
-  public Long insertUser(String account, String passwordHash, String salt) {
+  public Long insertUser(String account, String passwordHash, String salt, Long shopId) {
     jdbcTemplate.update(
-        "INSERT INTO ym_sys_user (account, password_hash, password_salt, status, nickname, mi_value) VALUES (?, ?, ?, 'ACTIVE', ?, 0)",
-        account, passwordHash, salt, account
+        "INSERT INTO ym_sys_user (account, password_hash, password_salt, status, nickname, mi_value, shop_id) VALUES (?, ?, ?, 'ACTIVE', ?, 0, ?)",
+        account, passwordHash, salt, account, shopId
     );
     Long id = jdbcTemplate.queryForObject("SELECT LAST_INSERT_ID()", Long.class);
     // 分配默认角色
@@ -63,6 +67,10 @@ public class UserRepository {
 
   private UserAccount mapUser(ResultSet rs) throws SQLException {
     Long id = rs.getLong("id");
+    Long shopId = rs.getLong("shop_id");
+    if (rs.wasNull()) {
+      shopId = null;
+    }
     return new UserAccount(
         id,
         rs.getString("account"),
@@ -73,6 +81,8 @@ public class UserRepository {
         rs.getString("status"),
         rs.getInt("mi_value"),
         rs.getString("plan_name"),
+        shopId,
+        rs.getString("shop_name"),
         findRoles(id)
     );
   }

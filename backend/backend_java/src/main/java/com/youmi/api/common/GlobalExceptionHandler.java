@@ -11,6 +11,7 @@ public class GlobalExceptionHandler {
   public ResponseEntity<ApiResponse<Void>> handleApiException(ApiException exception) {
     HttpStatus status = switch (exception.getCode()) {
       case 401 -> HttpStatus.UNAUTHORIZED;
+      case 402 -> HttpStatus.PAYMENT_REQUIRED;
       case 403 -> HttpStatus.FORBIDDEN;
       case 404 -> HttpStatus.NOT_FOUND;
       case 502 -> HttpStatus.BAD_GATEWAY;

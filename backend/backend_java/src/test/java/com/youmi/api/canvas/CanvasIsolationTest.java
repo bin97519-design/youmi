@@ -86,9 +86,9 @@ class CanvasIsolationTest {
   @BeforeEach
   void setUp() {
     UserAccount userA = new UserAccount(
-        USER_A_ID, "admin_a", null, "AdminA", "x", "x", "ACTIVE", 0, "管理员", List.of("ADMIN"));
+        USER_A_ID, "admin_a", null, "AdminA", "x", "x", "ACTIVE", 0, "管理员", null, null, List.of("ADMIN"));
     UserAccount userB = new UserAccount(
-        USER_B_ID, "user_b", null, "UserB", "x", "x", "ACTIVE", 0, "普通用户", List.of("USER"));
+        USER_B_ID, "user_b", null, "UserB", "x", "x", "ACTIVE", 0, "普通用户", null, null, List.of("USER"));
 
     org.mockito.Mockito.when(userRepository.findById(USER_A_ID)).thenReturn(Optional.of(userA));
     org.mockito.Mockito.when(userRepository.findById(USER_B_ID)).thenReturn(Optional.of(userB));

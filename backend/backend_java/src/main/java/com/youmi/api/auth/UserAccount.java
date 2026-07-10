@@ -12,9 +12,11 @@ public record UserAccount(
     String status,
     Integer miValue,
     String planName,
+    Long shopId,
+    String shopName,
     List<String> roles
 ) {
   public AuthDtos.UserProfile toProfile() {
-    return new AuthDtos.UserProfile(id, account, phone, nickname, status, roles, miValue, planName);
+    return new AuthDtos.UserProfile(id, account, phone, nickname, status, roles, miValue, planName, shopId, shopName);
   }
 }

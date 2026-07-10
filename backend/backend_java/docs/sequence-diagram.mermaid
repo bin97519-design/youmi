@@ -1,0 +1,65 @@
+%% 米值消耗逻辑 — 程序调用流程时序图
+%% 三路径：正常 / 余额不足 / 生成失败（含异步失败）
+
+sequenceDiagram
+    autonumber
+    participant C as 前端(Client)
+    participant Ctrl as ImageTaskController
+    participant Svc as MiValueService
+    participant Repo as MiValueRepository(DB)
+    participant Ext as ImageGenerationClient(外部付费API)
+    participant H as GlobalExceptionHandler
+
+    rect rgb(240,255,240)
+    note over C,H: 路径A 正常（校验→扣减→生成→提交→返回余额）
+    C->>Ctrl: POST /api/image-tasks (Authorization, prompt)
+    Ctrl->>Ctrl: userId = requireLogin(authorization).id()  %% 未登录→401
+    rect rgb(235,245,255)
+    note over Ctrl,Svc: ① 校验+原子扣减(同事务)
+    Ctrl->>Svc: checkAndDeduct(userId, IMAGE)
+    Svc->>Repo: UPDATE ym_sys_user SET mi_value=mi_value-10 WHERE id=? AND mi_value>=10
+    alt affected rows = 1 (扣减成功)
+        Repo-->>Svc: 1
+        Svc->>Repo: INSERT ym_mi_value_log(PENDING, before, after, price=10, biz=IMAGE)
+        Repo-->>Svc: logId
+        Svc-->>Ctrl: DeductResult(logId, before, after)
+    else affected rows = 0 (余额不足)
+        Repo-->>Svc: 0
+        Svc->>Repo: SELECT mi_value (读当前余额)
+        Svc-->>Ctrl: throw MiValueInsufficientException(402,"米值不足，当前余额 Y")
+        Ctrl-->>H: 异常冒泡
+        H-->>C: HTTP 402 {code:402, message:"米值不足，当前余额 Y"}
+        note right of C: 前端拦截弹充值，绝不发起生成
+    end
+    end
+    Ctrl->>Ext: createTask(req)   %% 外部调用在事务外
+    Ext-->>Ctrl: CreateTaskResponse(taskId...)
+    Ctrl->>Svc: commit(logId)     %% PENDING→SUCCESS
+    Ctrl-->>C: HTTP 200 {data:{..., consumedMi:10, balance:after}}
+    end
+
+    rect rgb(255,240,240)
+    note over C,H: 路径B 生成失败（扣减成功→外部失败→回滚→记流水）
+    C->>Ctrl: POST /api/image-tasks (...)
+    Note over Ctrl,Svc: 已 checkAndDeduct 成功(PENDING)
+    Ctrl->>Ext: createTask(req)
+    Ext-->>Ctrl: throw Exception(网络/上游错误)
+    Ctrl->>Svc: rollback(userId, logId)
+    Svc->>Repo: UPDATE ym_mi_value_log SET status=ROLLBACK WHERE id=? AND status IN(PENDING,SUCCESS)
+    Svc->>Repo: UPDATE ym_sys_user SET mi_value=mi_value+10 WHERE id=?
+    Ctrl-->>H: throw ApiException(502,"生成服务异常，米值已退回")
+    H-->>C: HTTP 502 (余额已退回，不变)
+    end
+
+    rect rgb(255,250,230)
+    note over C,H: 路径C 异步终态失败（轮询 getTask 触发回滚）
+    C->>Ctrl: GET /api/image-tasks/{taskId}  %% 前端轮询
+    Ctrl->>Ext: getTask(taskId)
+    Ext-->>Ctrl: TaskStatusResponse(status=FAILED, error)
+    Ctrl->>Svc: rollback(userId, logId)  %% 仅当流水仍 SUCCESS/PENDING
+    Svc->>Repo: UPDATE ym_mi_value_log SET status=ROLLBACK WHERE id=? AND status IN(PENDING,SUCCESS)
+    alt 守卫命中(未回滚过)
+        Svc->>Repo: UPDATE ym_sys_user SET mi_value=mi_value+10 WHERE id=?
+    end
+    Ctrl-->>C: HTTP 200 (status=FAILED, 余额已退回)
+    end

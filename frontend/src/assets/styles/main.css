@@ -2397,8 +2397,8 @@ input::placeholder {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex: 1;
-  max-width: 240px;
+  width: 200px;
+  flex-shrink: 0;
   height: 36px;
   padding: 0 10px;
   border: 1px solid var(--yq-border);
@@ -2422,6 +2422,11 @@ input::placeholder {
 }
 
 /* Filters */
+.console-accounts-filters {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
 .console-filters {
   display: flex;
   gap: 8px;
@@ -2431,7 +2436,8 @@ input::placeholder {
   padding: 0 8px;
   font-size: 12px;
   border-radius: 8px;
-  min-width: 100px;
+  width: 140px !important;
+  flex-shrink: 0;
 }
 
 .console-table {
@@ -2443,9 +2449,9 @@ input::placeholder {
 .console-row {
   display: grid;
   align-items: center;
-  gap: 10px;
-  min-width: 760px;
-  padding: 10px;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 12px;
   border-radius: 12px;
   background: var(--yq-bg-main);
   transition: background 0.15s;
@@ -2457,8 +2463,9 @@ input::placeholder {
 .console-row-head {
   color: var(--yq-muted);
   background: transparent;
-  font-size: 12px;
-  font-weight: 900;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 .console-row-head:hover {
   background: transparent;
@@ -2477,7 +2484,7 @@ input::placeholder {
 }
 
 .users-table .console-row {
-  grid-template-columns: 150px 1fr 120px 94px 116px 120px;
+  grid-template-columns: 130px 120px 80px 100px 80px 130px 80px 1fr;
 }
 .roles-table .console-row {
   grid-template-columns: 150px 150px 1fr 70px 120px;
@@ -15261,11 +15268,14 @@ body {
 
 /* Hero 区域标题和标语 */
 [data-theme='light'] .yh-hero-title h1 {
+  background: none;
+  -webkit-background-clip: border-box;
+  background-clip: border-box;
   color: #111;
   text-shadow: none;
 }
 [data-theme='light'] .yh-slogan p {
-  color: #555;
+  color: #444;
 }
 [data-theme='light'] .yh-slogan strong {
   color: #0891b2;
@@ -15303,7 +15313,7 @@ body {
   fill: #111;
 }
 [data-theme='light'] .yh-logo-sub {
-  color: #888;
+  color: #666;
 }
 
 /* 亮色主题：左侧导航图标 SVG 颜色覆盖 */
@@ -15334,6 +15344,148 @@ body {
   fill: rgba(234, 88, 12, 0.15);
 }
 
+/* === 亮色主题：侧边栏文字对比度全面修复 === */
+
+/* 导航标签文字 — 原硬编码 #f9fbff 白色，亮色下不可见 */
+[data-theme='light'] .yh-nav-label {
+  color: #333;
+}
+[data-theme='light'] .yh-nav-item.active .yh-nav-label {
+  color: #0891b2;
+}
+[data-theme='light'] .yh-nav-item:hover .yh-nav-label {
+  color: #111;
+}
+
+/* 导航箭头 */
+[data-theme='light'] .yh-nav-arrow {
+  color: #aaa;
+}
+[data-theme='light'] .yh-nav-item:hover .yh-nav-arrow,
+[data-theme='light'] .yh-nav-item.is-open .yh-nav-arrow {
+  color: #666;
+}
+
+/* 子菜单项 — 原硬编码灰色，hover 变更浅，方向反了 */
+[data-theme='light'] .yh-sub-item {
+  color: #666;
+}
+[data-theme='light'] .yh-sub-item:hover {
+  color: #222;
+  background: #f0f2f5;
+}
+[data-theme='light'] .yh-sub-item.active {
+  color: #0891b2;
+}
+[data-theme='light'] .yh-sub-item.active:hover {
+  color: #065f6b;
+}
+[data-theme='light'] .yh-sub-item.locked {
+  color: #b0b0b0;
+}
+
+/* 子菜单徽章 — 原 #fff1a6 黄底白字，亮色下看不清 */
+[data-theme='light'] .yh-sub-badge {
+  color: #fff;
+  background: #0891b2;
+}
+
+/* 锁定图标 */
+[data-theme='light'] .yh-lock {
+  color: #c4a300;
+}
+
+/* 状态文字 */
+[data-theme='light'] .yh-sub-status {
+  color: #d97706;
+}
+
+/* 侧边栏折叠/展开按钮 */
+[data-theme='light'] .yh-rail-toggle {
+  color: #888;
+  border-color: rgba(0, 0, 0, 0.12);
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+[data-theme='light'] .yh-rail-toggle:hover {
+  color: #555;
+  border-color: rgba(0, 0, 0, 0.2);
+}
+
+/* 底部图标按钮 — 原硬编码 #fff 白色，亮色下不可见 */
+[data-theme='light'] .yh-bottom-icon {
+  color: #666;
+}
+[data-theme='light'] .yh-bottom-icon:hover {
+  color: #333;
+  background: #f0f2f5;
+}
+
+/* 用户卡片 */
+[data-theme='light'] .yh-user-card {
+  background: #f5f6f8;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+}
+[data-theme='light'] .yh-user-top strong {
+  color: #111;
+}
+[data-theme='light'] .yh-user-top small,
+[data-theme='light'] .yh-user-row {
+  color: #666;
+}
+[data-theme='light'] .yh-user-row strong {
+  color: #111;
+}
+[data-theme='light'] .yh-user-caret {
+  color: #999;
+}
+[data-theme='light'] .yh-avatar {
+  background: #e0e0e0;
+  border-color: rgba(0, 0, 0, 0.1);
+  color: #666;
+}
+[data-theme='light'] .yh-user-row button {
+  color: #fff;
+}
+
+/* 底部行 — 原硬编码 #9ba5b2 偏浅 */
+[data-theme='light'] .yh-bottom-row {
+  color: #666;
+}
+[data-theme='light'] .yh-bottom-row:hover {
+  color: #333;
+  background: #f0f2f5;
+}
+
+/* 外观选择器 — 原硬编码 #9ba5b2 偏浅 */
+[data-theme='light'] .yh-appearance {
+  color: #666;
+}
+[data-theme='light'] .yh-appearance .active {
+  color: #fff;
+  background: #0891b2;
+}
+
+/* 积分芯片 — 原深紫底白字，亮色下突兀 */
+[data-theme='light'] .yh-points-chip {
+  color: #fff;
+  background: #0891b2;
+  border-color: #0891b2;
+  box-shadow: 0 2px 8px rgba(8, 145, 178, 0.25);
+}
+
+/* 小头像 — 原深灰底 */
+[data-theme='light'] .yh-avatar-mini {
+  background: #e0e0e0;
+  border-color: rgba(0, 0, 0, 0.1);
+  color: #666;
+}
+
+/* 历史区域分隔线 — --yh-line 已在 .youmi-home 下覆盖，此处补兜底 */
+[data-theme='light'] .yh-rail-history {
+  border-top-color: rgba(0, 0, 0, 0.08);
+}
+
 /* 登录弹窗 */
 [data-theme='light'] .yh-login-backdrop {
   background: rgba(255, 255, 255, 0.7);
@@ -15354,7 +15506,7 @@ body {
 /* 上传区域 */
 [data-theme='light'] .yh-upload-tile {
   background: #f5f5f5;
-  color: #888;
+  color: #777;
 }
 [data-theme='light'] .yh-upload-deck.has-images .yh-upload-tile {
   border-color: rgba(0, 0, 0, 0.1);
@@ -15414,7 +15566,7 @@ body {
   color: #222;
 }
 [data-theme='light'] .yh-shortcut-card small {
-  color: #999;
+  color: #777;
 }
 
 /* Case gallery 标题 */
@@ -15422,13 +15574,80 @@ body {
   color: #222;
 }
 [data-theme='light'] .yh-cases header p {
-  color: #888;
+  color: #666;
 }
 
 /* Composer 提示文字 */
 [data-theme='light'] .yh-composer-tip,
 [data-theme='light'] .yh-composer-footer {
-  color: #888;
+  color: #666;
+}
+
+/* === 亮色主题：对话区/工作区文字对比度修复 === */
+
+/* 对话标签 — 原深紫底白字 */
+[data-theme='light'] .yh-thread-pill {
+  background: #ecfeff;
+  color: #0891b2;
+}
+[data-theme='light'] .yh-count-pill {
+  background: #f0f2f5;
+  color: #555;
+}
+[data-theme='light'] .yh-progress-pill {
+  background: #fef3c7;
+  color: #92400e;
+}
+[data-theme='light'] .yh-progress-pill.failed {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+/* 对话元数据 — 原 #8e8e8e 偏浅 */
+[data-theme='light'] .yh-thread-meta {
+  color: #666;
+}
+
+/* 生成卡片 — 原深色渐变底 */
+[data-theme='light'] .yh-generation-card {
+  background: #f5f6f8;
+  border-color: rgba(0, 0, 0, 0.08);
+}
+[data-theme='light'] .yh-generating-center {
+  color: #0891b2;
+}
+[data-theme='light'] .yh-generating-center .uc-placeholder-icon-svg {
+  color: #0e7490;
+}
+[data-theme='light'] .yh-generating-center p {
+  color: #555;
+}
+[data-theme='light'] .yh-card-progress {
+  background: #0891b2;
+}
+
+/* 详情步骤条 — 原深色半透明底 */
+[data-theme='light'] .yh-detail-stepper {
+  background: #ffffff;
+  color: #666;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.06), 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+[data-theme='light'] .yh-detail-stepper span:not(:last-child)::after {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+/* 工作区切换按钮 — token 变量已适配，补充 hover */
+[data-theme='light'] .yh-workspace-switch:hover,
+[data-theme='light'] .yh-workspace-filters button:hover {
+  background: #f0f2f5;
+}
+
+/* 帮助浮动按钮 — 加边框提升可见度 */
+[data-theme='light'] .yh-help-float {
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+[data-theme='light'] .yh-help-float:hover {
+  background: #e4e8ed;
 }
 
 /* ─── 浅色主题：重叠元素选择弹窗 ─── */

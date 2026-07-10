@@ -93,19 +93,42 @@ export const useUserStore = defineStore('user', {
 
     async fetchCurrentUser() {
       if (!this.token) return null;
-
       try {
-        const data = await requestApi('/api/auth/me', {
-          headers: {
-            Authorization: `Bearer ${this.token}`,
-          },
+        const res = await fetch(apiPath('/api/auth/me'), {
+          headers: { Authorization: `Bearer ${this.token}` },
         });
-        this.saveSession(this.token, data.user);
-        return data.user;
+        // 仅明确鉴权失败（token 真的失效）才清除会话；
+        // 否则网络抖动 / 后端 5xx / 后端重启瞬间等瞬时错误会误把用户踢出登录，
+        // 连带画布 storage key 带 userId 后缀切换导致画布"消失"。
+        if (res.status === 401 || res.status === 403) {
+          this.clearSession();
+          return null;
+        }
+        // 其余情况（网络/5xx/其他 4xx）一律保留 token，避免被瞬时错误强制登出
+        if (!res.ok) return null;
+        const data = await res.json().catch(() => ({}));
+        if (data.code && data.code !== 0) return null; // 业务错误不踢，静默
+        this.saveSession(this.token, data.user || data);
+        return data.user || data;
       } catch {
-        this.clearSession();
+        // 网络异常（fetch 抛错）：保留 token，下次再验证
         return null;
       }
+    },
+
+    /** 公开接口：拉取 ACTIVE 店铺列表（id/name/code），供注册页下拉 */
+    async fetchShops() {
+      return requestApi('/api/shops');
+    },
+
+    /** 注册并自动登录：shopId 由后台管理员后续分配，注册时无需关联 */
+    async register({ account, password }) {
+      const data = await requestApi('/api/auth/register', {
+        method: 'POST',
+        body: JSON.stringify({ account, password }),
+      });
+      this.saveSession(data.token, data.user);
+      return data.user;
     },
 
     async logout() {

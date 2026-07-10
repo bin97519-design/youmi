@@ -13,6 +13,38 @@ const form = ref({
   password: '',
 })
 
+/* ── 注册页签状态 ── */
+const mode = ref('login')
+const regForm = ref({ account: '', password: '' })
+const regPending = ref(false)
+const regError = ref('')
+
+async function switchRegister() {
+  mode.value = 'register'
+  regError.value = ''
+}
+
+function switchLogin() {
+  mode.value = 'login'
+  errorText.value = ''
+}
+
+async function submitRegister() {
+  regError.value = ''
+  regPending.value = true
+  try {
+    await userStore.register({
+      account: regForm.value.account.trim(),
+      password: regForm.value.password,
+    })
+    regForm.value = { account: '', password: '' }
+  } catch (error) {
+    regError.value = error.message || '注册失败，请稍后重试'
+  } finally {
+    regPending.value = false
+  }
+}
+
 async function submitLogin() {
   errorText.value = ''
   pending.value = true
@@ -68,7 +100,7 @@ async function submitLogin() {
           </div>
         </div>
 
-        <form class="yh-login-right" @submit.prevent="submitLogin">
+        <form class="yh-login-right" @submit.prevent="mode === 'login' ? submitLogin() : submitRegister()">
           <svg class="yh-login-logo" viewBox="0 0 122 34" aria-label="YOUMI">
             <path class="logo-stroke" d="M8 9.5c4.2 8 8 12 12.6 12.2 5.1.2 8.2-4.8 8.2-10.8" />
             <path class="logo-stroke" d="M20.3 21.6c-1.7 4.5-4.6 7.2-9.4 7.2" />
@@ -87,40 +119,83 @@ async function submitLogin() {
           </svg>
           <h3>有米AI · 专为电商而生</h3>
 
-          <label>
-            <span>账号</span>
-            <input
-              v-model.trim="form.account"
-              type="text"
-              autocomplete="username"
-              placeholder="手机号 / 登录账号"
-            />
-          </label>
-
-          <label>
-            <span>密码</span>
-            <div class="yh-password-box">
-              <input
-                v-model="form.password"
-                type="password"
-                autocomplete="current-password"
-                placeholder="请输入密码"
-              />
-              <button type="button">⊙</button>
-            </div>
-          </label>
-
-          <p v-if="errorText" class="yh-login-error">{{ errorText }}</p>
-          <button class="yh-login-submit" type="submit" :disabled="pending">
-            {{ pending ? '登录中...' : '立即登录' }}
-          </button>
-
-          <div class="yh-login-links">
-            <button type="button">密码登录</button>
-            <button type="button">短信登录</button>
-            <button type="button">注册账号</button>
-            <button type="button">忘记密码</button>
+          <div class="yh-auth-tabs">
+            <button type="button" :class="{ active: mode === 'login' }" @click="switchLogin()">
+              登录
+            </button>
+            <button type="button" :class="{ active: mode === 'register' }" @click="switchRegister()">
+              注册账号
+            </button>
           </div>
+
+          <template v-if="mode === 'login'">
+            <label>
+              <span>账号</span>
+              <input
+                v-model.trim="form.account"
+                type="text"
+                autocomplete="username"
+                placeholder="手机号 / 登录账号"
+              />
+            </label>
+
+            <label>
+              <span>密码</span>
+              <div class="yh-password-box">
+                <input
+                  v-model="form.password"
+                  type="password"
+                  autocomplete="current-password"
+                  placeholder="请输入密码"
+                />
+                <button type="button">⊙</button>
+              </div>
+            </label>
+
+            <p v-if="errorText" class="yh-login-error">{{ errorText }}</p>
+            <button class="yh-login-submit" type="submit" :disabled="pending">
+              {{ pending ? '登录中...' : '立即登录' }}
+            </button>
+
+            <div class="yh-login-links">
+              <button type="button">密码登录</button>
+              <button type="button">短信登录</button>
+              <button type="button" @click="switchRegister()">注册账号</button>
+              <button type="button">忘记密码</button>
+            </div>
+          </template>
+
+          <template v-else>
+            <label>
+              <span>账号</span>
+              <input
+                v-model.trim="regForm.account"
+                type="text"
+                autocomplete="username"
+                placeholder="登录账号"
+              />
+            </label>
+
+            <label>
+              <span>密码</span>
+              <input
+                v-model="regForm.password"
+                type="password"
+                autocomplete="new-password"
+                placeholder="请设置登录密码"
+              />
+            </label>
+
+            <p v-if="regError" class="yh-login-error">{{ regError }}</p>
+            <button
+              class="yh-login-submit"
+              type="submit"
+              :disabled="regPending"
+            >
+              {{ regPending ? '注册中...' : '立即注册' }}
+            </button>
+          </template>
+
           <p class="yh-login-agreement">
             登录即表示阅读并同意《服务条款》《隐私政策》《AI 功能使用须知》
           </p>
@@ -129,3 +204,65 @@ async function submitLogin() {
     </div>
   </Teleport>
 </template>
+
+<style scoped>
+.yh-auth-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+.yh-auth-tabs button {
+  flex: 1;
+  padding: 10px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #94a3b8;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+.yh-auth-tabs button.active {
+  color: #fff;
+  background: rgba(99, 102, 241, 0.16);
+  border-color: rgba(99, 102, 241, 0.5);
+}
+.yh-login-right label select {
+  width: 100%;
+  padding: 12px 14px;
+  font-size: 14px;
+  color: #e2e8f0;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  outline: none;
+  cursor: pointer;
+}
+.yh-login-right label select:focus {
+  border-color: rgba(99, 102, 241, 0.6);
+}
+.yh-login-right label select.is-invalid {
+  border-color: #f87171;
+}
+.yh-login-hint {
+  margin: 0 0 4px;
+  font-size: 12px;
+  color: #fbbf24;
+}
+[data-theme='light'] .yh-auth-tabs button {
+  color: #64748b;
+  background: #f1f5f9;
+  border-color: #e2e8f0;
+}
+[data-theme='light'] .yh-auth-tabs button.active {
+  color: #1e293b;
+  background: rgba(99, 102, 241, 0.12);
+  border-color: rgba(99, 102, 241, 0.5);
+}
+[data-theme='light'] .yh-login-right label select {
+  color: #1e293b;
+  background: #fff;
+  border-color: #e2e8f0;
+}
+</style>

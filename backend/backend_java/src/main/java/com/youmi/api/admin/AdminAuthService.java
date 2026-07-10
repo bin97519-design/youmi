@@ -42,6 +42,15 @@ public class AdminAuthService {
     return tokenService.getUserId(parseBearerToken(authorization)).orElse(null);
   }
 
+  /** 验证登录态并返回 userId；未登录抛 401（供需要登录的接口，如米值扣减闸门使用） */
+  public Long requireUserId(String authorization) {
+    Long userId = optionalUserId(authorization);
+    if (userId == null) {
+      throw new ApiException(401, "未登录");
+    }
+    return userId;
+  }
+
   private String parseBearerToken(String authorization) {
     if (authorization == null || !authorization.startsWith("Bearer ")) return "";
     return authorization.substring("Bearer ".length()).trim();

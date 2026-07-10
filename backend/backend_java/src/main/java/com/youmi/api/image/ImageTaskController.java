@@ -1,11 +1,18 @@
 package com.youmi.api.image;
 
 import com.youmi.api.admin.AdminAuthService;
+import com.youmi.api.common.ApiException;
 import com.youmi.api.common.ApiResponse;
+import com.youmi.api.credit.MiBizType;
+import com.youmi.api.credit.MiValueDtos;
+import com.youmi.api.credit.MiValueService;
+import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -18,9 +25,6 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import jakarta.servlet.http.HttpServletResponse;
-import java.io.IOException;
-import java.io.OutputStream;
 
 @RestController
 @RequestMapping("/api/image-tasks")
@@ -28,14 +32,17 @@ public class ImageTaskController {
   private final ImageGenerationClient imageGenerationClient;
   private final ImageTaskLogService imageTaskLogService;
   private final AdminAuthService adminAuthService;
+  private final MiValueService miValueService;
 
   public ImageTaskController(
       ImageGenerationClient imageGenerationClient,
       ImageTaskLogService imageTaskLogService,
-      AdminAuthService adminAuthService) {
+      AdminAuthService adminAuthService,
+      MiValueService miValueService) {
     this.imageGenerationClient = imageGenerationClient;
     this.imageTaskLogService = imageTaskLogService;
     this.adminAuthService = adminAuthService;
+    this.miValueService = miValueService;
   }
 
   @GetMapping("/status")
@@ -47,17 +54,61 @@ public class ImageTaskController {
   public ApiResponse<ImageGenerationDtos.CreateTaskResponse> create(
       @RequestHeader(value = "Authorization", required = false) String authorization,
       @RequestBody ImageGenerationDtos.CreateTaskRequest request) throws Exception {
-    ImageGenerationDtos.CreateTaskResponse response = imageGenerationClient.createTask(request);
-    imageTaskLogService.recordCreated(adminAuthService.optionalUserId(authorization), request, response);
-    return ApiResponse.ok(response);
+    // 闸门要求登录态
+    Long userId = adminAuthService.requireUserId(authorization);
+    // 先扣后生成：原子扣减成功才发起外部调用；不足则抛 402，绝不发起外部调用
+    MiValueDtos.DeductResult deduct = miValueService.checkAndDeduct(userId, MiBizType.IMAGE);
+    try {
+      ImageGenerationDtos.CreateTaskResponse response = imageGenerationClient.createTask(request);
+      // 关联外部任务 id 到流水，供异步失败回滚
+      if (response.tasks() != null && !response.tasks().isEmpty()
+          && response.tasks().get(0).taskId() != null) {
+        miValueService.linkTask(deduct.logId(), response.tasks().get(0).taskId());
+      }
+      // 外部调用成功 → 确认流水 SUCCESS（余额已在扣减时减少，此处只改状态）
+      miValueService.commit(deduct.logId());
+      // 回填本次消耗与最新余额
+      response.setConsumedMi(deduct.price());
+      response.setBalance(miValueService.getBalance(userId));
+      imageTaskLogService.recordCreated(userId, request, response);
+      return ApiResponse.ok(response);
+    } catch (Exception e) {
+      // 外部失败 → 幂等回滚米值并记流水 ROLLBACK
+      miValueService.rollback(userId, deduct.logId());
+      throw new ApiException(502, "生成服务异常，米值已退回");
+    }
   }
 
   @GetMapping("/{taskId}")
   public ApiResponse<ImageGenerationDtos.TaskStatusResponse> get(@PathVariable String taskId)
       throws Exception {
     ImageGenerationDtos.TaskStatusResponse response = imageGenerationClient.getTask(taskId);
+    // 异步轮询到终态：失败则回退米值，成功则确认流水
+    if (isTerminalFailed(response.status())) {
+      miValueService.rollbackByTaskId(taskId);
+    } else if (isTerminalSuccess(response.status())) {
+      miValueService.commitByTaskId(taskId);
+    }
     imageTaskLogService.recordStatus(response);
     return ApiResponse.ok(response);
+  }
+
+  /** 是否为终态失败（需回滚米值） */
+  private boolean isTerminalFailed(String status) {
+    if (status == null) return false;
+    String s = status.trim().toLowerCase();
+    return s.equals("failed") || s.equals("error") || s.equals("cancelled")
+        || s.equals("canceled") || s.equals("expired") || s.equals("aborted")
+        || s.contains("error") || s.contains("fail");
+  }
+
+  /** 是否为终态成功（需确认流水） */
+  private boolean isTerminalSuccess(String status) {
+    if (status == null) return false;
+    String s = status.trim().toLowerCase();
+    return s.equals("completed") || s.equals("succeeded") || s.equals("success")
+        || s.equals("done") || s.equals("finished") || s.equals("generated")
+        || s.equals("ready");
   }
 
   /**

@@ -9,7 +9,7 @@ public final class AuthDtos {
   public record LoginRequest(String account, String phone, String password) {
   }
 
-  public record RegisterRequest(String account, String password) {
+  public record RegisterRequest(String account, String password, Long shopId) {
   }
 
   public record LoginResponse(String token, UserProfile user) {
@@ -26,7 +26,9 @@ public final class AuthDtos {
       String status,
       List<String> roles,
       Integer miValue,
-      String plan
+      String plan,
+      Long shopId,
+      String shopName
   ) {
   }
 }

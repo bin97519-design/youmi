@@ -119,3 +119,60 @@ CREATE TABLE IF NOT EXISTS ym_ecommerce_set_task (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_ecommerce_set_task_set_id (set_id)
 );
+
+CREATE TABLE IF NOT EXISTS ym_mi_value_log (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  biz_type VARCHAR(20) NOT NULL COMMENT 'IMAGE/VIDEO/ADMIN_ADJUST',
+  task_type VARCHAR(32) NULL,
+  price INT NOT NULL COMMENT '本次变动的米值绝对值',
+  before_balance INT NOT NULL COMMENT '变动前余额快照',
+  after_balance INT NOT NULL COMMENT '变动后余额快照',
+  task_id VARCHAR(128) NULL COMMENT '关联外部任务 id（异步终态回滚/确认用）',
+  status VARCHAR(20) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/SUCCESS/FAILED/ROLLBACK',
+  remark VARCHAR(255) NULL COMMENT '备注，如管理后台调账原因',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_log_user (user_id),
+  INDEX idx_log_status (status),
+  INDEX idx_log_task (task_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ── 店铺归属（账号系统新增店铺归属功能） ──
+CREATE TABLE IF NOT EXISTS ym_shop (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  name VARCHAR(128) NOT NULL,
+  code VARCHAR(64) NOT NULL UNIQUE,
+  platform VARCHAR(32) NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_shop_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 预埋默认店铺（幂等，ON DUPLICATE KEY UPDATE 避免重复插入报错）
+INSERT INTO ym_shop (name, code, platform, status) VALUES
+  ('爱洁猫', 'aijiemao', '淘宝', 'ACTIVE'),
+  ('能见度', 'nengjiandu', '淘宝', 'ACTIVE'),
+  ('宜爵', 'yijue', '淘宝', 'ACTIVE'),
+  ('卡寐森', 'kameisen', '淘宝', 'ACTIVE'),
+  ('猫人', 'maoren', '淘宝', 'ACTIVE'),
+  ('诺沐', 'nuomu', '淘宝', 'ACTIVE'),
+  ('奇思妙想', 'qisimiaoxiang', '淘宝', 'ACTIVE')
+ON DUPLICATE KEY UPDATE name = name;
+
+-- 给 ym_sys_user 增加 shop_id 列（幂等，避免重启重复 ALTER 报错）
+SET @db = DATABASE();
+SET @has_shop_col = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@db AND table_name='ym_sys_user' AND column_name='shop_id');
+SET @sql = IF(@has_shop_col=0, 'ALTER TABLE ym_sys_user ADD COLUMN shop_id BIGINT NULL', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- 给 shop_id 增加普通索引（非唯一，幂等）
+SET @has_shop_idx = (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@db AND table_name='ym_sys_user' AND index_name='idx_user_shop');
+SET @sql = IF(@has_shop_idx=0, 'ALTER TABLE ym_sys_user ADD INDEX idx_user_shop (shop_id)', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- 给 shop_id 增加外键约束（幂等，ON DELETE RESTRICT）
+SET @has_shop_fk = (SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=@db AND table_name='ym_sys_user' AND constraint_name='fk_user_shop' AND constraint_type='FOREIGN KEY');
+SET @sql = IF(@has_shop_fk=0, 'ALTER TABLE ym_sys_user ADD CONSTRAINT fk_user_shop FOREIGN KEY (shop_id) REFERENCES ym_shop (id) ON DELETE RESTRICT', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;

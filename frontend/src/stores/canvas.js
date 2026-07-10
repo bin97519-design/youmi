@@ -5,6 +5,19 @@ import { apiPath } from '../utils/apiBase';
 const STORAGE_KEY = 'youmi_canvas_documents_v3';
 const OFFLINE_QUEUE_KEY = 'youmi_canvas_offline_queue_v1';
 const PERSIST_DEBOUNCE_MS = 500;  // 服务器同步防抖，500ms 足够（localStorage 立即写）
+
+/**
+ * 按当前登录用户隔离 localStorage key，避免同浏览器多账号串台（看到别人的画布）。
+ * 未登录（无 userId）时回退到固定 key，保持未登录场景兼容（老数据仍可读取）。
+ * @param {string} base 基础 key（如 STORAGE_KEY / OFFLINE_QUEUE_KEY）
+ * @returns {string} 带 userId 后缀的隔离 key，或原始 base
+ */
+function storageKey(base) {
+  const userStore = useUserStore();
+  if (!userStore.isAuthenticated) userStore.restoreSession();
+  const userId = userStore.profile?.id ?? null;
+  return userId ? `${base}_u${userId}` : base;
+}
 let authFailed = false;  // 认证失败后静默，避免重复请求刷屏
 const demoImages = [
   new URL('../assets/youqian/images/060-1780040674695_a003c35a-7592-42ae-9a69-bcae7156c3bf.png', import.meta.url).href,
@@ -48,30 +61,39 @@ export function makeCanvasDocument(id = String(Date.now()).slice(-4)) {
 }
 
 function seed() {
+  const userStore = useUserStore();
+  if (!userStore.isAuthenticated) userStore.restoreSession();
+  const userId = userStore.profile?.id ?? 'anon';
+  // 给默认样例 docId 加 userId 前缀，避免不同用户之间的 seed docId 全局冲突（未来分享/协作功能需要）
+  const prefix = `seed-${userId}-`;
   const configs = [
     {
-      id: '1904',
+      id: prefix + '1904',
+      baseId: '1904',
       title: '未命名画布 05-23 14:16',
       image: demoImages[1],
       layers: 5,
       age: '7 小时前',
     },
     {
-      id: '2905',
+      id: prefix + '2905',
+      baseId: '2905',
       title: 'chat_image(5/29_14:58)',
       image: demoImages[0],
       layers: 1,
       age: '1 天前',
     },
     {
-      id: '2201',
+      id: prefix + '2201',
+      baseId: '2201',
       title: '未命名画布 05-22 14:01',
       image: demoImages[2],
       layers: 2,
       age: '1 天前',
     },
     {
-      id: '2309',
+      id: prefix + '2309',
+      baseId: '2309',
       title: '未命名画布 05-23 14:09',
       image: demoImages[1],
       layers: 1,
@@ -89,9 +111,10 @@ function seed() {
       age: config.age,
       editing: Boolean(config.editing),
     };
-    doc.payload.view.scale = config.id === '1904' ? 0.2 : 0.68;
+    // 使用 baseId 判断特殊样例（保持原先 1904 专属的 scale / chat 行为）
+    doc.payload.view.scale = config.baseId === '1904' ? 0.2 : 0.68;
     doc.payload.layers = Array.from({ length: config.layers }, (_, index) => ({
-      id: `seed-${config.id}-${index + 1}`,
+      id: `seed-${config.baseId}-${index + 1}`,
       name: layerName(index),
       url: demoImages[(docIndex + index) % demoImages.length],
       thumbnailUrl: demoImages[(docIndex + index) % demoImages.length],
@@ -105,7 +128,7 @@ function seed() {
       visible: true,
       locked: false,
     }));
-    doc.payload.chat = config.id === '1904'
+    doc.payload.chat = config.baseId === '1904'
       ? [
           { id: 'seed-chat-1', role: 'assistant', text: '3333', createdAt: Date.now() - 1000 * 60 * 60 * 7 },
           { id: 'seed-chat-2', role: 'assistant', text: '已提交对话修改任务，请等待生成结果（生成完成后会显示在画布中）。', createdAt: Date.now() - 1000 * 60 * 30 },
@@ -124,7 +147,7 @@ function mergeSeedDocuments(documents) {
 
 function loadLocal() {
   try {
-    const data = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+    const data = JSON.parse(localStorage.getItem(storageKey(STORAGE_KEY)) || 'null');
     return Array.isArray(data) && data.length ? mergeSeedDocuments(data) : seed();
   } catch {
     return seed();
@@ -133,7 +156,7 @@ function loadLocal() {
 
 function saveLocal(documents) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(documents));
+    localStorage.setItem(storageKey(STORAGE_KEY), JSON.stringify(documents));
   } catch (e) {
     // 配额超出：尝试清理历史 generationHistory
     try {
@@ -143,7 +166,7 @@ function saveLocal(documents) {
         const history = (doc.payload.generationHistory || []).slice(0, 20);
         return { ...doc, payload: { ...doc.payload, layers, generationHistory: history } };
       });
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(slim));
+      localStorage.setItem(storageKey(STORAGE_KEY), JSON.stringify(slim));
       console.warn('localStorage 配额不足，已自动裁剪 history');
     } catch (e2) {
       console.error('localStorage 写入失败：', e2);
@@ -153,7 +176,7 @@ function saveLocal(documents) {
 
 function loadOfflineQueue() {
   try {
-    const data = JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || '[]');
+    const data = JSON.parse(localStorage.getItem(storageKey(OFFLINE_QUEUE_KEY)) || '[]');
     return Array.isArray(data) ? data : [];
   } catch {
     return [];
@@ -162,7 +185,7 @@ function loadOfflineQueue() {
 
 function saveOfflineQueue(queue) {
   try {
-    localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
+    localStorage.setItem(storageKey(OFFLINE_QUEUE_KEY), JSON.stringify(queue));
   } catch (e) {
     console.warn('offline queue write failed:', e);
   }
@@ -186,11 +209,11 @@ function getAuthHeaders() {
 }
 
 async function syncToServer(doc, { skipQueue = false } = {}) {
-  if (authFailed) return;
+  if (authFailed) return false;
   const headers = getAuthHeaders();
-  if (!headers.Authorization) return;
+  if (!headers.Authorization) return false;
   // 检查 localStorage 里是否已有离线队列（说明之前保存失败过），如果有就直接跳过避免刷屏
-  if (!skipQueue && loadOfflineQueue().length > 0) return;
+  if (!skipQueue && loadOfflineQueue().length > 0) return false;
   try {
     const res = await fetch(apiPath('/api/canvas/save'), {
       method: 'POST',
@@ -204,18 +227,34 @@ async function syncToServer(doc, { skipQueue = false } = {}) {
       }),
     });
     if (!res.ok) {
-      if (res.status === 401 || res.status === 403) { authFailed = true; saveOfflineQueue([]); return; }
+      if (res.status === 401 || res.status === 403) {
+        authFailed = true;
+        saveOfflineQueue([]);
+        return false;
+      }
+      let message = '';
       try {
         const body = await res.json().catch(() => ({}));
-        if (body.message === '未登录' || body.message === '登录已过期') { authFailed = true; saveOfflineQueue([]); return; }
-      } catch {}
-      if (!skipQueue) {
-        pushOfflineQueue(doc);
+        message = body.message || '';
+        if (message === '未登录' || message === '登录已过期') {
+          authFailed = true;
+          saveOfflineQueue([]);
+          return false;
+        }
+      } catch (_e) {
+        // 响应体非 JSON 时忽略，继续按通用失败处理
+        void _e;
       }
+      // 非鉴权类失败（如 HTTP 500）：无论是否 skipQueue 都明确报错，避免被静默吞掉
+      console.error(`[canvas] 同步画布到服务端失败: HTTP ${res.status} ${message}`.trim());
+      if (!skipQueue) pushOfflineQueue(doc);
+      return false;
     }
+    return true;
   } catch (e) {
-    console.warn('Sync canvas to server failed:', e);
+    console.error('[canvas] 同步画布到服务端异常:', e?.message || e);
     if (!skipQueue) pushOfflineQueue(doc);
+    return false;
   }
 }
 
@@ -476,6 +515,28 @@ export const useCanvasStore = defineStore('canvas', {
       for (const doc of this.documents) {
         if (doc && doc.payload) syncToServer(doc, { skipQueue: true });
       }
+    },
+
+    /**
+     * 编辑画布名称后「即时落库」：跳过 500ms 防抖，立即把该画布的 title（含 payload）
+     * POST 到 /api/canvas/save。避免「编辑完立刻刷新」导致防抖未触发、title 没进 DB。
+     * 同时先写 localStorage 作为后端不可达时的降级。
+     * @param {object} doc 画布文档（需含 id / title / payload）
+     */
+    async syncTitleNow(doc) {
+      if (!doc) return false;
+      // 本地先落盘，保证即使后端暂时不可达，刷新也不丢
+      saveLocal(this.documents);
+      if (!doc.payload) return true;
+      const ok = await syncToServer(doc, { skipQueue: true });
+      if (!ok) {
+        // 即时同步失败：本地已落盘（数据不丢），降级走防抖重试；
+        // persist 会在后续失败时将 doc 分入离线队列，待网络/服务端恢复后自动重试，
+        // 既避免「静默失败」也保证云端 ym_canvas_document.title 最终一致。
+        console.error('[canvas] 编辑画布名称即时落库失败，已降级为防抖重试');
+        this.persist();
+      }
+      return ok;
     },
 
     /**

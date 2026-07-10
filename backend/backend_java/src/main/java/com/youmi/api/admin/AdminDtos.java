@@ -16,6 +16,9 @@ public final class AdminDtos {
       String status,
       Integer miValue,
       String planName,
+      Long shopId,
+      String shopName,
+      String shopPlatform,
       List<String> roles,
       String createdAt,
       String updatedAt) {
@@ -29,6 +32,9 @@ public final class AdminDtos {
       String status,
       Integer miValue,
       String planName,
+      Long shopId,
+      String shopName,
+      String shopPlatform,
       List<String> roles) {
   }
 
@@ -39,6 +45,8 @@ public final class AdminDtos {
       String status,
       Integer miValue,
       String planName,
+      Long shopId,
+      String shopPlatform,
       List<String> roles) {
   }
 

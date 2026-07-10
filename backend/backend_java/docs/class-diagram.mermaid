@@ -1,0 +1,111 @@
+%% 米值消耗逻辑 — 类图 / 模块关系
+classDiagram
+    direction TB
+
+    class MiBizType {
+        <<enumeration>>
+        IMAGE
+        VIDEO
+        ADMIN_ADJUST
+    }
+
+    class ApiException {
+        +int code
+        +String message
+        +getCode() int
+    }
+
+    class MiValueInsufficientException {
+        +MiValueInsufficientException(int balance)
+    }
+    MiValueInsufficientException --|> ApiException
+
+    class MiValueProperties {
+        -Map~MiBizType,Integer~ prices
+        -boolean enabled
+        +getPrice(MiBizType) int
+    }
+
+    class MiValueLedger {
+        +Long id
+        +Long userId
+        +MiBizType bizType
+        +int price
+        +int beforeBalance
+        +int afterBalance
+        +String taskId
+        +String status
+        +String remark
+        +LocalDateTime createdAt
+        +LocalDateTime updatedAt
+    }
+
+    class DeductResult {
+        +Long logId
+        +int beforeBalance
+        +int afterBalance
+        +int price
+        +MiBizType bizType
+    }
+
+    class MiValueRepository {
+        +deductAtomic(userId, price) int
+        +insertLedger(MiValueLedger) Long
+        +commitLedger(logId) int
+        +rollbackLedger(logId) int
+        +addBalance(userId, price) int
+        +getBalance(userId) int
+        +getLedger(logId) MiValueLedger
+    }
+
+    class MiValueService {
+        +checkAndDeduct(userId, bizType) DeductResult
+        +commit(logId) void
+        +rollback(userId, logId) void
+        +getBalance(userId) int
+        +adjustByAdmin(userId, delta, reason) DeductResult
+    }
+    MiValueService --> MiValueRepository
+    MiValueService --> MiValueProperties
+
+    class AdminAuthService {
+        +requireAdmin(authorization) UserAccount
+        +requireLogin(authorization) UserAccount
+    }
+
+    class ImageGenerationClient {
+        +createTask(req) CreateTaskResponse
+        +getTask(taskId) TaskStatusResponse
+    }
+
+    class VideoGenerationClient {
+        +createVideo(req) VideoCreateResponse
+        +getVideo(taskId) VideoStatusResponse
+    }
+
+    class ImageTaskController {
+        +create(authorization, req) ApiResponse
+        +get(taskId) ApiResponse
+    }
+    ImageTaskController --> MiValueService
+    ImageTaskController --> ImageGenerationClient
+    ImageTaskController --> AdminAuthService
+
+    class VideoTaskController {
+        +create(authorization, req) ApiResponse
+    }
+    VideoTaskController --> MiValueService
+    VideoTaskController --> VideoGenerationClient
+    VideoTaskController --> AdminAuthService
+
+    class AdminMiValueController {
+        +getMiValue(id) ApiResponse
+        +adjustMiValue(id, req) ApiResponse
+    }
+    AdminMiValueController --> MiValueService
+    AdminMiValueController --> AdminAuthService
+
+    class GlobalExceptionHandler {
+        +handleApiException(ApiException) ResponseEntity
+    }
+    GlobalExceptionHandler ..> MiValueInsufficientException

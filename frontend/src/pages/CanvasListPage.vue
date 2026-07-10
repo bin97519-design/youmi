@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, computed, nextTick, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useCanvasStore } from '../stores/canvas';
 import { useUserStore } from '../stores/user';
@@ -10,6 +10,8 @@ const userStore = useUserStore();
 const sortOpen = ref(false);
 const sortBy = ref('按修改时间');
 const query = ref('');
+const editingTitleId = ref(null);
+const editingTitleText = ref('');
 
 const sortOptions = ['按修改时间', '按创建时间', '按最近打开', '按标题'];
 
@@ -37,6 +39,50 @@ function removeDocument(id) {
   if (!userStore.requireLogin()) return;
   canvas.removeDocumentAsync(id);
 }
+
+function startEditTitle(doc, event) {
+  if (event) event.stopPropagation();
+  editingTitleId.value = doc.id;
+  editingTitleText.value = doc.title;
+  nextTick(() => {
+    const card = document.querySelector(`.canvas-card:has(.card-title-input)`);
+    const input = card?.querySelector('.card-title-input');
+    if (input) {
+      input.focus();
+      input.select();
+    }
+  });
+}
+
+function saveTitle(doc) {
+  const trimmed = editingTitleText.value.trim();
+  if (trimmed && trimmed !== doc.title) {
+    doc.title = trimmed;
+    doc.updatedAt = Date.now();
+    // 即时落库：跳过 500ms 防抖，编辑完立即把 title 写进后端 ym_canvas_document.title
+    canvas.syncTitleNow(doc);
+  }
+  editingTitleId.value = null;
+}
+
+function cancelEditTitle() {
+  editingTitleId.value = null;
+}
+
+function onTitleKeydown(event, doc) {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    saveTitle(doc);
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    cancelEditTitle();
+  }
+}
+
+// 列表加载时从服务端回填（刷新后从 DB 读回最新 title）
+onMounted(() => {
+  canvas.syncFromServer();
+});
 </script>
 
 <template>
@@ -74,7 +120,17 @@ function removeDocument(id) {
           <b v-if="doc.meta?.editing">✎ 编辑中</b>
         </button>
         <footer>
-          <strong>{{ doc.title }}</strong>
+          <template v-if="editingTitleId === doc.id">
+            <input
+              ref="titleInput"
+              v-model="editingTitleText"
+              class="card-title-input"
+              @blur="saveTitle(doc)"
+              @keydown="onTitleKeydown($event, doc)"
+              @click.stop
+            />
+          </template>
+          <strong v-else @click="startEditTitle(doc, $event)" class="card-title-editable">{{ doc.title }}</strong>
           <p>
             <span>{{ doc.meta?.layerCount || doc.payload.layers.length }} 图层 · {{ doc.meta?.age || '刚刚' }}</span>
             <button type="button" @click.stop>⋮</button>
@@ -85,3 +141,38 @@ function removeDocument(id) {
     </section>
   </main>
 </template>
+
+<style scoped>
+.card-title-editable {
+  display: block;
+  cursor: text;
+  font-size: 15px;
+  font-weight: 700;
+  color: #fff;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  border-radius: 4px;
+  transition: background-color 0.15s;
+}
+.card-title-editable:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+.card-title-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 8px;
+  margin: -2px -4px;
+  border: 1px solid var(--yq-primary, #6366f1);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  outline: none;
+}
+</style>

@@ -36,16 +36,45 @@ const roleSearch = ref('')
 const taskStatusFilter = ref('')
 const taskModelFilter = ref('')
 const taskUserFilter = ref('')
+const shopFilter = ref('')
+const platformFilter = ref('')
+const shops = ref([])
+
+/* ── 账号详情/编辑抽屉 ── */
+const drawerOpen = ref(false)
+const editingUser = reactive({
+  id: null,
+  account: '',
+  nickname: '',
+  phone: '',
+  status: 'ACTIVE',
+  miValue: 0,
+  planName: '普通用户',
+  roleDraft: 'USER',
+  shopId: '',
+  shopPlatform: '',
+  passwordDraft: '',
+})
 
 const filteredUsers = computed(() => {
   const q = userSearch.value.trim().toLowerCase()
-  if (!q) return users.value
-  return users.value.filter(
-    (u) =>
-      (u.account || '').toLowerCase().includes(q) ||
-      (u.nickname || '').toLowerCase().includes(q) ||
-      String(u.id).includes(q),
-  )
+  const sf = shopFilter.value
+  const pf = platformFilter.value
+  return users.value.filter((u) => {
+    if (q) {
+      const hit =
+        (u.account || '').toLowerCase().includes(q) ||
+        (u.nickname || '').toLowerCase().includes(q) ||
+        String(u.id).includes(q)
+      if (!hit) return false
+    }
+    // 店铺筛选：AND 关系（不匹配就过滤掉，继续往下检查平台）
+    if (sf === 'UNBOUND') { if (u.shopId) return false }
+    else if (sf) { if (String(u.shopId) !== String(sf)) return false }
+    // 平台筛选：AND 关系
+    if (pf && u.shopPlatform !== pf) return false
+    return true
+  })
 })
 
 const filteredRoles = computed(() => {
@@ -95,6 +124,22 @@ const userForm = reactive({
   miValue: 100,
   planName: '普通用户',
   roles: ['USER'],
+  shopId: '',
+  shopInput: '',
+  shopPlatform: '',
+})
+
+/* 创建卡片平台下拉 ↔ 编辑弹窗平台字段 双向同步 */
+watch(() => userForm.shopPlatform, (v) => {
+  editingUser.shopPlatform = v ?? ''
+})
+watch(() => editingUser.shopPlatform, (v) => {
+  userForm.shopPlatform = v ?? ''
+  /* 同步回列表行（列表渲染的是 users 数组，不经过表单对象） */
+  if (editingUser.id) {
+    const row = users.value.find((u) => String(u.id) === String(editingUser.id))
+    if (row) row.shopPlatform = v ?? ''
+  }
 })
 
 const roleForm = reactive({
@@ -105,6 +150,22 @@ const roleForm = reactive({
 
 const roleOptions = computed(() => roles.value.map((role) => role.code))
 const summary = computed(() => stats.value?.summary || {})
+
+/* 店铺名称→ID 映射表，用于创建账号时解析手输店名 */
+const shopNameMap = computed(() => {
+  const map = {}
+  for (const s of shops.value) map[s.name] = s.id
+  return map
+})
+
+/** 解析用户输入的店铺值：返回 { shopId, shopName } */
+function resolveShopInput(input) {
+  const name = (input || '').trim()
+  if (!name) return { shopId: null, shopName: '' }
+  const id = shopNameMap.value[name]
+  if (id != null) return { shopId: Number(id), shopName: '' }
+  return { shopId: null, shopName: name }
+}
 
 async function api(path, options = {}) {
   const response = await fetch(apiPath(path), {
@@ -135,12 +196,14 @@ async function loadConsole() {
 
     /* 仅管理员加载账号和角色 */
     if (isAdmin.value) {
-      const [userRows, roleRows] = await Promise.all([
+      const [userRows, roleRows, shopRows] = await Promise.all([
         api('/api/admin/users').catch(() => []),
         api('/api/admin/roles').catch(() => []),
+        api('/api/admin/shops').catch(() => []),
       ])
       roles.value = roleRows.map(normalizeRole)
       users.value = userRows.map(normalizeUser)
+      shops.value = shopRows
     }
   } catch (error) {
     /* 非管理员请求 admin 接口返回 403 是预期行为，不必提示 */
@@ -161,9 +224,22 @@ async function createUser() {
   saving.value = true
   errorText.value = ''
   try {
+    const { shopId: resolvedShopId, shopName: resolvedShopName } = resolveShopInput(userForm.shopInput)
     const created = await api('/api/admin/users', {
       method: 'POST',
-      body: JSON.stringify(userForm),
+      body: JSON.stringify({
+        account: userForm.account,
+        phone: userForm.phone,
+        nickname: userForm.nickname,
+        password: userForm.password,
+        status: userForm.status,
+        miValue: Number(userForm.miValue || 0),
+        planName: userForm.planName,
+        shopId: resolvedShopId,
+        shopName: resolvedShopName,
+        shopPlatform: userForm.shopPlatform || null,
+        roles: [userForm.roles[0] || 'USER'],
+      }),
     })
     users.value = [normalizeUser(created), ...users.value]
     resetUserForm()
@@ -189,6 +265,7 @@ async function saveUser(user) {
         status: user.status,
         miValue: Number(user.miValue || 0),
         planName: user.planName,
+        shopId: user.shopId ?? null,
         roles: [user.roleDraft || 'USER'],
       }),
     })
@@ -317,7 +394,67 @@ function resetUserForm() {
     miValue: 100,
     planName: '普通用户',
     roles: ['USER'],
+    shopId: '',
+    shopInput: '',
+    shopPlatform: '',
   })
+}
+
+/* ── 账号详情/编辑抽屉 ── */
+function openDrawer(user) {
+  drawerOpen.value = true
+  Object.assign(editingUser, {
+    id: user.id,
+    account: user.account,
+    nickname: user.nickname || '',
+    phone: user.phone || '',
+    status: user.status || 'ACTIVE',
+    miValue: user.miValue || 0,
+    planName: user.planName || '普通用户',
+    roleDraft: user.roles?.[0] || 'USER',
+    shopId: user.shopId != null ? String(user.shopId) : '',
+    shopPlatform: user.shopPlatform || '',
+    passwordDraft: '',
+  })
+}
+
+function closeDrawer() {
+  drawerOpen.value = false
+}
+
+async function saveUserDetail() {
+  saving.value = true
+  errorText.value = ''
+  try {
+    const payload = {
+      phone: editingUser.phone || '',
+      nickname: editingUser.nickname || '',
+      password: '',
+      status: editingUser.status,
+      miValue: Number(editingUser.miValue || 0),
+      planName: editingUser.planName || '普通用户',
+      roles: [editingUser.roleDraft || 'USER'],
+      shopId:
+        editingUser.shopId === '' || editingUser.shopId == null
+          ? null
+          : Number(editingUser.shopId),
+      shopPlatform: editingUser.shopPlatform || null,
+    }
+    const updated = await api(`/api/admin/users/${editingUser.id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    })
+    users.value = users.value.map((item) =>
+      item.id === updated.id ? normalizeUser(updated) : item,
+    )
+    drawerOpen.value = false
+    showToast('账号保存成功')
+  } catch (error) {
+    errorText.value = error.message || '保存失败'
+    showToast(error.message || '保存失败', 'error')
+  } finally {
+    saving.value = false
+  }
 }
 
 function resetRoleForm() {
@@ -368,6 +505,48 @@ function statusLabel(s) {
 }
 function taskStatusLabel(s) {
   return taskStatusLabelMap[s] || s
+}
+
+/* ── 自定义下拉框状态 ── */
+const dropdownOpen = reactive({
+  createStatus: false,
+  createRole: false,
+  createShop: false,
+  createPlatform: false,
+  editPlatform: false,
+  editStatus: false,
+  editRole: false,
+  editShop: false,
+  filterShop: false,
+  filterPlatform: false,
+  filterTaskStatus: false,
+  filterTaskModel: false,
+  filterTaskUser: false,
+})
+
+function toggleDropdown(key) {
+  Object.keys(dropdownOpen).forEach((k) => {
+    if (k !== key) dropdownOpen[k] = false
+  })
+  dropdownOpen[key] = !dropdownOpen[key]
+}
+
+function closeDropdown(key) {
+  dropdownOpen[key] = false
+}
+
+function onDocClick() {
+  Object.keys(dropdownOpen).forEach((k) => (dropdownOpen[k] = false))
+}
+
+function shopLabel(shopId) {
+  const shop = shops.value.find((s) => String(s.id) === shopId)
+  return shop ? shop.name : ''
+}
+
+function taskUserLabel(userId) {
+  const user = taskUserOptions.value.find((u) => String(u.id) === userId)
+  return user ? user.nickname || user.account || user.id : userId
 }
 
 /* ── Canvas 折线图 ── */
@@ -570,9 +749,12 @@ watch([activeTab, stats], () => {
 
 onMounted(() => {
   loadConsole()
+  document.addEventListener('click', onDocClick)
 })
 
-onUnmounted(() => {})
+onUnmounted(() => {
+  document.removeEventListener('click', onDocClick)
+})
 </script>
 
 <template>
@@ -697,10 +879,17 @@ onUnmounted(() => {})
         <div class="console-form-row">
           <label>
             <span>状态</span>
-            <select v-model="userForm.status">
-              <option value="ACTIVE">启用</option>
-              <option value="DISABLED">禁用</option>
-            </select>
+            <div class="custom-select" @click.stop="toggleDropdown('createStatus')">
+              <div class="custom-select-trigger" :class="{ open: dropdownOpen.createStatus }">
+                {{ statusLabelMap[userForm.status] || userForm.status }}
+                <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+              </div>
+              <div v-show="dropdownOpen.createStatus" class="custom-select-dropdown">
+                <div v-for="s in ['ACTIVE','DISABLED']" :key="s" @click.stop="userForm.status = s; closeDropdown('createStatus')" :class="{ active: userForm.status === s }">
+                  {{ statusLabelMap[s] }}
+                </div>
+              </div>
+            </div>
           </label>
           <label>
             <span>米值</span>
@@ -714,11 +903,49 @@ onUnmounted(() => {})
           </label>
           <label>
             <span>角色</span>
-            <select v-model="userForm.roles[0]">
-              <option v-for="role in roleOptions" :key="role" :value="role">
-                {{ roleLabel(role) }}
-              </option>
-            </select>
+            <div class="custom-select" @click.stop="toggleDropdown('createRole')">
+              <div class="custom-select-trigger" :class="{ open: dropdownOpen.createRole }">
+                {{ roleLabel(userForm.roles[0]) }}
+                <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+              </div>
+              <div v-show="dropdownOpen.createRole" class="custom-select-dropdown">
+                <div v-for="role in roleOptions" :key="role" @click.stop="userForm.roles[0] = role; closeDropdown('createRole')" :class="{ active: userForm.roles[0] === role }">
+                  {{ roleLabel(role) }}
+                </div>
+              </div>
+            </div>
+          </label>
+        </div>
+        <div class="console-form-row">
+          <label>
+            <span>所属店铺</span>
+            <div class="custom-combobox" @click.stop>
+              <input
+                v-model="userForm.shopInput"
+                type="text"
+                placeholder="选择或输入新店铺名称"
+                @focus="dropdownOpen.createShop = true"
+              />
+              <div v-show="dropdownOpen.createShop" class="custom-select-dropdown">
+                <div v-for="s in shops" :key="s.id" @click.stop="userForm.shopInput = s.name; closeDropdown('createShop')">
+                  {{ s.name }}
+                </div>
+              </div>
+            </div>
+          </label>
+          <label>
+            <span>平台</span>
+            <div class="custom-select" @click.stop="toggleDropdown('createPlatform')">
+              <div class="custom-select-trigger" :class="{ open: dropdownOpen.createPlatform }">
+                {{ userForm.shopPlatform || '请选择平台' }}
+                <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+              </div>
+              <div v-show="dropdownOpen.createPlatform" class="custom-select-dropdown">
+                <div v-for="p in ['淘宝','天猫','京东','抖音','拼多多']" :key="p" @click.stop="userForm.shopPlatform = p; closeDropdown('createPlatform')" :class="{ active: userForm.shopPlatform === p }">
+                  {{ p }}
+                </div>
+              </div>
+            </div>
           </label>
         </div>
         <button class="console-primary" type="submit" :disabled="saving">创建账号</button>
@@ -727,19 +954,48 @@ onUnmounted(() => {})
       <section class="console-card console-table-card">
         <div class="console-card-head">
           <h2>账号列表</h2>
-          <div class="console-search-box">
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <circle cx="11" cy="11" r="8" />
-              <path d="M21 21l-4.35-4.35" />
-            </svg>
-            <input v-model="userSearch" placeholder="搜索账号/昵称" />
+          <div class="console-accounts-filters">
+            <div class="console-search-box">
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <circle cx="11" cy="11" r="8" />
+                <path d="M21 21l-4.35-4.35" />
+              </svg>
+              <input v-model="userSearch" placeholder="搜索账号/昵称" />
+            </div>
+            <div class="custom-select console-filter-select" @click.stop="toggleDropdown('filterShop')">
+              <div class="custom-select-trigger" :class="{ open: dropdownOpen.filterShop }">
+                {{ shopFilter === '' ? '全部店铺' : shopFilter === 'UNBOUND' ? '未绑定' : shopLabel(shopFilter) }}
+                <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+              </div>
+              <div v-show="dropdownOpen.filterShop" class="custom-select-dropdown">
+                <div @click.stop="shopFilter = ''; closeDropdown('filterShop')" :class="{ active: shopFilter === '' }">全部店铺</div>
+                <div v-for="s in shops" :key="s.id" @click.stop="shopFilter = String(s.id); closeDropdown('filterShop')" :class="{ active: shopFilter === String(s.id) }">
+                  {{ s.name }}
+                </div>
+                <div @click.stop="shopFilter = 'UNBOUND'; closeDropdown('filterShop')" :class="{ active: shopFilter === 'UNBOUND' }">未绑定</div>
+              </div>
+            </div>
+            <div class="custom-select console-filter-select" @click.stop="toggleDropdown('filterPlatform')">
+              <div class="custom-select-trigger" :class="{ open: dropdownOpen.filterPlatform }">
+                {{ platformFilter || '全部平台' }}
+                <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+              </div>
+              <div v-show="dropdownOpen.filterPlatform" class="custom-select-dropdown">
+                <div @click.stop="platformFilter = ''; closeDropdown('filterPlatform')" :class="{ active: !platformFilter }">全部平台</div>
+                <div v-for="p in ['淘宝','天猫','京东','抖音','拼多多']" :key="p"
+                  @click.stop="platformFilter = p; closeDropdown('filterPlatform')"
+                  :class="{ active: platformFilter === p }">
+                  {{ p }}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
         <div class="console-table users-table">
@@ -749,6 +1005,8 @@ onUnmounted(() => {})
             <span>角色</span>
             <span>米值</span>
             <span>状态</span>
+            <span>所属店铺</span>
+            <span>平台</span>
             <span>操作</span>
           </div>
           <div v-for="user in filteredUsers" :key="user.id" class="console-row">
@@ -767,7 +1025,10 @@ onUnmounted(() => {})
               <option value="ACTIVE">启用</option>
               <option value="DISABLED">禁用</option>
             </select>
+            <span class="console-shop-cell">{{ user.shopName || '未绑定' }}<em v-if="user.shopPlatform" class="shop-platform-tag">[{{ user.shopPlatform }}]</em></span>
+            <span class="console-platform-cell">{{ user.shopPlatform || '-' }}</span>
             <span class="console-actions">
+              <button type="button" @click="openDrawer(user)">编辑</button>
               <button type="button" @click="saveUser(user)">保存</button>
               <button type="button" class="console-btn-danger" @click="deleteUser(user)">
                 删除
@@ -781,8 +1042,109 @@ onUnmounted(() => {})
       </section>
     </section>
 
+    <!-- 账号详情/编辑抽屉 -->
+    <Teleport to="body">
+      <Transition name="console-fade">
+        <div v-if="drawerOpen" class="console-drawer-mask" @click.self="closeDrawer()">
+          <aside class="console-drawer" role="dialog" aria-modal="true" aria-label="编辑账号">
+            <header class="console-drawer-head">
+              <h3>编辑账号 · {{ editingUser.account }}</h3>
+              <button class="console-drawer-close" type="button" aria-label="关闭" @click="closeDrawer()">×</button>
+            </header>
+            <div class="console-drawer-body">
+              <label>
+                <span>账号</span>
+                <input :value="editingUser.account" disabled />
+              </label>
+              <label>
+                <span>昵称</span>
+                <input v-model.trim="editingUser.nickname" />
+              </label>
+              <label>
+                <span>手机号</span>
+                <input v-model.trim="editingUser.phone" />
+              </label>
+              <div class="console-form-row">
+                <label>
+                <span>状态</span>
+                <div class="custom-select" @click.stop="toggleDropdown('editStatus')">
+                  <div class="custom-select-trigger" :class="{ open: dropdownOpen.editStatus }">
+                    {{ statusLabelMap[editingUser.status] || editingUser.status }}
+                    <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                  </div>
+                  <div v-show="dropdownOpen.editStatus" class="custom-select-dropdown">
+                    <div v-for="s in ['ACTIVE','DISABLED']" :key="s" @click.stop="editingUser.status = s; closeDropdown('editStatus')" :class="{ active: editingUser.status === s }">
+                      {{ statusLabelMap[s] }}
+                    </div>
+                  </div>
+                </div>
+              </label>
+                <label>
+                  <span>米值</span>
+                  <input v-model.number="editingUser.miValue" type="number" min="0" />
+                </label>
+              </div>
+              <label>
+                <span>会员</span>
+                <input v-model.trim="editingUser.planName" />
+              </label>
+              <label>
+                <span>角色</span>
+                <div class="custom-select" @click.stop="toggleDropdown('editRole')">
+                  <div class="custom-select-trigger" :class="{ open: dropdownOpen.editRole }">
+                    {{ roleLabel(editingUser.roleDraft) }}
+                    <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                  </div>
+                  <div v-show="dropdownOpen.editRole" class="custom-select-dropdown">
+                    <div v-for="role in roleOptions" :key="role" @click.stop="editingUser.roleDraft = role; closeDropdown('editRole')" :class="{ active: editingUser.roleDraft === role }">
+                      {{ roleLabel(role) }}
+                    </div>
+                  </div>
+                </div>
+              </label>
+              <label>
+                <span>所属店铺</span>
+                <div class="custom-select" @click.stop="toggleDropdown('editShop')">
+                  <div class="custom-select-trigger" :class="{ open: dropdownOpen.editShop }">
+                    {{ editingUser.shopId ? shopLabel(editingUser.shopId) : '解绑 / 不绑定' }}
+                    <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                  </div>
+                  <div v-show="dropdownOpen.editShop" class="custom-select-dropdown">
+                    <div @click.stop="editingUser.shopId = ''; editingUser.shopPlatform = ''; closeDropdown('editShop')" :class="{ active: editingUser.shopId === '' }">解绑 / 不绑定</div>
+                    <div v-for="s in shops" :key="s.id" @click.stop="editingUser.shopId = String(s.id); editingUser.shopPlatform = s.platform || ''; closeDropdown('editShop')" :class="{ active: editingUser.shopId === String(s.id) }">
+                      {{ s.name }}（{{ s.code }}）
+                    </div>
+                  </div>
+                </div>
+              </label>
+              <label>
+                <span>平台</span>
+                <div class="custom-select" @click.stop="toggleDropdown('editPlatform')">
+                  <div class="custom-select-trigger" :class="{ open: dropdownOpen.editPlatform }">
+                    {{ editingUser.shopPlatform || '请选择平台' }}
+                    <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                  </div>
+                  <div v-show="dropdownOpen.editPlatform" class="custom-select-dropdown">
+                    <div v-for="p in ['淘宝','天猫','京东','抖音','拼多多']" :key="p" @click.stop="editingUser.shopPlatform = p; closeDropdown('editPlatform')" :class="{ active: editingUser.shopPlatform === p }">
+                      {{ p }}
+                    </div>
+                  </div>
+                </div>
+              </label>
+            </div>
+            <footer class="console-drawer-foot">
+              <button class="console-btn-ghost" type="button" @click="closeDrawer()">取消</button>
+              <button class="console-primary" type="button" :disabled="saving" @click="saveUserDetail()">
+                {{ saving ? '保存中...' : '保存' }}
+              </button>
+            </footer>
+          </aside>
+        </div>
+      </Transition>
+    </Teleport>
+
     <!-- Roles Tab -->
-    <section v-else-if="activeTab === 'roles'" class="console-grid">
+    <section v-if="activeTab === 'roles'" class="console-grid">
       <form class="console-card console-form" @submit.prevent="createRole">
         <h2>新增角色</h2>
         <label>
@@ -918,24 +1280,42 @@ onUnmounted(() => {})
         <div class="console-card-head">
           <h2>最近生图任务</h2>
           <div class="console-filters">
-            <select v-model="taskStatusFilter" class="console-filter-select">
-              <option value="">全部状态</option>
-              <option
-                v-for="s in ['COMPLETED', 'FAILED', 'PENDING', 'PROCESSING']"
-                :key="s"
-                :value="s"
-              >
-                {{ taskStatusLabel(s) }}
-              </option>
-            </select>
-            <select v-model="taskModelFilter" class="console-filter-select">
-              <option value="">全部模型</option>
-              <option v-for="m in taskModelOptions" :key="m" :value="m">{{ m }}</option>
-            </select>
-            <select v-model="taskUserFilter" class="console-filter-select">
-              <option value="">全部用户</option>
-              <option v-for="u in taskUserOptions" :key="u.id" :value="String(u.id)">{{ u.nickname || u.account || u.id }}</option>
-            </select>
+            <div class="custom-select console-filter-select" @click.stop="toggleDropdown('filterTaskStatus')">
+              <div class="custom-select-trigger" :class="{ open: dropdownOpen.filterTaskStatus }">
+                {{ taskStatusFilter ? taskStatusLabel(taskStatusFilter) : '全部状态' }}
+                <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+              </div>
+              <div v-show="dropdownOpen.filterTaskStatus" class="custom-select-dropdown">
+                <div @click.stop="taskStatusFilter = ''; closeDropdown('filterTaskStatus')" :class="{ active: taskStatusFilter === '' }">全部状态</div>
+                <div v-for="s in ['COMPLETED', 'FAILED', 'PENDING', 'PROCESSING']" :key="s" @click.stop="taskStatusFilter = s; closeDropdown('filterTaskStatus')" :class="{ active: taskStatusFilter === s }">
+                  {{ taskStatusLabel(s) }}
+                </div>
+              </div>
+            </div>
+            <div class="custom-select console-filter-select" @click.stop="toggleDropdown('filterTaskModel')">
+              <div class="custom-select-trigger" :class="{ open: dropdownOpen.filterTaskModel }">
+                {{ taskModelFilter || '全部模型' }}
+                <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+              </div>
+              <div v-show="dropdownOpen.filterTaskModel" class="custom-select-dropdown">
+                <div @click.stop="taskModelFilter = ''; closeDropdown('filterTaskModel')" :class="{ active: taskModelFilter === '' }">全部模型</div>
+                <div v-for="m in taskModelOptions" :key="m" @click.stop="taskModelFilter = m; closeDropdown('filterTaskModel')" :class="{ active: taskModelFilter === m }">
+                  {{ m }}
+                </div>
+              </div>
+            </div>
+            <div class="custom-select console-filter-select" @click.stop="toggleDropdown('filterTaskUser')">
+              <div class="custom-select-trigger" :class="{ open: dropdownOpen.filterTaskUser }">
+                {{ taskUserFilter ? taskUserLabel(taskUserFilter) : '全部用户' }}
+                <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+              </div>
+              <div v-show="dropdownOpen.filterTaskUser" class="custom-select-dropdown">
+                <div @click.stop="taskUserFilter = ''; closeDropdown('filterTaskUser')" :class="{ active: taskUserFilter === '' }">全部用户</div>
+                <div v-for="u in taskUserOptions" :key="u.id" @click.stop="taskUserFilter = String(u.id); closeDropdown('filterTaskUser')" :class="{ active: taskUserFilter === String(u.id) }">
+                  {{ u.nickname || u.account || u.id }}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
         <div class="console-table tasks-table">
@@ -964,3 +1344,313 @@ onUnmounted(() => {})
     </section>
   </main>
 </template>
+
+<style scoped>
+.console-accounts-filters {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+/* 任务搜索框 */
+.console-task-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 200px;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--yq-border, rgba(255,255,255,.12));
+  border-radius: 8px;
+  background: var(--yq-bg-main);
+  color: var(--yq-muted);
+  font-size: 12px;
+  flex-shrink: 0;
+  transition: border-color .2s;
+}
+.console-task-search:focus-within {
+  border-color: var(--yq-primary, #6366f1);
+}
+.console-task-search svg {
+  flex-shrink: 0;
+  opacity: .5;
+}
+.console-task-search input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: inherit;
+  font-size: inherit;
+  min-width: 0;
+}
+.console-task-search input::placeholder {
+  color: var(--yq-muted);
+  opacity: .6;
+}
+.search-clear {
+  background: none;
+  border: none;
+  color: var(--yq-muted);
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 2px;
+}
+.search-clear:hover {
+  color: #ef4444;
+}
+.console-shop-cell {
+  font-size: 13px;
+  color: #cbd5e1;
+}
+.shop-platform-tag {
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 600;
+  color: #0891b2;
+  margin-left: 4px;
+}
+.console-platform-cell {
+  font-size: 13px;
+  color: #94a3b8;
+}
+.console-drawer-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.6);
+  backdrop-filter: blur(2px);
+  display: flex;
+  justify-content: flex-end;
+  z-index: 1200;
+}
+.console-drawer {
+  width: 420px;
+  max-width: 92vw;
+  height: 100%;
+  background: #0f172a;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  box-shadow: -12px 0 40px rgba(0, 0, 0, 0.4);
+}
+.console-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.console-drawer-head h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #f1f5f9;
+}
+.console-drawer-close {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+.console-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.console-drawer-body label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: #94a3b8;
+}
+.console-drawer-body label input,
+.console-drawer-body label select {
+  padding: 10px 12px;
+  font-size: 14px;
+  color: #e2e8f0;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  outline: none;
+}
+.console-drawer-body label input:disabled {
+  opacity: 0.6;
+}
+.console-drawer-foot {
+  display: flex;
+  gap: 10px;
+  padding: 16px 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.console-drawer-foot .console-primary {
+  flex: 1;
+}
+.console-btn-ghost {
+  padding: 10px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #cbd5e1;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  cursor: pointer;
+}
+.console-fade-enter-active,
+.console-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+.console-fade-enter-from,
+.console-fade-leave-to {
+  opacity: 0;
+}
+[data-theme='light'] .console-shop-cell {
+  color: #475569;
+}
+[data-theme='light'] .shop-platform-tag {
+  color: #0e7490;
+}
+[data-theme='light'] .console-platform-cell {
+  color: #64748b;
+}
+[data-theme='light'] .console-drawer {
+  background: #fff;
+  border-left-color: #e2e8f0;
+}
+[data-theme='light'] .console-drawer-head h3 {
+  color: #1e293b;
+}
+[data-theme='light'] .console-drawer-head,
+[data-theme='light'] .console-drawer-foot {
+  border-color: #e2e8f0;
+}
+[data-theme='light'] .console-drawer-body label {
+  color: #64748b;
+}
+[data-theme='light'] .console-drawer-body label input,
+[data-theme='light'] .console-drawer-body label select {
+  color: #1e293b;
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+[data-theme='light'] .console-btn-ghost {
+  color: #475569;
+  background: #f1f5f9;
+  border-color: #e2e8f0;
+}
+
+/* ── 自定义下拉框（适配开灯/关灯主题） ── */
+.custom-select {
+  position: relative;
+  width: 100%;
+}
+.custom-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 10px 12px;
+  font-size: 14px;
+  color: #e2e8f0;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  cursor: pointer;
+  outline: none;
+  user-select: none;
+  transition: border-color 0.2s, background 0.2s;
+}
+.custom-select-trigger:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.custom-select-trigger .arrow {
+  transition: transform 0.2s;
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+.custom-select-trigger.open .arrow {
+  transform: rotate(180deg);
+}
+.custom-select-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 100;
+  background: rgba(30, 41, 59, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  max-height: 220px;
+  overflow-y: auto;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(12px);
+}
+.custom-select-dropdown > div {
+  padding: 10px 12px;
+  font-size: 14px;
+  color: #e2e8f0;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.custom-select-dropdown > div:hover,
+.custom-select-dropdown > div.active {
+  background: rgba(255, 255, 255, 0.08);
+}
+.custom-select-dropdown > div.active {
+  color: #60a5fa;
+}
+
+/* Combobox */
+.custom-combobox {
+  position: relative;
+  width: 100%;
+}
+.custom-combobox input {
+  width: 100%;
+}
+
+/* 筛选器里的下拉框更紧凑 */
+.custom-select.console-filter-select .custom-select-trigger {
+  padding: 6px 10px;
+  font-size: 13px;
+  border-radius: 8px;
+}
+.custom-select.console-filter-select .custom-select-dropdown > div {
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+/* 开灯模式 */
+[data-theme='light'] .custom-select-trigger {
+  color: #1e293b;
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+[data-theme='light'] .custom-select-trigger:hover {
+  background: #f1f5f9;
+}
+[data-theme='light'] .custom-select-dropdown {
+  background: #fff;
+  border-color: #e2e8f0;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+[data-theme='light'] .custom-select-dropdown > div {
+  color: #1e293b;
+}
+[data-theme='light'] .custom-select-dropdown > div:hover,
+[data-theme='light'] .custom-select-dropdown > div.active {
+  background: #f1f5f9;
+}
+[data-theme='light'] .custom-select-dropdown > div.active {
+  color: #2563eb;
+}
+</style>

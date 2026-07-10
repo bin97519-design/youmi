@@ -1236,7 +1236,98 @@ async function submitImageTask({ prompt, imageUrls }) {
 }
 
 async function fetchImageTask(taskId) {
-  return readApiResponse(await fetch(`/api/image-tasks/${encodeURIComponent(taskId)}`))
+  // 与 submitImageTask 保持一致，统一走 apiPath 代理前缀（避免裸路径在部分部署下漏代理）
+  return readApiResponse(
+    await fetch(apiPath('/api/image-tasks/' + encodeURIComponent(taskId))),
+  )
+}
+
+// 轮询生图任务直到完成/失败/超时。被「发起生图」与「刷新后恢复轮询」两处共用，
+// 避免两份轮询逻辑分叉导致行为不一致。
+// assistantId 为空字符串时表示无聊天消息上下文（刷新恢复场景），进度/完成消息不会被写入聊天。
+// 返回 true 表示成功完成并已完成占位图层替换；失败或超时抛错交由调用方处理。
+async function pollImageTaskUntilDone(taskId, placeholderId, assistantId, prompt = '') {
+  for (let index = 0; index < TASK_MAX_POLLS; index += 1) {
+    await wait(TASK_POLL_INTERVAL)
+    // 组件已卸载（页面刷新/导航）：由 onMounted 的恢复逻辑在重载后接管，这里直接退出
+    if (!_mounted.value) return false
+    const status = await fetchImageTask(taskId)
+    const progress = normalizeProgress(status.progress, Math.min(96, 10 + (index + 1) * 7))
+    const progressText = Number.isFinite(Number(status.progress)) ? ` ${progress}%` : ''
+    updateGeneratingPlaceholder(placeholderId, {
+      progress,
+      status: status.status || 'processing',
+    })
+    if (!isTaskDone(status.status) && assistantId) {
+      updateChatMessage(assistantId, {
+        text: `正在生成${progressText}，任务状态：${status.status || 'processing'}`,
+      })
+    }
+
+    if (isTaskFailed(status.status)) {
+      throw new Error(friendlyImageError(status.error || 'APIMart 生图任务失败'))
+    }
+
+    if (isTaskDone(status.status)) {
+      let url = extractTaskImageUrl(status)
+      if (!url) throw new Error('任务完成，但没有返回图片地址')
+      // 将临时 URL 转存到自有 OSS，获取永久 URL（防签名过期裂图）
+      updateGeneratingPlaceholder(placeholderId, {
+        progress: 98,
+        status: 'completed',
+        statusText: '生成完成，正在转存到云存储...',
+      })
+      url = await persistToOss(url)
+      updateGeneratingPlaceholder(placeholderId, {
+        progress: 100,
+        status: 'completed',
+        statusText: '生成完成，正在渲染到画布...',
+      })
+      await replaceGeneratingPlaceholder(
+        placeholderId,
+        url,
+        prompt && (prompt.includes('买家秀') || hasGridKeywords(prompt)),
+      )
+      if (assistantId) {
+        updateChatMessage(assistantId, { text: '生成完成，已添加到画布。', imageUrl: url })
+      }
+      return true
+    }
+  }
+
+  throw new Error('轮询超时，任务仍未完成')
+}
+
+// 刷新/导航后恢复被中断（processing/interrupted）的生图任务轮询。
+// 无聊天消息上下文（assistantId 为空），仅更新占位图层状态，成功则替换图片。
+async function resumeImageTaskPolling(taskId, placeholderId) {
+  if (!taskId || !placeholderId) return
+  const placeholder = layers.value.find((l) => l.id === placeholderId)
+  const prompt = placeholder?.prompt || ''
+  try {
+    // 先切回 processing，给用户明确的“恢复中”反馈（interrupted 不是终态）
+    updateGeneratingPlaceholder(placeholderId, {
+      progress: Math.max(1, placeholder?.progress || 1),
+      status: 'processing',
+      statusText: '生成任务恢复中...',
+      taskId,
+    })
+    await pollImageTaskUntilDone(taskId, placeholderId, '', prompt)
+  } catch (error) {
+    const friendly = friendlyImageError(error.message || error)
+    // 恢复轮询进行中页面被刷新/导航中断：不标 failed，保持 processing 让 onMounted 下一轮自然接管
+    const isInterruption =
+      error?.name === 'AbortError' ||
+      (error?.name === 'TypeError' && !_mounted.value) ||
+      (error?.message === 'Failed to fetch' && !_mounted.value)
+    if (!isInterruption) {
+      updateGeneratingPlaceholder(placeholderId, {
+        progress: 1,
+        status: 'failed',
+        statusText: friendly,
+      })
+    }
+  }
 }
 
 function firstUrl(value) {
@@ -1281,6 +1372,7 @@ function normalizeProgress(value, fallback = 6) {
 }
 
 function placeholderStatusText(progress, status = '') {
+  if (status === 'interrupted') return '生成任务恢复中...'
   if (isTaskFailed(status)) return '生成失败，请重试或调整提示词。'
   if (progress >= 92) return PLACEHOLDER_STATUS_TEXTS[3]
   if (progress >= 62) return PLACEHOLDER_STATUS_TEXTS[2]
@@ -4169,80 +4261,51 @@ async function sendChat() {
     })
     updateGeneratingPlaceholder(placeholderId, { taskId, progress: 8, status: 'processing' })
 
-    for (let index = 0; index < TASK_MAX_POLLS; index += 1) {
-      await wait(TASK_POLL_INTERVAL)
-      // 组件已卸载，停止轮询（避免内存泄漏和野指针错误）
-      if (!_mounted.value) return
-      const status = await fetchImageTask(taskId)
-      const progress = normalizeProgress(status.progress, Math.min(96, 10 + (index + 1) * 7))
-      const progressText = Number.isFinite(Number(status.progress)) ? ` ${progress}%` : ''
-      updateGeneratingPlaceholder(placeholderId, {
-        progress,
-        status: status.status || 'processing',
-      })
-      if (!isTaskDone(status.status)) {
-        updateChatMessage(assistantId, {
-          text: `正在生成${progressText}，任务状态：${status.status || 'processing'}`,
-        })
-      }
+    // 核心轮询逻辑（与刷新后恢复流程共用）
+    const done = await pollImageTaskUntilDone(taskId, placeholderId, assistantId, fullPrompt)
+    if (!done) return
 
-      if (isTaskFailed(status.status)) {
-        throw new Error(friendlyImageError(status.error || 'APIMart 生图任务失败'))
-      }
-
-      if (isTaskDone(status.status)) {
-        let url = extractTaskImageUrl(status)
-        if (!url) throw new Error('任务完成，但没有返回图片地址')
-        // 将临时 URL 转存到自有 OSS，获取永久 URL（防签名过期裂图）
-        updateGeneratingPlaceholder(placeholderId, {
-          progress: 98,
-          status: 'completed',
-          statusText: '生成完成，正在转存到云存储...',
-        })
-        url = await persistToOss(url)
-        updateGeneratingPlaceholder(placeholderId, {
-          progress: 100,
-          status: 'completed',
-          statusText: '生成完成，正在渲染到画布...',
-        })
-        await replaceGeneratingPlaceholder(
-          placeholderId,
-          url,
-          fullPrompt && (fullPrompt.includes('买家秀') || hasGridKeywords(fullPrompt)),
-        )
-        updateChatMessage(assistantId, { text: '生成完成，已添加到画布。', imageUrl: url })
-        // 落库前将参考图临时链（agnes/apimart/unsplash 等 CDN 签名 URL）转存为 OSS 永久 URL，
-        // 防止签名过期后聊天气泡里的缩放图裂图。persistToOss 内置降级，转存失败返回原 URL 且不 reject。
-        let persistedReferenceImageUrls = imageUrls
-        if (imageUrls?.length) {
-          persistedReferenceImageUrls = await Promise.all(
-            imageUrls.map((u) => persistToOss(u)),
-          )
-        }
-        generationHistory.value.push({
-          id: `gen-${Date.now()}`,
-          prompt: fullPrompt,
-          model: chatModel.value,
-          ratio: chatRatio.value,
-          resolution: chatResolution.value,
-          imageUrl: url,
-          referenceImageUrls: persistedReferenceImageUrls,
-          createdAt: Date.now(),
-        })
-        if (generationHistory.value.length > 200) generationHistory.value.shift()
-        // 生成历史归属文档：落库到 payload（保留最近 200 条）
-        canvas.updateDocument(props.id, (draft) => {
-          draft.payload.generationHistory = generationHistory.value.slice(-200)
-          return draft
-        })
-        return
-      }
+    // 落库前将参考图临时链（agnes/apimart/unsplash 等 CDN 签名 URL）转存为 OSS 永久 URL，
+    // 防止签名过期后聊天气泡里的缩放图裂图。persistToOss 内置降级，转存失败返回原 URL 且不 reject。
+    let persistedReferenceImageUrls = imageUrls
+    if (imageUrls?.length) {
+      persistedReferenceImageUrls = await Promise.all(imageUrls.map((u) => persistToOss(u)))
     }
-
-    throw new Error('轮询超时，任务仍未完成')
+    generationHistory.value.push({
+      id: `gen-${Date.now()}`,
+      prompt: fullPrompt,
+      model: chatModel.value,
+      ratio: chatRatio.value,
+      resolution: chatResolution.value,
+      imageUrl: layers.value.find((l) => l.id === placeholderId)?.url || '',
+      referenceImageUrls: persistedReferenceImageUrls,
+      createdAt: Date.now(),
+    })
+    if (generationHistory.value.length > 200) generationHistory.value.shift()
+    // 生成历史归属文档：落库到 payload（保留最近 200 条）
+    canvas.updateDocument(props.id, (draft) => {
+      draft.payload.generationHistory = generationHistory.value.slice(-200)
+      return draft
+    })
+    return
   } catch (error) {
     const friendly = friendlyImageError(error.message || error)
-    if (!submitted) {
+    // 判断是否为页面刷新/导航导致的中断（非真正失败）：浏览器卸载会中断进行中的 fetch
+    const isInterruption =
+      error?.name === 'AbortError' ||
+      (error?.name === 'TypeError' && !_mounted.value) ||
+      (error?.message === 'Failed to fetch' && !_mounted.value)
+    if (isInterruption && submitted) {
+      // 保留 taskId，标记 interrupted 供 onMounted 恢复逻辑重启轮询；不显示错误文案，不写 failed
+      const current = layers.value.find((l) => l.id === placeholderId)
+      updateGeneratingPlaceholder(placeholderId, {
+        progress: current?.progress || 1,
+        status: 'interrupted',
+        statusText: '生成任务恢复中...',
+        taskId: current?.taskId,
+      })
+      updateChatMessage(assistantId, { text: '生成任务已暂停（页面刷新），正在恢复...' })
+    } else if (!submitted) {
       // 提交阶段失败：根本没有后台任务，自动移除占位卡，避免画布留下死卡
       removeLayer(placeholderId)
       showCopyPasteToast(friendly)
@@ -4252,8 +4315,8 @@ async function sendChat() {
         status: 'failed',
         statusText: friendly,
       })
+      updateChatMessage(assistantId, { text: `生成失败：${friendly}` })
     }
-    updateChatMessage(assistantId, { text: `生成失败：${friendly}` })
   } finally {
     chatGenerating.value = false
   }
@@ -5061,6 +5124,26 @@ onMounted(() => {
   }
   // 聊天记录滚动到底部（最后一条消息）
   scrollChatToBottom()
+  // 恢复被页面刷新/导航中断的生图任务：扫描 payload 中 processing/interrupted 状态且带 taskId 的占位图层并继续轮询。
+  // 同时恢复历史脏数据：修复前因刷新被标为 failed 但错误文案含 "fetch"（网络中断）的旧图层也尝试重试。
+  nextTick(() => {
+    const interruptedLayers = (doc.value?.payload?.layers || []).filter(
+      (layer) =>
+        layer.type === 'placeholder' &&
+        layer.taskId &&
+        (
+          layer.status === 'processing' ||
+          layer.status === 'interrupted' ||
+          // 历史脏数据兜底：修复前被误标为 failed 的网络中断图层，taskId 还在说明后端任务可能还活着
+          (layer.status === 'failed' && layer.statusText && /fetch/i.test(layer.statusText))
+        ),
+    )
+    for (const layer of interruptedLayers) {
+      // 恢复前先切回 processing，覆盖掉旧的 failed/interrupted 状态
+      updateGeneratingPlaceholder(layer.id, { status: 'processing', statusText: '生成任务恢复中...' })
+      resumeImageTaskPolling(layer.taskId, layer.id)
+    }
+  })
   const onCtrlDown = (e) => {
     if (e.key === 'Control') ctrlHeld.value = true
   }
@@ -5635,6 +5718,7 @@ async function loadImageForCrop(layer) {
                 'is-image': layer.type === 'image' || (layer.url && !layer.type),
                 'is-image-placeholder': layer.type === 'image-placeholder',
                 'is-failed': layer.status === 'failed',
+                'is-interrupted': layer.status === 'interrupted',
                 'is-dragging': dragState && dragState.ids.includes(layer.id),
               },
             ]"

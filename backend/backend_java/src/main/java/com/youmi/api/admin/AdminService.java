@@ -2,6 +2,7 @@ package com.youmi.api.admin;
 
 import com.youmi.api.auth.PasswordHasher;
 import com.youmi.api.common.ApiException;
+import com.youmi.api.shop.ShopRepository;
 import java.math.BigDecimal;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -14,6 +15,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -29,10 +31,13 @@ public class AdminService {
 
   private final JdbcTemplate jdbcTemplate;
   private final PasswordHasher passwordHasher;
+  private final ShopRepository shopRepository;
 
-  public AdminService(JdbcTemplate jdbcTemplate, PasswordHasher passwordHasher) {
+  public AdminService(JdbcTemplate jdbcTemplate, PasswordHasher passwordHasher,
+      ShopRepository shopRepository) {
     this.jdbcTemplate = jdbcTemplate;
     this.passwordHasher = passwordHasher;
+    this.shopRepository = shopRepository;
   }
 
   public AdminDtos.ConsoleOverview overview(Long scopeUserId) {
@@ -64,13 +69,20 @@ public class AdminService {
     return new AdminDtos.ConsoleOverview(users, roles, images);
   }
 
-  public List<AdminDtos.UserRow> listUsers() {
-    String sql = """
-        SELECT id, account, phone, nickname, status, mi_value, plan_name, created_at, updated_at
-        FROM ym_sys_user
-        ORDER BY id DESC
-        """;
-    return jdbcTemplate.query(sql, (rs, rowNum) -> mapUser(rs));
+  public List<AdminDtos.UserRow> listUsers(Long shopId) {
+    StringBuilder sql = new StringBuilder("""
+        SELECT u.id, u.account, u.phone, u.nickname, u.status, u.mi_value, u.plan_name,
+               u.shop_id, s.`name` AS shop_name, s.platform AS shop_platform, u.created_at, u.updated_at
+        FROM ym_sys_user u
+        LEFT JOIN ym_shop s ON s.id = u.shop_id
+        """);
+    List<Object> args = new ArrayList<>();
+    if (shopId != null) {
+      sql.append(" WHERE u.shop_id = ?");
+      args.add(shopId);
+    }
+    sql.append(" ORDER BY u.id DESC");
+    return jdbcTemplate.query(sql.toString(), (rs, rowNum) -> mapUser(rs), args.toArray());
   }
 
   @Transactional
@@ -81,6 +93,24 @@ public class AdminService {
     String status = normalizeStatus(request.status());
     int miValue = request.miValue() == null ? 0 : Math.max(0, request.miValue());
     String planName = StringUtils.hasText(request.planName()) ? request.planName().trim() : "普通用户";
+    Long shopId = request.shopId();
+    String shopName = request.shopName();
+
+    /* 优先用已传的 shopId；若未传但给了 shopName，则按名称查找或自动创建 */
+    if (shopId == null && StringUtils.hasText(shopName)) {
+      Optional<Long> existing = shopRepository.findIdByName(shopName.trim());
+      if (existing.isPresent()) {
+        shopId = existing.get();
+      } else {
+        String code = "SHOP-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase(Locale.ROOT);
+        String platform = StringUtils.hasText(request.shopPlatform()) ? request.shopPlatform().trim() : "manual";
+        shopId = shopRepository.insert(shopName.trim(), code, platform, "ACTIVE");
+      }
+    }
+    if (shopId != null && !shopRepository.existsActiveById(shopId)) {
+      throw new ApiException(400, "请选择有效的店铺");
+    }
+    final Long resolvedShopId = shopId; /* effectively final，供 lambda 捕获 */
     String salt = "youmi-" + UUID.randomUUID().toString().replace("-", "");
     String hash = passwordHasher.sha256(password, salt);
 
@@ -88,8 +118,8 @@ public class AdminService {
     try {
       jdbcTemplate.update(connection -> {
         PreparedStatement ps = connection.prepareStatement("""
-            INSERT INTO ym_sys_user (account, phone, nickname, password_hash, password_salt, status, mi_value, plan_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO ym_sys_user (account, phone, nickname, password_hash, password_salt, status, mi_value, plan_name, shop_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, Statement.RETURN_GENERATED_KEYS);
         ps.setString(1, account);
         ps.setString(2, blankToNull(request.phone()));
@@ -99,6 +129,7 @@ public class AdminService {
         ps.setString(6, status);
         ps.setInt(7, miValue);
         ps.setString(8, planName);
+        ps.setObject(9, resolvedShopId);
         return ps;
       }, keyHolder);
     } catch (DuplicateKeyException exception) {
@@ -128,6 +159,20 @@ public class AdminService {
       args.add(salt);
     }
 
+    if (request.shopId() != null) {
+      if (!shopRepository.existsActiveById(request.shopId())) {
+        throw new ApiException(400, "请选择有效的店铺");
+      }
+      sql.append(", shop_id = ?");
+      args.add(request.shopId());
+      /* 同步更新店铺平台 */
+      if (StringUtils.hasText(request.shopPlatform())) {
+        jdbcTemplate.update("UPDATE ym_shop SET platform = ? WHERE id = ?", request.shopPlatform().trim(), request.shopId());
+      }
+    } else {
+      sql.append(", shop_id = NULL");
+    }
+
     sql.append(" WHERE id = ?");
     args.add(id);
     try {
@@ -149,9 +194,11 @@ public class AdminService {
 
   public AdminDtos.UserRow getUser(Long id) {
     String sql = """
-        SELECT id, account, phone, nickname, status, mi_value, plan_name, created_at, updated_at
-        FROM ym_sys_user
-        WHERE id = ?
+        SELECT u.id, u.account, u.phone, u.nickname, u.status, u.mi_value, u.plan_name,
+               u.shop_id, s.`name` AS shop_name, s.platform AS shop_platform, u.created_at, u.updated_at
+        FROM ym_sys_user u
+        LEFT JOIN ym_shop s ON s.id = u.shop_id
+        WHERE u.id = ?
         """;
     List<AdminDtos.UserRow> rows = jdbcTemplate.query(sql, (rs, rowNum) -> mapUser(rs), id);
     if (rows.isEmpty()) throw new ApiException(404, "用户不存在");
@@ -382,6 +429,9 @@ public class AdminService {
         rs.getString("status"),
         rs.getInt("mi_value"),
         rs.getString("plan_name"),
+        nullableLong(rs, "shop_id"),
+        rs.getString("shop_name"),
+        rs.getString("shop_platform"),
         findUserRoleCodes(id),
         time(rs, "created_at"),
         time(rs, "updated_at"));
