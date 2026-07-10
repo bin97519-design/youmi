@@ -6,6 +6,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -126,7 +127,7 @@ public class MiniMaxM3Client {
         .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
         .build();
 
-    HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+    HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
     log.info("MiniMax response status: {}", response.statusCode());
     if (response.statusCode() >= 300) {
       log.error("MiniMax error body: {}", compact(response.body()));

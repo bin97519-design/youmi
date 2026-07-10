@@ -6,6 +6,8 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.TextNode;
 import com.youmi.api.common.ApiException;
+import com.youmi.api.file.OssStorageService;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.net.URI;
 import java.net.URLEncoder;
@@ -20,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -39,18 +42,28 @@ public class ImageGenerationClient {
 
   private final ObjectMapper objectMapper;
   private final ImageGenerationProperties properties;
+  private final OssStorageService ossStorageService;
   private final HttpClient httpClient;
   private final Map<String, List<String>> persistedImageCache = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<String, FailoverState> failoverStates = new ConcurrentHashMap<>();
 
-  public ImageGenerationClient(ObjectMapper objectMapper, ImageGenerationProperties properties) {
+  @Autowired
+  public ImageGenerationClient(
+      ObjectMapper objectMapper,
+      ImageGenerationProperties properties,
+      OssStorageService ossStorageService) {
     this.objectMapper = objectMapper;
     this.properties = properties;
+    this.ossStorageService = ossStorageService;
     this.httpClient = HttpClient.newBuilder()
         .version(HttpClient.Version.HTTP_1_1)
         .followRedirects(HttpClient.Redirect.NORMAL)
         .connectTimeout(Duration.ofSeconds(Math.max(3, properties.getTimeoutSeconds())))
         .build();
+  }
+
+  ImageGenerationClient(ObjectMapper objectMapper, ImageGenerationProperties properties) {
+    this(objectMapper, properties, null);
   }
 
   public ImageGenerationDtos.StatusResponse status() {
@@ -69,8 +82,7 @@ public class ImageGenerationClient {
 
   /** 中转站模式：baseUrl 指向代理服务器且有 generation-path=/api/images/jobs */
   private boolean isProxyConfigured() {
-    return properties.isConfigured()
-        && properties.normalizedGenerationPath().contains("/api/images/jobs");
+    return properties.isProxyConfigured();
   }
 
   public ImageGenerationDtos.CreateTaskResponse createTask(ImageGenerationDtos.CreateTaskRequest request)
@@ -163,7 +175,7 @@ public class ImageGenerationClient {
     }
     putIfPresent(body, "webhook_url", request.webhookUrl());
 
-    JsonNode root = sendPost(properties.normalizedBaseUrl() + properties.normalizedGenerationPath(), body);
+    JsonNode root = sendProxyPost(properties.normalizedProxyBaseUrl() + properties.normalizedProxyGenerationPath(), body);
     List<ImageGenerationDtos.TaskRef> tasks = extractTasks(root);
     if (tasks.isEmpty()) {
       throw new ApiException(502, "APIMart did not return task_id");
@@ -422,8 +434,8 @@ public class ImageGenerationClient {
     signBody.put("contentType", image.contentType());
     signBody.put("size", image.bytes().length);
 
-    JsonNode signResult = sendPost(
-        properties.normalizedBaseUrl() + properties.normalizedOssSignPath(), signBody);
+    JsonNode signResult = sendProxyPost(
+        properties.normalizedProxyBaseUrl() + properties.normalizedOssSignPath(), signBody);
     String uploadUrl = text(signResult, "upload_url");
     String objectName = firstNonBlank(text(signResult, "object_name"), text(signResult, "objectName"));
     // 中转站签名：url 是签名 URL（会过期），public_url 才是永久 URL
@@ -688,15 +700,17 @@ public class ImageGenerationClient {
 
   /** 中转站代理任务轮询：GET /api/images/jobs/{job_id} */
   private ImageGenerationDtos.TaskStatusResponse getProxyTask(String jobId) throws Exception {
-    if (!properties.isConfigured()) {
+    if (!properties.isProxyConfigured()) {
       throw new ApiException(400, "Proxy image api key is not configured");
     }
     String cleanJobId = jobId == null ? "" : jobId.trim();
     if (cleanJobId.isBlank()) throw new ApiException(400, "jobId is required");
 
-    String endpoint = properties.normalizedBaseUrl() + properties.normalizedTaskPath() + "/" + encode(cleanJobId);
+    String endpoint = properties.normalizedProxyBaseUrl()
+        + properties.normalizedProxyTaskPath()
+        + "/" + encode(cleanJobId);
 
-    JsonNode root = sendGet(endpoint);
+    JsonNode root = sendProxyGet(endpoint);
     String status = firstNonBlank(text(root, "status"), "unknown");
     String error = firstNonBlank(
         text(root.path("error"), "message"),
@@ -872,6 +886,27 @@ public class ImageGenerationClient {
     return send(request, "GetToken");
   }
 
+  private JsonNode sendProxyPost(String endpoint, Map<String, Object> body) throws Exception {
+    HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create(endpoint))
+        .timeout(Duration.ofSeconds(Math.max(5, properties.getTimeoutSeconds())))
+        .header("Authorization", "Bearer " + properties.getProxyApiKey())
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
+        .build();
+    return send(request, "Proxy");
+  }
+
+  private JsonNode sendProxyGet(String endpoint) throws Exception {
+    HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create(endpoint))
+        .timeout(Duration.ofSeconds(Math.max(5, properties.getTimeoutSeconds())))
+        .header("Authorization", "Bearer " + properties.getProxyApiKey())
+        .GET()
+        .build();
+    return send(request, "Proxy");
+  }
+
   private JsonNode sendApimartDirectPost(String endpoint, Map<String, Object> body) throws Exception {
     HttpRequest request = HttpRequest.newBuilder()
         .uri(URI.create(endpoint))
@@ -1007,7 +1042,8 @@ public class ImageGenerationClient {
 
   private List<String> persistImageUrls(String taskId, List<String> imageUrls) throws Exception {
     if (!properties.isPersistGeneratedImages()) return imageUrls;
-    if (properties.getUploadEndpoint() == null || properties.getUploadEndpoint().isBlank()) {
+    boolean canUploadDirectly = ossStorageService != null && ossStorageService.isConfigured();
+    if (!canUploadDirectly && (properties.getUploadEndpoint() == null || properties.getUploadEndpoint().isBlank())) {
       throw new ApiException(502, "Generated image persistence is enabled, but upload endpoint is not configured");
     }
 
@@ -1029,6 +1065,16 @@ public class ImageGenerationClient {
 
   private String persistImageUrl(String taskId, int index, String imageUrl) throws Exception {
     DownloadedImage image = downloadImage(taskId, index, imageUrl);
+    if (ossStorageService != null && ossStorageService.isConfigured()) {
+      String objectName = generatedObjectName(taskId, index, image);
+      try (ByteArrayInputStream inputStream = new ByteArrayInputStream(image.bytes())) {
+        ossStorageService.uploadStream(inputStream, objectName, image.contentType());
+      }
+      String storedUrl = ossStorageService.getFileUrl(objectName);
+      System.out.println("[image-persist] stored generated image to OSS: " + storedUrl);
+      return storedUrl;
+    }
+
     String boundary = "----YoumiUploadBoundary" + System.currentTimeMillis() + Math.abs(imageUrl.hashCode());
     byte[] body = multipartBody(boundary, image);
 
@@ -1057,6 +1103,24 @@ public class ImageGenerationClient {
       throw new ApiException(502, "Generated image OSS upload succeeded, but no URL was returned");
     }
     return normalizeUploadedUrl(uploadedUrl);
+  }
+
+  private String generatedObjectName(String taskId, int index, DownloadedImage image) {
+    String filename = image.filename() == null || image.filename().isBlank()
+        ? "generated-" + index + "." + extensionFor(image.contentType())
+        : image.filename().replaceAll("[^A-Za-z0-9._-]", "_");
+    if (filename.length() > 120) {
+      filename = filename.substring(filename.length() - 120);
+    }
+    String safeTaskId = taskId == null ? "task" : taskId.replaceAll("[^A-Za-z0-9._-]", "_");
+    if (safeTaskId.length() > 80) {
+      safeTaskId = safeTaskId.substring(safeTaskId.length() - 80);
+    }
+    return java.time.LocalDate.now()
+        + "/ai-" + System.currentTimeMillis()
+        + "-" + safeTaskId
+        + "-" + index
+        + "-" + filename;
   }
 
   private DownloadedImage downloadImage(String taskId, int index, String imageUrl) throws Exception {
