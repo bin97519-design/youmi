@@ -1747,7 +1747,7 @@ async function pasteLayerFromBuffer(buffer) {
   showCopyPasteToast(els.length ? `已粘贴图层（含 ${els.length} 个分层元素）` : '已粘贴图层')
 }
 
-function addGeneratingPlaceholderLayer(prompt, genMeta = {}) {
+async function addGeneratingPlaceholderLayer(prompt, genMeta = {}) {
   pushUndo()
   const referenceImages = chatReferenceImages.value.filter(
     (image) => !image.uploading && !image.error,
@@ -1814,8 +1814,8 @@ function addGeneratingPlaceholderLayer(prompt, genMeta = {}) {
 
   selectedLayerId.value = layerId
   selectedLayerIds.value = [layerId]
-  // 占位图创建后立即同步服务器（绕过 500ms 防抖），确保刷新后服务器返回的数据里已有占位图层
-  canvas.flushNow?.()
+  // 占位图创建后立即同步服务器（await 确保到达），确保刷新后服务器返回的数据里已有占位图层
+  await canvas.flushNow?.()
   return layerId
 }
 
@@ -4349,7 +4349,7 @@ async function sendChat() {
   selectedDetectedElements.value = new Set()
   elementClickPositions.value = {}
   chatGenerating.value = true
-  const placeholderId = addGeneratingPlaceholderLayer(fullPrompt, {
+  const placeholderId = await addGeneratingPlaceholderLayer(fullPrompt, {
     model: chatModel.value,
     ratio: chatRatio.value,
     resolution: chatResolution.value,

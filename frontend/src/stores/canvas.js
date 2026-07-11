@@ -528,16 +528,19 @@ export const useCanvasStore = defineStore('canvas', {
       this.persist();
     },
 
-    // 立即刷写：场景：用户上传/AI 生图完成 → 立即同步服务器，不等防抖
-    flushNow() {
+    // 立即刷写：场景：用户上传/AI 生图完成 / 占位图创建 → 立即同步服务器，不等防抖
+    // 返回 Promise，调用方可 await 确保服务器已收到再允许刷新
+    async flushNow() {
       if (this._serverSyncTimer) {
         clearTimeout(this._serverSyncTimer);
         this._serverSyncTimer = null;
       }
       saveLocal(this.documents);
+      const promises = [];
       for (const doc of this.documents) {
-        if (doc && doc.payload) syncToServer(doc, { skipQueue: true });
+        if (doc && doc.payload) promises.push(syncToServer(doc, { skipQueue: true }));
       }
+      await Promise.all(promises);
     },
 
     /**
