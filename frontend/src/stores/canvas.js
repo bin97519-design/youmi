@@ -429,11 +429,17 @@ export const useCanvasStore = defineStore('canvas', {
             if ((!serverConns || !serverConns.length) && localConns && localConns.length) {
               mergedDoc.payload.connections = localConns;
             }
-            const localHistory = localDoc.payload.generationHistory;
-            const serverHistory = mergedDoc.payload.generationHistory;
-            if ((!serverHistory || !serverHistory.length) && localHistory && localHistory.length) {
-              mergedDoc.payload.generationHistory = localHistory;
+            // 历史记录按 id 去重并集（本地优先），避免 500ms 防抖窗口内被旧 server 数据整体覆盖
+            const localHistory = localDoc.payload.generationHistory || [];
+            const serverHistory = mergedDoc.payload.generationHistory || [];
+            const _historyMap = new Map();
+            for (const rec of serverHistory) {
+              if (rec && rec.id) _historyMap.set(rec.id, rec);
             }
+            for (const rec of localHistory) {
+              if (rec && rec.id) _historyMap.set(rec.id, rec); // 本地优先：后写入覆盖
+            }
+            mergedDoc.payload.generationHistory = Array.from(_historyMap.values());
             const localChatCfg = localDoc.payload.chatConfig;
             const serverChatCfg = mergedDoc.payload.chatConfig;
             if ((!serverChatCfg || !Object.keys(serverChatCfg).length) && localChatCfg && Object.keys(localChatCfg).length) {

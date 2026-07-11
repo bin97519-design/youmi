@@ -397,6 +397,21 @@ function toggleChatSelect(name) {
 }
 // 生成历史归属画布文档：从 payload 读取（旧文档无该字段则默认 []）
 const generationHistory = ref([...(doc.value?.payload?.generationHistory || [])])
+
+// 历史记录「唯一写入入口」：图进画布 ⇒ 历史必写（聊天生图路径 A 与刷新恢复路径 B 共用）。
+// record 字段：{ id, prompt, model, ratio, resolution, imageUrl, referenceImageUrls, createdAt }
+// 写入后立即写回文档 payload 并强制 flush，确保易丢节点（刷新恢复完成）也不丢记录。
+function recordGenerationToHistory(record) {
+  if (!record || !record.imageUrl) return
+  generationHistory.value.push(record)
+  if (generationHistory.value.length > 200) generationHistory.value.shift()
+  canvas.updateDocument(props.id, (draft) => {
+    draft.payload.generationHistory = generationHistory.value.slice(-200)
+    return draft
+  })
+  // localStorage 已在 updateDocument→persist 内同步即时写；这里强制 flush，让服务器也立即跟上
+  canvas.flushNow?.()
+}
 // 对话窗口选中的模型参数也归属文档（payload.chatConfig），未持久化过则保持默认
 const initialChatConfig = doc.value?.payload?.chatConfig || {}
 const chatModel = ref(initialChatConfig.model || 'banana2')
@@ -1297,6 +1312,28 @@ async function pollImageTaskUntilDone(taskId, placeholderId, assistantId, prompt
         url,
         prompt && (prompt.includes('买家秀') || hasGridKeywords(prompt)),
       )
+      // —— 历史记录唯一写入点（路径 A 聊天生图 / 路径 B 刷新后恢复 共用）——
+      // 图已落地画布，这里确保同步进历史记录。占位图层上的 genMeta 提供生成参数；
+      // 旧版（修复前）创建的在途图层可能没有 genMeta，则优雅降级（prompt 兜底，其余字段允许为空）。
+      const placeholderLayer = layers.value.find((l) => l.id === placeholderId)
+      const meta = placeholderLayer?.genMeta || {}
+      let refUrls = meta.referenceImageUrls
+      if (Array.isArray(refUrls) && refUrls.length) {
+        // 转存为 OSS 永久 URL，防止签名过期后历史缩略图裂图（与原聊天流程行为一致）
+        refUrls = await Promise.all(refUrls.map((u) => persistToOss(u)))
+      } else {
+        refUrls = Array.isArray(refUrls) ? refUrls : []
+      }
+      recordGenerationToHistory({
+        id: `gen-${Date.now()}`,
+        prompt: meta.prompt || placeholderLayer?.prompt || prompt || '',
+        model: meta.model || '',
+        ratio: meta.ratio || '',
+        resolution: meta.resolution || '',
+        imageUrl: url,
+        referenceImageUrls: refUrls,
+        createdAt: Date.now(),
+      })
       if (assistantId) {
         updateChatMessage(assistantId, { text: '生成完成，已添加到画布。', imageUrl: url })
       }
@@ -1710,7 +1747,7 @@ async function pasteLayerFromBuffer(buffer) {
   showCopyPasteToast(els.length ? `已粘贴图层（含 ${els.length} 个分层元素）` : '已粘贴图层')
 }
 
-function addGeneratingPlaceholderLayer(prompt) {
+function addGeneratingPlaceholderLayer(prompt, genMeta = {}) {
   pushUndo()
   const referenceImages = chatReferenceImages.value.filter(
     (image) => !image.uploading && !image.error,
@@ -1745,6 +1782,15 @@ function addGeneratingPlaceholderLayer(prompt) {
       type: 'placeholder',
       name: layerName(index),
       prompt,
+      // 生成参数随占位图层持久化，供「刷新后恢复完成」路径（路径 B）也能造出完整历史记录。
+      // 修复前创建的旧在途图层可能没有 genMeta，恢复时优雅降级（prompt 兜底，其余字段允许为空）。
+      genMeta: {
+        prompt,
+        model: genMeta.model || '',
+        ratio: genMeta.ratio || '',
+        resolution: genMeta.resolution || '',
+        referenceImageUrls: Array.isArray(genMeta.referenceImageUrls) ? genMeta.referenceImageUrls : [],
+      },
       progress: 6,
       status: 'submitted',
       statusText: placeholderStatusText(6),
@@ -4301,7 +4347,12 @@ async function sendChat() {
   selectedDetectedElements.value = new Set()
   elementClickPositions.value = {}
   chatGenerating.value = true
-  const placeholderId = addGeneratingPlaceholderLayer(fullPrompt)
+  const placeholderId = addGeneratingPlaceholderLayer(fullPrompt, {
+    model: chatModel.value,
+    ratio: chatRatio.value,
+    resolution: chatResolution.value,
+    referenceImageUrls: imageUrls,
+  })
   let submitted = false
 
   try {
@@ -4316,30 +4367,8 @@ async function sendChat() {
     // 核心轮询逻辑（与刷新后恢复流程共用，统一走幂等守卫 startImagePoll）
     const done = await startImagePoll(taskId, placeholderId, assistantId, fullPrompt)
     if (!done) return
-
-    // 落库前将参考图临时链（agnes/apimart/unsplash 等 CDN 签名 URL）转存为 OSS 永久 URL，
-    // 防止签名过期后聊天气泡里的缩放图裂图。persistToOss 内置降级，转存失败返回原 URL 且不 reject。
-    let persistedReferenceImageUrls = imageUrls
-    if (imageUrls?.length) {
-      persistedReferenceImageUrls = await Promise.all(imageUrls.map((u) => persistToOss(u)))
-    }
-    generationHistory.value.push({
-      id: `gen-${Date.now()}`,
-      prompt: fullPrompt,
-      model: chatModel.value,
-      ratio: chatRatio.value,
-      resolution: chatResolution.value,
-      imageUrl: layers.value.find((l) => l.id === placeholderId)?.url || '',
-      referenceImageUrls: persistedReferenceImageUrls,
-      createdAt: Date.now(),
-    })
-    if (generationHistory.value.length > 200) generationHistory.value.shift()
-    // 生成历史归属文档：落库到 payload（保留最近 200 条）
-    canvas.updateDocument(props.id, (draft) => {
-      draft.payload.generationHistory = generationHistory.value.slice(-200)
-      return draft
-    })
-    return
+    // 历史记录已在 pollImageTaskUntilDone 的「图片落地」完成点统一写入
+    // （聊天生图 A / 刷新恢复 B 共用 recordGenerationToHistory），此处不重复 push，避免双写。
   } catch (error) {
     const friendly = friendlyImageError(error.message || error)
     // 判断是否为页面刷新/导航导致的中断（非真正失败）：浏览器卸载会中断进行中的 fetch
