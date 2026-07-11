@@ -1200,6 +1200,18 @@ function isTaskFailed(status) {
   return ['failed', 'error', 'cancelled', 'canceled'].includes(String(status || '').toLowerCase())
 }
 
+// 统一生图任务状态的词表与大小写，使「恢复轮询」与具体状态词解耦。
+// - 空值返回 ''，方便调用点用 `|| 'processing'` 兜底；
+// - 其余未知词原样小写返回（不静默吞掉），便于恢复过滤器按非终态处理。
+function normalizeStatus(raw) {
+  if (raw == null) return ''
+  const s = String(raw).toLowerCase()
+  if (/in_progress|pending|generating|running|queued|processing/.test(s)) return 'processing'
+  if (/completed|succeeded|success|done|finished/.test(s)) return 'completed'
+  if (/failed|error|fail/.test(s)) return 'failed'
+  return s
+}
+
 async function readApiResponse(response) {
   const result = await response.json().catch(() => null)
   if (!response.ok || !result || result.code !== 0) {
@@ -1256,7 +1268,9 @@ async function pollImageTaskUntilDone(taskId, placeholderId, assistantId, prompt
     const progressText = Number.isFinite(Number(status.progress)) ? ` ${progress}%` : ''
     updateGeneratingPlaceholder(placeholderId, {
       progress,
-      status: status.status || 'processing',
+      // 归一化：每个持久化到图层的 status 都统一成规范词（processing/completed/failed），
+      // 避免后端/中转站透传的原始词（IN_PROGRESS/PENDING/GENERATING/代理自有词）大小写不一致导致恢复过滤器匹配不上。
+      status: normalizeStatus(status.status) || 'processing',
     })
     if (!isTaskDone(status.status) && assistantId) {
       updateChatMessage(assistantId, {
@@ -1295,19 +1309,33 @@ async function pollImageTaskUntilDone(taskId, placeholderId, assistantId, prompt
 
 // 刷新/导航后恢复被中断（processing/interrupted）的生图任务轮询。
 // 无聊天消息上下文（assistantId 为空），仅更新占位图层状态，成功则替换图片。
+// 防止同一个 taskId 被并发重复轮询（恢复扫描可能被 onMounted / 图层监听多次触发，
+// 或刷新恢复与本地生图轮询同时发生）。所有生图轮询统一走这里，保证幂等。
+const _pollingTasks = new Set()
+async function startImagePoll(taskId, placeholderId, assistantId, prompt = '') {
+  if (!taskId || !placeholderId) return false
+  if (_pollingTasks.has(taskId)) return false // 已在轮询中，幂等复用，不重复起轮询
+  _pollingTasks.add(taskId)
+  try {
+    return await pollImageTaskUntilDone(taskId, placeholderId, assistantId, prompt)
+  } finally {
+    _pollingTasks.delete(taskId)
+  }
+}
+
 async function resumeImageTaskPolling(taskId, placeholderId) {
   if (!taskId || !placeholderId) return
   const placeholder = layers.value.find((l) => l.id === placeholderId)
   const prompt = placeholder?.prompt || ''
   try {
-    // 先切回 processing，给用户明确的“恢复中”反馈（interrupted 不是终态）
+    // 先切回 processing，给用户明确的“恢复中”反馈（interrupted/persisting 都不是终态）
     updateGeneratingPlaceholder(placeholderId, {
       progress: Math.max(1, placeholder?.progress || 1),
       status: 'processing',
       statusText: '生成任务恢复中...',
       taskId,
     })
-    await pollImageTaskUntilDone(taskId, placeholderId, '', prompt)
+    await startImagePoll(taskId, placeholderId, '', prompt)
   } catch (error) {
     const friendly = friendlyImageError(error.message || error)
     // 恢复轮询进行中页面被刷新/导航中断：不标 failed，保持 processing 让 onMounted 下一轮自然接管
@@ -1316,14 +1344,43 @@ async function resumeImageTaskPolling(taskId, placeholderId) {
       (error?.name === 'TypeError' && !_mounted.value) ||
       (error?.message === 'Failed to fetch' && !_mounted.value)
     if (!isInterruption) {
+      // 轻量 UX 安全网：恢复失败（任务已不存在/轮询报错）时给出明确可操作的文案，
+      // 而不是留下一个无声转圈的死卡。
       updateGeneratingPlaceholder(placeholderId, {
         progress: 1,
         status: 'failed',
-        statusText: friendly,
+        statusText: '恢复失败，请重试',
       })
     }
   }
 }
+
+// 刷新/恢复后扫描所有「非终态的占位图层」并重启轮询。
+// 与具体状态词解耦：凡是 type==='placeholder' 且带 taskId 且非 completed/failed 的，一律恢复，
+// 覆盖「纯生成中刷新」(APIMart 的 IN_PROGRESS/PENDING/GENERATING、中转站代理自有词等) 这种原本匹配不上的 case。
+// 配合 startImagePoll 的 taskId 守卫，可安全被多次调用（幂等）。
+function resumeInterruptedPlaceholders() {
+  const layersToResume = (doc.value?.payload?.layers || []).filter((layer) => {
+    const s = normalizeStatus(layer.status)
+    return (
+      layer.type === 'placeholder' &&
+      layer.taskId &&
+      !isTaskDone(s) &&
+      !isTaskFailed(s) &&
+      !_pollingTasks.has(layer.taskId) // 已在轮询中的不重复处理，避免重复改状态触发监听回环
+    )
+  })
+  for (const layer of layersToResume) {
+    // 恢复前先切回 processing，覆盖掉旧的 failed/interrupted/persisting 等状态
+    updateGeneratingPlaceholder(layer.id, { status: 'processing', statusText: '生成任务恢复中...' })
+    resumeImageTaskPolling(layer.taskId, layer.id)
+  }
+}
+
+// 服务端 doc 合并（syncFromServer）可能在 onMounted 恢复扫描之后异步覆盖本地图层，
+// 导致已扫描出来的占位层被替换掉、而恢复逻辑不会重跑。这里对图层列表做幂等重扫，
+// 配合 startImagePoll 的 taskId 守卫，确保恢复不漏、也不重复起轮询。
+watch(() => doc.value?.payload?.layers, resumeInterruptedPlaceholders)
 
 function firstUrl(value) {
   if (!value) return ''
@@ -4256,8 +4313,8 @@ async function sendChat() {
     })
     updateGeneratingPlaceholder(placeholderId, { taskId, progress: 8, status: 'processing' })
 
-    // 核心轮询逻辑（与刷新后恢复流程共用）
-    const done = await pollImageTaskUntilDone(taskId, placeholderId, assistantId, fullPrompt)
+    // 核心轮询逻辑（与刷新后恢复流程共用，统一走幂等守卫 startImagePoll）
+    const done = await startImagePoll(taskId, placeholderId, assistantId, fullPrompt)
     if (!done) return
 
     // 落库前将参考图临时链（agnes/apimart/unsplash 等 CDN 签名 URL）转存为 OSS 永久 URL，
@@ -5123,28 +5180,11 @@ onMounted(() => {
   }
   // 聊天记录滚动到底部（最后一条消息）
   scrollChatToBottom()
-  // 恢复被页面刷新/导航中断的生图任务：扫描 payload 中 processing/interrupted 状态且带 taskId 的占位图层并继续轮询。
-  // 同时恢复历史脏数据：修复前因刷新被标为 failed 但错误文案含 "fetch"（网络中断）的旧图层也尝试重试。
-  nextTick(() => {
-    const interruptedLayers = (doc.value?.payload?.layers || []).filter(
-      (layer) =>
-        layer.type === 'placeholder' &&
-        layer.taskId &&
-        (
-          layer.status === 'processing' ||
-          layer.status === 'interrupted' ||
-          // 后端异步转存中（persisting）若被刷新打断，同样需要恢复轮询
-          layer.status === 'persisting' ||
-          // 历史脏数据兜底：修复前被误标为 failed 的网络中断图层，taskId 还在说明后端任务可能还活着
-          (layer.status === 'failed' && layer.statusText && /fetch/i.test(layer.statusText))
-        ),
-    )
-    for (const layer of interruptedLayers) {
-      // 恢复前先切回 processing，覆盖掉旧的 failed/interrupted 状态
-      updateGeneratingPlaceholder(layer.id, { status: 'processing', statusText: '生成任务恢复中...' })
-      resumeImageTaskPolling(layer.taskId, layer.id)
-    }
-  })
+  // 恢复被页面刷新/导航中断的生图任务：扫描所有「非终态 + 带 taskId」的占位图层并继续轮询。
+  // 与具体状态词解耦（经 normalizeStatus 归一），覆盖「纯生成中刷新」(APIMart 的 IN_PROGRESS/PENDING/GENERATING、
+  // 中转站代理自有词等) 这种原本白名单匹配不上的 case；时机 B(persisting)/C(completed) 仍按原逻辑正常完成。
+  // 另见组件级 watch：服务端 doc 合并（syncFromServer）异步覆盖本地图层后也会幂等重扫。
+  nextTick(() => resumeInterruptedPlaceholders())
   const onCtrlDown = (e) => {
     if (e.key === 'Control') ctrlHeld.value = true
   }
