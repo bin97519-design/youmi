@@ -1814,6 +1814,8 @@ function addGeneratingPlaceholderLayer(prompt, genMeta = {}) {
 
   selectedLayerId.value = layerId
   selectedLayerIds.value = [layerId]
+  // 占位图创建后立即同步服务器（绕过 500ms 防抖），确保刷新后服务器返回的数据里已有占位图层
+  canvas.flushNow?.()
   return layerId
 }
 
