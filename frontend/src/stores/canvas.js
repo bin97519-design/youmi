@@ -493,6 +493,11 @@ export const useCanvasStore = defineStore('canvas', {
       return doc;
     },
     updateDocument(id, patcher) {
+      // 记录修改前的 placeholder 图层 id 集合，用于检测新增占位图
+      const docBefore = this.documents.find((d) => d.id === id);
+      const placeholderIdsBefore = new Set(
+        (docBefore?.payload?.layers || []).filter((l) => l.type === 'placeholder').map((l) => l.id),
+      );
       this.documents = this.documents.map((doc) => {
         if (doc.id !== id) return doc;
         const next = patcher(JSON.parse(JSON.stringify(doc)));
@@ -502,6 +507,22 @@ export const useCanvasStore = defineStore('canvas', {
         return next;
       });
       this.persist();
+      // 检测是否新增了 placeholder 图层 → 立即同步服务器（绕过 500ms 防抖）
+      // 确保刷新时服务器返回的数据里已有占位图层，不被旧数据覆盖
+      const docAfter = this.documents.find((d) => d.id === id);
+      const hasNewPlaceholder = (docAfter?.payload?.layers || []).some(
+        (l) => l.type === 'placeholder' && !placeholderIdsBefore.has(l.id),
+      );
+      if (hasNewPlaceholder) {
+        // 清掉 persist 刚设的防抖 timer，立即同步
+        if (this._serverSyncTimer) {
+          clearTimeout(this._serverSyncTimer);
+          this._serverSyncTimer = null;
+        }
+        for (const doc of this.documents) {
+          if (doc && doc.payload) syncToServer(doc, { skipQueue: true });
+        }
+      }
     },
     removeDocument(id) {
       this.documents = this.documents.filter((doc) => doc.id !== id);
