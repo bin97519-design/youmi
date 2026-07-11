@@ -91,7 +91,11 @@ public class ImageGenerationClient {
       throw new ApiException(400, "prompt is required");
     }
 
-    if (!properties.isConfigured() && !properties.isGetTokenConfigured() && !properties.isAgnesConfigured()) {
+    if (!properties.isConfigured()
+        && !properties.isApimartDirectConfigured()
+        && !properties.isGetTokenConfigured()
+        && !properties.isAgnesConfigured()
+        && !isProxyConfigured()) {
       throw new ApiException(400, "Image generation api key is not configured");
     }
 
@@ -124,15 +128,18 @@ public class ImageGenerationClient {
         try {
           return createApimartDirectTask(request);
         } catch (Exception apimartError) {
-          System.out.println("[image] APIMart-direct failed, falling back to Proxy: " + apimartError.getMessage());
-          if (proxyConfigured) {
-            return createProxyTask(request);
-          }
-          throw apimartError;
+          System.out.println("[image] APIMart-direct failed, trying fallback chain: " + apimartError.getMessage());
+          return createFallbackTask(request, apimartError);
         }
-      } else if (proxyConfigured) {
-        System.out.println("[image-route] APIMart-direct not configured, using Proxy directly");
-        return createProxyTask(request);
+      } else {
+        if (properties.isGetTokenConfigured()) {
+          System.out.println("[image-route] APIMart-direct not configured, using GetToken fallback");
+          return createGetTokenTask(request);
+        }
+        if (proxyConfigured) {
+          System.out.println("[image-route] APIMart-direct not configured, using Proxy directly");
+          return createProxyTask(request);
+        }
       }
     }
 
@@ -140,13 +147,45 @@ public class ImageGenerationClient {
       try {
         return createApimartTask(request);
       } catch (Exception exception) {
-        if (!isProxyConfigured()) throw exception;
+        return createFallbackTask(request, exception);
       }
+    }
+    if (properties.isGetTokenConfigured()) {
+      return createGetTokenTask(request);
     }
     if (isProxyConfigured()) {
       return createProxyTask(request);
     }
     throw new ApiException(502, "Image generation provider request failed");
+  }
+
+  private ImageGenerationDtos.CreateTaskResponse createFallbackTask(
+      ImageGenerationDtos.CreateTaskRequest request, Exception primaryError) throws Exception {
+    Exception lastError = primaryError;
+    if (properties.isGetTokenConfigured()) {
+      try {
+        System.out.println("[image] trying GetToken fallback");
+        return createGetTokenTask(request);
+      } catch (Exception getTokenError) {
+        lastError = getTokenError;
+        System.out.println("[image] GetToken fallback failed: " + getTokenError.getMessage());
+      }
+    }
+    if (isProxyConfigured()) {
+      try {
+        System.out.println("[image] trying Proxy fallback");
+        return createProxyTask(request);
+      } catch (Exception proxyError) {
+        if (lastError != null) {
+          proxyError.addSuppressed(lastError);
+        }
+        throw proxyError;
+      }
+    }
+    if (lastError != null) {
+      throw lastError;
+    }
+    throw new ApiException(502, "No image fallback provider configured");
   }
 
   private ImageGenerationDtos.CreateTaskResponse createApimartTask(ImageGenerationDtos.CreateTaskRequest request)
@@ -175,7 +214,7 @@ public class ImageGenerationClient {
     }
     putIfPresent(body, "webhook_url", request.webhookUrl());
 
-    JsonNode root = sendProxyPost(properties.normalizedProxyBaseUrl() + properties.normalizedProxyGenerationPath(), body);
+    JsonNode root = sendPost(properties.normalizedBaseUrl() + properties.normalizedGenerationPath(), body);
     List<ImageGenerationDtos.TaskRef> tasks = extractTasks(root);
     if (tasks.isEmpty()) {
       throw new ApiException(502, "APIMart did not return task_id");
@@ -253,7 +292,8 @@ public class ImageGenerationClient {
       body.put("image_objects", imageObjects);
     }
 
-    JsonNode root = sendPost(properties.normalizedBaseUrl() + properties.normalizedGenerationPath(), body);
+    JsonNode root = sendProxyPost(
+        properties.normalizedProxyBaseUrl() + properties.normalizedProxyGenerationPath(), body);
 
     // 中转站返回 { job_id, poll_url, retry_after_seconds, status }
     String jobId = firstNonBlank(text(root, "job_id"), text(root, "id"));
@@ -1414,12 +1454,28 @@ public class ImageGenerationClient {
 
   /** 根据主 provider 与解析后的模型决定备用 provider；无可用备用链时返回 null */
   private String determineBackupProvider(String primaryProvider, String resolvedModel) {
-    return switch (primaryProvider) {
-      case "apimart-direct" -> isProxyConfigured() ? PROVIDER_PROXY : null;
-      case PROVIDER_GETTOKEN -> isProxyConfigured() ? PROVIDER_PROXY : null;
-      case PROVIDER_APIMART -> isProxyConfigured() ? PROVIDER_PROXY : null;
-      default -> null; // agnes / proxy 无备用
-    };
+    List<String> providers = determineBackupProviders(primaryProvider, resolvedModel);
+    return providers.isEmpty() ? null : providers.get(0);
+  }
+
+  private List<String> determineBackupProviders(String primaryProvider, String resolvedModel) {
+    if (!properties.isFallbackEnabled()) {
+      return List.of();
+    }
+    if ("apimart-direct".equals(primaryProvider) || PROVIDER_APIMART.equals(primaryProvider)) {
+      List<String> providers = new ArrayList<>(2);
+      if (properties.isGetTokenConfigured()) {
+        providers.add(PROVIDER_GETTOKEN);
+      }
+      if (isProxyConfigured()) {
+        providers.add(PROVIDER_PROXY);
+      }
+      return providers;
+    }
+    if (PROVIDER_GETTOKEN.equals(primaryProvider)) {
+      return isProxyConfigured() ? List.of(PROVIDER_PROXY) : List.of();
+    }
+    return List.of(); // agnes / proxy have no backup provider.
   }
 
   /** 按需创建备份任务（懒创建），将返回的 taskId 写入 state.backupTaskId */
@@ -1440,7 +1496,7 @@ public class ImageGenerationClient {
     String model = state.originalRequest == null ? "unknown"
         : properties.resolveModel(state.originalRequest.model());
     System.out.println("[image-failover] " + new java.util.Date()
-        + " | reason=timeout_or_error"
+        + " | reason=" + state.failoverReason
         + " | from=" + state.primaryProvider
         + " | to=" + state.backupProvider
         + " | model=" + model
@@ -1449,19 +1505,26 @@ public class ImageGenerationClient {
 
   /** 触发故障转移：计算备用 provider 并创建备份任务；失败则重置以便下次轮询重试 */
   private void triggerBackup(FailoverState state, String reason) {
-    String backup = determineBackupProvider(
+    List<String> backups = determineBackupProviders(
         state.primaryProvider, properties.resolveModel(state.originalRequest.model()));
-    if (backup == null) return;
-    state.backupProvider = backup;
+    if (backups.isEmpty()) return;
     state.failoverReason = reason;
-    try {
-      createBackupTask(state);
-      state.failoverTriggered = true;
-    } catch (Exception e) {
-      System.out.println("[image-failover] 备份任务创建失败: " + e.getMessage());
-      state.backupProvider = null;
-      state.failoverReason = "timeout"; // 复位，下一次轮询可重试
+    for (String backup : backups) {
+      state.backupProvider = backup;
+      try {
+        createBackupTask(state);
+        state.failoverTriggered = true;
+        return;
+      } catch (Exception e) {
+        System.out.println("[image-failover] backup task create failed"
+            + " | to=" + backup
+            + " | reason=" + reason
+            + " | error=" + e.getMessage());
+        state.backupTaskId = null;
+      }
     }
+    state.backupProvider = null;
+    state.failoverReason = "timeout"; // Reset so the next poll can retry the chain.
   }
 
   /**
