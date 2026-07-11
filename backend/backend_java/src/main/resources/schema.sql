@@ -176,3 +176,19 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @has_shop_fk = (SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=@db AND table_name='ym_sys_user' AND constraint_name='fk_user_shop' AND constraint_type='FOREIGN KEY');
 SET @sql = IF(@has_shop_fk=0, 'ALTER TABLE ym_sys_user ADD CONSTRAINT fk_user_shop FOREIGN KEY (shop_id) REFERENCES ym_shop (id) ON DELETE RESTRICT', 'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- ── 生图结果持久化（后端异步转存落库，抗刷新裂图） ──
+-- result_urls：永久 OSS URL（JSON 数组字符串）
+SET @has_result_urls = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@db AND table_name='ym_image_task' AND column_name='result_urls');
+SET @sql = IF(@has_result_urls=0, 'ALTER TABLE ym_image_task ADD COLUMN result_urls LONGTEXT NULL', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- persist_status：PENDING / DONE / FAILED（持久化状态，落库耐久）
+SET @has_persist_status = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@db AND table_name='ym_image_task' AND column_name='persist_status');
+SET @sql = IF(@has_persist_status=0, "ALTER TABLE ym_image_task ADD COLUMN persist_status VARCHAR(16) NOT NULL DEFAULT 'PENDING'", 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- is_fallback：兜底通道徽章（proxy 中转站生成的图）
+SET @has_is_fallback = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@db AND table_name='ym_image_task' AND column_name='is_fallback');
+SET @sql = IF(@has_is_fallback=0, 'ALTER TABLE ym_image_task ADD COLUMN is_fallback TINYINT(1) NOT NULL DEFAULT 0', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;

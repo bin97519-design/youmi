@@ -1271,13 +1271,8 @@ async function pollImageTaskUntilDone(taskId, placeholderId, assistantId, prompt
     if (isTaskDone(status.status)) {
       let url = extractTaskImageUrl(status)
       if (!url) throw new Error('任务完成，但没有返回图片地址')
-      // 将临时 URL 转存到自有 OSS，获取永久 URL（防签名过期裂图）
-      updateGeneratingPlaceholder(placeholderId, {
-        progress: 98,
-        status: 'completed',
-        statusText: '生成完成，正在转存到云存储...',
-      })
-      url = await persistToOss(url)
+      // 后端已在异步持久化完成后返回永久 OSS URL（persist_status=DONE），
+      // 此处不再二次转存（去掉双重转存 + 30s 自杀式 abort，避免很慢/裂图）。
       updateGeneratingPlaceholder(placeholderId, {
         progress: 100,
         status: 'completed',
@@ -1373,6 +1368,7 @@ function normalizeProgress(value, fallback = 6) {
 
 function placeholderStatusText(progress, status = '') {
   if (status === 'interrupted') return '生成任务恢复中...'
+  if (status === 'persisting') return '生成完成，正在转存到云存储...'
   if (isTaskFailed(status)) return '生成失败，请重试或调整提示词。'
   if (progress >= 92) return PLACEHOLDER_STATUS_TEXTS[3]
   if (progress >= 62) return PLACEHOLDER_STATUS_TEXTS[2]
@@ -1441,8 +1437,7 @@ function scrollChatToBottom() {
 
 async function addImageLayerFromUrl(url, name = 'AI生成图片', detectPrompt = '') {
   try {
-    // 将临时 URL 转存到自有 OSS（永久 URL 自动跳过，不重复转存）
-    url = await persistToOss(url)
+    // 后端已在异步持久化完成后返回永久 OSS URL，此处不再二次转存（去掉 30s 自杀式 abort）
     const size = await imageSize(url)
     let layerId = ''
     canvas.updateDocument(props.id, (draft) => {
@@ -5138,6 +5133,8 @@ onMounted(() => {
         (
           layer.status === 'processing' ||
           layer.status === 'interrupted' ||
+          // 后端异步转存中（persisting）若被刷新打断，同样需要恢复轮询
+          layer.status === 'persisting' ||
           // 历史脏数据兜底：修复前被误标为 failed 的网络中断图层，taskId 还在说明后端任务可能还活着
           (layer.status === 'failed' && layer.statusText && /fetch/i.test(layer.statusText))
         ),

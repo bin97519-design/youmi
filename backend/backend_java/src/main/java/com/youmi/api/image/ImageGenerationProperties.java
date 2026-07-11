@@ -442,7 +442,7 @@ public class ImageGenerationProperties {
   public boolean isProxyModel(String resolvedModel) {
     if (resolvedModel == null) return false;
     String m = resolvedModel.trim().toLowerCase();
-    return m.startsWith("gpt-image") || m.startsWith("dall-e");
+    return m.startsWith("gpt-image");
   }
 
   private static String normalizeAlias(String value) {
@@ -470,12 +470,6 @@ public class ImageGenerationProperties {
     // 兼容用户手抖写法：空格分隔 / 错误拼写
     aliases.put("gpt imag 2", "gpt-image-2");
     aliases.put("gpt image 2", "gpt-image-2");
-    aliases.put("gpt-image-1.5", "gpt-image-1.5");
-    aliases.put("gpt-image-1", "gpt-image-1");
-    aliases.put("gpt-image-1-mini", "gpt-image-1-mini");
-    aliases.put("dall-e-2", "dall-e-2");
-    aliases.put("dall-e-3", "dall-e-3");
-    aliases.put("dall-e-3-2024", "dall-e-3");
     // Agnes Image 2.1 Flash 系列
     aliases.put("agnesimage21flash", "agnes-image-2.1-flash");
     aliases.put("agnes-image-2.1-flash", "agnes-image-2.1-flash");

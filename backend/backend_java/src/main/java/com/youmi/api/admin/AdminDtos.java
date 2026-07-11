@@ -104,7 +104,9 @@ public final class AdminDtos {
       String createdAt,
       String updatedAt,
       String completedAt,
-      Boolean isFallback) {
+      Boolean isFallback,
+      String resultUrls,
+      String persistStatus) {
   }
 
   public record DailyImageStat(String day, Long tasks, Integer images, Integer miCost, BigDecimal moneyCost) {

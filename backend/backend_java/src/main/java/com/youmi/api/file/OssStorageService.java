@@ -22,6 +22,8 @@ import com.aliyuncs.sts.model.v20150401.AssumeRoleRequest;
 import com.aliyuncs.sts.model.v20150401.AssumeRoleResponse;
 import com.youmi.api.common.ApiException;
 import jakarta.annotation.PreDestroy;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.URL;
 import java.net.URLConnection;
@@ -76,14 +78,30 @@ public class OssStorageService {
 
   public String uploadStream(InputStream inputStream, String objectName, String contentType) {
     try {
+      // 先把输入流完整读入内存，再包装为 ByteArrayInputStream 上传。
+      // 避免 OSS SDK 上传重试时 "Failed to reset the request input stream"
+      // （普通 InputStream 不支持 reset，导致部分上传静默失败）。ByteArrayInputStream 支持 reset。
+      byte[] bytes = toByteArray(inputStream);
       ObjectMetadata metadata = new ObjectMetadata();
+      metadata.setContentLength(bytes.length);
       metadata.setContentType(contentType == null || contentType.isBlank() ? "application/octet-stream" : contentType);
       OSS oss = ossClient();
-      oss.putObject(properties.getBucketName(), objectName, inputStream, metadata);
+      oss.putObject(properties.getBucketName(), objectName, new ByteArrayInputStream(bytes), metadata);
       return objectName;
     } catch (Exception exception) {
       throw new ApiException(502, "OSS stream upload failed: " + exception.getMessage());
     }
+  }
+
+  /** 将输入流完整读入 byte[]，避免流式上传时无法 reset 导致的静默失败 */
+  private static byte[] toByteArray(InputStream inputStream) throws Exception {
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    byte[] buffer = new byte[8192];
+    int bytesRead;
+    while ((bytesRead = inputStream.read(buffer)) != -1) {
+      out.write(buffer, 0, bytesRead);
+    }
+    return out.toByteArray();
   }
 
   public String uploadUrlToObject(String sourceUrl, String objectName) {

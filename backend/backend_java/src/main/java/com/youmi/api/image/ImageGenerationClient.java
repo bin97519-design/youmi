@@ -8,6 +8,8 @@ import com.fasterxml.jackson.databind.node.TextNode;
 import com.youmi.api.common.ApiException;
 import com.youmi.api.file.OssStorageService;
 import java.io.ByteArrayInputStream;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import java.io.ByteArrayOutputStream;
 import java.net.URI;
 import java.net.URLEncoder;
@@ -23,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -47,6 +50,14 @@ public class ImageGenerationClient {
   private final Map<String, List<String>> persistedImageCache = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<String, FailoverState> failoverStates = new ConcurrentHashMap<>();
 
+  // 下列依赖为字段注入（required=false）：测试构造时可为 null，运行时由 Spring 注入。
+  @Autowired(required = false)
+  private JdbcTemplate jdbcTemplate;
+  // 异步持久化去重：标记正在持久化的复合 taskId（其值 = ym_image_task.task_id）
+  private final ConcurrentHashMap<String, Boolean> persistingTaskIds = new ConcurrentHashMap<>();
+  // 持久化专用线程池：避免轮询请求内同步阻塞，且不引入自注入造成的循环依赖
+  private final ThreadPoolTaskExecutor persistExecutor = buildPersistExecutor();
+
   @Autowired
   public ImageGenerationClient(
       ObjectMapper objectMapper,
@@ -64,6 +75,19 @@ public class ImageGenerationClient {
 
   ImageGenerationClient(ObjectMapper objectMapper, ImageGenerationProperties properties) {
     this(objectMapper, properties, null);
+  }
+
+  /** 构建持久化专用线程池（有界，避免无限制创建线程） */
+  private static ThreadPoolTaskExecutor buildPersistExecutor() {
+    ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+    executor.setCorePoolSize(4);
+    executor.setMaxPoolSize(16);
+    executor.setQueueCapacity(64);
+    executor.setThreadNamePrefix("img-persist-");
+    executor.setWaitForTasksToCompleteOnShutdown(false);
+    executor.setDaemon(true);
+    executor.initialize();
+    return executor;
   }
 
   public ImageGenerationDtos.StatusResponse status() {
@@ -118,7 +142,7 @@ public class ImageGenerationClient {
       }
     }
 
-    // gpt-image-2 / dall-e 等：优先走 APIMart 直连（aiuxu.com），失败兜底 Proxy(47.90.226.52)
+    // gpt-image-2 / dall-e 等：优先走 APIMart 直连（aiuxu.com），失败兜底 Proxy（GetToken 不支持 gpt-image-2，跳过）
     if (properties.isProxyModel(resolvedModel)) {
       boolean apimartConfigured = properties.isApimartDirectConfigured();
       boolean proxyConfigured = isProxyConfigured();
@@ -132,10 +156,6 @@ public class ImageGenerationClient {
           return createFallbackTask(request, apimartError);
         }
       } else {
-        if (properties.isGetTokenConfigured()) {
-          System.out.println("[image-route] APIMart-direct not configured, using GetToken fallback");
-          return createGetTokenTask(request);
-        }
         if (proxyConfigured) {
           System.out.println("[image-route] APIMart-direct not configured, using Proxy directly");
           return createProxyTask(request);
@@ -161,29 +181,19 @@ public class ImageGenerationClient {
 
   private ImageGenerationDtos.CreateTaskResponse createFallbackTask(
       ImageGenerationDtos.CreateTaskRequest request, Exception primaryError) throws Exception {
-    Exception lastError = primaryError;
-    if (properties.isGetTokenConfigured()) {
-      try {
-        System.out.println("[image] trying GetToken fallback");
-        return createGetTokenTask(request);
-      } catch (Exception getTokenError) {
-        lastError = getTokenError;
-        System.out.println("[image] GetToken fallback failed: " + getTokenError.getMessage());
-      }
-    }
     if (isProxyConfigured()) {
       try {
         System.out.println("[image] trying Proxy fallback");
         return createProxyTask(request);
       } catch (Exception proxyError) {
-        if (lastError != null) {
-          proxyError.addSuppressed(lastError);
+        if (primaryError != null) {
+          proxyError.addSuppressed(primaryError);
         }
         throw proxyError;
       }
     }
-    if (lastError != null) {
-      throw lastError;
+    if (primaryError != null) {
+      throw primaryError;
     }
     throw new ApiException(502, "No image fallback provider configured");
   }
@@ -244,20 +254,17 @@ public class ImageGenerationClient {
     int count = request.requestedCount();
     List<String> imageUrls = request.normalizedImageUrls();
 
-    // 中转站白名单：gpt-image-2 / gpt-image-1.5 / gpt-image-1 / gpt-image-1-mini
+    // gpt-image-2 / Gemini（兜底时从 GetToken fallback 过来）
     String proxyModel = normalizeProxyModel(resolvedModel);
-    this.proxyModel = proxyModel;  // 给 pickProxySize / pickDallESize 用
+    this.proxyModel = proxyModel;  // 给 pickProxySize 用
 
-    // dall-e-2 / dall-e-3 走自己的尺寸白名单
     boolean isGemini = proxyModel.startsWith("gemini-");
     String proxySize;
-    if (proxyModel.startsWith("dall-e-")) {
-      proxySize = pickDallESize(size);
-    } else if (isGemini) {
+    if (isGemini) {
       // Gemini：直接用 ratio 作为 aspect_ratio，不用 px 尺寸
       proxySize = size;
     } else {
-      // gpt-image-* 系列：按 ratio + resolution 计算像素尺寸
+      // gpt-image-2：按 ratio + resolution 计算像素尺寸
       proxySize = pickProxySize(size, resolution);
     }
     System.out.println("[proxy] model=" + resolvedModel + " size=" + size
@@ -718,14 +725,11 @@ public class ImageGenerationClient {
     boolean hasImages = !imageUrls.isEmpty();
     boolean done = isDoneStatus(status) || (hasImages && progress != null && progress >= 100);
     if (done && hasImages) {
-      List<String> temporaryUrls = new ArrayList<>(imageUrls);
-      try {
-        imageUrls = persistImageUrls(cleanTaskId, imageUrls);
-        replaceImageUrls(root, temporaryUrls, imageUrls);
-      } catch (Exception persistError) {
-        System.out.println("[apimart-persist] OSS persist failed (fallback to temp URLs): " + persistError.getMessage());
-      }
-      status = "completed";
+      // 不在轮询内同步转存（避免 60s 阻塞 + 前端二次转存）。
+      // 立即返回中转站临时 URL，异步触发持久化，状态由 DB 持久化状态决定。
+      PollResult pr = decidePollResponse(cleanTaskId, imageUrls);
+      imageUrls = pr.imageUrls();
+      status = pr.status();
     }
 
     return new ImageGenerationDtos.TaskStatusResponse(
@@ -806,14 +810,9 @@ public class ImageGenerationClient {
     boolean hasImages = !imageUrls.isEmpty();
     boolean done = isDoneStatus(status) || (hasImages && progress != null && progress >= 100);
     if (done && hasImages) {
-      List<String> temporaryUrls = new ArrayList<>(imageUrls);
-      try {
-        imageUrls = persistImageUrls(GETTOKEN_TASK_PREFIX + cleanTaskId, imageUrls);
-        replaceImageUrls(root, temporaryUrls, imageUrls);
-      } catch (Exception persistError) {
-        System.out.println("[gettoken-persist] OSS persist failed (fallback to temp URLs): " + persistError.getMessage());
-      }
-      status = "completed";
+      PollResult pr = decidePollResponse(GETTOKEN_TASK_PREFIX + cleanTaskId, imageUrls);
+      imageUrls = pr.imageUrls();
+      status = pr.status();
     }
     return new ImageGenerationDtos.TaskStatusResponse(
         PROVIDER_GETTOKEN,
@@ -860,15 +859,9 @@ public class ImageGenerationClient {
     boolean hasImages = !imageUrls.isEmpty();
     boolean done = isDoneStatus(status) || (hasImages && progress != null && progress >= 100);
     if (done && hasImages) {
-      List<String> temporaryUrls = new ArrayList<>(imageUrls);
-      try {
-        imageUrls = persistImageUrls(APIMART_DIRECT_TASK_PREFIX + cleanTaskId, imageUrls);
-        replaceImageUrls(root, temporaryUrls, imageUrls);
-      } catch (Exception persistError) {
-        System.out.println("[apimart-direct-persist] OSS persist failed (fallback to temp URLs): " + persistError.getMessage());
-        // OSS 转存失败不阻断，用临时 URL 返回
-      }
-      status = "completed";
+      PollResult pr = decidePollResponse(APIMART_DIRECT_TASK_PREFIX + cleanTaskId, imageUrls);
+      imageUrls = pr.imageUrls();
+      status = pr.status();
     }
 
     return new ImageGenerationDtos.TaskStatusResponse(
@@ -1078,6 +1071,129 @@ public class ImageGenerationClient {
   private String normalizeGetTokenResolution(String resolution) {
     if (resolution == null || resolution.isBlank()) return "";
     return resolution.trim().toLowerCase();
+  }
+
+  // ===== 异步持久化（生图结果落自有 OSS，真源在后端、落库，与前端刷新无关） =====
+  // 轮询内【不再】同步转存（避免 60s 阻塞 + 前端二次转存）。
+  // done 时立即返回中转站临时 URL，异步触发持久化并把永久 URL 写回 ym_image_task；
+  // 轮询返回状态由 DB 持久化状态（persist_status）决定。
+
+  /** 持久化状态：PENDING / DONE / FAILED（null 视为 PENDING） */
+  private record PersistState(String status, String resultUrls) {}
+
+  /** 轮询返回决策结果 */
+  private record PollResult(List<String> imageUrls, String status) {}
+
+  /**
+   * 根据 DB 持久化状态决定本轮轮询返回给前端的 imageUrls 与 status：
+   * - DONE   → 返回永久 OSS URL，status=completed（前端停止轮询并插入）
+   * - FAILED → 返回中转站临时 URL 兜底，status=completed
+   * - PENDING/未知 → 触发异步持久化，返回中转站临时 URL，status=persisting（前端继续轮询）
+   */
+  private PollResult decidePollResponse(String dbTaskId, List<String> temporaryUrls) {
+    PersistState state = getPersistState(dbTaskId);
+    String status = state.status() == null ? "PENDING" : state.status().toUpperCase();
+    if ("DONE".equals(status)) {
+      List<String> permanent = parseResultUrls(state.resultUrls());
+      if (permanent != null && !permanent.isEmpty()) {
+        return new PollResult(permanent, "completed");
+      }
+      // DONE 但无可用永久 URL：降级返回临时 URL
+      return new PollResult(new ArrayList<>(temporaryUrls), "completed");
+    }
+    if ("FAILED".equals(status)) {
+      // 持久化失败，返回中转站临时 URL 兜底（仍可能过期，但至少先出图）
+      return new PollResult(new ArrayList<>(temporaryUrls), "completed");
+    }
+    // PENDING / 未知：触发异步持久化（幂等），继续轮询
+    triggerAsyncPersist(dbTaskId, temporaryUrls);
+    return new PollResult(new ArrayList<>(temporaryUrls), "persisting");
+  }
+
+  /** 触发异步持久化：提交到专用线程池执行，避免轮询请求内同步阻塞与循环依赖 */
+  private void triggerAsyncPersist(String dbTaskId, List<String> temporaryUrls) {
+    try {
+      List<String> urls = new ArrayList<>(temporaryUrls);
+      persistExecutor.execute(() -> runPersistTask(dbTaskId, urls));
+    } catch (Exception e) {
+      System.out.println("[image-persist] trigger async persist failed for task=" + dbTaskId
+          + ": " + e.getMessage());
+    }
+  }
+
+  /** 读取 ym_image_task 的持久化状态（异常安全，默认 PENDING） */
+  private PersistState getPersistState(String taskId) {
+    if (jdbcTemplate == null) return new PersistState("PENDING", null);
+    try {
+      List<PersistState> rows = jdbcTemplate.query(
+          "SELECT persist_status, result_urls FROM ym_image_task WHERE task_id = ?",
+          (rs, rn) -> new PersistState(rs.getString("persist_status"), rs.getString("result_urls")),
+          taskId);
+      if (rows.isEmpty()) return new PersistState("PENDING", null);
+      PersistState s = rows.get(0);
+      return new PersistState(s.status() == null ? "PENDING" : s.status(), s.resultUrls());
+    } catch (Exception e) {
+      return new PersistState("PENDING", null);
+    }
+  }
+
+  /** 将 result_urls(JSON 数组字符串) 解析为 URL 列表 */
+  private List<String> parseResultUrls(String json) {
+    if (json == null || json.isBlank()) return null;
+    try {
+      JsonNode node = objectMapper.readTree(json);
+      if (node.isArray()) {
+        List<String> urls = new ArrayList<>();
+        for (JsonNode item : node) {
+          String u = item.isTextual() ? item.asText() : item.asText("");
+          if (u != null && !u.isBlank()) urls.add(u);
+        }
+        return urls.isEmpty() ? null : urls;
+      }
+      if (node.isTextual() && !node.asText().isBlank()) return List.of(node.asText());
+    } catch (Exception e) {
+      System.out.println("[image-persist] parse result_urls failed: " + e.getMessage());
+    }
+    return null;
+  }
+
+  /**
+   * 异步持久化任务体：下载中转站临时图 + 上传自有 OSS，结果写回 ym_image_task。
+   * 由 persistExecutor 线程池执行；幂等：内存标记 + DB 状态二次确认，避免并发轮询双传。
+   */
+  private void runPersistTask(String taskId, List<String> temporaryUrls) {
+    if (jdbcTemplate == null) return;
+    // 并发幂等：已在处理中则跳过
+    if (persistingTaskIds.putIfAbsent(taskId, Boolean.TRUE) != null) {
+      return;
+    }
+    try {
+      // 二次确认：DB 若已是 DONE 直接跳过（重启/重复触发保护）
+      PersistState existing = getPersistState(taskId);
+      if ("DONE".equalsIgnoreCase(existing.status())) {
+        return;
+      }
+      // 下载 + 上传（逻辑与原 persistImageUrls 一致）
+      List<String> persisted = persistImageUrls(taskId, temporaryUrls);
+      String resultJson = objectMapper.writeValueAsString(persisted);
+      jdbcTemplate.update(
+          "UPDATE ym_image_task SET result_urls = ?, persist_status = 'DONE' WHERE task_id = ?",
+          resultJson, taskId);
+      System.out.println("[image-persist-async] persisted " + persisted.size()
+          + " image(s) for task=" + taskId);
+    } catch (Exception e) {
+      System.out.println("[image-persist-async] persist failed for task=" + taskId
+          + ": " + e.getMessage());
+      try {
+        jdbcTemplate.update(
+            "UPDATE ym_image_task SET persist_status = 'FAILED' WHERE task_id = ? AND persist_status <> 'DONE'",
+            taskId);
+      } catch (Exception ignore) {
+        // 忽略写入失败
+      }
+    } finally {
+      persistingTaskIds.remove(taskId);
+    }
   }
 
   private List<String> persistImageUrls(String taskId, List<String> imageUrls) throws Exception {
@@ -1463,14 +1579,7 @@ public class ImageGenerationClient {
       return List.of();
     }
     if ("apimart-direct".equals(primaryProvider) || PROVIDER_APIMART.equals(primaryProvider)) {
-      List<String> providers = new ArrayList<>(2);
-      if (properties.isGetTokenConfigured()) {
-        providers.add(PROVIDER_GETTOKEN);
-      }
-      if (isProxyConfigured()) {
-        providers.add(PROVIDER_PROXY);
-      }
-      return providers;
+      return isProxyConfigured() ? List.of(PROVIDER_PROXY) : List.of();
     }
     if (PROVIDER_GETTOKEN.equals(primaryProvider)) {
       return isProxyConfigured() ? List.of(PROVIDER_PROXY) : List.of();
@@ -1628,7 +1737,7 @@ public class ImageGenerationClient {
     return "";
   }
 
-  private String proxyModel;  // 当前请求的代理模型，供 pickDallESize 内部判断
+  private String proxyModel;  // 当前请求的代理模型，供内部判断
 
   /**
    * gpt-image-2 灵活尺寸计算：
@@ -1760,15 +1869,10 @@ public class ImageGenerationClient {
   private String normalizeProxyModel(String model) {
     if (model == null) return "gpt-image-2";
     String m = model.trim().toLowerCase();
-    // gpt-image-2 系列
-    if (m.equals("gpt-image-2") || m.equals("gpt-image-2-2026-04-21")
-        || m.equals("gpt-image-1.5") || m.equals("gpt-image-1")
-        || m.equals("gpt-image-1-mini")) {
+    // gpt-image-2
+    if (m.equals("gpt-image-2") || m.equals("gpt-image-2-2026-04-21")) {
       return m;
     }
-    // dall-e
-    if (m.equals("dall-e-2")) return "dall-e-2";
-    if (m.equals("dall-e-3") || m.equals("dall-e-3-2024")) return "dall-e-3";
     // Gemini（兜底时从 GetToken fallback 过来）
     if (m.startsWith("gemini-3.1-flash")) return "gemini-3.1-flash-image";
     if (m.startsWith("gemini-3-pro")) return "gemini-3-pro-image";
@@ -1784,21 +1888,7 @@ public class ImageGenerationClient {
     return "medium"; // 2K 默认
   }
 
-  /**
-   * dall-e-2 尺寸白名单：256x256、512x512、1024x1024
-   * dall-e-3 尺寸白名单：1024x1024、1792x1024、1024x1792
-   */
-  private String pickDallESize(String ratio) {
-    double r = parseRatio(ratio);
-    if (proxyModel.equals("dall-e-2")) {
-      // dall-e-2 只有 256x256、512x512、1024x1024，全方形
-      return "1024x1024";
-    }
-    // dall-e-3
-    if (r > 1.05) return "1792x1024";
-    if (r < 0.95) return "1024x1792";
-    return "1024x1024";
-  }
+  private String pickDallESize(String ratio) { return "1024x1024"; } // removed: dall-e not used
 
   /**
    * 将 resolution 档位映射为 Agnes 的 size 参数。
