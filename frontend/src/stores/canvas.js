@@ -408,17 +408,34 @@ export const useCanvasStore = defineStore('canvas', {
             continue;
           }
 
-          // 服务器有数据 → 覆盖本地；保留 detection 缓存 + 本地独有字段（connections/generationHistory/chatConfig）
+          // 服务器有数据 → 合并本地；layers 按 id 并集（本地优先），保留 detection 缓存 + 本地独有字段
           const mergedDoc = { ...serverDoc };
           if (serverDoc.payload?.layers && localDoc.payload?.layers) {
             mergedDoc.payload = { ...serverDoc.payload };
-            mergedDoc.payload.layers = serverDoc.payload.layers.map((sl, i) => {
-              const ll = localDoc.payload.layers[i];
-              if (sl && ll && ll.detection?.status === 'done' && !sl.detection) {
-                return { ...sl, detection: ll.detection };
+            // layers 按 id 并集合并：先放服务器（保持 z-index 顺序），再放本地（本地后写覆盖→本地优先，本地独有图层追加到末尾）
+            const _layerMap = new Map();
+            for (const sl of serverDoc.payload.layers) {
+              if (sl && sl.id) _layerMap.set(sl.id, sl);
+            }
+            for (const ll of localDoc.payload.layers) {
+              if (!ll || !ll.id) continue;
+              const existing = _layerMap.get(ll.id);
+              if (existing) {
+                // 同 id 图层：本地优先，但保留 detection 缓存（本地有 done 而服务器没有 → 保留本地的 detection）
+                const merged = { ...ll };
+                if (existing.detection && !ll.detection) {
+                  merged.detection = existing.detection;
+                }
+                if (ll.detection?.status === 'done' && !existing.detection) {
+                  merged.detection = ll.detection;
+                }
+                _layerMap.set(ll.id, merged);
+              } else {
+                // 本地独有图层（如刚创建的占位图），直接追加
+                _layerMap.set(ll.id, ll);
               }
-              return sl;
-            });
+            }
+            mergedDoc.payload.layers = Array.from(_layerMap.values());
           }
           // 保留本地独有字段：服务端旧数据可能不含这些字段或为空，直接覆盖会丢失
           // 策略：服务端有实质数据则用服务端的，服务端为空/缺失但本地有数据则保留本地的
