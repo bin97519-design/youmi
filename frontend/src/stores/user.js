@@ -108,8 +108,13 @@ export const useUserStore = defineStore('user', {
         if (!res.ok) return null;
         const data = await res.json().catch(() => ({}));
         if (data.code && data.code !== 0) return null; // 业务错误不踢，静默
-        this.saveSession(this.token, data.user || data);
-        return data.user || data;
+        // /api/auth/me 返回 {code:0, data: UserProfile}，用户资料在 data.data；
+        // login 接口返回 {code:0, data: {token, user}}，用户资料在 data.data.user。
+        // 统一用 data.data 优先（me 接口），兼容 data.user（login 遗留），杜绝空对象覆盖好 profile。
+        const resolvedUser = data.data || data.user || data;
+        if (!resolvedUser || typeof resolvedUser !== 'object' || !resolvedUser.id) return null;
+        this.saveSession(this.token, resolvedUser);
+        return resolvedUser;
       } catch {
         // 网络异常（fetch 抛错）：保留 token，下次再验证
         return null;

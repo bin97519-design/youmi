@@ -2,6 +2,7 @@ package com.youmi.api.admin;
 
 import com.youmi.api.auth.PasswordHasher;
 import com.youmi.api.common.ApiException;
+import com.youmi.api.image.ImageGenerationProperties;
 import com.youmi.api.shop.ShopRepository;
 import java.math.BigDecimal;
 import java.sql.PreparedStatement;
@@ -32,12 +33,14 @@ public class AdminService {
   private final JdbcTemplate jdbcTemplate;
   private final PasswordHasher passwordHasher;
   private final ShopRepository shopRepository;
+  private final ImageGenerationProperties imageProps;
 
   public AdminService(JdbcTemplate jdbcTemplate, PasswordHasher passwordHasher,
-      ShopRepository shopRepository) {
+      ShopRepository shopRepository, ImageGenerationProperties imageProps) {
     this.jdbcTemplate = jdbcTemplate;
     this.passwordHasher = passwordHasher;
     this.shopRepository = shopRepository;
+    this.imageProps = imageProps;
   }
 
   public AdminDtos.ConsoleOverview overview(Long scopeUserId) {
@@ -270,10 +273,10 @@ public class AdminService {
     return rows.get(0);
   }
 
-  public AdminDtos.ImageStatsResponse imageStats(Long scopeUserId) {
+  public AdminDtos.ImageStatsResponse imageStats(Long scopeUserId, String dateFrom, String dateTo) {
     return new AdminDtos.ImageStatsResponse(
         imageSummary(scopeUserId),
-        recentImageTasks(scopeUserId),
+        recentImageTasks(scopeUserId, dateFrom, dateTo),
         dailyImageStats(scopeUserId),
         modelImageStats(scopeUserId));
   }
@@ -322,34 +325,31 @@ public class AdminService {
         rs.getBigDecimal("total_money_cost")), args);
   }
 
-  private List<AdminDtos.ImageTaskRow> recentImageTasks(Long scopeUserId) {
-    String sql;
-    Object[] args;
+  private List<AdminDtos.ImageTaskRow> recentImageTasks(Long scopeUserId, String dateFrom, String dateTo) {
+    String baseSql = """
+        SELECT t.id, t.task_id, t.user_id, u.nickname AS user_name, t.provider, t.prompt, t.model, t.requested_model,
+               t.size, t.resolution, t.requested_count, t.status, t.progress, t.image_count, t.mi_cost,
+               t.money_cost, t.error_message, t.created_at, t.updated_at, t.completed_at
+        FROM ym_image_task t
+        LEFT JOIN ym_sys_user u ON u.id = t.user_id
+        WHERE 1=1
+        """;
+    StringBuilder sql = new StringBuilder(baseSql);
+    List<Object> argList = new ArrayList<>();
     if (scopeUserId != null) {
-      sql = """
-          SELECT t.id, t.task_id, t.user_id, u.nickname AS user_name, t.provider, t.prompt, t.model, t.requested_model,
-                 t.size, t.resolution, t.requested_count, t.status, t.progress, t.image_count, t.mi_cost,
-                 t.money_cost, t.error_message, t.created_at, t.updated_at, t.completed_at
-          FROM ym_image_task t
-          LEFT JOIN ym_sys_user u ON u.id = t.user_id
-          WHERE t.user_id = ?
-          ORDER BY t.created_at DESC
-          LIMIT 80
-          """;
-      args = new Object[]{scopeUserId};
-    } else {
-      sql = """
-          SELECT t.id, t.task_id, t.user_id, u.nickname AS user_name, t.provider, t.prompt, t.model, t.requested_model,
-                 t.size, t.resolution, t.requested_count, t.status, t.progress, t.image_count, t.mi_cost,
-                 t.money_cost, t.error_message, t.created_at, t.updated_at, t.completed_at
-          FROM ym_image_task t
-          LEFT JOIN ym_sys_user u ON u.id = t.user_id
-          ORDER BY t.created_at DESC
-          LIMIT 80
-          """;
-      args = new Object[]{};
+      sql.append(" AND t.user_id = ?");
+      argList.add(scopeUserId);
     }
-    return jdbcTemplate.query(sql, (rs, rowNum) -> mapImageTask(rs), args);
+    if (dateFrom != null && !dateFrom.isEmpty()) {
+      sql.append(" AND DATE(t.created_at) >= ?");
+      argList.add(dateFrom);
+    }
+    if (dateTo != null && !dateTo.isEmpty()) {
+      sql.append(" AND DATE(t.created_at) <= ?");
+      argList.add(dateTo);
+    }
+    sql.append(" ORDER BY t.created_at DESC LIMIT 500");
+    return jdbcTemplate.query(sql.toString(), (rs, rowNum) -> mapImageTask(rs), argList.toArray());
   }
 
   private List<AdminDtos.DailyImageStat> dailyImageStats(Long scopeUserId) {
@@ -449,6 +449,11 @@ public class AdminService {
   }
 
   private AdminDtos.ImageTaskRow mapImageTask(ResultSet rs) throws SQLException {
+    /* 兜底判定：proxy 中转站（47.90.226.52）永远是 failover 备用通道，
+       从不会被用户直接选择，因此 provider 字段等于 'proxy' 即代表该图由兜底通道生成。
+       imageProps 已注入，预留用于将来可配置化的兜底通道识别。 */
+    String provider = rs.getString("provider");
+    boolean isFallback = provider != null && "proxy".equalsIgnoreCase(provider.trim());
     return new AdminDtos.ImageTaskRow(
         rs.getLong("id"),
         rs.getString("task_id"),
@@ -469,7 +474,8 @@ public class AdminService {
         rs.getString("error_message"),
         time(rs, "created_at"),
         time(rs, "updated_at"),
-        time(rs, "completed_at"));
+        time(rs, "completed_at"),
+        isFallback);
   }
 
   private void ensureUserExists(Long id) {

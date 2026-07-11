@@ -102,9 +102,11 @@ public class AdminController {
 
   @GetMapping("/image-stats")
   public ApiResponse<AdminDtos.ImageStatsResponse> imageStats(
-      @RequestHeader(value = "Authorization", required = false) String authorization) {
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @RequestParam(required = false) String dateFrom,
+      @RequestParam(required = false) String dateTo) {
     UserAccount user = adminAuthService.requireLogin(authorization);
     Long scopeUserId = adminAuthService.isAdmin(user) ? null : user.id();
-    return ApiResponse.ok(adminService.imageStats(scopeUserId));
+    return ApiResponse.ok(adminService.imageStats(scopeUserId, dateFrom, dateTo));
   }
 }

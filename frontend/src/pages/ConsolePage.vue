@@ -36,6 +36,9 @@ const roleSearch = ref('')
 const taskStatusFilter = ref('')
 const taskModelFilter = ref('')
 const taskUserFilter = ref('')
+// 日期范围筛选（最近生图任务）：格式 YYYY-MM-DD，空 = 不限
+const taskDateFrom = ref('')
+const taskDateTo = ref('')
 const shopFilter = ref('')
 const platformFilter = ref('')
 const shops = ref([])
@@ -94,6 +97,148 @@ const filteredTasks = computed(() => {
     list = list.filter((t) => String(t.userId) === taskUserFilter.value)
   return list
 })
+
+/* ── 最近生图任务分页（客户端分页，复用 image-stats 接口重新加载） ── */
+const taskCurrentPage = ref(1)
+const taskPageSize = ref(10)
+const taskReloading = ref(false)
+
+const pagedTasks = computed(() => {
+  const list = filteredTasks.value
+  const start = (taskCurrentPage.value - 1) * taskPageSize.value
+  return list.slice(start, start + taskPageSize.value)
+})
+const taskTotal = computed(() => filteredTasks.value.length)
+const taskTotalPages = computed(() => Math.max(1, Math.ceil(taskTotal.value / taskPageSize.value)))
+const pageWindow = computed(() => {
+  const total = taskTotalPages.value
+  const cur = taskCurrentPage.value
+  const span = 2
+  let start = Math.max(1, cur - span)
+  let end = Math.min(total, cur + span)
+  if (end - start < span * 2) {
+    if (start === 1) end = Math.min(total, start + span * 2)
+    else if (end === total) start = Math.max(1, end - span * 2)
+  }
+  const arr = []
+  for (let i = start; i <= end; i++) arr.push(i)
+  return arr
+})
+
+/* 筛选条件变化只重置页码，保留筛选值 */
+watch([taskStatusFilter, taskModelFilter, taskUserFilter], () => {
+  taskCurrentPage.value = 1
+})
+
+/* ── 日期范围筛选（最近生图任务） ── */
+// 本地日期格式化（避免 toISOString 的 UTC 时区偏移导致跨天误差）
+function fmtDateValue(d) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+function shiftDays(n) {
+  const d = new Date()
+  d.setDate(d.getDate() - n)
+  return fmtDateValue(d)
+}
+const todayStr = fmtDateValue(new Date())
+const sevenDaysAgoStr = shiftDays(7)
+// 默认最近 7 天，页面一进来就只显示近 7 天的数据
+taskDateFrom.value = sevenDaysAgoStr
+taskDateTo.value = todayStr
+
+const showDatePicker = ref(false)
+
+const dateShortcuts = [
+  { key: 'today', label: '今天' },
+  { key: 'week', label: '最近7天' },
+  { key: 'month', label: '最近30天' },
+  { key: 'all', label: '全部' },
+]
+
+const activeShortcut = computed(() => {
+  if (!taskDateFrom.value && !taskDateTo.value) return 'all'
+  const from = taskDateFrom.value
+  const to = taskDateTo.value
+  if (from === to && from === todayStr) return 'today'
+  if (from === shiftDays(7) && to === todayStr) return 'week'
+  if (from === shiftDays(30) && to === todayStr) return 'month'
+  return ''
+})
+
+// 去掉年份显示（2026-07-11 → 07/11）
+function fmtShort(d) { return d ? d.slice(5).replace('-', '/') : '' }
+
+const dateDisplayText = computed(() => {
+  if (activeShortcut.value === 'all') return '全部日期'
+  if (activeShortcut.value === 'today') return '今天'
+  if (activeShortcut.value === 'week') return '最近7天'
+  if (activeShortcut.value === 'month') return '最近30天'
+  if (taskDateFrom.value && taskDateTo.value) return `${fmtShort(taskDateFrom.value)} ~ ${fmtShort(taskDateTo.value)}`
+  if (taskDateFrom.value) return `${fmtShort(taskDateFrom.value)} 起`
+  if (taskDateTo.value) return `${fmtShort(taskDateTo.value)} 止`
+  return '日期范围'
+})
+
+function applyDateShortcut(key) {
+  const toStr = todayStr
+  switch (key) {
+    case 'today':
+      taskDateFrom.value = toStr
+      taskDateTo.value = toStr
+      break
+    case 'week':
+      taskDateFrom.value = shiftDays(7)
+      taskDateTo.value = toStr
+      break
+    case 'month':
+      taskDateFrom.value = shiftDays(30)
+      taskDateTo.value = toStr
+      break
+    case 'all':
+    default:
+      taskDateFrom.value = ''
+      taskDateTo.value = ''
+      break
+  }
+  showDatePicker.value = false
+}
+
+// 拼接日期筛选 query 参数（dateFrom / dateTo）
+function buildImageStatsQuery() {
+  const params = new URLSearchParams()
+  if (taskDateFrom.value) params.set('dateFrom', taskDateFrom.value)
+  if (taskDateTo.value) params.set('dateTo', taskDateTo.value)
+  const qs = params.toString()
+  return qs ? `?${qs}` : ''
+}
+
+// 日期变化 → 重置页码并重新拉取（日期过滤在后端 SQL 完成）
+watch([taskDateFrom, taskDateTo], () => {
+  taskCurrentPage.value = 1
+  reloadTaskPage(1)
+})
+
+async function reloadTaskPage(p) {
+  const target = Math.min(Math.max(1, p), taskTotalPages.value)
+  taskReloading.value = true
+  taskCurrentPage.value = target
+  try {
+    const imageStats = await api('/api/admin/image-stats' + buildImageStatsQuery())
+    stats.value = imageStats
+  } catch (e) {
+    /* 静默失败，仍展示已分页数据 */
+  } finally {
+    taskReloading.value = false
+  }
+}
+
+function changeTaskPageSize(size) {
+  taskPageSize.value = size
+  taskCurrentPage.value = 1
+}
 
 const taskModelOptions = computed(() => {
   const set = new Set((stats.value?.tasks || []).map((t) => t.requestedModel || t.model))
@@ -191,7 +336,7 @@ async function loadConsole() {
   errorText.value = ''
   try {
     /* 所有角色都能看统计 */
-    const imageStats = await api('/api/admin/image-stats')
+    const imageStats = await api('/api/admin/image-stats' + buildImageStatsQuery())
     stats.value = imageStats
 
     /* 仅管理员加载账号和角色 */
@@ -537,6 +682,7 @@ function closeDropdown(key) {
 
 function onDocClick() {
   Object.keys(dropdownOpen).forEach((k) => (dropdownOpen[k] = false))
+  showDatePicker.value = false
 }
 
 function shopLabel(shopId) {
@@ -1316,6 +1462,25 @@ onUnmounted(() => {
                 </div>
               </div>
             </div>
+            <!-- 日期范围筛选 -->
+            <div class="date-range-picker console-filter-select" @click.stop="showDatePicker = !showDatePicker">
+              <div class="custom-select-trigger" :class="{ open: showDatePicker }">
+                {{ dateDisplayText }}
+                <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+              </div>
+              <div v-show="showDatePicker" class="date-picker-dropdown" @click.stop>
+                <div class="date-shortcuts">
+                  <button v-for="s in dateShortcuts" :key="s.key" type="button"
+                    @click.stop="applyDateShortcut(s.key)"
+                    :class="{ active: activeShortcut === s.key }">{{ s.label }}</button>
+                </div>
+                <div class="date-range-inputs">
+                  <input type="date" v-model="taskDateFrom" :max="todayStr" />
+                  <span>~</span>
+                  <input type="date" v-model="taskDateTo" :max="todayStr" />
+                </div>
+              </div>
+            </div>
           </div>
         </div>
         <div class="console-table tasks-table">
@@ -1327,9 +1492,10 @@ onUnmounted(() => {
             <span>图片</span>
             <span>时间</span>
           </div>
-          <div v-for="task in filteredTasks" :key="task.taskId" class="console-row">
+          <div v-for="task in pagedTasks" :key="task.taskId" class="console-row">
             <span>
               <strong>{{ task.taskId }}</strong>
+              <span v-if="isAdmin && task.isFallback" class="fallback-badge" title="该图由兜底通道生成">兜底</span>
               <small>{{ shortPrompt(task.prompt) }}</small>
             </span>
             <span v-if="isAdmin">{{ task.userName || task.userId || '匿名' }}</span>
@@ -1338,7 +1504,17 @@ onUnmounted(() => {
             <span>{{ task.imageCount }} 张 / {{ task.miCost }} 米值</span>
             <span>{{ formatTime(task.createdAt) }}</span>
           </div>
-          <p v-if="!filteredTasks.length" class="console-empty">暂无匹配任务。</p>
+          <p v-if="!taskReloading && pagedTasks.length === 0" class="console-empty">暂无匹配任务。</p>
+        </div>
+        <div class="console-pagination" v-if="taskTotal > 0">
+          <select class="page-size" :disabled="taskReloading" @change="changeTaskPageSize(Number($event.target.value))">
+            <option v-for="s in [10, 20, 50]" :key="s" :value="s" :selected="s === taskPageSize">{{ s }}条/页</option>
+          </select>
+          <span class="page-total">共 {{ taskTotal }} 条</span>
+          <button class="page-btn" :disabled="taskCurrentPage <= 1 || taskReloading" @click="reloadTaskPage(taskCurrentPage - 1)">上一页</button>
+          <button v-for="p in pageWindow" :key="p" class="page-btn" :class="{ active: p === taskCurrentPage }" :disabled="taskReloading" @click="reloadTaskPage(p)">{{ p }}</button>
+          <button class="page-btn" :disabled="taskCurrentPage >= taskTotalPages || taskReloading" @click="reloadTaskPage(taskCurrentPage + 1)">下一页</button>
+          <span v-if="taskReloading" class="page-loading">加载中…</span>
         </div>
       </section>
     </section>
@@ -1652,5 +1828,233 @@ onUnmounted(() => {
 }
 [data-theme='light'] .custom-select-dropdown > div.active {
   color: #2563eb;
+}
+
+/* ── 最近生图任务分页（中性色，贴合暗色半透明主题） ── */
+.console-pagination {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: #94a3b8;
+}
+.page-total {
+  margin-right: 4px;
+}
+.page-btn {
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: #e2e8f0;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.page-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+.page-btn.active {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.25);
+  color: #fff;
+}
+.page-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.page-size {
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: #e2e8f0;
+  width: fit-content;
+  height: 28px;
+  box-sizing: border-box;
+  vertical-align: middle;
+}
+.page-size option {
+  background: #1e293b;
+  color: #e2e8f0;
+}
+.page-loading {
+  color: #94a3b8;
+}
+[data-theme='light'] .console-pagination {
+  color: #64748b;
+}
+[data-theme='light'] .page-btn {
+  border-color: #e2e8f0;
+  background: #f8fafc;
+  color: #1e293b;
+}
+[data-theme='light'] .page-btn:hover:not(:disabled) {
+  background: #f1f5f9;
+}
+[data-theme='light'] .page-btn.active {
+  background: rgba(0, 0, 0, 0.06);
+  border-color: rgba(0, 0, 0, 0.12);
+  color: #1e293b;
+}
+[data-theme='light'] .page-size {
+  border-color: #e2e8f0;
+  background: #f8fafc;
+  color: #1e293b;
+  height: 28px;
+  box-sizing: border-box;
+}
+[data-theme='light'] .page-size option {
+  background: #ffffff;
+  color: #1e293b;
+}
+
+/* ── 兜底通道徽章（仅管理员可见，中性琥珀色） ── */
+.fallback-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+  vertical-align: middle;
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+}
+[data-theme='light'] .fallback-badge {
+  color: #b45309;
+  background: rgba(251, 191, 36, 0.15);
+  border-color: rgba(180, 83, 9, 0.4);
+}
+
+/* ── 日期范围选择器（与筛选器风格统一） ── */
+.date-range-picker {
+  position: relative;
+}
+.date-range-picker .custom-select-trigger {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.04);
+  color: #e2e8f0;
+  font-size: 12px;
+  white-space: nowrap;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: all 0.2s;
+}
+.date-range-picker .custom-select-trigger:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.date-range-picker .arrow {
+  opacity: 0.5;
+  flex-shrink: 0;
+  transition: transform 0.2s;
+}
+.date-range-picker .custom-select-trigger.open .arrow {
+  transform: rotate(180deg);
+}
+.date-picker-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 100;
+  background: rgba(15, 23, 42, 0.96);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 10px;
+  min-width: 264px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+.date-shortcuts {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.date-shortcuts button {
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.date-shortcuts button:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #e2e8f0;
+}
+.date-shortcuts button.active {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.date-range-inputs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.date-range-inputs input[type='date'] {
+  flex: 1;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: #e2e8f0;
+  font-size: 12px;
+  outline: none;
+}
+.date-range-inputs input[type='date']:focus {
+  border-color: rgba(99, 102, 241, 0.5);
+}
+.date-range-inputs span {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+/* 亮色主题覆盖 */
+[data-theme='light'] .date-range-picker .custom-select-trigger {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+  color: #1e293b;
+}
+[data-theme='light'] .date-range-picker .custom-select-trigger:hover {
+  background: #f1f5f9;
+}
+[data-theme='light'] .date-picker-dropdown {
+  background: rgba(255, 255, 255, 0.96);
+  border-color: #e2e8f0;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+}
+[data-theme='light'] .date-shortcuts button {
+  border-color: #e2e8f0;
+  color: #64748b;
+}
+[data-theme='light'] .date-shortcuts button:hover {
+  background: #f1f5f9;
+  color: #334155;
+}
+[data-theme='light'] .date-shortcuts button.active {
+  background: #e2e8f0;
+  color: #0f172a;
+  border-color: #cbd5e1;
+}
+[data-theme='light'] .date-range-inputs input[type='date'] {
+  background: #ffffff;
+  border-color: #e2e8f0;
+  color: #1e293b;
+}
+[data-theme='light'] .date-range-inputs span {
+  color: #94a3b8;
 }
 </style>

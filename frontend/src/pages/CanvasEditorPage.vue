@@ -115,8 +115,8 @@ const rightPanelVisible = ref(true)
 const isReversePromptCanvas = computed(() => props.id === 'reverse-prompt')
 const reversePromptCard = reactive({ x: null, y: null, width: 380, height: 240, dragging: null })
 const reversePromptConnectors = ref([])
-const selectedLayerId = ref(doc.value.payload.layers[0]?.id || '')
-const selectedLayerIds = ref(selectedLayerId.value ? [selectedLayerId.value] : [])
+const selectedLayerId = ref('')
+const selectedLayerIds = ref([])
 // 图片复制 / 粘贴的内部 buffer（保底，确保应用内 Ctrl+C → Ctrl+V 100% 可用）
 const clipboardImage = ref(null)
 const rightTab = ref('chat')
@@ -4842,11 +4842,12 @@ function stopMarquee(event) {
   marquee.active = false
 }
 
-nextTick(() => {
-  if (!selectedLayerId.value) selectedLayerId.value = layers.value[0]?.id || ''
-  if (selectedLayerId.value && !selectedLayerIds.value.length)
-    selectedLayerIds.value = [selectedLayerId.value]
-})
+// 注释掉：初始化时 nextTick 会自动选中第一层，覆盖 onMounted 的清空逻辑
+// nextTick(() => {
+//   if (!selectedLayerId.value) selectedLayerId.value = layers.value[0]?.id || ''
+//   if (selectedLayerId.value && !selectedLayerIds.value.length)
+//     selectedLayerIds.value = [selectedLayerId.value]
+// })
 
 // 全局快捷键
 function onGlobalKeydown(event) {
@@ -5069,6 +5070,9 @@ function removeGenerationRecord(id) {
 }
 
 onMounted(() => {
+  // 确保页面重新加载/画布初始化时所有图层默认未选中
+  selectedLayerId.value = ''
+  selectedLayerIds.value = []
   _mounted.value = true
   updateViewportSize()
   window.addEventListener('resize', updateViewportSize)
