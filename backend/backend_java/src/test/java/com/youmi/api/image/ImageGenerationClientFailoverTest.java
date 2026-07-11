@@ -19,7 +19,6 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -110,13 +109,13 @@ class ImageGenerationClientFailoverTest {
 
   /** apimart 主通道创建失败（500）→ 直奔 Proxy 中转站；核心断言：GetToken 完全未被调用 */
   @Test
-  void apimartCreateFailure_fallsDirectlyToProxy_skipsGetToken() throws Exception {
+  void apimartCreateFailure_triesGetTokenBeforeProxy() throws Exception {
     ImageGenerationClient client = newApimartClient();
 
     // 第 1 次 send（apimart 主通道创建）返回 500 → 触发兜底；第 2 次 send（proxy 创建）返回 job_id。
     when(mockHttpClient.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
         .thenAnswer(inv -> mockResponse(500, "{\"error\":\"apimart internal error\"}"))
-        .thenAnswer(inv -> mockResponse(200, "{\"job_id\":\"job-proxy-1\"}"));
+        .thenAnswer(inv -> mockResponse(200, "{\"taskId\":\"gt-1\"}"));
 
     ImageGenerationDtos.CreateTaskRequest req = new ImageGenerationDtos.CreateTaskRequest(
         "a cat", "stable-diffusion-3", "1:1", "1:1", "2K",
@@ -125,14 +124,14 @@ class ImageGenerationClientFailoverTest {
     ImageGenerationDtos.CreateTaskResponse resp = client.createTask(req);
 
     assertNotNull(resp, "apimart 创建失败后不应抛异常，应返回 proxy 兜底响应");
-    assertEquals("proxy", resp.provider(), "apimart 创建失败必须直奔 proxy 中转站");
-    assertEquals("proxy:job-proxy-1", resp.tasks().get(0).taskId(), "兜底任务应落在 proxy（taskId 前缀 proxy:）");
+    assertEquals("gettoken", resp.provider(), "apimart 创建失败应先尝试 GetToken 兜底");
+    assertEquals("gettoken:gt-1", resp.tasks().get(0).taskId(), "兜底任务应先落在 GetToken");
 
     // 核心断言：命中 proxy（47.90.226.52）且 GetToken（nb.gettoken.cn）完全没被调用
     verify(mockHttpClient, atLeastOnce()).send(
-        argThat(r -> r.uri().toString().contains("47.90.226.52")), any());
-    verify(mockHttpClient, never()).send(
         argThat(r -> r.uri().toString().contains("gettoken")), any());
+    verify(mockHttpClient, never()).send(
+        argThat(r -> r.uri().toString().contains("47.90.226.52")), any());
   }
 
   /**
@@ -144,26 +143,29 @@ class ImageGenerationClientFailoverTest {
    * 下面的断言据此使用 "xxx" 作为原始 taskId（而非 "apimart:xxx"），与源码实际行为一致。
    */
   @Test
-  void apimartPollFailure_fallsDirectlyToProxy_skipsGetToken() throws Exception {
+  void apimartPollFailure_triesGetTokenBeforeProxy() throws Exception {
     ImageGenerationClient client = newApimartClient();
 
-    AtomicInteger postJobsCount = new AtomicInteger(0);
     when(mockHttpClient.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
         .thenAnswer(inv -> {
           HttpRequest req = inv.getArgument(0);
           String uri = req.uri().toString();
           String method = req.method();
-          if (uri.contains("/api/images/jobs") && "POST".equalsIgnoreCase(method)) {
-            // 第 1 次 POST = apimart 主通道创建成功（注册 FailoverState primaryProvider=apimart）
-            // 第 2 次 POST = proxy 兜底创建成功
-            int n = postJobsCount.incrementAndGet();
-            if (n == 1) return mockResponse(200, "{\"task_id\":\"xxx\"}");
-            return mockResponse(200, "{\"job_id\":\"px\"}");
+          if (uri.contains("/v1/images/generations") && "POST".equalsIgnoreCase(method)) {
+            return mockResponse(200, "{\"task_id\":\"xxx\"}");
           }
           // apimart 主通道轮询端点（原始 task id，无 apimart: 前缀）返回 500（模拟主站故障）
           if (uri.contains("/v1/tasks/xxx")) return mockResponse(500, "{\"error\":\"apimart poll failed\"}");
-          // proxy 轮询成功
-          if (uri.contains("/v1/tasks/px")) return mockResponse(200, "{\"status\":\"completed\"}");
+          if (uri.contains("gettoken") && uri.contains("/query")) {
+            return mockResponse(200, "{\"status\":\"completed\"}");
+          }
+          if (uri.contains("gettoken")) {
+            return mockResponse(200, "{\"taskId\":\"gt-backup\"}");
+          }
+          if (uri.contains("/api/images/jobs") && "POST".equalsIgnoreCase(method)) {
+            return mockResponse(200, "{\"job_id\":\"px\"}");
+          }
+          if (uri.contains("/api/images/jobs")) return mockResponse(200, "{\"status\":\"completed\"}");
           return mockResponse(200, "{\"status\":\"completed\"}");
         });
 
@@ -181,14 +183,14 @@ class ImageGenerationClientFailoverTest {
     ImageGenerationDtos.TaskStatusResponse resp = client.getTask("xxx");
 
     assertNotNull(resp, "apimart 轮询失败不应抛异常，应返回 proxy 兜底响应");
-    assertEquals("proxy", resp.provider(), "apimart 轮询失败必须切到 proxy 中转站");
+    assertEquals("gettoken", resp.provider(), "apimart 轮询失败应先切到 GetToken 兜底");
     assertEquals("xxx", resp.taskId(), "taskId 必须透传为原始值（前端无感知）");
 
-    // 核心断言：命中 proxy（47.90.226.52）且 GetToken（nb.gettoken.cn）完全没被调用
+    // 核心断言：命中 GetToken，未跳过到 Proxy
     verify(mockHttpClient, atLeastOnce()).send(
-        argThat(r -> r.uri().toString().contains("47.90.226.52")), any());
-    verify(mockHttpClient, never()).send(
         argThat(r -> r.uri().toString().contains("gettoken")), any());
+    verify(mockHttpClient, never()).send(
+        argThat(r -> r.uri().toString().contains("47.90.226.52")), any());
   }
 
   // ============ 构造辅助 ============
@@ -198,11 +200,16 @@ class ImageGenerationClientFailoverTest {
     ImageGenerationProperties props = new ImageGenerationProperties();
     if (proxyConfigured) {
       props.setApiKey("test-apimart-key");          // isConfigured()=true
-      props.setGenerationPath("/api/images/jobs");  // isProxyConfigured()=true（含 /api/images/jobs）
-      props.setBaseUrl("http://47.90.226.52");      // proxy 中转站地址
+      props.setGenerationPath("/v1/images/generations");
+      props.setBaseUrl("https://api.apimart.test");
+      props.setProxyApiKey("test-proxy-key");
+      props.setProxyBaseUrl("http://47.90.226.52");
+      props.setProxyGenerationPath("/api/images/jobs");
+      props.setProxyTaskPath("/api/images/jobs");
     } else {
       props.setApiKey("");                          // isConfigured()=false → isProxyConfigured()=false
       props.setGenerationPath("/v1/images/generations");
+      props.setProxyApiKey("");
     }
     props.setGetTokenApiKey("test-gettoken-key");   // isGetTokenConfigured()=true
     props.setGetTokenBaseUrl("https://nb.gettoken.cn/openapi/v1");
@@ -222,8 +229,11 @@ class ImageGenerationClientFailoverTest {
             return mockResponse(gettokenStatus, gettokenBody);
           }
           // proxy：创建任务返回 job_id；查询任务返回 completed
-          if (uri.contains("/api/images/jobs")) {
+          if (uri.contains("/api/images/jobs") && "POST".equalsIgnoreCase(req.method())) {
             return mockResponse(200, "{\"job_id\":\"job123\"}");
+          }
+          if (uri.contains("/api/images/jobs")) {
+            return mockResponse(200, "{\"status\":\"completed\"}");
           }
           return mockResponse(200, "{\"status\":\"completed\"}");
         });
@@ -250,8 +260,12 @@ class ImageGenerationClientFailoverTest {
   private ImageGenerationClient newApimartClient() {
     ImageGenerationProperties props = new ImageGenerationProperties();
     props.setApiKey("test-apimart-key");          // isConfigured()=true
-    props.setGenerationPath("/api/images/jobs");  // isProxyConfigured()=true（含 /api/images/jobs）
-    props.setBaseUrl("http://47.90.226.52");      // proxy 中转站地址（本 property 模型下即主通道地址）
+    props.setGenerationPath("/v1/images/generations");
+    props.setBaseUrl("https://api.apimart.test");
+    props.setProxyApiKey("test-proxy-key");
+    props.setProxyBaseUrl("http://47.90.226.52");
+    props.setProxyGenerationPath("/api/images/jobs");
+    props.setProxyTaskPath("/api/images/jobs");
     props.setTaskPath("/v1/tasks");
     props.setGetTokenApiKey("test-gettoken-key"); // 故意配置 GetToken，证明兜底不会绕过去
     props.setGetTokenBaseUrl("https://nb.gettoken.cn/openapi/v1");

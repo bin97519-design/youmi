@@ -47,10 +47,6 @@ youmi:
     generation-path: /v1/images/generations
     task-path: /v1/tasks
     api-key: ${YOUMI_IMAGE_API_KEY:}
-    proxy-base-url: ${PROXY_BASE_URL:http://47.90.226.52}
-    proxy-api-key: ${PROXY_AUTH_TOKEN:}
-    proxy-generation-path: ${PROXY_GENERATION_PATH:/api/images/jobs}
-    proxy-task-path: ${PROXY_TASK_PATH:/api/images/jobs}
     fallback-enabled: false
     fallback-provider: gettoken
     get-token-base-url: https://nb.gettoken.cn/openapi/v1

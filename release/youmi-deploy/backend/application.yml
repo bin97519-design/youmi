@@ -74,10 +74,6 @@ youmi:
     upload-field-name: file
     timeout-seconds: 60
     upload-timeout-seconds: 120
-  credit:
-    prices:
-      IMAGE: 10
-      VIDEO: 50
   minimax:
     base-url: https://api.minimaxi.com/anthropic
     messages-path: /v1/messages

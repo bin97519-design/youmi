@@ -29,12 +29,17 @@ public class ImageGenerationProperties {
   private int timeoutSeconds = 60;
   private int uploadTimeoutSeconds = 120;
   private String ossSignPath = "/api/oss/sign";
+  // Proxy fallback provider. Kept separate from APIMart/GetToken credentials.
+  private String proxyBaseUrl = "http://47.90.226.52";
+  private String proxyApiKey = "";
+  private String proxyGenerationPath = "/api/images/jobs";
+  private String proxyTaskPath = "/api/images/jobs";
   // Agnes Image provider
   private String agnesBaseUrl = "https://apihub.agnes-ai.com";
   private String agnesApiKey = "";
   private String agnesGenerationPath = "/v1/images/generations";
   // APIMart 直连（GPT-Image-2 official，主通道）
-  private String apimartDirectBaseUrl = "https://api.apimart.ai";
+  private String apimartDirectBaseUrl = "https://apib.ai";
   private String apimartDirectApiKey = "";
   private String apimartDirectGenerationPath = "/v1/images/generations";
   private String apimartDirectTaskPath = "/v1/tasks";
@@ -277,6 +282,58 @@ public class ImageGenerationProperties {
     return ossSignPath.startsWith("/") ? ossSignPath : "/" + ossSignPath;
   }
 
+  public String getProxyBaseUrl() {
+    return proxyBaseUrl;
+  }
+
+  public void setProxyBaseUrl(String proxyBaseUrl) {
+    this.proxyBaseUrl = proxyBaseUrl;
+  }
+
+  public String getProxyApiKey() {
+    return proxyApiKey;
+  }
+
+  public void setProxyApiKey(String proxyApiKey) {
+    this.proxyApiKey = proxyApiKey;
+  }
+
+  public String getProxyGenerationPath() {
+    return proxyGenerationPath;
+  }
+
+  public void setProxyGenerationPath(String proxyGenerationPath) {
+    this.proxyGenerationPath = proxyGenerationPath;
+  }
+
+  public String getProxyTaskPath() {
+    return proxyTaskPath;
+  }
+
+  public void setProxyTaskPath(String proxyTaskPath) {
+    this.proxyTaskPath = proxyTaskPath;
+  }
+
+  public boolean isProxyConfigured() {
+    return proxyApiKey != null && !proxyApiKey.isBlank()
+        && proxyBaseUrl != null && !proxyBaseUrl.isBlank();
+  }
+
+  public String normalizedProxyBaseUrl() {
+    if (proxyBaseUrl == null || proxyBaseUrl.isBlank()) return "http://47.90.226.52";
+    return proxyBaseUrl.endsWith("/") ? proxyBaseUrl.substring(0, proxyBaseUrl.length() - 1) : proxyBaseUrl;
+  }
+
+  public String normalizedProxyGenerationPath() {
+    if (proxyGenerationPath == null || proxyGenerationPath.isBlank()) return "/api/images/jobs";
+    return proxyGenerationPath.startsWith("/") ? proxyGenerationPath : "/" + proxyGenerationPath;
+  }
+
+  public String normalizedProxyTaskPath() {
+    if (proxyTaskPath == null || proxyTaskPath.isBlank()) return "/api/images/jobs";
+    return proxyTaskPath.startsWith("/") ? proxyTaskPath : "/" + proxyTaskPath;
+  }
+
   public String getAgnesBaseUrl() {
     return agnesBaseUrl;
   }
@@ -353,7 +410,7 @@ public class ImageGenerationProperties {
   }
 
   public String normalizedApimartDirectBaseUrl() {
-    if (apimartDirectBaseUrl == null || apimartDirectBaseUrl.isBlank()) return "https://api.apimart.ai";
+    if (apimartDirectBaseUrl == null || apimartDirectBaseUrl.isBlank()) return "https://apib.ai";
     return apimartDirectBaseUrl.endsWith("/") ? apimartDirectBaseUrl.substring(0, apimartDirectBaseUrl.length() - 1) : apimartDirectBaseUrl;
   }
 

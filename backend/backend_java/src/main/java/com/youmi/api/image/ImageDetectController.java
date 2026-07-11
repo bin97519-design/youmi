@@ -1,7 +1,7 @@
 package com.youmi.api.image;
 
-import com.youmi.api.ai.DashScopeClient;
 import com.youmi.api.ai.MiniMaxM3Client;
+import com.youmi.api.ai.XfyunVisionClient;
 import com.youmi.api.common.ApiResponse;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -26,11 +26,11 @@ public class ImageDetectController {
       .followRedirects(HttpClient.Redirect.ALWAYS)
       .build();
 
-  private final DashScopeClient dashScopeClient;
+  private final XfyunVisionClient xfyunVisionClient;
   private final MiniMaxM3Client miniMaxM3Client;
 
-  public ImageDetectController(DashScopeClient dashScopeClient, MiniMaxM3Client miniMaxM3Client) {
-    this.dashScopeClient = dashScopeClient;
+  public ImageDetectController(XfyunVisionClient xfyunVisionClient, MiniMaxM3Client miniMaxM3Client) {
+    this.xfyunVisionClient = xfyunVisionClient;
     this.miniMaxM3Client = miniMaxM3Client;
   }
 
@@ -64,7 +64,7 @@ public class ImageDetectController {
     return dataUri;
   }
 
-  @PostMapping("/detect-elements")
+  @PostMapping(value = "/detect-elements", produces = "application/json;charset=UTF-8")
   public ApiResponse<ImageDetectDtos.DetectResponse> detectElements(
       @RequestBody ImageDetectDtos.DetectRequest request) {
 
@@ -76,17 +76,17 @@ public class ImageDetectController {
       return ApiResponse.fail(500, "图片加载失败：" + e.getMessage());
     }
 
-    // 优先使用 DashScope (Qwen)
-    if (dashScopeClient.isConfigured()) {
+    // Use Xfyun vision first.
+    if (xfyunVisionClient.isConfigured()) {
       try {
-        log.info("Detecting elements with DashScope (model: {})", dashScopeClient.model());
-        List<MiniMaxM3Client.ImageElement> detected = dashScopeClient.detectImageElements(imageUri);
+        log.info("Detecting elements with Xfyun vision (model: {})", xfyunVisionClient.model());
+        List<MiniMaxM3Client.ImageElement> detected = xfyunVisionClient.detectImageElements(imageUri);
         List<ImageDetectDtos.DetectedElement> elements = detected.stream()
             .map(el -> new ImageDetectDtos.DetectedElement(el.objectName(), el.box2d()))
             .toList();
         return ApiResponse.ok(new ImageDetectDtos.DetectResponse(elements, request.imageUrl()));
       } catch (Exception e) {
-        log.error("DashScope detect failed, fallback to MiniMax", e);
+        log.error("Xfyun vision detect failed, fallback to MiniMax", e);
         // fallback to MiniMax below
       }
     }
@@ -106,7 +106,7 @@ public class ImageDetectController {
       }
     }
 
-    log.warn("No detect API configured (DashScope or MiniMax)");
+    log.warn("No detect API configured (Xfyun vision or MiniMax)");
     return ApiResponse.ok(new ImageDetectDtos.DetectResponse(List.of(), request.imageUrl()));
   }
 }

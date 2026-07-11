@@ -6,6 +6,8 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.TextNode;
 import com.youmi.api.common.ApiException;
+import com.youmi.api.file.OssStorageService;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.net.URI;
 import java.net.URLEncoder;
@@ -20,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -39,18 +42,28 @@ public class ImageGenerationClient {
 
   private final ObjectMapper objectMapper;
   private final ImageGenerationProperties properties;
+  private final OssStorageService ossStorageService;
   private final HttpClient httpClient;
   private final Map<String, List<String>> persistedImageCache = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<String, FailoverState> failoverStates = new ConcurrentHashMap<>();
 
-  public ImageGenerationClient(ObjectMapper objectMapper, ImageGenerationProperties properties) {
+  @Autowired
+  public ImageGenerationClient(
+      ObjectMapper objectMapper,
+      ImageGenerationProperties properties,
+      OssStorageService ossStorageService) {
     this.objectMapper = objectMapper;
     this.properties = properties;
+    this.ossStorageService = ossStorageService;
     this.httpClient = HttpClient.newBuilder()
         .version(HttpClient.Version.HTTP_1_1)
         .followRedirects(HttpClient.Redirect.NORMAL)
         .connectTimeout(Duration.ofSeconds(Math.max(3, properties.getTimeoutSeconds())))
         .build();
+  }
+
+  ImageGenerationClient(ObjectMapper objectMapper, ImageGenerationProperties properties) {
+    this(objectMapper, properties, null);
   }
 
   public ImageGenerationDtos.StatusResponse status() {
@@ -69,8 +82,7 @@ public class ImageGenerationClient {
 
   /** 中转站模式：baseUrl 指向代理服务器且有 generation-path=/api/images/jobs */
   private boolean isProxyConfigured() {
-    return properties.isConfigured()
-        && properties.normalizedGenerationPath().contains("/api/images/jobs");
+    return properties.isProxyConfigured();
   }
 
   public ImageGenerationDtos.CreateTaskResponse createTask(ImageGenerationDtos.CreateTaskRequest request)
@@ -79,7 +91,11 @@ public class ImageGenerationClient {
       throw new ApiException(400, "prompt is required");
     }
 
-    if (!properties.isConfigured() && !properties.isGetTokenConfigured() && !properties.isAgnesConfigured()) {
+    if (!properties.isConfigured()
+        && !properties.isApimartDirectConfigured()
+        && !properties.isGetTokenConfigured()
+        && !properties.isAgnesConfigured()
+        && !isProxyConfigured()) {
       throw new ApiException(400, "Image generation api key is not configured");
     }
 
@@ -112,15 +128,18 @@ public class ImageGenerationClient {
         try {
           return createApimartDirectTask(request);
         } catch (Exception apimartError) {
-          System.out.println("[image] APIMart-direct failed, falling back to Proxy: " + apimartError.getMessage());
-          if (proxyConfigured) {
-            return createProxyTask(request);
-          }
-          throw apimartError;
+          System.out.println("[image] APIMart-direct failed, trying fallback chain: " + apimartError.getMessage());
+          return createFallbackTask(request, apimartError);
         }
-      } else if (proxyConfigured) {
-        System.out.println("[image-route] APIMart-direct not configured, using Proxy directly");
-        return createProxyTask(request);
+      } else {
+        if (properties.isGetTokenConfigured()) {
+          System.out.println("[image-route] APIMart-direct not configured, using GetToken fallback");
+          return createGetTokenTask(request);
+        }
+        if (proxyConfigured) {
+          System.out.println("[image-route] APIMart-direct not configured, using Proxy directly");
+          return createProxyTask(request);
+        }
       }
     }
 
@@ -128,13 +147,45 @@ public class ImageGenerationClient {
       try {
         return createApimartTask(request);
       } catch (Exception exception) {
-        if (!isProxyConfigured()) throw exception;
+        return createFallbackTask(request, exception);
       }
+    }
+    if (properties.isGetTokenConfigured()) {
+      return createGetTokenTask(request);
     }
     if (isProxyConfigured()) {
       return createProxyTask(request);
     }
     throw new ApiException(502, "Image generation provider request failed");
+  }
+
+  private ImageGenerationDtos.CreateTaskResponse createFallbackTask(
+      ImageGenerationDtos.CreateTaskRequest request, Exception primaryError) throws Exception {
+    Exception lastError = primaryError;
+    if (properties.isGetTokenConfigured()) {
+      try {
+        System.out.println("[image] trying GetToken fallback");
+        return createGetTokenTask(request);
+      } catch (Exception getTokenError) {
+        lastError = getTokenError;
+        System.out.println("[image] GetToken fallback failed: " + getTokenError.getMessage());
+      }
+    }
+    if (isProxyConfigured()) {
+      try {
+        System.out.println("[image] trying Proxy fallback");
+        return createProxyTask(request);
+      } catch (Exception proxyError) {
+        if (lastError != null) {
+          proxyError.addSuppressed(lastError);
+        }
+        throw proxyError;
+      }
+    }
+    if (lastError != null) {
+      throw lastError;
+    }
+    throw new ApiException(502, "No image fallback provider configured");
   }
 
   private ImageGenerationDtos.CreateTaskResponse createApimartTask(ImageGenerationDtos.CreateTaskRequest request)
@@ -241,7 +292,8 @@ public class ImageGenerationClient {
       body.put("image_objects", imageObjects);
     }
 
-    JsonNode root = sendPost(properties.normalizedBaseUrl() + properties.normalizedGenerationPath(), body);
+    JsonNode root = sendProxyPost(
+        properties.normalizedProxyBaseUrl() + properties.normalizedProxyGenerationPath(), body);
 
     // 中转站返回 { job_id, poll_url, retry_after_seconds, status }
     String jobId = firstNonBlank(text(root, "job_id"), text(root, "id"));
@@ -422,8 +474,8 @@ public class ImageGenerationClient {
     signBody.put("contentType", image.contentType());
     signBody.put("size", image.bytes().length);
 
-    JsonNode signResult = sendPost(
-        properties.normalizedBaseUrl() + properties.normalizedOssSignPath(), signBody);
+    JsonNode signResult = sendProxyPost(
+        properties.normalizedProxyBaseUrl() + properties.normalizedOssSignPath(), signBody);
     String uploadUrl = text(signResult, "upload_url");
     String objectName = firstNonBlank(text(signResult, "object_name"), text(signResult, "objectName"));
     // 中转站签名：url 是签名 URL（会过期），public_url 才是永久 URL
@@ -688,15 +740,17 @@ public class ImageGenerationClient {
 
   /** 中转站代理任务轮询：GET /api/images/jobs/{job_id} */
   private ImageGenerationDtos.TaskStatusResponse getProxyTask(String jobId) throws Exception {
-    if (!properties.isConfigured()) {
+    if (!properties.isProxyConfigured()) {
       throw new ApiException(400, "Proxy image api key is not configured");
     }
     String cleanJobId = jobId == null ? "" : jobId.trim();
     if (cleanJobId.isBlank()) throw new ApiException(400, "jobId is required");
 
-    String endpoint = properties.normalizedBaseUrl() + properties.normalizedTaskPath() + "/" + encode(cleanJobId);
+    String endpoint = properties.normalizedProxyBaseUrl()
+        + properties.normalizedProxyTaskPath()
+        + "/" + encode(cleanJobId);
 
-    JsonNode root = sendGet(endpoint);
+    JsonNode root = sendProxyGet(endpoint);
     String status = firstNonBlank(text(root, "status"), "unknown");
     String error = firstNonBlank(
         text(root.path("error"), "message"),
@@ -872,6 +926,27 @@ public class ImageGenerationClient {
     return send(request, "GetToken");
   }
 
+  private JsonNode sendProxyPost(String endpoint, Map<String, Object> body) throws Exception {
+    HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create(endpoint))
+        .timeout(Duration.ofSeconds(Math.max(5, properties.getTimeoutSeconds())))
+        .header("Authorization", "Bearer " + properties.getProxyApiKey())
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
+        .build();
+    return send(request, "Proxy");
+  }
+
+  private JsonNode sendProxyGet(String endpoint) throws Exception {
+    HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create(endpoint))
+        .timeout(Duration.ofSeconds(Math.max(5, properties.getTimeoutSeconds())))
+        .header("Authorization", "Bearer " + properties.getProxyApiKey())
+        .GET()
+        .build();
+    return send(request, "Proxy");
+  }
+
   private JsonNode sendApimartDirectPost(String endpoint, Map<String, Object> body) throws Exception {
     HttpRequest request = HttpRequest.newBuilder()
         .uri(URI.create(endpoint))
@@ -1007,7 +1082,8 @@ public class ImageGenerationClient {
 
   private List<String> persistImageUrls(String taskId, List<String> imageUrls) throws Exception {
     if (!properties.isPersistGeneratedImages()) return imageUrls;
-    if (properties.getUploadEndpoint() == null || properties.getUploadEndpoint().isBlank()) {
+    boolean canUploadDirectly = ossStorageService != null && ossStorageService.isConfigured();
+    if (!canUploadDirectly && (properties.getUploadEndpoint() == null || properties.getUploadEndpoint().isBlank())) {
       throw new ApiException(502, "Generated image persistence is enabled, but upload endpoint is not configured");
     }
 
@@ -1029,6 +1105,16 @@ public class ImageGenerationClient {
 
   private String persistImageUrl(String taskId, int index, String imageUrl) throws Exception {
     DownloadedImage image = downloadImage(taskId, index, imageUrl);
+    if (ossStorageService != null && ossStorageService.isConfigured()) {
+      String objectName = generatedObjectName(taskId, index, image);
+      try (ByteArrayInputStream inputStream = new ByteArrayInputStream(image.bytes())) {
+        ossStorageService.uploadStream(inputStream, objectName, image.contentType());
+      }
+      String storedUrl = ossStorageService.getFileUrl(objectName);
+      System.out.println("[image-persist] stored generated image to OSS: " + storedUrl);
+      return storedUrl;
+    }
+
     String boundary = "----YoumiUploadBoundary" + System.currentTimeMillis() + Math.abs(imageUrl.hashCode());
     byte[] body = multipartBody(boundary, image);
 
@@ -1057,6 +1143,24 @@ public class ImageGenerationClient {
       throw new ApiException(502, "Generated image OSS upload succeeded, but no URL was returned");
     }
     return normalizeUploadedUrl(uploadedUrl);
+  }
+
+  private String generatedObjectName(String taskId, int index, DownloadedImage image) {
+    String filename = image.filename() == null || image.filename().isBlank()
+        ? "generated-" + index + "." + extensionFor(image.contentType())
+        : image.filename().replaceAll("[^A-Za-z0-9._-]", "_");
+    if (filename.length() > 120) {
+      filename = filename.substring(filename.length() - 120);
+    }
+    String safeTaskId = taskId == null ? "task" : taskId.replaceAll("[^A-Za-z0-9._-]", "_");
+    if (safeTaskId.length() > 80) {
+      safeTaskId = safeTaskId.substring(safeTaskId.length() - 80);
+    }
+    return java.time.LocalDate.now()
+        + "/ai-" + System.currentTimeMillis()
+        + "-" + safeTaskId
+        + "-" + index
+        + "-" + filename;
   }
 
   private DownloadedImage downloadImage(String taskId, int index, String imageUrl) throws Exception {
@@ -1350,12 +1454,28 @@ public class ImageGenerationClient {
 
   /** 根据主 provider 与解析后的模型决定备用 provider；无可用备用链时返回 null */
   private String determineBackupProvider(String primaryProvider, String resolvedModel) {
-    return switch (primaryProvider) {
-      case "apimart-direct" -> isProxyConfigured() ? PROVIDER_PROXY : null;
-      case PROVIDER_GETTOKEN -> isProxyConfigured() ? PROVIDER_PROXY : null;
-      case PROVIDER_APIMART -> isProxyConfigured() ? PROVIDER_PROXY : null;
-      default -> null; // agnes / proxy 无备用
-    };
+    List<String> providers = determineBackupProviders(primaryProvider, resolvedModel);
+    return providers.isEmpty() ? null : providers.get(0);
+  }
+
+  private List<String> determineBackupProviders(String primaryProvider, String resolvedModel) {
+    if (!properties.isFallbackEnabled()) {
+      return List.of();
+    }
+    if ("apimart-direct".equals(primaryProvider) || PROVIDER_APIMART.equals(primaryProvider)) {
+      List<String> providers = new ArrayList<>(2);
+      if (properties.isGetTokenConfigured()) {
+        providers.add(PROVIDER_GETTOKEN);
+      }
+      if (isProxyConfigured()) {
+        providers.add(PROVIDER_PROXY);
+      }
+      return providers;
+    }
+    if (PROVIDER_GETTOKEN.equals(primaryProvider)) {
+      return isProxyConfigured() ? List.of(PROVIDER_PROXY) : List.of();
+    }
+    return List.of(); // agnes / proxy have no backup provider.
   }
 
   /** 按需创建备份任务（懒创建），将返回的 taskId 写入 state.backupTaskId */
@@ -1376,7 +1496,7 @@ public class ImageGenerationClient {
     String model = state.originalRequest == null ? "unknown"
         : properties.resolveModel(state.originalRequest.model());
     System.out.println("[image-failover] " + new java.util.Date()
-        + " | reason=timeout_or_error"
+        + " | reason=" + state.failoverReason
         + " | from=" + state.primaryProvider
         + " | to=" + state.backupProvider
         + " | model=" + model
@@ -1385,19 +1505,26 @@ public class ImageGenerationClient {
 
   /** 触发故障转移：计算备用 provider 并创建备份任务；失败则重置以便下次轮询重试 */
   private void triggerBackup(FailoverState state, String reason) {
-    String backup = determineBackupProvider(
+    List<String> backups = determineBackupProviders(
         state.primaryProvider, properties.resolveModel(state.originalRequest.model()));
-    if (backup == null) return;
-    state.backupProvider = backup;
+    if (backups.isEmpty()) return;
     state.failoverReason = reason;
-    try {
-      createBackupTask(state);
-      state.failoverTriggered = true;
-    } catch (Exception e) {
-      System.out.println("[image-failover] 备份任务创建失败: " + e.getMessage());
-      state.backupProvider = null;
-      state.failoverReason = "timeout"; // 复位，下一次轮询可重试
+    for (String backup : backups) {
+      state.backupProvider = backup;
+      try {
+        createBackupTask(state);
+        state.failoverTriggered = true;
+        return;
+      } catch (Exception e) {
+        System.out.println("[image-failover] backup task create failed"
+            + " | to=" + backup
+            + " | reason=" + reason
+            + " | error=" + e.getMessage());
+        state.backupTaskId = null;
+      }
     }
+    state.backupProvider = null;
+    state.failoverReason = "timeout"; // Reset so the next poll can retry the chain.
   }
 
   /**
