@@ -1058,10 +1058,6 @@ async function maybeAutoDetect(layer, force = false) {
       throw new Error(`HTTP ${res.status}`)
     }
     const data = await res.json()
-    console.log('[detect] API 返回:', {
-      code: data.code,
-      elementCount: (data.data?.elements || data.data?.imageInfo)?.length,
-    })
     if ((data.code === 0 || data.code === 200) && (data.data?.elements || data.data?.imageInfo)) {
       // Java 后端直接返回 0-1 归一化坐标，无需再除以 1000
       const normalizeBox = (raw) => {
@@ -1083,30 +1079,6 @@ async function maybeAutoDetect(layer, force = false) {
         }
       })
       layerDetectedElements.value = { ...layerDetectedElements.value, [layer.id]: els }
-      console.log(
-        '[detect] 填充 layerDetectedElements:',
-        Object.keys(layerDetectedElements.value),
-        '→',
-        els.length,
-        '个元素',
-      )
-      // 逐元素坐标调试日志
-      for (const el of els) {
-        const b = el.box_2d || el.box2d || [0, 0, 1, 1]
-        console.log(
-          `[detect] ${el.object_name || el.name}: x1=${b[0]} y1=${b[1]} x2=${b[2]} y2=${b[3]}`,
-        )
-      }
-      console.log('[detect] 第一个元素完整数据:', JSON.stringify(els[0]))
-      console.log('[detect] 当前 layer 信息:', {
-        id: layer.id,
-        x: layer.x,
-        y: layer.y,
-        width: layer.width,
-        height: layer.height,
-        viewScale: viewScale.value,
-        viewOffset: viewOffset.value,
-      })
       // 持久化到文档 payload
       canvas.updateDocument(props.id, (draft) => {
         draft.payload.detectedElements = draft.payload.detectedElements || {}
@@ -1235,12 +1207,14 @@ async function readApiResponse(response) {
   return result.data
 }
 
-async function submitImageTask({ prompt, imageUrls }) {
+async function submitImageTask({ prompt, imageUrls, model, size, resolution }) {
+  // 恢复场景（刷新后重新提交）必须沿用占位图层持久化的生成参数 genMeta，
+  // 不能用刷新后重置为默认的 chatModel/chatRatio/chatResolution（否则会换模型/比例重出）。
   const body = {
     prompt,
-    model: chatModel.value,
-    size: chatRatio.value,
-    resolution: chatResolution.value,
+    model: model || chatModel.value,
+    size: size || chatRatio.value,
+    resolution: resolution || chatResolution.value,
     n: 1,
   }
   if (imageUrls?.length) {
@@ -1372,7 +1346,7 @@ async function resumeImageTaskPolling(taskId, placeholderId) {
       statusText: '生成任务恢复中...',
       taskId,
     })
-    await startImagePoll(taskId, placeholderId, '', prompt)
+    await startImagePoll(taskId, placeholderId, placeholder?.chatMessageId || '', prompt)
   } catch (error) {
     const friendly = friendlyImageError(error.message || error)
     // 恢复轮询进行中页面被刷新/导航中断：不标 failed，保持 processing 让 onMounted 下一轮自然接管
@@ -1392,26 +1366,171 @@ async function resumeImageTaskPolling(taskId, placeholderId) {
   }
 }
 
-// 刷新/恢复后扫描所有「非终态的占位图层」并重启轮询。
-// 与具体状态词解耦：凡是 type==='placeholder' 且带 taskId 且非 completed/failed 的，一律恢复，
+// 刷新/恢复后扫描所有「非终态的占位图层」并重启生图。
+// 与具体状态词解耦：凡是 type==='placeholder' 且非 completed/failed 的，一律恢复，
 // 覆盖「纯生成中刷新」(APIMart 的 IN_PROGRESS/PENDING/GENERATING、中转站代理自有词等) 这种原本匹配不上的 case。
-// 配合 startImagePoll 的 taskId 守卫，可安全被多次调用（幂等）。
+// 两种情况：
+//   - 带 taskId：直接恢复轮询（resumeImageTaskPolling）
+//   - 无 taskId（提交阶段就被刷新中断）：重新提交任务（resumeInterruptedNoTaskId）
+// 配合 startImagePoll 的 taskId 守卫 + _pollingTasks 的 layer.id 占位，可安全被多次调用（幂等）。
 function resumeInterruptedPlaceholders() {
   const layersToResume = (doc.value?.payload?.layers || []).filter((layer) => {
     const s = normalizeStatus(layer.status)
     return (
       layer.type === 'placeholder' &&
-      layer.taskId &&
       !isTaskDone(s) &&
       !isTaskFailed(s) &&
-      !_pollingTasks.has(layer.taskId) // 已在轮询中的不重复处理，避免重复改状态触发监听回环
+      !_pollingTasks.has(layer.taskId || layer.id) // 已在轮询/恢复中的不重复处理，避免重复改状态触发监听回环
     )
   })
   for (const layer of layersToResume) {
-    // 恢复前先切回 processing，覆盖掉旧的 failed/interrupted/persisting 等状态
-    updateGeneratingPlaceholder(layer.id, { status: 'processing', statusText: '生成任务恢复中...' })
-    resumeImageTaskPolling(layer.taskId, layer.id)
+    if (layer.taskId) {
+      resumeImageTaskPolling(layer.taskId, layer.id)
+    } else {
+      // 提交阶段就被刷新中断（占位图已落库但还没拿到 taskId）：重新提交任务
+      resumeInterruptedNoTaskId(layer)
+    }
   }
+}
+
+// 刷新/恢复时，对「从未拿到 taskId 却已 failed」的占位图做一次重试（仅 onMounted 调用，避免 watch 重扫死循环）。
+// 这类占位图只可能来自：提交阶段就被刷新中断 / 原始提交即被后端拒绝（见 submitFail 分支）。
+// 已拿到 taskId 的 failed 视为后端真实失败（任务本身挂了），不重试。
+// 重试上限：后端真实拒绝按 resumeAttempts<3（避免后端持续 5xx 时每次刷新都无脑重提）；
+//   网络瞬时失败(networkFailed) 不受上限约束，每次挂载都重试（后端只是当时不可达，恢复后理应续上）。
+function retryFailedNoTaskPlaceholders() {
+  const failed = (doc.value?.payload?.layers || []).filter((layer) => {
+    const s = normalizeStatus(layer.status)
+    const retryable = !!layer.networkFailed || Number(layer.resumeAttempts || 0) < 3
+    return (
+      layer.type === 'placeholder' &&
+      isTaskFailed(s) &&
+      !layer.taskId &&
+      retryable &&
+      !_pollingTasks.has(layer.id)
+    )
+  })
+  for (const layer of failed) {
+    resumeInterruptedNoTaskId(layer)
+  }
+}
+
+// 提交阶段被刷新中断的占位图：无 taskId，需重新向后端提交生图任务，再接轮询。
+// 用 layer.id 占 _pollingTasks 保证幂等（watch 重扫时不会重复提交），拿到 taskId 后提前占住 taskId，
+// 并在 finally 释放。
+async function resumeInterruptedNoTaskId(layer) {
+  if (_pollingTasks.has(layer.id)) return
+  _pollingTasks.add(layer.id)
+  const prompt = layer.prompt || layer.genMeta?.prompt || ''
+  const imageUrls = Array.isArray(layer.genMeta?.referenceImageUrls) ? layer.genMeta.referenceImageUrls : []
+  updateGeneratingPlaceholder(layer.id, { status: 'processing', statusText: '生成任务恢复中...' })
+  // 累计重试次数并持久化，配合 retryFailedNoTaskPlaceholders 的 <3 上限，避免后端持续失败时每次刷新都无脑重提
+  const attempts = Number(layer.resumeAttempts || 0) + 1
+  updateGeneratingPlaceholder(layer.id, { resumeAttempts: attempts })
+  let taskId = ''
+  try {
+    taskId = await submitImageTask({
+      prompt,
+      imageUrls,
+      model: layer.genMeta?.model,
+      size: layer.genMeta?.ratio,
+      resolution: layer.genMeta?.resolution,
+    })
+    _pollingTasks.add(taskId) // 提前占住，避免 watch 重扫重复拉起轮询
+    // 成功拿到 taskId：清除上一次失败残留的报错/网络标记，避免陈旧 e 字段一直挂在图层上
+    updateGeneratingPlaceholder(layer.id, { taskId, lastError: '', networkFailed: false })
+    // 传 layer 上持久化的 chatMessageId（而非空字符串），让轮询完成时能更新聊天卡片文案。
+    await startImagePoll(taskId, layer.id, layer.chatMessageId || '', prompt)
+  } catch (error) {
+    const lastError = `[resumeSubmitFail] ${error?.name || 'Error'}: ${error?.message || error}`
+    // 区分「网络层瞬时错误」与「后端明确拒绝」：
+    // fetch 本身没拿到响应 → TypeError: Failed to fetch / AbortError，属网络瞬断（代理未就绪/刷新瞬间瞬断），不应永久判死；
+    // readApiResponse 抛的 Error（code!==0 / 无 task_id）→ 后端真拒绝，才计入重试上限。
+    const isNetworkError =
+      error?.name === 'AbortError' ||
+      (error?.name === 'TypeError' && /Failed to fetch|NetworkError|network/i.test(error?.message || ''))
+    if (isNetworkError) {
+      // 标记 failed + networkFailed：由 retryFailedNoTaskPlaceholders 在下次挂载重试；
+      // resumeAttempts 归零（不计入后端失败上限），且 failed 不会触发 watch 重扫，避免同挂载内死循环。
+      updateGeneratingPlaceholder(layer.id, {
+        progress: 1,
+        status: 'failed',
+        statusText: '网络中断，刷新后自动重试',
+        lastError,
+        networkFailed: true,
+        resumeAttempts: 0,
+      })
+    } else {
+      const friendly = friendlyImageError(error.message || error)
+      updateGeneratingPlaceholder(layer.id, {
+        progress: 1,
+        status: 'failed',
+        statusText: friendly,
+        lastError,
+      })
+    }
+  } finally {
+    _pollingTasks.delete(layer.id)
+    if (taskId) _pollingTasks.delete(taskId)
+  }
+}
+
+// 清理「彻底死亡」的僵尸占位图：已无法恢复、不会重试、只会污染画布的残留 placeholder。
+// 本函数在 resumeInterruptedPlaceholders / retryFailedNoTaskPlaceholders 之后调用，
+// 能恢复的重试都已拉起（_pollingTasks 有记录），剩下的就是真尸体。
+// 清理条件（同时满足）：
+//   1) type === 'placeholder'
+//   2) 不在 _pollingTasks 中（未被恢复/重试函数占住）
+//   3) 无 taskId（有 taskId 的交给 pollImageTaskUntilDone 自身处理；completed 的会被替换为 image）
+//   4) status 非 processing（正在生成中的绝不碰）
+//
+// 覆盖所有逃逸僵尸类型：
+//   - interrupted + 无taskId（刷新中断后从未成功提交的）← 之前三不管！
+//   - 空/undefined status + 无taskId（状态丢失的残留）← 之前三不管！
+//   - failed + 有taskId（后端真实失败，不会重试）
+//   - failed + 无taskId + 重试耗尽（本地重试也放弃的）
+function cleanupDeadPlaceholders() {
+  const deadIds = []
+  const allLayers = doc.value?.payload?.layers || []
+  for (const layer of allLayers) {
+    if (layer.type !== 'placeholder') continue
+    // 正在被恢复或重试的不动（避免竞态删除）
+    if (_pollingTasks.has(layer.taskId || layer.id)) continue
+    // 有 taskId 且正在处理中 → 让轮询自己收尾
+    if (layer.taskId) {
+      const s = normalizeStatus(layer.status)
+      if (s === 'processing' || s === 'completed') continue
+    }
+    // 剩余全部视为死尸：无taskId的非processing / 有taskId的终态失败
+    deadIds.push(layer.id)
+  }
+  if (deadIds.length === 0) return
+  canvas.updateDocument(props.id, (draft) => {
+    const alive = draft.payload.layers.filter((l) => !deadIds.includes(l.id))
+    draft.payload.layers = alive.length > 0 ? alive : []
+    return draft
+  })
+}
+
+// 终极兜底：暴力清除所有「无图」占位图层。
+// 条件只有一条：type === 'placeholder' && !layer.url（没有有效图片内容）。
+// 不管它是什么状态、有没有 taskId、重试了几次、是否 interrupted ——
+// 没有图 = 用户看不到 = 但占着 DOM 拦截鼠标 = 必须清除。
+// 正在轮询恢复中的除外（_pollingTasks 有记录），避免杀掉正在生成的。
+function purgeEmptyUrlPlaceholders() {
+  const deadIds = []
+  const allLayers = doc.value?.payload?.layers || []
+  for (const layer of allLayers) {
+    if (layer.type !== 'placeholder') continue
+    if (layer.url) continue // 有图的（失败卡片/预览图/生成中缩略图）保留
+    if (_pollingTasks.has(layer.taskId || layer.id)) continue // 正在恢复的不动
+    deadIds.push(layer.id)
+  }
+  if (deadIds.length === 0) return
+  canvas.updateDocument(props.id, (draft) => {
+    draft.payload.layers = draft.payload.layers.filter((l) => !deadIds.includes(l.id))
+    return draft
+  })
 }
 
 // 服务端 doc 合并（syncFromServer）可能在 onMounted 恢复扫描之后异步覆盖本地图层，
@@ -1747,7 +1866,7 @@ async function pasteLayerFromBuffer(buffer) {
   showCopyPasteToast(els.length ? `已粘贴图层（含 ${els.length} 个分层元素）` : '已粘贴图层')
 }
 
-async function addGeneratingPlaceholderLayer(prompt, genMeta = {}) {
+async function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '') {
   pushUndo()
   const referenceImages = chatReferenceImages.value.filter(
     (image) => !image.uploading && !image.error,
@@ -1791,6 +1910,9 @@ async function addGeneratingPlaceholderLayer(prompt, genMeta = {}) {
         resolution: genMeta.resolution || '',
         referenceImageUrls: Array.isArray(genMeta.referenceImageUrls) ? genMeta.referenceImageUrls : [],
       },
+      // 关联的聊天消息 id：刷新后恢复轮询完成时用来更新聊天卡片文案（否则 assistantId 为空，
+      // pollImageTaskUntilDone 会跳过所有 chatMessage 更新，卡片永远停在"正在恢复..."）。
+      chatMessageId,
       progress: 6,
       status: 'submitted',
       statusText: placeholderStatusText(6),
@@ -1833,26 +1955,11 @@ async function replaceGeneratingPlaceholder(layerId, url, skipAutoDetect = false
   pushUndo()
   try {
     const size = await imageSize(url)
-    // 调试：记录替换前占位图的位置
-    const beforeLayer = layers.value.find((l) => l.id === layerId)
-    console.log('[replacePlaceholder] before replace:', {
-      layerId,
-      x: beforeLayer?.x,
-      y: beforeLayer?.y,
-      width: beforeLayer?.width,
-      height: beforeLayer?.height,
-    })
     let replaced = false
     canvas.updateDocument(props.id, (draft) => {
       const index = draft.payload.layers.findIndex((layer) => layer.id === layerId)
       if (index === -1) return draft
       const placeholder = draft.payload.layers[index]
-      console.log('[replacePlaceholder] draft placeholder:', {
-        x: placeholder.x,
-        y: placeholder.y,
-        width: placeholder.width,
-        height: placeholder.height,
-      })
       const width =
         placeholder.width || (size.width > size.height ? CANVAS_IMAGE_WIDTH : CANVAS_IMAGE_WIDTH)
       const height = Math.round((width * size.height) / size.width)
@@ -1874,12 +1981,6 @@ async function replaceGeneratingPlaceholder(layerId, url, skipAutoDetect = false
         previewUrl: undefined,
         source: 'AI生成图片',
       }
-      console.log('[replacePlaceholder] after replace:', {
-        x: placeholder.x,
-        y: placeholder.y,
-        newWidth: width,
-        newHeight: height,
-      })
       replaced = true
       return draft
     })
@@ -2297,6 +2398,7 @@ function openImageViewer(url, name) {
   nextTick(() => {
     const overlay = document.querySelector('.uc-image-viewer-overlay')
     if (overlay) overlay.focus()
+    applyViewerTransform()
   })
 }
 
@@ -2325,22 +2427,37 @@ function switchImageViewer(dir) {
   imageViewer.scale = 1
   imageViewer.translateX = 0
   imageViewer.translateY = 0
+  nextTick(() => applyViewerTransform())
 }
 
 // 旋转图片 — 直接累加，不取模，避免跨越0/360边界时动画反向
 function rotateImage(deg) {
   imageViewer.rotation += deg
+  applyViewerTransform()
 }
 
 // 镜像翻转
 function flipImage(axis) {
   if (axis === 'x') imageViewer.flipX = !imageViewer.flipX
   else imageViewer.flipY = !imageViewer.flipY
+  applyViewerTransform()
 }
 
-// 缩放
+// 图片查看器 transform 字符串（拖拽直写 DOM 与缩放/旋转/翻转共用，保证一致）
+function viewerImgTransform(translateX = imageViewer.translateX, translateY = imageViewer.translateY) {
+  return `translate(${translateX}px, ${translateY}px) scale(${imageViewer.scale}) rotate(${imageViewer.rotation}deg) scaleX(${imageViewer.flipX ? -1 : 1}) scaleY(${imageViewer.flipY ? -1 : 1})`
+}
+
+// 直接把 transform 写到 img DOM（不经过 Vue 响应式 patch），缩放/旋转/翻转/拖拽统一走这里
+function applyViewerTransform() {
+  const img = document.querySelector('.uc-image-viewer-content img')
+  if (img) img.style.transform = viewerImgTransform()
+}
+
+// 缩放（按钮）
 function zoomImage(delta) {
   imageViewer.scale = Math.max(0.25, Math.min(4, imageViewer.scale + delta))
+  applyViewerTransform()
 }
 
 // 滚轮缩放
@@ -2348,7 +2465,12 @@ function handleViewerWheel(e) {
   e.preventDefault()
   const delta = e.deltaY > 0 ? -0.15 : 0.15
   imageViewer.scale = Math.max(0.25, Math.min(4, imageViewer.scale + delta))
+  applyViewerTransform()
 }
+
+// 拖拽基准：start 时记录起始偏移，move 中只算 delta，全程不写响应式状态 → 不触发 Vue 重渲染 → 零延迟跟手
+let _dragBaseX = 0
+let _dragBaseY = 0
 
 // 开始拖动
 function startViewerDrag(e) {
@@ -2356,20 +2478,39 @@ function startViewerDrag(e) {
   imageViewer.isDragging = true
   imageViewer.dragStartX = e.clientX
   imageViewer.dragStartY = e.clientY
-  imageViewer.dragStartTranslateX = imageViewer.translateX
-  imageViewer.dragStartTranslateY = imageViewer.translateY
+  _dragBaseX = imageViewer.translateX
+  _dragBaseY = imageViewer.translateY
+  // 指针捕获：放大后图片超出容器，鼠标移出边界仍能持续收到 pointermove，避免掉帧卡顿
+  try { e.currentTarget.setPointerCapture(e.pointerId) } catch (_) {}
+  // 关掉 transition + 缓存 img 元素（拖拽全程直写 transform，不依赖 Vue patch）
+  try {
+    const img = e.currentTarget.querySelector('img')
+    if (img) { img.classList.add('is-dragging'); imageViewer._imgEl = img }
+  } catch (_) {}
 }
 
-// 拖动中
+// 拖动中：只算 delta 直写 DOM，零响应式、零 Vue 重渲染、零延迟跟手
 function moveViewerDrag(e) {
   if (!imageViewer.isDragging) return
-  imageViewer.translateX = imageViewer.dragStartTranslateX + (e.clientX - imageViewer.dragStartX)
-  imageViewer.translateY = imageViewer.dragStartTranslateY + (e.clientY - imageViewer.dragStartY)
+  const el = imageViewer._imgEl
+  if (!el) return
+  const dx = e.clientX - imageViewer.dragStartX
+  const dy = e.clientY - imageViewer.dragStartY
+  el.style.transform = viewerImgTransform(_dragBaseX + dx, _dragBaseY + dy)
 }
 
-// 停止拖动
-function stopViewerDrag() {
+// 停止拖动：仅在松手这一刻把最终偏移同步回响应式状态（全程唯一一次写状态）
+function stopViewerDrag(e) {
+  if (!imageViewer.isDragging) return
+  const dx = e.clientX - imageViewer.dragStartX
+  const dy = e.clientY - imageViewer.dragStartY
+  imageViewer.translateX = _dragBaseX + dx
+  imageViewer.translateY = _dragBaseY + dy
   imageViewer.isDragging = false
+  const img = imageViewer._imgEl
+  if (img) img.classList.remove('is-dragging')
+  try { if (e?.currentTarget?.hasPointerCapture?.(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId) } catch (_) {}
+  imageViewer._imgEl = null
 }
 
 // 下载图片（优先 fetch+blob，大文件/跨域 fallback 新标签页打开）
@@ -2769,6 +2910,15 @@ function removeLayer(id) {
 }
 
 function startLayerDrag(event, layer) {
+  // 隐形/死亡占位图层（无图、且未处于轮询恢复中）：不拦截画布 pointerdown，
+  // 直接放行让事件冒泡到 stage，保证该区域框选多选正常可用。
+  if (
+    layer.type === 'placeholder' &&
+    !layer.url &&
+    !_pollingTasks.has(layer.taskId || layer.id)
+  ) {
+    return
+  }
   if (!userStore.requireLogin()) return
   if (activeTool.value === 'hand') return
   if (activeTool.value === 'annotate') return
@@ -4354,7 +4504,7 @@ async function sendChat() {
     ratio: chatRatio.value,
     resolution: chatResolution.value,
     referenceImageUrls: imageUrls,
-  })
+  }, assistantId)
   let submitted = false
 
   try {
@@ -4373,13 +4523,18 @@ async function sendChat() {
     // （聊天生图 A / 刷新恢复 B 共用 recordGenerationToHistory），此处不重复 push，避免双写。
   } catch (error) {
     const friendly = friendlyImageError(error.message || error)
-    // 判断是否为页面刷新/导航导致的中断（非真正失败）：浏览器卸载会中断进行中的 fetch
+    // 判断是否「页面刷新/导航导致的中断」而非真正失败：浏览器卸载会中断进行中的 fetch。
+    // 注意：不再要求 !_mounted —— 卸载时 fetch 的 abort 可能在 onUnmounted 把 _mounted 置 false 之前就 reject，
+    // 若加 !_mounted 守卫会误判为「提交阶段失败」进而误删占位图（即「立即刷新占位图消失」的根因）。
+    // 发送路径里的 AbortError / TypeError / Failed to fetch 只可能来自导航中断（该 fetch 无其他 abort 来源），
+    // 因此放宽判定是安全的，且「保留(标 interrupted)优于误删」。
     const isInterruption =
       error?.name === 'AbortError' ||
-      (error?.name === 'TypeError' && !_mounted.value) ||
-      (error?.message === 'Failed to fetch' && !_mounted.value)
-    if (isInterruption && submitted) {
-      // 保留 taskId，标记 interrupted 供 onMounted 恢复逻辑重启轮询；不显示错误文案，不写 failed
+      error?.name === 'TypeError' ||
+      error?.message === 'Failed to fetch'
+    if (isInterruption) {
+      // 刷新/导航中断：无论提交阶段还是轮询阶段，一律保留占位图，标记 interrupted 供 onMounted 恢复逻辑接管
+      // （提交阶段中断时还没有 taskId，恢复逻辑会重新提交任务，见 resumeInterruptedNoTaskId）
       const current = layers.value.find((l) => l.id === placeholderId)
       updateGeneratingPlaceholder(placeholderId, {
         progress: current?.progress || 1,
@@ -4389,14 +4544,17 @@ async function sendChat() {
       })
       updateChatMessage(assistantId, { text: '生成任务已暂停（页面刷新），正在恢复...' })
     } else if (!submitted) {
-      // 提交阶段失败：根本没有后台任务，自动移除占位卡，避免画布留下死卡
+      // 真正提交失败（服务端明确报错，非刷新中断）：无后台任务，移除占位卡避免死卡
       removeLayer(placeholderId)
       showCopyPasteToast(friendly)
     } else {
+      // 原始提交即失败（服务端明确报错，非刷新中断）：把真实错误存到图层，供后续排查
+      const lastError = `[submitFail] ${error?.name || 'Error'}: ${error?.message || error}`
       updateGeneratingPlaceholder(placeholderId, {
         progress: 1,
         status: 'failed',
         statusText: friendly,
+        lastError,
       })
       updateChatMessage(assistantId, { text: `生成失败：${friendly}` })
     }
@@ -5189,7 +5347,6 @@ onMounted(() => {
     }
     if (hasBadData) {
       // 旧版归一化 bug 导致的数据，清除缓存让用户重新检测
-      console.log('[detect] 清除旧版缓存数据，需要重新检测')
       canvas.updateDocument(props.id, (draft) => {
         draft.payload.detectedElements = {}
         return draft
@@ -5215,7 +5372,9 @@ onMounted(() => {
   // 与具体状态词解耦（经 normalizeStatus 归一），覆盖「纯生成中刷新」(APIMart 的 IN_PROGRESS/PENDING/GENERATING、
   // 中转站代理自有词等) 这种原本白名单匹配不上的 case；时机 B(persisting)/C(completed) 仍按原逻辑正常完成。
   // 另见组件级 watch：服务端 doc 合并（syncFromServer）异步覆盖本地图层后也会幂等重扫。
-  nextTick(() => resumeInterruptedPlaceholders())
+  // 延迟 ~400ms 触发：onMounted 刚挂载时 Vite 代理 / 鉴权请求可能尚未就绪，过早重提易触发
+  // 「Failed to fetch」被误判为失败；延迟后首轮重提命中率更高。
+  setTimeout(() => { resumeInterruptedPlaceholders(); retryFailedNoTaskPlaceholders(); cleanupDeadPlaceholders(); purgeEmptyUrlPlaceholders() }, 400)
   const onCtrlDown = (e) => {
     if (e.key === 'Control') ctrlHeld.value = true
   }
@@ -5806,6 +5965,7 @@ async function loadImageForCrop(layer) {
                   : undefined,
               zIndex: layer.zIndex,
               '--canvas-inverse-scale': 1 / viewScale,
+              pointerEvents: (layer.type === 'placeholder' && !layer.url && !_pollingTasks.has(layer.taskId || layer.id)) ? 'none' : undefined,
             }"
             @pointerdown="startLayerDrag($event, layer)"
             @pointermove="moveLayer"
@@ -7184,12 +7344,6 @@ async function loadImageForCrop(layer) {
           <img
             :src="imageViewer.url"
             :alt="imageViewer.name"
-            :style="{
-              transform: `translate(${imageViewer.translateX}px, ${imageViewer.translateY}px) scale(${imageViewer.scale}) rotate(${imageViewer.rotation}deg) scaleX(${imageViewer.flipX ? -1 : 1}) scaleY(${imageViewer.flipY ? -1 : 1})`,
-              transition: imageViewer.isDragging
-                ? 'none'
-                : 'transform 0.35s cubic-bezier(0.215, 0.61, 0.355, 1)',
-            }"
             draggable="false"
           />
 

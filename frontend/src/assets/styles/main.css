@@ -786,6 +786,9 @@ input::placeholder {
   cursor: grab;
   touch-action: none;
   z-index: 10;
+  /* canvas-viewport 设为 pointer-events:none 让空白处事件穿透到 stage 触发框选，
+     这里显式恢复 auto，否则子图层会继承 none 导致无法拖拽 */
+  pointer-events: auto;
 }
 /* 画布视口容器：平移+缩放只更新这一个 DOM 元素，不触发 N 个图层重排 */
 .canvas-viewport {
@@ -798,6 +801,11 @@ input::placeholder {
   transform-origin: 0 0;
   will-change: transform;
   backface-visibility: hidden;
+  /* 关键修复：本容器盒子铺满 stage 且被 translate/scale 平移后，
+     会盖住 stage 的一部分区域；若它捕获 pointerdown，
+     startMarquee 里 `event.target !== event.currentTarget` 会把空白框选掐掉。
+     设为 none 让盒子对鼠标透明，空白区域事件直接穿透到 stage → 框选正常。 */
+  pointer-events: none;
 }
 /* 平移时跳过视口外图层渲染，降低 GPU 合成开销 */
 .stage.is-panning .canvas-layer {
@@ -13649,6 +13657,11 @@ body {
   border-radius: 10px;
   user-select: none;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  transition: transform 0.35s cubic-bezier(0.215, 0.61, 0.355, 1);
+  will-change: transform;
+}
+.uc-image-viewer-content img.is-dragging {
+  transition: none;
 }
 
 /* 多图切换导航按钮 */

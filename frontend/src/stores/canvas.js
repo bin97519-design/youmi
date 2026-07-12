@@ -148,7 +148,8 @@ function mergeSeedDocuments(documents) {
 function loadLocal() {
   try {
     const data = JSON.parse(localStorage.getItem(storageKey(STORAGE_KEY)) || 'null');
-    return Array.isArray(data) && data.length ? mergeSeedDocuments(data) : seed();
+    const result = Array.isArray(data) && data.length ? mergeSeedDocuments(data) : seed();
+    return result;
   } catch {
     return seed();
   }
