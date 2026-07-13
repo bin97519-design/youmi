@@ -60,6 +60,7 @@ youmi:
     apimart-direct-api-key: ${YOUMI_IMAGE_APIMART_DIRECT_API_KEY:${APIMART_API_KEY:${APIMART_IMAGE_API_KEY:}}}
     apimart-direct-generation-path: ${YOUMI_IMAGE_APIMART_DIRECT_GENERATION_PATH:/v1/images/generations}
     apimart-direct-task-path: ${YOUMI_IMAGE_APIMART_DIRECT_TASK_PATH:/v1/tasks}
+    apimart-direct-fallback-base-url: ${YOUMI_IMAGE_APIMART_DIRECT_FALLBACK_BASE_URL:https://aiuxu.com}
     fallback-enabled: ${YOUMI_IMAGE_FALLBACK_ENABLED:true}
     fallback-provider: gettoken
     get-token-base-url: https://nb.gettoken.cn/openapi/v1

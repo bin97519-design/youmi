@@ -43,6 +43,8 @@ public class ImageGenerationProperties {
   private String apimartDirectApiKey = "";
   private String apimartDirectGenerationPath = "/v1/images/generations";
   private String apimartDirectTaskPath = "/v1/tasks";
+  // APIMart 直连主站不可达（被墙 / DNS 通但 TCP 超时）时的备用域名（之前能用过的代理 apib.ai）
+  private String apimartDirectFallbackBaseUrl = "https://aiuxu.com";
   private Map<String, String> modelAliases = defaultModelAliases();
 
   public String getBaseUrl() {
@@ -405,6 +407,14 @@ public class ImageGenerationProperties {
     this.apimartDirectTaskPath = apimartDirectTaskPath;
   }
 
+  public String getApimartDirectFallbackBaseUrl() {
+    return apimartDirectFallbackBaseUrl;
+  }
+
+  public void setApimartDirectFallbackBaseUrl(String apimartDirectFallbackBaseUrl) {
+    this.apimartDirectFallbackBaseUrl = apimartDirectFallbackBaseUrl;
+  }
+
   public boolean isApimartDirectConfigured() {
     return apimartDirectApiKey != null && !apimartDirectApiKey.isBlank();
   }
@@ -422,6 +432,13 @@ public class ImageGenerationProperties {
   public String normalizedApimartDirectTaskPath() {
     if (apimartDirectTaskPath == null || apimartDirectTaskPath.isBlank()) return "/v1/tasks";
     return apimartDirectTaskPath.startsWith("/") ? apimartDirectTaskPath : "/" + apimartDirectTaskPath;
+  }
+
+  public String normalizedApimartDirectFallbackBaseUrl() {
+    if (apimartDirectFallbackBaseUrl == null || apimartDirectFallbackBaseUrl.isBlank()) return "https://aiuxu.com";
+    return apimartDirectFallbackBaseUrl.endsWith("/")
+        ? apimartDirectFallbackBaseUrl.substring(0, apimartDirectFallbackBaseUrl.length() - 1)
+        : apimartDirectFallbackBaseUrl;
   }
 
   /** 判断请求的模型是否应走 Agnes provider */

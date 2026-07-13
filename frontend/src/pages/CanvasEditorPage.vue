@@ -1297,6 +1297,7 @@ async function pollImageTaskUntilDone(taskId, placeholderId, assistantId, prompt
     if (!isTaskDone(status.status) && assistantId) {
       updateChatMessage(assistantId, {
         text: `正在生成${progressText}，任务状态：${status.status || 'processing'}`,
+        generating: true,
       })
     }
 
@@ -1342,7 +1343,11 @@ async function pollImageTaskUntilDone(taskId, placeholderId, assistantId, prompt
         createdAt: Date.now(),
       })
       if (assistantId) {
-        updateChatMessage(assistantId, { text: '生成完成，已添加到画布。', imageUrl: url })
+        updateChatMessage(assistantId, {
+          text: '生成完成，已添加到画布。',
+          imageUrl: url,
+          generating: false,
+        })
       }
       return true
     }
@@ -3602,7 +3607,96 @@ function renderMessageContent(message) {
       html = html.replace(`[${name}]`, pillHtml)
     }
   }
+  // ---- 生图预览卡片 ----
+  if (message.imageUrl) {
+    const imgEsc = escHtml(message.imageUrl)
+    const mid = escHtml(message.id || '')
+    html += `<div class="chat-gen-preview" data-msg-id="${mid}">`
+      + `<img class="chat-gen-preview-img" src="${imgEsc}" alt="生成结果" loading="lazy" />`
+      + `<div class="chat-gen-preview-actions">`
+      + `<button class="chat-gen-action-btn chat-gen-action--regen-prompt" data-msg-id="${mid}" title="编辑提示词重新生成">✏️</button>`
+      + `<button class="chat-gen-action-btn chat-gen-action--regen" data-msg-id="${mid}" title="使用相同参数重新生成">🔄</button>`
+      + `<button class="chat-gen-action-btn chat-gen-action--like" data-msg-id="${mid}" title="点赞">👍</button>`
+      + `<button class="chat-gen-action-btn chat-gen-action--dislike" data-msg-id="${mid}" title="点踩">👎</button>`
+      + `</div>`
+      + `</div>`
+  } else if (message.generating) {
+    html += `<div class="chat-gen-preview chat-gen-preview--loading"><div class="chat-gen-skeleton"></div></div>`
+  }
   return html
+}
+
+// 生图预览卡片：单击定位画布图层 + 操作按钮；双击打开查看器
+function handleGenPreviewClick(e) {
+  const previewImg = e.target.closest('.chat-gen-preview-img')
+  if (previewImg && !e.target.closest('.chat-gen-action-btn')) {
+    const url = previewImg.getAttribute('src')
+    if (url) {
+      const layer = (layers.value || []).find((l) => l.type === 'image' && l.url === url)
+      if (layer) selectSingleLayer(layer)
+    }
+    return
+  }
+  const btn = e.target.closest('.chat-gen-action-btn')
+  if (!btn) return
+  e.stopPropagation()
+  const msgId = btn.dataset.msgId
+  if (!msgId) return
+  const chat = doc.value?.payload?.chat || []
+  // 把文字写进 contenteditable 输入框并同步 chatText（sendChat 从 DOM 读，不能只写 ref）
+  const writeEditorText = (t) => {
+    const editorEl = document.querySelector('.chat-editor')
+    if (editorEl) {
+      editorEl.textContent = t || ''
+      updateChatTextFromEditor()
+      editorEl.focus()
+    } else {
+      chatText.value = t || ''
+    }
+  }
+  if (btn.classList.contains('chat-gen-action--regen-prompt')) {
+    const idx = chat.findIndex((m) => m.id === msgId)
+    // 真正的"原始请求"是这条 assistant 消息前一条 user 消息（prompt + 参考图都在那里）
+    const userMsg = idx > 0 ? chat[idx - 1] : null
+    const src = userMsg && userMsg.role === 'user' ? userMsg : chat.find((m) => m.id === msgId)
+    if (src) {
+      writeEditorText(src.text)
+      // 恢复参考图到输入框（补 id 字段，UI 用 id 做 key/active）
+      if (src.referenceImages?.length) {
+        chatReferenceImages.value = src.referenceImages.map((r, i) => ({
+          id: r.id || r.url || `ref-${Date.now()}-${i}`,
+          url: r.url,
+          name: r.name || '',
+        }))
+        activeChatReferenceId.value = chatReferenceImages.value.at(-1)?.id || ''
+      }
+    }
+  } else if (btn.classList.contains('chat-gen-action--regen')) {
+    const msg = chat.find((m) => m.id === msgId)
+    if (msg?.imageUrl) {
+      const history = doc.value?.payload?.generationHistory || []
+      const rec = history.find((r) => r.imageUrl === msg.imageUrl)
+      if (rec?.prompt) {
+        writeEditorText(rec.prompt)
+        sendChat()
+      }
+    }
+  } else if (btn.classList.contains('chat-gen-action--like')) {
+    btn.classList.toggle('chat-gen-action--active')
+    const sib = btn.parentElement?.querySelector('.chat-gen-action--dislike')
+    if (sib) sib.classList.remove('chat-gen-action--active')
+  } else if (btn.classList.contains('chat-gen-action--dislike')) {
+    btn.classList.toggle('chat-gen-action--active')
+    const sib = btn.parentElement?.querySelector('.chat-gen-action--like')
+    if (sib) sib.classList.remove('chat-gen-action--active')
+  }
+}
+
+function handleGenPreviewDblClick(e) {
+  const img = e.target.closest('.chat-gen-preview-img')
+  if (!img) return
+  const url = img.getAttribute('src')
+  if (url) openImageViewer(url, img.getAttribute('alt') || '生成结果')
 }
 
 // 格式化消息元数据时间：MM-DD HH:mm
@@ -4653,6 +4747,7 @@ async function sendChat() {
       ratio: chatRatio.value,
       resolution: chatResolution.value,
       createdAt: createdAt + 1,
+      generating: true,
     },
   ])
   // 清空编辑器（pill + 文字）
@@ -4733,6 +4828,7 @@ async function sendChat() {
         statusText: friendly,
         lastError,
       })
+      updateChatMessage(assistantId, { text: `生成失败：${friendly}` })
       showCopyPasteToast(friendly)
     } else {
       // 原始提交即失败（服务端明确报错，非刷新中断）：把真实错误存到图层，供后续排查
@@ -6996,6 +7092,8 @@ async function loadImageForCrop(layer) {
             @mouseover="handleChatPillEnter"
             @mousemove="handleChatPillMove"
             @mouseout="handleChatPillLeave"
+            @click="handleGenPreviewClick"
+            @dblclick="handleGenPreviewDblClick"
           >
             <div
               v-for="message in chatMessages"

@@ -11,6 +11,7 @@ import java.io.ByteArrayInputStream;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -49,6 +50,9 @@ public class ImageGenerationClient {
   private final HttpClient httpClient;
   private final Map<String, List<String>> persistedImageCache = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<String, FailoverState> failoverStates = new ConcurrentHashMap<>();
+  // APIMart 直连：记录每个 task 创建时实际使用的 base url（主站或 fallback 代理域名），
+  // 轮询 GET 必须用同一个域名才能拿到 task_id。
+  private final ConcurrentHashMap<String, String> apimartDirectTaskBaseUrl = new ConcurrentHashMap<>();
 
   // 下列依赖为字段注入（required=false）：测试构造时可为 null，运行时由 Spring 注入。
   @Autowired(required = false)
@@ -347,12 +351,19 @@ public class ImageGenerationClient {
         + " request.size()=" + request.size() + " request.ratio()=" + request.ratio()
         + " n=" + count + " body=" + body);
 
-    JsonNode root = sendApimartDirectPost(endpoint, body);
-    List<ImageGenerationDtos.TaskRef> tasks = extractTasks(root).stream()
+    ApimartDirectSendResult result = sendApimartDirectPost(endpoint, body);
+    JsonNode root = result.root;
+    List<ImageGenerationDtos.TaskRef> rawTasks = extractTasks(root);
+    List<ImageGenerationDtos.TaskRef> tasks = rawTasks.stream()
         .map(task -> new ImageGenerationDtos.TaskRef(APIMART_DIRECT_TASK_PREFIX + task.taskId(), task.status()))
         .toList();
     if (tasks.isEmpty()) {
       throw new ApiException(502, "APIMart direct did not return task_id");
+    }
+
+    // 记录该 task 实际创建所用的 base url（可能是 fallback 代理域名），轮询 GET 必须同源
+    for (ImageGenerationDtos.TaskRef raw : rawTasks) {
+      apimartDirectTaskBaseUrl.put(raw.taskId(), result.usedBaseUrl);
     }
 
     registerFailoverState(tasks.get(0).taskId(), request, "apimart-direct");
@@ -835,13 +846,14 @@ public class ImageGenerationClient {
     String cleanTaskId = taskId == null ? "" : taskId.trim();
     if (cleanTaskId.isBlank()) throw new ApiException(400, "taskId is required");
 
-    String endpoint = properties.normalizedApimartDirectBaseUrl()
-        + properties.normalizedApimartDirectTaskPath() + "/" + encode(cleanTaskId);
+    // 优先用该 task 创建时实际使用的域名（可能是 fallback 代理），否则用主站
+    String baseUrl = apimartDirectTaskBaseUrl.getOrDefault(cleanTaskId, properties.normalizedApimartDirectBaseUrl());
+    String suffix = properties.normalizedApimartDirectTaskPath() + "/" + encode(cleanTaskId);
     if (properties.getLanguage() != null && !properties.getLanguage().isBlank()) {
-      endpoint += "?language=" + encode(properties.getLanguage());
+      suffix += "?language=" + encode(properties.getLanguage());
     }
 
-    JsonNode root = sendApimartDirectGet(endpoint);
+    JsonNode root = sendApimartDirectGet(baseUrl, suffix);
     JsonNode data = firstDataNode(root);
     String status = firstNonBlank(text(data, "status"), "unknown");
     Integer progress = intValue(data, "progress");
@@ -865,6 +877,10 @@ public class ImageGenerationClient {
       PollResult pr = decidePollResponse(APIMART_DIRECT_TASK_PREFIX + cleanTaskId, imageUrls);
       imageUrls = pr.imageUrls();
       status = pr.status();
+    }
+
+    if (done) {
+      apimartDirectTaskBaseUrl.remove(cleanTaskId); // task 已终态，清理防内存泄漏
     }
 
     return new ImageGenerationDtos.TaskStatusResponse(
@@ -943,7 +959,40 @@ public class ImageGenerationClient {
     return send(request, "Proxy");
   }
 
-  private JsonNode sendApimartDirectPost(String endpoint, Map<String, Object> body) throws Exception {
+  /** APIMart 直连 POST 的结果：响应体 + 实际使用的 base url（主站或 fallback 代理域名） */
+  private static final class ApimartDirectSendResult {
+    final JsonNode root;
+    final String usedBaseUrl;
+
+    ApimartDirectSendResult(JsonNode root, String usedBaseUrl) {
+      this.root = root;
+      this.usedBaseUrl = usedBaseUrl;
+    }
+  }
+
+  /** 将 endpoint 的基址从 fromBase 换成 toBase（用于主站↔fallback 代理域名切换） */
+  private static String swapApimartDirectBase(String endpoint, String fromBase, String toBase) {
+    if (fromBase != null && !fromBase.isEmpty() && endpoint.startsWith(fromBase)) {
+      return toBase + endpoint.substring(fromBase.length());
+    }
+    return endpoint;
+  }
+
+  /** 判断异常是否为网络层不可达（IOException 及其子类 SSLException / SocketTimeoutException / HttpTimeoutException） */
+  private static boolean isNetworkError(Throwable e) {
+    return e != null && e.getCause() instanceof IOException;
+  }
+
+  /**
+   * APIMart 直连 POST：优先打主站（api.apimart.ai），仅当网络层不可达（IOException / SSLException /
+   * SocketTimeoutException）时，自动用 fallback 代理域名（apib.ai）重试一次。
+   * API 业务错误（4xx/5xx 非 IO 类）不重试，原样抛出。
+   */
+  private ApimartDirectSendResult sendApimartDirectPost(String endpoint, Map<String, Object> body) throws Exception {
+    String primaryBase = properties.normalizedApimartDirectBaseUrl();
+    String fallbackBase = properties.normalizedApimartDirectFallbackBaseUrl();
+    String fallbackEndpoint = swapApimartDirectBase(endpoint, primaryBase, fallbackBase);
+
     HttpRequest request = HttpRequest.newBuilder()
         .uri(URI.create(endpoint))
         .timeout(Duration.ofSeconds(Math.max(5, properties.getTimeoutSeconds())))
@@ -951,13 +1000,60 @@ public class ImageGenerationClient {
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
         .build();
-    return send(request, "APIMart-direct");
+
+    System.out.println("[apimart-direct] trying primary...");
+    try {
+      JsonNode root = send(request, "APIMart-direct");
+      return new ApimartDirectSendResult(root, primaryBase);
+    } catch (ApiException e) {
+      if (isNetworkError(e) && !fallbackEndpoint.equals(endpoint)) {
+        System.out.println("[apimart-direct] primary failed, retrying fallback...");
+        HttpRequest fallbackRequest = HttpRequest.newBuilder()
+            .uri(URI.create(fallbackEndpoint))
+            .timeout(Duration.ofSeconds(Math.max(5, properties.getTimeoutSeconds())))
+            .header("Authorization", "Bearer " + properties.getApimartDirectApiKey())
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
+            .build();
+        JsonNode root = send(fallbackRequest, "APIMart-direct");
+        return new ApimartDirectSendResult(root, fallbackBase);
+      }
+      throw e;
+    }
   }
 
-  private JsonNode sendApimartDirectGet(String endpoint) throws Exception {
-    // aiuxu.com / apib.ai 在 keep-alive 连接被服务端关闭后，Java HttpClient 仍会复用
-    // 已关闭的连接导致 GET 永久挂起。这里改用 Java 老 API HttpURLConnection（不共享任何连接池）。
-    // 关键：加上时间戳防代理缓存 + 禁用缓存头，避免代理(127.0.0.1:7897)返回旧数据
+  /**
+   * APIMart 直连任务轮询 GET：优先用创建 task 时的域名（baseUrl），网络层不可达时自动用
+   * 另一个域名（主站 / fallback 代理）重试一次。仅网络错误重试，API 业务错误原样抛出。
+   */
+  private JsonNode sendApimartDirectGet(String baseUrl, String suffix) throws Exception {
+    String fallbackBase = properties.normalizedApimartDirectFallbackBaseUrl();
+    String altBase = baseUrl.equals(fallbackBase)
+        ? properties.normalizedApimartDirectBaseUrl()
+        : fallbackBase;
+    System.out.println("[apimart-direct] trying primary (GET) baseUrl=" + baseUrl);
+    try {
+      return doApimartDirectGet(baseUrl + suffix);
+    } catch (IOException primaryError) {
+      if (altBase.equals(baseUrl)) {
+        throw wrapApimartDirectGetError(primaryError);
+      }
+      System.out.println("[apimart-direct] primary failed, retrying fallback (GET) baseUrl=" + altBase);
+      try {
+        return doApimartDirectGet(altBase + suffix);
+      } catch (IOException fallbackError) {
+        throw wrapApimartDirectGetError(fallbackError);
+      }
+    }
+  }
+
+  /**
+   * 真正发起一次 APIMart 直连 GET（HttpURLConnection，不共享连接池，避免 keep-alive 复用已关闭连接而挂起）。
+   * 成功返回 JsonNode；网络层错误（SocketTimeoutException / SSLException / IOException）直接抛出原始异常，
+   * 由 sendApimartDirectGet 决定是否 fallback 重试；API 业务错误（非 2xx / 空响应）直接抛 ApiException（不重试）。
+   */
+  private JsonNode doApimartDirectGet(String endpoint) throws IOException {
+    // 加上时间戳防代理缓存 + 禁用缓存头，避免代理返回旧数据
     String separator = endpoint.contains("?") ? "&" : "?";
     String noCacheEndpoint = endpoint + separator + "_t=" + System.currentTimeMillis();
     java.net.URL url = new java.net.URL(noCacheEndpoint);
@@ -990,20 +1086,33 @@ public class ImageGenerationClient {
       if (status < 200 || status >= 300) {
         throw new ApiException(502, "APIMart-direct request failed: " + status + " " + compact(body));
       }
-      return parseBody(body);
-    } catch (java.net.SocketTimeoutException e) {
-      throw new ApiException(504, "APIMart-direct request timed out: " + e.getMessage());
-    } catch (javax.net.ssl.SSLException e) {
-      throw new ApiException(502, "APIMart-direct SSL/HTTP error: " + e.getMessage());
-    } catch (java.io.IOException e) {
-      String msg = e.getMessage();
-      if (msg != null && msg.contains("header parser received no bytes")) {
-        throw new ApiException(502, "APIMart-direct received empty response (server may be rate-limiting). Try again in a moment.");
+      try {
+        return parseBody(body);
+      } catch (IOException ioe) {
+        throw ioe;
+      } catch (Exception parseError) {
+        // JSON 解析等非网络错误：包装成 RuntimeException 透传，不触发 fallback 重试
+        throw new RuntimeException("APIMart-direct response parse error: " + parseError.getMessage(), parseError);
       }
-      throw new ApiException(502, "APIMart-direct IO error: " + msg);
+      // 网络层错误（SocketTimeoutException / SSLException / IOException）直接向上抛出，由 sendApimartDirectGet 处理 fallback
     } finally {
       conn.disconnect();
     }
+  }
+
+  /** 将 GET 阶段的网络层异常转换为与历史一致的 ApiException（仅在主站与 fallback 均失败后调用） */
+  private ApiException wrapApimartDirectGetError(IOException e) {
+    if (e instanceof java.net.SocketTimeoutException) {
+      return new ApiException(504, "APIMart-direct request timed out: " + e.getMessage());
+    }
+    if (e instanceof javax.net.ssl.SSLException) {
+      return new ApiException(502, "APIMart-direct SSL/HTTP error: " + e.getMessage());
+    }
+    String msg = e.getMessage();
+    if (msg != null && msg.contains("header parser received no bytes")) {
+      return new ApiException(502, "APIMart-direct received empty response (server may be rate-limiting). Try again in a moment.");
+    }
+    return new ApiException(502, "APIMart-direct IO error: " + msg);
   }
 
   private JsonNode sendGet(String endpoint) throws Exception {
@@ -1051,16 +1160,16 @@ public class ImageGenerationClient {
         return root;
       } catch (java.net.http.HttpTimeoutException e) {
         if (attempt == 0) { lastError = e; continue; }
-        throw new ApiException(504, providerLabel + " request timed out: " + e.getMessage());
+        throw new ApiException(504, providerLabel + " request timed out: " + e.getMessage(), e);
       } catch (javax.net.ssl.SSLException e) {
-        throw new ApiException(502, providerLabel + " SSL/HTTP error (server closed connection): " + e.getMessage());
+        throw new ApiException(502, providerLabel + " SSL/HTTP error (server closed connection): " + e.getMessage(), e);
       } catch (java.io.IOException e) {
         String msg = e.getMessage();
         if (msg != null && msg.contains("header parser received no bytes")) {
           if (attempt == 0) { lastError = e; continue; }
-          throw new ApiException(502, providerLabel + " received empty response (server may be rate-limiting or temporarily unavailable). Try again in a moment.");
+          throw new ApiException(502, providerLabel + " received empty response (server may be rate-limiting or temporarily unavailable). Try again in a moment.", e);
         }
-        throw new ApiException(502, providerLabel + " IO error: " + msg);
+        throw new ApiException(502, providerLabel + " IO error: " + msg, e);
       }
     }
     throw new ApiException(502, providerLabel + " request failed after retry: " + (lastError != null ? lastError.getMessage() : "unknown"));
