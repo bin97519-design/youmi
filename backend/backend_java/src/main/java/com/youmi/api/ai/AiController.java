@@ -10,22 +10,20 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api/ai")
 public class AiController {
-  private final AiChatClient aiChatClient;
-  private final MiniMaxM3Client miniMaxM3Client;
+  private final DashScopeClient dashScopeClient;
 
-  public AiController(AiChatClient aiChatClient, MiniMaxM3Client miniMaxM3Client) {
-    this.aiChatClient = aiChatClient;
-    this.miniMaxM3Client = miniMaxM3Client;
+  public AiController(DashScopeClient dashScopeClient) {
+    this.dashScopeClient = dashScopeClient;
   }
 
   @GetMapping("/status")
   public ApiResponse<AiChatDtos.StatusResponse> status() {
-    return ApiResponse.ok(aiChatClient.status());
+    return ApiResponse.ok(dashScopeClient.status());
   }
 
   @PostMapping("/optimize-product-info")
   public ApiResponse<AiChatDtos.OptimizeProductInfoResponse> optimizeProductInfo(
       @RequestBody AiChatDtos.OptimizeProductInfoRequest request) throws Exception {
-    return ApiResponse.ok(miniMaxM3Client.optimizeProductInfo(request.productInfo(), request.productImages()));
+    return ApiResponse.ok(dashScopeClient.optimizeProductInfo(request.productInfo(), request.productImages()));
   }
 }

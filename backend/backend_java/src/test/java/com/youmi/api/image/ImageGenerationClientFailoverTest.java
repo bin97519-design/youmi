@@ -84,6 +84,23 @@ class ImageGenerationClientFailoverTest {
         argThat(req -> req.uri().toString().contains("47.90.226.52")), any());
   }
 
+  @Test
+  void getTokenPreviewUrl_isNotCountedAsGeneratedImage() throws Exception {
+    ImageGenerationClient client = buildClient(200, """
+        {
+          "status":"SUCCESS",
+          "previewType":"image",
+          "previewUrl":"https://cdn.example.com/preview.jpg",
+          "results":[{"outputType":"jpg","url":"https://cdn.example.com/final.jpg"}]
+        }
+        """, true);
+
+    ImageGenerationDtos.TaskStatusResponse resp = client.getTask("gettoken:xxx");
+
+    assertEquals(1, resp.imageUrls().size(), "GetToken previewUrl 不能计入生成结果");
+    assertEquals("https://cdn.example.com/final.jpg", resp.imageUrls().get(0));
+  }
+
   // ============ 反向用例：proxy 未配置（无可用备份）→ 异常原样抛出，保留旧行为 ============
   @Test
   void getTokenPollException_noProxyConfigured_rethrowsOriginalException() throws Exception {
@@ -109,13 +126,13 @@ class ImageGenerationClientFailoverTest {
 
   /** apimart 主通道创建失败（500）→ 直奔 Proxy 中转站；核心断言：GetToken 完全未被调用 */
   @Test
-  void apimartCreateFailure_triesGetTokenBeforeProxy() throws Exception {
+  void apimartCreateFailure_fallsBackDirectlyToProxy() throws Exception {
     ImageGenerationClient client = newApimartClient();
 
     // 第 1 次 send（apimart 主通道创建）返回 500 → 触发兜底；第 2 次 send（proxy 创建）返回 job_id。
     when(mockHttpClient.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
         .thenAnswer(inv -> mockResponse(500, "{\"error\":\"apimart internal error\"}"))
-        .thenAnswer(inv -> mockResponse(200, "{\"taskId\":\"gt-1\"}"));
+        .thenAnswer(inv -> mockResponse(200, "{\"job_id\":\"px\"}"));
 
     ImageGenerationDtos.CreateTaskRequest req = new ImageGenerationDtos.CreateTaskRequest(
         "a cat", "stable-diffusion-3", "1:1", "1:1", "2K",
@@ -124,13 +141,13 @@ class ImageGenerationClientFailoverTest {
     ImageGenerationDtos.CreateTaskResponse resp = client.createTask(req);
 
     assertNotNull(resp, "apimart 创建失败后不应抛异常，应返回 proxy 兜底响应");
-    assertEquals("gettoken", resp.provider(), "apimart 创建失败应先尝试 GetToken 兜底");
-    assertEquals("gettoken:gt-1", resp.tasks().get(0).taskId(), "兜底任务应先落在 GetToken");
+    assertEquals("proxy", resp.provider(), "apimart 创建失败应直接切换到 Proxy");
+    assertEquals("proxy:px", resp.tasks().get(0).taskId(), "兜底任务应落在 Proxy");
 
     // 核心断言：命中 proxy（47.90.226.52）且 GetToken（nb.gettoken.cn）完全没被调用
-    verify(mockHttpClient, atLeastOnce()).send(
-        argThat(r -> r.uri().toString().contains("gettoken")), any());
     verify(mockHttpClient, never()).send(
+        argThat(r -> r.uri().toString().contains("gettoken")), any());
+    verify(mockHttpClient, atLeastOnce()).send(
         argThat(r -> r.uri().toString().contains("47.90.226.52")), any());
   }
 
@@ -143,7 +160,7 @@ class ImageGenerationClientFailoverTest {
    * 下面的断言据此使用 "xxx" 作为原始 taskId（而非 "apimart:xxx"），与源码实际行为一致。
    */
   @Test
-  void apimartPollFailure_triesGetTokenBeforeProxy() throws Exception {
+  void apimartPollFailure_fallsBackDirectlyToProxy() throws Exception {
     ImageGenerationClient client = newApimartClient();
 
     when(mockHttpClient.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
@@ -183,13 +200,13 @@ class ImageGenerationClientFailoverTest {
     ImageGenerationDtos.TaskStatusResponse resp = client.getTask("xxx");
 
     assertNotNull(resp, "apimart 轮询失败不应抛异常，应返回 proxy 兜底响应");
-    assertEquals("gettoken", resp.provider(), "apimart 轮询失败应先切到 GetToken 兜底");
+    assertEquals("proxy", resp.provider(), "apimart 轮询失败应直接切换到 Proxy");
     assertEquals("xxx", resp.taskId(), "taskId 必须透传为原始值（前端无感知）");
 
-    // 核心断言：命中 GetToken，未跳过到 Proxy
-    verify(mockHttpClient, atLeastOnce()).send(
-        argThat(r -> r.uri().toString().contains("gettoken")), any());
+    // 核心断言：命中 Proxy，GetToken 完全未被调用
     verify(mockHttpClient, never()).send(
+        argThat(r -> r.uri().toString().contains("gettoken")), any());
+    verify(mockHttpClient, atLeastOnce()).send(
         argThat(r -> r.uri().toString().contains("47.90.226.52")), any());
   }
 

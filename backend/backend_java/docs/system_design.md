@@ -28,7 +28,7 @@
 2. **一致性与可审计（先扣后生成、失败回滚、流水留痕）**：每次扣减先在 `ym_mi_value_log` 写一条 `PENDING` 流水；外部成功 → 流水置 `SUCCESS`（余额维持扣减）；外部失败 → **幂等回滚**（流水状态守卫 `status IN (PENDING,SUCCESS)` 的单条 UPDATE，命中才 `mi_value + price`），流水置 `FAILED`/`ROLLBACK`。流水是每笔消耗的可审计凭证。
 
 ### 1.4 显式排除（不接闸门）
-- **AI 智能对话（文本）**：`/api/ai/*`（deepseek/minimax 文本对话）—— 不校验、不扣减。
+- **AI 智能对话（文本）**：`/api/ai/*`（通义千问文本与视觉能力）—— 不校验、不扣减。
 - **元素检测**：`ImageDetectController`（`/api/image-detect/*`）—— 不校验、不扣减。
 - 这两类入口在本次设计中**明确标注「排除」**，任何阶段都不得在之上加闸门。
 

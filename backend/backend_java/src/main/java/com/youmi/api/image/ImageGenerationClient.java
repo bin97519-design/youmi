@@ -819,8 +819,7 @@ public class ImageGenerationClient {
     Integer progress = intValue(root, "progress");
     String error = firstNonBlank(text(root, "errorMessage"), text(root, "error"), text(root, "message"));
     List<String> imageUrls = new ArrayList<>();
-    collectImageUrls(root.path("results"), imageUrls);
-    collectImageUrls(root, imageUrls);
+    collectGetTokenResultUrls(root, imageUrls);
     boolean hasImages = !imageUrls.isEmpty();
     boolean done = isDoneStatus(status) || (hasImages && progress != null && progress >= 100);
     if (done && hasImages) {
@@ -836,6 +835,22 @@ public class ImageGenerationClient {
         imageUrls,
         error.isBlank() ? null : error,
         root);
+  }
+
+  /** GetToken 会同时返回 previewUrl 与 results；previewUrl 只是预览图，不能计入生成结果。 */
+  private void collectGetTokenResultUrls(JsonNode root, List<String> imageUrls) {
+    JsonNode results = root.path("results");
+    if (!results.isMissingNode() && !results.isNull()) {
+      collectImageUrls(results, imageUrls);
+    }
+    if (!imageUrls.isEmpty()) return;
+
+    // 兼容旧响应格式，但只读取明确的最终结果字段，绝不递归扫描整个 root。
+    collectImageUrls(root.path("result"), imageUrls);
+    collectImageUrls(root.path("output"), imageUrls);
+    collectImageUrls(root.path("resultUrl"), imageUrls);
+    collectImageUrls(root.path("outputUrl"), imageUrls);
+    collectImageUrls(root.path("url"), imageUrls);
   }
 
   /** APIMart 直连任务轮询：GET /v1/tasks/{task_id} */

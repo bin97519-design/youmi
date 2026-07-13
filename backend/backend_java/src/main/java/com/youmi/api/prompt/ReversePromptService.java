@@ -3,7 +3,7 @@ package com.youmi.api.prompt;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.youmi.api.ai.AiChatDtos;
-import com.youmi.api.ai.MiniMaxM3Client;
+import com.youmi.api.ai.DashScopeClient;
 import java.util.ArrayList;
 import java.util.List;
 import org.springframework.stereotype.Service;
@@ -11,15 +11,15 @@ import org.springframework.stereotype.Service;
 @Service
 public class ReversePromptService {
   private final ObjectMapper objectMapper;
-  private final MiniMaxM3Client miniMaxM3Client;
+  private final DashScopeClient dashScopeClient;
   private final ReversePromptTemplateService templateService;
 
   public ReversePromptService(
       ObjectMapper objectMapper,
-      MiniMaxM3Client miniMaxM3Client,
+      DashScopeClient dashScopeClient,
       ReversePromptTemplateService templateService) {
     this.objectMapper = objectMapper;
-    this.miniMaxM3Client = miniMaxM3Client;
+    this.dashScopeClient = dashScopeClient;
     this.templateService = templateService;
   }
 
@@ -40,7 +40,7 @@ public class ReversePromptService {
       throw new IllegalArgumentException("请提供图片 URL 或图片 base64");
     }
 
-    AiChatDtos.CompletionResult result = miniMaxM3Client.completeVision(
+    AiChatDtos.CompletionResult result = dashScopeClient.completeVision(
         "你是电商图片结构化视觉解析助手。必须严格输出 JSON，不输出 Markdown，不解释过程。",
         template.systemPrompt(),
         images.stream().limit(1).toList(),

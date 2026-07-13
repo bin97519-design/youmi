@@ -12,6 +12,27 @@ const users = ref([])
 const roles = ref([])
 const stats = ref(null)
 
+const finishedTaskCount = computed(
+  () => (stats.value?.summary?.completedTasks || 0) + (stats.value?.summary?.failedTasks || 0),
+)
+const overallSuccessRate = computed(() => {
+  const finished = finishedTaskCount.value
+  if (!finished) return '--'
+  return `${(((stats.value?.summary?.completedTasks || 0) / finished) * 100).toFixed(1)}%`
+})
+
+const providerLabelMap = {
+  apimart: 'APIMart',
+  gettoken: 'GetToken',
+  proxy: 'Proxy 兜底',
+  agnes: 'Agnes',
+  unknown: '其他通道',
+}
+
+function providerLabel(provider) {
+  return providerLabelMap[provider] || provider
+}
+
 /* ── 角色判断 ── */
 const isAdmin = computed(() => {
   const profile = userStore.profile
@@ -90,7 +111,8 @@ const filteredRoles = computed(() => {
 
 const filteredTasks = computed(() => {
   let list = stats.value?.tasks || []
-  if (taskStatusFilter.value) list = list.filter((t) => t.status === taskStatusFilter.value)
+  if (taskStatusFilter.value)
+    list = list.filter((t) => taskStatusKey(t.status) === taskStatusFilter.value)
   if (taskModelFilter.value)
     list = list.filter((t) => (t.requestedModel || t.model) === taskModelFilter.value)
   if (taskUserFilter.value)
@@ -648,8 +670,16 @@ function roleLabel(code) {
 function statusLabel(s) {
   return statusLabelMap[s] || s
 }
+function taskStatusKey(status) {
+  const value = String(status || '').trim().toUpperCase()
+  if (['COMPLETED', 'SUCCEEDED', 'SUCCESS', 'DONE'].includes(value)) return 'COMPLETED'
+  if (['FAILED', 'ERROR', 'CANCELLED', 'CANCELED'].includes(value)) return 'FAILED'
+  if (['PENDING', 'WAITING', 'QUEUED', 'SUBMITTED'].includes(value)) return 'PENDING'
+  if (['PROCESSING', 'RUNNING', 'GENERATING', 'IN_PROGRESS'].includes(value)) return 'PROCESSING'
+  return value
+}
 function taskStatusLabel(s) {
-  return taskStatusLabelMap[s] || s
+  return taskStatusLabelMap[taskStatusKey(s)] || s
 }
 
 /* ── 自定义下拉框状态 ── */
@@ -972,7 +1002,7 @@ onUnmounted(() => {
     <!-- Metrics with skeleton -->
     <section class="console-metrics">
       <template v-if="loading && !users.length">
-        <article v-for="i in isAdmin ? 4 : 2" :key="i" class="console-skeleton-metric">
+        <article v-for="i in isAdmin ? 5 : 3" :key="i" class="console-skeleton-metric">
           <span class="console-skeleton-bar" style="width: 48px"></span>
           <span class="console-skeleton-bar" style="width: 64px; height: 28px"></span>
           <span class="console-skeleton-bar" style="width: 80px"></span>
@@ -998,6 +1028,11 @@ onUnmounted(() => {
           <span>米值消耗</span>
           <strong>{{ summary.totalMiCost || 0 }}</strong>
           <small>生成 {{ summary.totalImages || 0 }} 张图</small>
+        </article>
+        <article>
+          <span>整体生图成功率</span>
+          <strong class="console-success-rate">{{ overallSuccessRate }}</strong>
+          <small>成功 {{ summary.completedTasks || 0 }} / 已结束 {{ finishedTaskCount }}</small>
         </article>
       </template>
     </section>
@@ -1397,10 +1432,31 @@ onUnmounted(() => {
             <p v-if="!stats?.models?.length" class="console-empty">暂无模型统计。</p>
           </div>
         </div>
+        <div class="console-provider-rates">
+          <div class="console-provider-rates-head">
+            <h3>中转站成功率</h3>
+            <span>成功任务 / 已结束任务</span>
+          </div>
+          <div
+            v-for="provider in stats?.providers || []"
+            :key="provider.provider"
+            class="console-provider-rate-row"
+          >
+            <strong>{{ providerLabel(provider.provider) }}</strong>
+            <div class="console-provider-rate-track" aria-hidden="true">
+              <span :style="{ width: `${provider.successRate || 0}%` }"></span>
+            </div>
+            <span class="console-provider-rate-count">
+              {{ provider.successfulTasks }} / {{ provider.finishedTasks }}
+            </span>
+            <b>{{ provider.successRate == null ? '--' : `${Number(provider.successRate).toFixed(1)}%` }}</b>
+          </div>
+          <p v-if="!stats?.providers?.length" class="console-empty">暂无中转站统计。</p>
+        </div>
       </section>
 
       <!-- 趋势折线图 -->
-      <section class="console-card">
+      <section class="console-card console-trend-card">
         <h2>近 14 天趋势</h2>
         <div class="console-trend-wrap">
           <canvas
@@ -1500,7 +1556,7 @@ onUnmounted(() => {
             </span>
             <span v-if="isAdmin">{{ task.userName || task.userId || '匿名' }}</span>
             <span>{{ task.requestedModel || task.model }}</span>
-            <span :class="['status-pill', task.status]">{{ taskStatusLabel(task.status) }}</span>
+            <span :class="['status-pill', taskStatusKey(task.status)]">{{ taskStatusLabel(task.status) }}</span>
             <span>{{ task.imageCount }} 张 / {{ task.miCost }} 米值</span>
             <span>{{ formatTime(task.createdAt) }}</span>
           </div>

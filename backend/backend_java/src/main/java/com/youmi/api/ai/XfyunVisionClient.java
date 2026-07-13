@@ -40,7 +40,7 @@ public class XfyunVisionClient {
     return properties.getModel();
   }
 
-  public List<MiniMaxM3Client.ImageElement> detectImageElements(String imageUrl) throws Exception {
+  public List<VisionElement> detectImageElements(String imageUrl) throws Exception {
     if (!properties.isConfigured()) {
       throw new IllegalStateException("Xfyun vision api key is not configured");
     }
@@ -100,7 +100,7 @@ public class XfyunVisionClient {
     }
 
     JsonNode array = objectMapper.readTree(json);
-    List<MiniMaxM3Client.ImageElement> elements = new ArrayList<>();
+    List<VisionElement> elements = new ArrayList<>();
     if (!array.isArray()) {
       return elements;
     }
@@ -116,7 +116,7 @@ public class XfyunVisionClient {
       name = name.replaceAll("\\s*\\([^)]*\\)\\s*", "").trim();
       List<Double> fixed = topLeftBottomRightToLeftTopRightBottom(coords);
       if (isValidBox(fixed)) {
-        elements.add(new MiniMaxM3Client.ImageElement(name, fixed));
+        elements.add(new VisionElement(name, fixed));
       }
     }
 
@@ -231,19 +231,19 @@ public class XfyunVisionClient {
     return ratio <= 100 && ratio >= 0.01;
   }
 
-  private List<MiniMaxM3Client.ImageElement> dedupeNames(List<MiniMaxM3Client.ImageElement> elements) {
+  private List<VisionElement> dedupeNames(List<VisionElement> elements) {
     Map<String, Integer> counts = new LinkedHashMap<>();
-    for (MiniMaxM3Client.ImageElement element : elements) {
+    for (VisionElement element : elements) {
       counts.merge(element.objectName(), 1, Integer::sum);
     }
 
     Map<String, Integer> seq = new LinkedHashMap<>();
-    List<MiniMaxM3Client.ImageElement> deduped = new ArrayList<>();
-    for (MiniMaxM3Client.ImageElement element : elements) {
+    List<VisionElement> deduped = new ArrayList<>();
+    for (VisionElement element : elements) {
       String name = element.objectName();
       if (counts.getOrDefault(name, 0) > 1) {
         int next = seq.merge(name, 1, Integer::sum);
-        deduped.add(new MiniMaxM3Client.ImageElement(name + next, element.box2d()));
+        deduped.add(new VisionElement(name + next, element.box2d()));
       } else {
         deduped.add(element);
       }

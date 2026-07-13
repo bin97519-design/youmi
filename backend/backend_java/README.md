@@ -74,13 +74,13 @@ npm run api
 
 ```yaml
 youmi:
-  ai:
-    base-url: https://api.deepseek.com
+  dashscope:
+    base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
     chat-path: /chat/completions
-    api-key: your-api-key
-    model: deepseek-v4-flash
-    temperature: 0.35
-    timeout-seconds: 45
+    api-key: ${DASHSCOPE_API_KEY:}
+    model: qwen3.7-plus
+    temperature: 0.2
+    timeout-seconds: 60
 ```
 
 如果后续使用中转站，只需要把 `base-url`、`chat-path`、`api-key`、`model` 换成中转站给出的配置。

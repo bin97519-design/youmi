@@ -148,7 +148,7 @@ onMounted(() => {
   cursor: text;
   font-size: 15px;
   font-weight: 700;
-  color: #fff;
+  color: var(--canvas-text);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -158,7 +158,7 @@ onMounted(() => {
   transition: background-color 0.15s;
 }
 .card-title-editable:hover {
-  background-color: rgba(255, 255, 255, 0.08);
+  background-color: var(--canvas-surface-hover);
 }
 
 .card-title-input {
@@ -167,10 +167,10 @@ onMounted(() => {
   box-sizing: border-box;
   padding: 4px 8px;
   margin: -2px -4px;
-  border: 1px solid var(--yq-primary, #6366f1);
+  border: 1px solid var(--canvas-accent);
   border-radius: 4px;
-  background: rgba(0, 0, 0, 0.5);
-  color: #fff;
+  background: var(--canvas-input);
+  color: var(--canvas-text);
   font-size: 15px;
   font-weight: 700;
   outline: none;

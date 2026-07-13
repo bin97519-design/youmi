@@ -3,9 +3,8 @@ package com.youmi.api.detail;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.youmi.api.ai.AiChatClient;
 import com.youmi.api.ai.AiChatDtos;
-import com.youmi.api.ai.MiniMaxM3Client;
+import com.youmi.api.ai.DashScopeClient;
 import com.youmi.api.common.ApiException;
 import com.youmi.api.image.ImageGenerationProperties;
 import java.awt.Graphics2D;
@@ -62,19 +61,16 @@ public class DetailCloneService {
       Pattern.compile("(?i)(?:[?&#]|^)(?:id|itemId)=(\\d{5,})\\b|\\b(?:id|itemId)[:=](\\d{5,})\\b");
 
   private final ObjectMapper objectMapper;
-  private final AiChatClient aiChatClient;
-  private final MiniMaxM3Client miniMaxM3Client;
+  private final DashScopeClient dashScopeClient;
   private final ImageGenerationProperties imageProperties;
   private final HttpClient webExtractHttpClient;
 
   public DetailCloneService(
       ObjectMapper objectMapper,
-      AiChatClient aiChatClient,
-      MiniMaxM3Client miniMaxM3Client,
+      DashScopeClient dashScopeClient,
       ImageGenerationProperties imageProperties) {
     this.objectMapper = objectMapper;
-    this.aiChatClient = aiChatClient;
-    this.miniMaxM3Client = miniMaxM3Client;
+    this.dashScopeClient = dashScopeClient;
     this.imageProperties = imageProperties;
     this.webExtractHttpClient = HttpClient.newBuilder()
         .connectTimeout(WEB_EXTRACT_TIMEOUT)
@@ -168,9 +164,9 @@ public class DetailCloneService {
   }
 
   public DetailCloneDtos.DeconstructResponse deconstruct(DetailCloneDtos.DeconstructRequest request) {
-    if (miniMaxM3Client.isConfigured()) {
+    if (dashScopeClient.isConfigured()) {
       try {
-        AiChatDtos.CompletionResult completion = miniMaxM3Client.completeVision(
+        AiChatDtos.CompletionResult completion = dashScopeClient.completeVision(
             "你是电商详情页视觉结构分析师。你的任务是复制竞品 A 的信息结构和视觉语法，但绝不复制竞品事实、品牌、证书、排名、价格、功效承诺。只输出 JSON。",
             deconstructPrompt(request),
             limitedList(request == null ? null : request.competitorImages(), MAX_VISION_COMPETITOR_IMAGES),
@@ -179,43 +175,15 @@ public class DetailCloneService {
         List<DetailCloneDtos.SliceContract> contracts =
             parseArray(completion.content(), "sliceContracts", SLICE_CONTRACT_LIST);
         if (!contracts.isEmpty()) {
-          return new DetailCloneDtos.DeconstructResponse("minimax-m3", completion.model(), contracts);
+          return new DetailCloneDtos.DeconstructResponse("dashscope", completion.model(), contracts);
         }
       } catch (Exception ignored) {
-        // Fall through to the existing text-model/fallback path.
-      }
-    }
-
-    if (!aiChatClient.isConfigured()) {
-      return new DetailCloneDtos.DeconstructResponse(
-          "fallback:no-api-key", aiChatClient.model(), fallbackSliceContracts(request));
-    }
-
-    try {
-      List<Map<String, Object>> content = new ArrayList<>();
-      content.add(Map.of("type", "text", "text", deconstructPrompt(request)));
-      for (String imageUrl : safeList(request.competitorImages())) {
-        if (StringUtils.hasText(imageUrl)) {
-          content.add(Map.of("type", "image_url", "image_url", Map.of("url", imageUrl.trim())));
-        }
-      }
-
-      Map<String, Object> message = new LinkedHashMap<>();
-      message.put("role", "user");
-      message.put("content", content);
-
-      AiChatDtos.CompletionResult completion = aiChatClient.completeRaw(List.of(message), 0.25);
-      List<DetailCloneDtos.SliceContract> contracts =
-          parseArray(completion.content(), "sliceContracts", SLICE_CONTRACT_LIST);
-      if (contracts.isEmpty()) {
         return new DetailCloneDtos.DeconstructResponse(
-            "fallback:empty-llm-result", aiChatClient.model(), fallbackSliceContracts(request));
+            "fallback:llm-error", dashScopeClient.model(), fallbackSliceContracts(request));
       }
-      return new DetailCloneDtos.DeconstructResponse("llm", completion.model(), contracts);
-    } catch (Exception ignored) {
-      return new DetailCloneDtos.DeconstructResponse(
-          "fallback:llm-error", aiChatClient.model(), fallbackSliceContracts(request));
     }
+    return new DetailCloneDtos.DeconstructResponse(
+        "fallback:no-api-key", dashScopeClient.model(), fallbackSliceContracts(request));
   }
 
   public DetailCloneDtos.MappingResponse map(DetailCloneDtos.MappingRequest request) {
@@ -224,11 +192,11 @@ public class DetailCloneService {
             ? fallbackSliceContracts(new DetailCloneDtos.DeconstructRequest(List.of(), request.productInfo(), request.cloneStrength()))
             : request.sliceContracts();
 
-    if (miniMaxM3Client.isConfigured()) {
+    if (dashScopeClient.isConfigured()) {
       try {
         List<String> images = new ArrayList<>();
         images.addAll(limitedList(request == null ? null : request.productImages(), MAX_VISION_PRODUCT_IMAGES));
-        AiChatDtos.CompletionResult completion = miniMaxM3Client.completeVision(
+        AiChatDtos.CompletionResult completion = dashScopeClient.completeVision(
             "你是电商详情页复刻映射专家。你只能借鉴竞品 A 的版式、信息顺序、视觉节奏和构图；产品事实、产品外观和卖点必须来自产品 C 的图片与 Markdown 信息。只输出 JSON。",
             mappingPrompt(request, sliceContracts),
             images,
@@ -237,33 +205,15 @@ public class DetailCloneService {
         List<DetailCloneDtos.MappingContract> contracts =
             parseArray(completion.content(), "mappingContracts", MAPPING_CONTRACT_LIST);
         if (!contracts.isEmpty()) {
-          return new DetailCloneDtos.MappingResponse("minimax-m3", completion.model(), contracts);
+          return new DetailCloneDtos.MappingResponse("dashscope", completion.model(), contracts);
         }
       } catch (Exception ignored) {
-        // Fall through to the existing text-model/fallback path.
-      }
-    }
-
-    if (!aiChatClient.isConfigured()) {
-      return new DetailCloneDtos.MappingResponse(
-          "fallback:no-api-key", aiChatClient.model(), fallbackMappingContracts(request, sliceContracts));
-    }
-
-    try {
-      AiChatDtos.CompletionResult completion = aiChatClient.complete(
-          List.of(new AiChatDtos.Message("user", mappingPrompt(request, sliceContracts))),
-          0.28);
-      List<DetailCloneDtos.MappingContract> contracts =
-          parseArray(completion.content(), "mappingContracts", MAPPING_CONTRACT_LIST);
-      if (contracts.isEmpty()) {
         return new DetailCloneDtos.MappingResponse(
-            "fallback:empty-llm-result", aiChatClient.model(), fallbackMappingContracts(request, sliceContracts));
+            "fallback:llm-error", dashScopeClient.model(), fallbackMappingContracts(request, sliceContracts));
       }
-      return new DetailCloneDtos.MappingResponse("llm", completion.model(), contracts);
-    } catch (Exception ignored) {
-      return new DetailCloneDtos.MappingResponse(
-          "fallback:llm-error", aiChatClient.model(), fallbackMappingContracts(request, sliceContracts));
     }
+    return new DetailCloneDtos.MappingResponse(
+        "fallback:no-api-key", dashScopeClient.model(), fallbackMappingContracts(request, sliceContracts));
   }
 
   private WebPage fetchWebPage(URI pageUri, String referer) throws Exception {

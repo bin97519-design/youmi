@@ -35,23 +35,16 @@ spring:
 youmi:
   auth:
     token-ttl-seconds: 604800
-  ai:
-    base-url: https://api.deepseek.com
-    chat-path: /chat/completions
-    api-key: ${YOUMI_AI_API_KEY:}
-    model: deepseek-chat
-    temperature: 0.35
-    timeout-seconds: 45
   image:
     base-url: https://api.apimart.ai
     generation-path: /v1/images/generations
     task-path: /v1/tasks
     api-key: ${YOUMI_IMAGE_API_KEY:}
     proxy-base-url: ${PROXY_BASE_URL:http://47.90.226.52}
-    proxy-api-key: ${PROXY_AUTH_TOKEN:}
+    proxy-api-key: ${IMAGE_PROXY_API_KEY:${PROXY_AUTH_TOKEN:}}
     proxy-generation-path: ${PROXY_GENERATION_PATH:/api/images/jobs}
     proxy-task-path: ${PROXY_TASK_PATH:/api/images/jobs}
-    fallback-enabled: false
+    fallback-enabled: true
     fallback-provider: gettoken
     get-token-base-url: https://nb.gettoken.cn/openapi/v1
     get-token-api-key: ${GETTOKEN_API_KEY:}
@@ -65,14 +58,6 @@ youmi:
     upload-field-name: file
     timeout-seconds: 60
     upload-timeout-seconds: 120
-  minimax:
-    base-url: https://api.minimaxi.com/anthropic
-    messages-path: /v1/messages
-    api-key: ${MINIMAX_API_KEY:}
-    model: MiniMax-M3
-    max-tokens: 1600
-    temperature: 0.6
-    timeout-seconds: 60
   xfyun:
     base-url: ${XFYUN_VISION_BASE_URL:https://maas-coding-api.cn-huabei-1.xf-yun.com/v2}
     chat-path: ${XFYUN_VISION_CHAT_PATH:/chat/completions}

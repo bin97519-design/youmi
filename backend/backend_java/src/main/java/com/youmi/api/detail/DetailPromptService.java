@@ -3,8 +3,8 @@ package com.youmi.api.detail;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.youmi.api.ai.AiChatClient;
 import com.youmi.api.ai.AiChatDtos;
+import com.youmi.api.ai.DashScopeClient;
 import java.util.ArrayList;
 import java.util.List;
 import org.springframework.stereotype.Service;
@@ -13,15 +13,15 @@ import org.springframework.util.StringUtils;
 @Service
 public class DetailPromptService {
   private final ObjectMapper objectMapper;
-  private final AiChatClient aiChatClient;
+  private final DashScopeClient dashScopeClient;
 
-  public DetailPromptService(ObjectMapper objectMapper, AiChatClient aiChatClient) {
+  public DetailPromptService(ObjectMapper objectMapper, DashScopeClient dashScopeClient) {
     this.objectMapper = objectMapper;
-    this.aiChatClient = aiChatClient;
+    this.dashScopeClient = dashScopeClient;
   }
 
   public DetailPromptDtos.PromptResponse generatePrompts(DetailPromptDtos.PromptRequest request) {
-    if (!aiChatClient.isConfigured()) {
+    if (!dashScopeClient.isConfigured()) {
       return fallbackResponse(request, "fallback:no-api-key");
     }
 
@@ -30,7 +30,7 @@ public class DetailPromptService {
       if (prompts.isEmpty()) {
         return fallbackResponse(request, "fallback:empty-llm-result");
       }
-      return new DetailPromptDtos.PromptResponse("llm", aiChatClient.model(), prompts);
+      return new DetailPromptDtos.PromptResponse("dashscope", dashScopeClient.model(), prompts);
     } catch (Exception ignored) {
       return fallbackResponse(request, "fallback:llm-error");
     }
@@ -38,7 +38,7 @@ public class DetailPromptService {
 
   private List<DetailPromptDtos.ScreenPrompt> requestPromptsFromLlm(DetailPromptDtos.PromptRequest request)
       throws Exception {
-    AiChatDtos.CompletionResult completion = aiChatClient.complete(
+    AiChatDtos.CompletionResult completion = dashScopeClient.complete(
         List.of(
             new AiChatDtos.Message(
                 "system",
@@ -102,7 +102,7 @@ public class DetailPromptService {
           plan.id(), plan.index(), positive, negative, layout, text, positive + "\n\n负向提示词：" + negative));
     }
 
-    return new DetailPromptDtos.PromptResponse(provider, aiChatClient.model(), prompts);
+    return new DetailPromptDtos.PromptResponse(provider, dashScopeClient.model(), prompts);
   }
 
   private String buildGlobalStandard(DetailPromptDtos.PromptRequest request, int pageCount) {

@@ -40,20 +40,13 @@ youmi:
     cors-auto-configure: ${OSS_CORS_AUTO_CONFIGURE:true}
   auth:
     token-ttl-seconds: 604800
-  ai:
-    base-url: https://api.deepseek.com
-    chat-path: /chat/completions
-    api-key: ${YOUMI_AI_API_KEY:}
-    model: deepseek-v4-flash
-    temperature: 0.35
-    timeout-seconds: 45
   image:
     base-url: https://api.apimart.ai
     generation-path: /v1/images/generations
     task-path: /v1/tasks
     api-key: ${YOUMI_IMAGE_API_KEY:${APIMART_API_KEY:${APIMART_IMAGE_API_KEY:}}}
     proxy-base-url: ${PROXY_BASE_URL:http://47.90.226.52}
-    proxy-api-key: ${PROXY_AUTH_TOKEN:}
+    proxy-api-key: ${IMAGE_PROXY_API_KEY:${PROXY_AUTH_TOKEN:}}
     proxy-generation-path: ${PROXY_GENERATION_PATH:/api/images/jobs}
     proxy-task-path: ${PROXY_TASK_PATH:/api/images/jobs}
     apimart-direct-base-url: ${YOUMI_IMAGE_APIMART_DIRECT_BASE_URL:https://apib.ai}
@@ -79,13 +72,12 @@ youmi:
     prices:
       IMAGE: 10
       VIDEO: 50
-  minimax:
-    base-url: https://api.minimaxi.com/anthropic
-    messages-path: /v1/messages
-    api-key: ${MINIMAX_API_KEY:}
-    model: MiniMax-M3
-    max-tokens: 1600
-    temperature: 0.6
+  dashscope:
+    base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api-key: ${DASHSCOPE_API_KEY:}
+    model: qwen3.7-plus
+    max-tokens: 4000
+    temperature: 0.2
     timeout-seconds: 60
   xfyun:
     base-url: ${XFYUN_VISION_BASE_URL:https://maas-coding-api.cn-huabei-1.xf-yun.com/v2}

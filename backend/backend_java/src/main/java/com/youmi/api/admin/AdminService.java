@@ -5,6 +5,7 @@ import com.youmi.api.common.ApiException;
 import com.youmi.api.image.ImageGenerationProperties;
 import com.youmi.api.shop.ShopRepository;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -278,7 +279,8 @@ public class AdminService {
         imageSummary(scopeUserId),
         recentImageTasks(scopeUserId, dateFrom, dateTo),
         dailyImageStats(scopeUserId),
-        modelImageStats(scopeUserId));
+        modelImageStats(scopeUserId),
+        providerSuccessStats(scopeUserId));
   }
 
   private AdminDtos.ImageStatsSummary imageSummary(Long scopeUserId) {
@@ -396,8 +398,6 @@ public class AdminService {
           FROM ym_image_task
           WHERE user_id = ?
           GROUP BY COALESCE(requested_model, model, 'unknown')
-          ORDER BY tasks DESC
-          LIMIT 12
           """;
       args = new Object[]{scopeUserId};
     } else {
@@ -407,17 +407,96 @@ public class AdminService {
                  COALESCE(SUM(money_cost), 0) AS money_cost
           FROM ym_image_task
           GROUP BY COALESCE(requested_model, model, 'unknown')
-          ORDER BY tasks DESC
-          LIMIT 12
           """;
       args = new Object[]{};
     }
-    return jdbcTemplate.query(sql, (rs, rowNum) -> new AdminDtos.ModelImageStat(
+    List<AdminDtos.ModelImageStat> rawStats = jdbcTemplate.query(sql, (rs, rowNum) -> new AdminDtos.ModelImageStat(
         rs.getString("model"),
         rs.getLong("tasks"),
         rs.getInt("images"),
         rs.getInt("mi_cost"),
         rs.getBigDecimal("money_cost")), args);
+
+    Map<String, AdminDtos.ModelImageStat> merged = new LinkedHashMap<>();
+    for (AdminDtos.ModelImageStat stat : rawStats) {
+      String model = imageProps.canonicalDisplayModel(stat.model());
+      merged.merge(model, new AdminDtos.ModelImageStat(
+              model, stat.tasks(), stat.images(), stat.miCost(), stat.moneyCost()),
+          (left, right) -> new AdminDtos.ModelImageStat(
+              model,
+              left.tasks() + right.tasks(),
+              left.images() + right.images(),
+              left.miCost() + right.miCost(),
+              left.moneyCost().add(right.moneyCost())));
+    }
+    List<AdminDtos.ModelImageStat> result = new ArrayList<>(merged.values());
+    result.sort((left, right) -> Long.compare(right.tasks(), left.tasks()));
+    return result.size() > 12 ? new ArrayList<>(result.subList(0, 12)) : result;
+  }
+
+  private List<AdminDtos.ProviderSuccessStat> providerSuccessStats(Long scopeUserId) {
+    String where = scopeUserId == null ? "" : " WHERE user_id = ?";
+    String sql = """
+        SELECT COALESCE(provider, 'unknown') AS provider,
+               COUNT(*) AS total_tasks,
+               SUM(CASE WHEN LOWER(status) IN ('completed', 'succeeded', 'success', 'done') THEN 1 ELSE 0 END) AS successful_tasks,
+               SUM(CASE WHEN LOWER(status) IN ('failed', 'error', 'cancelled', 'canceled') THEN 1 ELSE 0 END) AS failed_tasks
+        FROM ym_image_task
+        """ + where + " GROUP BY COALESCE(provider, 'unknown')";
+    Object[] args = scopeUserId == null ? new Object[]{} : new Object[]{scopeUserId};
+    List<AdminDtos.ProviderSuccessStat> rawStats = jdbcTemplate.query(sql, (rs, rowNum) -> {
+      long successful = rs.getLong("successful_tasks");
+      long failed = rs.getLong("failed_tasks");
+      return new AdminDtos.ProviderSuccessStat(
+          canonicalProvider(rs.getString("provider")),
+          rs.getLong("total_tasks"),
+          successful,
+          failed,
+          successful + failed,
+          null);
+    }, args);
+
+    Map<String, AdminDtos.ProviderSuccessStat> merged = new LinkedHashMap<>();
+    for (AdminDtos.ProviderSuccessStat stat : rawStats) {
+      merged.merge(stat.provider(), stat, (left, right) -> new AdminDtos.ProviderSuccessStat(
+          left.provider(),
+          left.totalTasks() + right.totalTasks(),
+          left.successfulTasks() + right.successfulTasks(),
+          left.failedTasks() + right.failedTasks(),
+          left.finishedTasks() + right.finishedTasks(),
+          null));
+    }
+
+    List<AdminDtos.ProviderSuccessStat> result = new ArrayList<>();
+    for (AdminDtos.ProviderSuccessStat stat : merged.values()) {
+      BigDecimal rate = stat.finishedTasks() == 0 ? null : BigDecimal.valueOf(stat.successfulTasks())
+          .multiply(BigDecimal.valueOf(100))
+          .divide(BigDecimal.valueOf(stat.finishedTasks()), 1, RoundingMode.HALF_UP);
+      result.add(new AdminDtos.ProviderSuccessStat(
+          stat.provider(), stat.totalTasks(), stat.successfulTasks(), stat.failedTasks(), stat.finishedTasks(), rate));
+    }
+    result.sort((left, right) -> Integer.compare(providerOrder(left.provider()), providerOrder(right.provider())));
+    return result;
+  }
+
+  private String canonicalProvider(String provider) {
+    if (provider == null || provider.isBlank()) return "unknown";
+    String value = provider.trim().toLowerCase(Locale.ROOT);
+    if (value.startsWith("apimart")) return "apimart";
+    if (value.startsWith("gettoken")) return "gettoken";
+    if (value.startsWith("proxy")) return "proxy";
+    if (value.startsWith("agnes")) return "agnes";
+    return value;
+  }
+
+  private int providerOrder(String provider) {
+    return switch (provider) {
+      case "apimart" -> 0;
+      case "gettoken" -> 1;
+      case "proxy" -> 2;
+      case "agnes" -> 3;
+      default -> 10;
+    };
   }
 
   private AdminDtos.UserRow mapUser(ResultSet rs) throws SQLException {
@@ -455,6 +534,11 @@ public class AdminService {
        imageProps 已注入，预留用于将来可配置化的兜底通道识别。 */
     String provider = rs.getString("provider");
     boolean isFallback = provider != null && "proxy".equalsIgnoreCase(provider.trim());
+    String model = imageProps.canonicalDisplayModel(rs.getString("model"));
+    String requestedModel = rs.getString("requested_model");
+    if (requestedModel != null && !requestedModel.isBlank()) {
+      requestedModel = imageProps.canonicalDisplayModel(requestedModel);
+    }
     return new AdminDtos.ImageTaskRow(
         rs.getLong("id"),
         rs.getString("task_id"),
@@ -462,8 +546,8 @@ public class AdminService {
         rs.getString("user_name"),
         rs.getString("provider"),
         rs.getString("prompt"),
-        rs.getString("model"),
-        rs.getString("requested_model"),
+        model,
+        requestedModel,
         rs.getString("size"),
         rs.getString("resolution"),
         rs.getInt("requested_count"),

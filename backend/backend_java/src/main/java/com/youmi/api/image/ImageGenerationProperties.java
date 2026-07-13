@@ -225,6 +225,18 @@ public class ImageGenerationProperties {
     return mapped == null ? value : mapped;
   }
 
+  /** Returns the stable, user-facing name used by admin statistics and filters. */
+  public String canonicalDisplayModel(String modelName) {
+    if (modelName == null || modelName.isBlank()) return "unknown";
+    String resolved = resolveModel(modelName).trim();
+    String normalized = resolved.toLowerCase(Locale.ROOT);
+    if (normalized.startsWith("gemini-3.1-flash-image-preview")) return "banana2";
+    if (normalized.startsWith("gemini-3-pro-image-preview")) return "banana-pro";
+    if (normalized.equals("gpt-image-2") || normalized.startsWith("gpt-image-2-")) return "gpt-image-2";
+    if (normalized.startsWith("agnes-image-2.1-flash")) return "agnes-image-2.1-flash";
+    return resolved;
+  }
+
   public String normalizeResolution(String resolvedModel, String requestedResolution) {
     String value = requestedResolution == null || requestedResolution.isBlank() ? defaultResolution : requestedResolution.trim();
     if (value.isBlank()) return value;

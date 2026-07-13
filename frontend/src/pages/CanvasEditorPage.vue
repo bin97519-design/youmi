@@ -2291,6 +2291,7 @@ const imageViewer = reactive({
   images: [], // [{url, name}]
   currentIndex: 0,
 })
+const imageViewerImgRef = ref(null)
 
 // ========== 视频查看器 ==========
 const videoViewer = reactive({
@@ -2486,6 +2487,7 @@ function openImageViewer(url, name) {
 
 // 关闭图片查看器
 function closeImageViewer() {
+  cancelViewerTransformFrame()
   imageViewer.show = false
   imageViewer.url = ''
   imageViewer.images = []
@@ -2526,14 +2528,40 @@ function flipImage(axis) {
 }
 
 // 图片查看器 transform 字符串（拖拽直写 DOM 与缩放/旋转/翻转共用，保证一致）
-function viewerImgTransform(translateX = imageViewer.translateX, translateY = imageViewer.translateY) {
-  return `translate(${translateX}px, ${translateY}px) scale(${imageViewer.scale}) rotate(${imageViewer.rotation}deg) scaleX(${imageViewer.flipX ? -1 : 1}) scaleY(${imageViewer.flipY ? -1 : 1})`
+function viewerImgTransform(
+  translateX = imageViewer.translateX,
+  translateY = imageViewer.translateY,
+  scale = imageViewer.scale,
+) {
+  return `translate3d(${translateX}px, ${translateY}px, 0) scale(${scale}) rotate(${imageViewer.rotation}deg) scaleX(${imageViewer.flipX ? -1 : 1}) scaleY(${imageViewer.flipY ? -1 : 1})`
 }
 
 // 直接把 transform 写到 img DOM（不经过 Vue 响应式 patch），缩放/旋转/翻转/拖拽统一走这里
-function applyViewerTransform() {
-  const img = document.querySelector('.uc-image-viewer-content img')
-  if (img) img.style.transform = viewerImgTransform()
+function applyViewerTransform(
+  translateX = imageViewer.translateX,
+  translateY = imageViewer.translateY,
+  scale = imageViewer.scale,
+) {
+  const img = imageViewerImgRef.value
+  if (img) img.style.transform = viewerImgTransform(translateX, translateY, scale)
+}
+
+let _viewerTransformFrame = null
+let _viewerPendingTransform = null
+function queueViewerTransform(translateX, translateY, scale = imageViewer.scale) {
+  _viewerPendingTransform = { translateX, translateY, scale }
+  if (_viewerTransformFrame !== null) return
+  _viewerTransformFrame = requestAnimationFrame(() => {
+    _viewerTransformFrame = null
+    const pending = _viewerPendingTransform
+    _viewerPendingTransform = null
+    if (pending) applyViewerTransform(pending.translateX, pending.translateY, pending.scale)
+  })
+}
+function cancelViewerTransformFrame() {
+  if (_viewerTransformFrame !== null) cancelAnimationFrame(_viewerTransformFrame)
+  _viewerTransformFrame = null
+  _viewerPendingTransform = null
 }
 
 // 缩放（按钮）
@@ -2544,10 +2572,9 @@ function zoomImage(delta) {
 
 // 滚轮缩放
 function handleViewerWheel(e) {
-  e.preventDefault()
-  const delta = e.deltaY > 0 ? -0.15 : 0.15
-  imageViewer.scale = Math.max(0.25, Math.min(4, imageViewer.scale + delta))
-  applyViewerTransform()
+  const factor = e.deltaY > 0 ? 0.9 : 1.1
+  imageViewer.scale = Math.max(0.25, Math.min(4, imageViewer.scale * factor))
+  queueViewerTransform(imageViewer.translateX, imageViewer.translateY, imageViewer.scale)
 }
 
 // 拖拽基准：start 时记录起始偏移，move 中只算 delta，全程不写响应式状态 → 不触发 Vue 重渲染 → 零延迟跟手
@@ -2572,7 +2599,7 @@ function startViewerDrag(e) {
   } catch (_) {}
   // 关掉 transition（!important 强制，任何 CSS 都压不过）→ 拖拽零延迟跟手
   try {
-    const img = e.currentTarget.querySelector('img')
+    const img = imageViewerImgRef.value
     if (img) {
       img.classList.add('is-dragging')
       img.style.setProperty('transition', 'none', 'important')
@@ -2588,14 +2615,9 @@ function startViewerDrag(e) {
 // 拖动中：只算 delta 直写 DOM，零响应式、零 Vue 重渲染、零延迟跟手
 function moveViewerDrag(e) {
   if (!imageViewer.isDragging) return
-  // 每次重新取节点，防御 Vue 重渲染替换 <img> 导致缓存节点失效
-  const el = document.querySelector('.uc-image-viewer-content img')
-  if (!el) return
-  // 防御：万一节点被替换过，重新强杀 transition
-  el.style.setProperty('transition', 'none', 'important')
   const dx = e.clientX - imageViewer.dragStartX
   const dy = e.clientY - imageViewer.dragStartY
-  el.style.transform = viewerImgTransform(_dragBaseX + dx, _dragBaseY + dy)
+  queueViewerTransform(_dragBaseX + dx, _dragBaseY + dy)
 }
 
 // 停止拖动：仅在松手这一刻把最终偏移同步回响应式状态（全程唯一一次写状态）
@@ -2605,8 +2627,10 @@ function stopViewerDrag(e) {
   const dy = e.clientY - imageViewer.dragStartY
   imageViewer.translateX = _dragBaseX + dx
   imageViewer.translateY = _dragBaseY + dy
+  cancelViewerTransformFrame()
+  applyViewerTransform()
   imageViewer.isDragging = false
-  const img = document.querySelector('.uc-image-viewer-content img')
+  const img = imageViewerImgRef.value
   if (img) {
     img.classList.remove('is-dragging')
     img.style.removeProperty('transition') // 恢复 CSS 过渡（缩放/旋转动画需要）
@@ -5736,14 +5760,12 @@ watch(
 
 // ============ 主题切换 ============
 import { useTheme } from '../composables/useTheme'
-const { theme: currentTheme, cycle: cycleTheme, isDark, isLight, isSystem } = useTheme()
+const { cycle: cycleTheme, isDark } = useTheme()
 function themeIcon() {
-  if (isDark()) return '🌙'
-  return '☀️'
+  return isDark() ? '☀' : '☾'
 }
 function themeLabel() {
-  if (isDark()) return '深色'
-  return '浅色'
+  return isDark() ? '开灯（切换到浅色）' : '关灯（切换到深色）'
 }
 
 // ========== 我的素材库 ==========
@@ -6100,7 +6122,9 @@ async function loadImageForCrop(layer) {
       <div class="head-actions">
         <button
           class="theme-toggle"
-          :title="`当前：${themeLabel()}（点击切换）`"
+          type="button"
+          :title="themeLabel()"
+          :aria-label="themeLabel()"
           @click="cycleTheme"
         >
           <span class="theme-toggle__icon">{{ themeIcon() }}</span>
@@ -7625,6 +7649,7 @@ async function loadImageForCrop(layer) {
           </button>
 
           <img
+            ref="imageViewerImgRef"
             :src="imageViewer.url"
             :alt="imageViewer.name"
             draggable="false"
@@ -7859,6 +7884,8 @@ async function loadImageForCrop(layer) {
                 v-if="record.imageUrl && !brokenImages.has('rec-' + record.id)"
                 :src="record.imageUrl"
                 :alt="record.prompt"
+                loading="lazy"
+                decoding="async"
                 @error="markImageBroken('rec-' + record.id)"
               />
               <div class="uc-history-card-footer">
@@ -7984,7 +8011,7 @@ async function loadImageForCrop(layer) {
               class="uc-materials-card"
               @click="addMaterialToCanvas(mat)"
             >
-              <img :src="mat.url" :alt="mat.name" />
+              <img :src="mat.url" :alt="mat.name" loading="lazy" decoding="async" />
               <div class="uc-materials-card-footer">
                 <div class="uc-materials-card-info">
                   <span class="uc-materials-card-name">{{ mat.name }}</span>

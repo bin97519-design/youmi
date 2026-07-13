@@ -179,11 +179,9 @@ import { useTheme } from '../composables/useTheme';
 const { theme, cycle: cycleTheme, isDark } = useTheme();
 
 function themeIcon() {
-  if (theme.value === 'system') return '🖥';
   return theme.value === 'dark' ? '🌙' : '☀️';
 }
 function themeLabel() {
-  if (theme.value === 'system') return '跟随系统';
   return theme.value === 'dark' ? '深色' : '浅色';
 }
 function themeName() { return themeLabel(); }

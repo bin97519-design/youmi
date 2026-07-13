@@ -126,10 +126,12 @@ public class ImageTaskLogService {
 
     jdbcTemplate.update("""
         UPDATE ym_image_task
-        SET status = ?, progress = ?, image_count = ?, mi_cost = ?, money_cost = ?,
+        SET provider = COALESCE(NULLIF(?, ''), provider),
+            status = ?, progress = ?, image_count = ?, mi_cost = ?, money_cost = ?,
             image_urls = ?, error_message = ?, raw_response = ?, completed_at = COALESCE(?, completed_at)
         WHERE task_id = ?
         """,
+        response.provider(),
         normalizeStatus(response.status(), "unknown"),
         response.progress() == null ? 0 : Math.max(0, Math.min(100, response.progress())),
         imageCount,

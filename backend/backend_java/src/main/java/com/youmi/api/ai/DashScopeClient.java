@@ -40,7 +40,87 @@ public class DashScopeClient {
     return properties.getModel();
   }
 
-  public List<MiniMaxM3Client.ImageElement> detectImageElements(String imageUrl) throws Exception {
+  public AiChatDtos.StatusResponse status() {
+    return new AiChatDtos.StatusResponse(
+        properties.isConfigured(),
+        properties.normalizedBaseUrl(),
+        properties.normalizedChatPath(),
+        properties.getModel(),
+        properties.getTemperature(),
+        properties.getTimeoutSeconds());
+  }
+
+  public AiChatDtos.CompletionResult complete(
+      List<AiChatDtos.Message> messages, Double temperature) throws Exception {
+    List<Map<String, Object>> rawMessages = messages == null
+        ? List.of()
+        : messages.stream()
+            .map(message -> Map.<String, Object>of(
+                "role", message.role(),
+                "content", message.content()))
+            .toList();
+    return completeRaw(rawMessages, temperature);
+  }
+
+  public AiChatDtos.CompletionResult completeRaw(
+      List<Map<String, Object>> messages, Double temperature) throws Exception {
+    requireConfigured();
+    Map<String, Object> body = new LinkedHashMap<>();
+    body.put("model", properties.getModel());
+    body.put("max_tokens", Math.max(200, properties.getMaxTokens()));
+    body.put("temperature", temperature == null ? properties.getTemperature() : temperature);
+    body.put("messages", messages == null ? List.of() : messages);
+    return new AiChatDtos.CompletionResult("dashscope", properties.getModel(), sendChat(body));
+  }
+
+  public AiChatDtos.CompletionResult completeVision(
+      String system,
+      String prompt,
+      List<String> imageUrls,
+      Double temperature,
+      Integer maxTokens) throws Exception {
+    requireConfigured();
+    List<Map<String, Object>> content = new ArrayList<>();
+    content.add(Map.of("type", "text", "text", prompt == null ? "" : prompt));
+    for (String imageUrl : cleanImageUrls(imageUrls).stream().limit(8).toList()) {
+      content.add(Map.of("type", "image_url", "image_url", Map.of("url", imageUrl)));
+    }
+
+    List<Map<String, Object>> messages = new ArrayList<>();
+    if (system != null && !system.isBlank()) {
+      messages.add(Map.of("role", "system", "content", system));
+    }
+    messages.add(Map.of("role", "user", "content", content));
+
+    Map<String, Object> body = new LinkedHashMap<>();
+    body.put("model", properties.getModel());
+    body.put("max_tokens", Math.max(200, maxTokens == null ? properties.getMaxTokens() : maxTokens));
+    body.put("temperature", temperature == null ? properties.getTemperature() : temperature);
+    body.put("messages", messages);
+    return new AiChatDtos.CompletionResult("dashscope", properties.getModel(), sendChat(body));
+  }
+
+  public AiChatDtos.OptimizeProductInfoResponse optimizeProductInfo(
+      String productInfo, List<String> productImages) throws Exception {
+    List<String> images = cleanImageUrls(productImages).stream().limit(6).toList();
+    if (images.isEmpty()) {
+      throw new IllegalArgumentException("请先上传至少一张产品图片");
+    }
+    String prompt = "请根据产品图片整理适合电商详情页生成的产品信息。"
+        + "使用中文 Markdown，包含产品名称、品类、材质、尺寸、工艺、六条核心卖点、目标人群和使用场景。"
+        + "无法从图片确认的参数请明确标注待补充，不要编造。\n\n用户补充信息：\n"
+        + (productInfo == null || productInfo.isBlank() ? "无" : productInfo.trim());
+    AiChatDtos.CompletionResult result = completeVision(
+        "你是电商商品信息分析师，只输出可直接使用的中文 Markdown。",
+        prompt,
+        images,
+        properties.getTemperature(),
+        properties.getMaxTokens());
+    return new AiChatDtos.OptimizeProductInfoResponse(
+        result.provider(), result.model(), result.content());
+  }
+
+  public List<VisionElement> detectImageElements(String imageUrl) throws Exception {
     String system = """
         你是一个高精度的图像元素检测专家。你的任务是输出精确到像素级别的 bounding box 坐标。
 
@@ -178,7 +258,7 @@ public class DashScopeClient {
 
     JsonNode array = objectMapper.readTree(json);
     log.info("[detect] Parsed {} elements from model response", array.isArray() ? array.size() : 0);
-    List<MiniMaxM3Client.ImageElement> elements = new ArrayList<>();
+    List<VisionElement> elements = new ArrayList<>();
     if (array.isArray()) {
       for (JsonNode node : array) {
         // 兼容多种字段名: box_2d / box.2d / bbox_2d / box2d / bbox
@@ -231,7 +311,7 @@ public class DashScopeClient {
             name, boxKey, coords, fixed.get(0), fixed.get(1), fixed.get(2), fixed.get(3));
 
         if (isValidBox(fixed)) {
-          elements.add(new MiniMaxM3Client.ImageElement(name, fixed));
+          elements.add(new VisionElement(name, fixed));
         }
       }
     }
@@ -242,16 +322,16 @@ public class DashScopeClient {
 
     // 元素名称去重：同名字追加编号
     Map<String, Integer> nameCounts = new LinkedHashMap<>();
-    for (MiniMaxM3Client.ImageElement el : elements) {
+    for (VisionElement el : elements) {
       nameCounts.merge(el.objectName(), 1, Integer::sum);
     }
     Map<String, Integer> nameSeq = new LinkedHashMap<>();
-    List<MiniMaxM3Client.ImageElement> deduped = new ArrayList<>();
-    for (MiniMaxM3Client.ImageElement el : elements) {
+    List<VisionElement> deduped = new ArrayList<>();
+    for (VisionElement el : elements) {
       String n = el.objectName();
       if (nameCounts.get(n) > 1) {
         int seq = nameSeq.merge(n, 1, Integer::sum);
-        deduped.add(new MiniMaxM3Client.ImageElement(n + seq, el.box2d()));
+        deduped.add(new VisionElement(n + seq, el.box2d()));
       } else {
         deduped.add(el);
       }
@@ -287,6 +367,20 @@ public class DashScopeClient {
       throw new IllegalStateException("DashScope returned empty content");
     }
     return content;
+  }
+
+  private void requireConfigured() {
+    if (!properties.isConfigured()) {
+      throw new IllegalStateException("DashScope api key is not configured");
+    }
+  }
+
+  private List<String> cleanImageUrls(List<String> imageUrls) {
+    if (imageUrls == null) return List.of();
+    return imageUrls.stream()
+        .filter(value -> value != null && !value.isBlank())
+        .map(String::trim)
+        .toList();
   }
 
   private String readContent(JsonNode root) {

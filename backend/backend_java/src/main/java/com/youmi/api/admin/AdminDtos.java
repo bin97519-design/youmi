@@ -69,7 +69,8 @@ public final class AdminDtos {
       ImageStatsSummary summary,
       List<ImageTaskRow> tasks,
       List<DailyImageStat> daily,
-      List<ModelImageStat> models) {
+      List<ModelImageStat> models,
+      List<ProviderSuccessStat> providers) {
   }
 
   public record ImageStatsSummary(
@@ -113,6 +114,15 @@ public final class AdminDtos {
   }
 
   public record ModelImageStat(String model, Long tasks, Integer images, Integer miCost, BigDecimal moneyCost) {
+  }
+
+  public record ProviderSuccessStat(
+      String provider,
+      Long totalTasks,
+      Long successfulTasks,
+      Long failedTasks,
+      Long finishedTasks,
+      BigDecimal successRate) {
   }
 
   public record ConsoleOverview(

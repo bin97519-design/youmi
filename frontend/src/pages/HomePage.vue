@@ -20,8 +20,8 @@ const router = useRouter()
 const loggedIn = computed(() => userStore.isAuthenticated)
 const userMenuOpen = ref(false)
 // 套餐 B 改造：使用统一的 useTheme composable
-const { cycle: cycleTheme, isDark, isLight, isSystem } = useTheme()
-const themeLabel = computed(() => (isSystem() ? '🖥 跟随系统' : isDark() ? '🌙 深色' : '☀️ 浅色'))
+const { cycle: cycleTheme, isDark } = useTheme()
+const themeLabel = computed(() => (isDark() ? '🌙 深色' : '☀️ 浅色'))
 
 function onUserMenuBlur(event) {
   // 延迟关闭，让 click 事件先触发
