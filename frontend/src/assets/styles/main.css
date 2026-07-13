@@ -10294,6 +10294,8 @@ body {
   overflow: hidden;
   border-radius: 8px;
   cursor: move;
+  /* 占位图与普通图层重叠时，优先选中占位图（强制拉到最上层） */
+  z-index: 99999 !important;
 }
 
 .canvas-layer.is-placeholder.selected {
@@ -13648,6 +13650,8 @@ body {
   overflow: hidden;
   padding: 20px 20px 80px;
   position: relative;
+  touch-action: none;
+  user-select: none;
 }
 
 .uc-image-viewer-content img {

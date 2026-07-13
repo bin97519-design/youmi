@@ -32,10 +32,10 @@ public class ImageTaskLogService {
       if (task == null || task.taskId() == null || task.taskId().isBlank()) continue;
       jdbcTemplate.update("""
           INSERT INTO ym_image_task (
-            task_id, user_id, provider, task_type, prompt, model, requested_model, size, resolution,
+            task_id, client_task_id, user_id, provider, task_type, prompt, model, requested_model, size, resolution,
             requested_count, status, progress, raw_response
           )
-          VALUES (?, ?, ?, 'IMAGE', ?, ?, ?, ?, ?, ?, ?, 0, ?)
+          VALUES (?, ?, ?, ?, 'IMAGE', ?, ?, ?, ?, ?, ?, ?, 0, ?)
           ON DUPLICATE KEY UPDATE
             user_id = COALESCE(VALUES(user_id), user_id),
             provider = VALUES(provider),
@@ -49,6 +49,7 @@ public class ImageTaskLogService {
             raw_response = VALUES(raw_response)
           """,
           task.taskId(),
+          request == null ? null : request.clientTaskId(),
           userId,
           response.provider(),
           prompt,
@@ -60,6 +61,59 @@ public class ImageTaskLogService {
           normalizeStatus(task.status(), "submitted"),
           raw);
     }
+  }
+
+  /**
+   * 客户端幂等：按前端稳定携带的 {@code client_task_id} 查询是否已存在同一张生图的落库记录。
+   * 命中表示刷新重提场景，调用方应直接返回已有任务，跳过米值扣减与外部生图调用。
+   *
+   * @param clientTaskId 前端生成的客户端幂等键（空值直接返回 null）
+   * @return 已存在的任务快照，未命中返回 null
+   */
+  public ExistingTask findExistingByClientTaskId(String clientTaskId) {
+    if (clientTaskId == null || clientTaskId.isBlank()) return null;
+    List<ExistingTask> rows = jdbcTemplate.query(
+        "SELECT task_id, provider, model, requested_model, size, resolution, requested_count, status, raw_response FROM ym_image_task WHERE client_task_id = ? LIMIT 1",
+        (rs, i) -> new ExistingTask(
+            rs.getString("task_id"),
+            rs.getString("provider"),
+            rs.getString("model"),
+            rs.getString("requested_model"),
+            rs.getString("size"),
+            rs.getString("resolution"),
+            rs.getInt("requested_count"),
+            rs.getString("status"),
+            rs.getString("raw_response")),
+        clientTaskId);
+    return rows.isEmpty() ? null : rows.get(0);
+  }
+
+  /** 已落库生图任务的轻量快照，用于幂等早返回时构造响应。 */
+  public static class ExistingTask {
+    public final String taskId, provider, model, requestedModel, size, resolution, status, rawResponse;
+    public final int n;
+
+    public ExistingTask(String taskId, String provider, String model, String requestedModel,
+        String size, String resolution, int n, String status, String rawResponse) {
+      this.taskId = taskId;
+      this.provider = provider;
+      this.model = model;
+      this.requestedModel = requestedModel;
+      this.size = size;
+      this.resolution = resolution;
+      this.n = n;
+      this.status = status;
+      this.rawResponse = rawResponse;
+    }
+  }
+
+  /** 由 {@link ExistingTask} 构造与正常创建响应结构一致的 {@link CreateTaskResponse}。 */
+  public ImageGenerationDtos.CreateTaskResponse buildResponseFromEntity(ExistingTask e) {
+    List<ImageGenerationDtos.TaskRef> tasks = List.of(
+        new ImageGenerationDtos.TaskRef(e.taskId, e.status == null ? "submitted" : e.status));
+    return new ImageGenerationDtos.CreateTaskResponse(
+        e.provider, e.requestedModel, e.model, e.size, e.resolution,
+        e.n <= 0 ? 1 : e.n, tasks, null);
   }
 
   public void recordStatus(ImageGenerationDtos.TaskStatusResponse response) {

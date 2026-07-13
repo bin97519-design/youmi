@@ -119,7 +119,7 @@ class ImageGenerationClientFailoverTest {
 
     ImageGenerationDtos.CreateTaskRequest req = new ImageGenerationDtos.CreateTaskRequest(
         "a cat", "stable-diffusion-3", "1:1", "1:1", "2K",
-        null, null, null, null, null, null, null, null, null, null);
+        null, null, null, null, null, null, null, null, null, null, null);
 
     ImageGenerationDtos.CreateTaskResponse resp = client.createTask(req);
 
@@ -171,7 +171,7 @@ class ImageGenerationClientFailoverTest {
 
     ImageGenerationDtos.CreateTaskRequest req = new ImageGenerationDtos.CreateTaskRequest(
         "a cat", "stable-diffusion-3", "1:1", "1:1", "2K",
-        null, null, null, null, null, null, null, null, null, null);
+        null, null, null, null, null, null, null, null, null, null, null);
 
     // 1) submitTask 成功：apimart 主通道创建成功，注册 primaryProvider=apimart（key 为原始 task id）
     ImageGenerationDtos.CreateTaskResponse created = client.createTask(req);
@@ -243,7 +243,7 @@ class ImageGenerationClientFailoverTest {
     // 注册 FailoverState：primaryProvider=gettoken，未触发过，存在可用 proxy 备份链
     ImageGenerationDtos.CreateTaskRequest req = new ImageGenerationDtos.CreateTaskRequest(
         "a cat", "gemini-3-pro-image-preview", "1:1", "1:1", "2K",
-        null, null, null, null, null, null, null, null, null, null);
+        null, null, null, null, null, null, null, null, null, null, null);
     Object state = newFailoverState(client, req, "gettoken");
     getFailoverStates(client).put("gettoken:xxx", state);
 

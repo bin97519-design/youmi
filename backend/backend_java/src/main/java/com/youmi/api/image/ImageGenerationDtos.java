@@ -34,7 +34,8 @@ public class ImageGenerationDtos {
       String moderation,
       @JsonProperty("input_fidelity") String inputFidelity,
       @JsonProperty("output_compression") Integer outputCompression,
-      @JsonProperty("webhook_url") String webhookUrl) {
+      @JsonProperty("webhook_url") String webhookUrl,
+      @JsonProperty("client_task_id") String clientTaskId) {
     public List<String> normalizedImageUrls() {
       LinkedHashSet<String> urls = new LinkedHashSet<>();
       addUrls(urls, imageUrlsSnake);

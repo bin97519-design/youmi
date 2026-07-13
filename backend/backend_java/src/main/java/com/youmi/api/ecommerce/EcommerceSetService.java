@@ -266,7 +266,8 @@ public class EcommerceSetService {
             null,           // moderation
             null,           // inputFidelity
             null,           // outputCompression
-            null            // webhookUrl
+            null,           // webhookUrl
+            null            // clientTaskId（电商套图链路不携带客户端幂等键，传 null 不影响原行为）
         );
 
         // 调用图片生成

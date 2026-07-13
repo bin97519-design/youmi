@@ -12,6 +12,7 @@ import java.io.OutputStream;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -24,6 +25,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -56,6 +58,14 @@ public class ImageTaskController {
       @RequestBody ImageGenerationDtos.CreateTaskRequest request) throws Exception {
     // 闸门要求登录态
     Long userId = adminAuthService.requireUserId(authorization);
+    // 客户端幂等：同一张生图前端带 client_task_id，刷新重提时直接返回已有任务，
+    // 跳过米值扣减与外部生图调用，杜绝重复生图+重复扣费。
+    if (request.clientTaskId() != null && !request.clientTaskId().isBlank()) {
+      ImageTaskLogService.ExistingTask existing = imageTaskLogService.findExistingByClientTaskId(request.clientTaskId());
+      if (existing != null) {
+        return ApiResponse.ok(imageTaskLogService.buildResponseFromEntity(existing));
+      }
+    }
     // 先扣后生成：原子扣减成功才发起外部调用；不足则抛 402，绝不发起外部调用
     MiValueDtos.DeductResult deduct = miValueService.checkAndDeduct(userId, MiBizType.IMAGE);
     try {
@@ -72,11 +82,46 @@ public class ImageTaskController {
       response.setBalance(miValueService.getBalance(userId));
       imageTaskLogService.recordCreated(userId, request, response);
       return ApiResponse.ok(response);
+    } catch (DuplicateKeyException dke) {
+      // 并发竞态：另一个同 client_task_id 的请求先 INSERT 成功了（TOCTOU 被 UNIQUE INDEX 拦截）
+      // 查回那条已有记录并返回，不再报错、不重复扣费。
+      // DuplicateKey 只可能在 recordCreated 时抛出，说明扣费+外部调用已完成；
+      // 真正的保障是前端的 chatGenerating 守卫 + DB UNIQUE INDEX 从本源杜绝双扣费。
+      ImageTaskLogService.ExistingTask existing =
+          imageTaskLogService.findExistingByClientTaskId(request.clientTaskId());
+      if (existing != null) {
+        return ApiResponse.ok(imageTaskLogService.buildResponseFromEntity(existing));
+      }
+      // 极端情况：查不到就往上抛，让外层 catch 处理
+      throw dke;
     } catch (Exception e) {
       // 外部失败 → 幂等回滚米值并记流水 ROLLBACK
       miValueService.rollback(userId, deduct.logId());
-      throw new ApiException(502, "生成服务异常，米值已退回");
+      // 服务端日志：记录完整的调用上下文与堆栈，方便定位根因
+      System.err.println("[ImageTask] createTask FAILED for user=" + userId
+          + " model=" + request.model()
+          + " error=" + e.getClass().getSimpleName() + ": " + e.getMessage());
+      e.printStackTrace();
+      // 前端展示信息：保留异常链信息帮助用户反馈定位
+      String errorMsg = "生成服务异常，米值已退回";
+      if (e.getMessage() != null) {
+        errorMsg += ": " + e.getMessage();
+      }
+      throw new ApiException(502, errorMsg);
     }
+  }
+
+  @GetMapping("/by-client-task-id")
+  public ApiResponse<Map<String, Object>> resolveByClientTaskId(
+      @RequestParam("client_task_id") String clientTaskId,
+      @RequestHeader(value = "Authorization", required = false) String authorization) {
+    // 与 create 保持一致的鉴权（仅校验登录态）
+    adminAuthService.requireUserId(authorization);
+    ImageTaskLogService.ExistingTask existing = imageTaskLogService.findExistingByClientTaskId(clientTaskId);
+    Map<String, Object> body = new java.util.HashMap<>();
+    body.put("exists", existing != null);
+    body.put("task_id", existing == null ? null : existing.taskId);
+    return ApiResponse.ok(body);
   }
 
   @GetMapping("/{taskId}")

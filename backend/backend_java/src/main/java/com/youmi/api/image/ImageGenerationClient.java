@@ -343,6 +343,9 @@ public class ImageGenerationClient {
     body.put("n", count);
     body.put("official_fallback", true);
     putIfPresent(body, "image_urls", request.normalizedImageUrls());
+    System.out.println("[apimart-direct] size=" + size + " resolution=" + resolution
+        + " request.size()=" + request.size() + " request.ratio()=" + request.ratio()
+        + " n=" + count + " body=" + body);
 
     JsonNode root = sendApimartDirectPost(endpoint, body);
     List<ImageGenerationDtos.TaskRef> tasks = extractTasks(root).stream()

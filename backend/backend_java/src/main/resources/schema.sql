@@ -192,3 +192,32 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @has_is_fallback = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@db AND table_name='ym_image_task' AND column_name='is_fallback');
 SET @sql = IF(@has_is_fallback=0, 'ALTER TABLE ym_image_task ADD COLUMN is_fallback TINYINT(1) NOT NULL DEFAULT 0', 'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- ── 生图客户端幂等（前端生成 client_task_id，刷新重提时后端跳过扣费+外部调用） ──
+-- client_task_id：前端对同一张生图稳定携带的客户端幂等键
+SET @has_client_task_id = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@db AND table_name='ym_image_task' AND column_name='client_task_id');
+SET @sql = IF(@has_client_task_id=0, 'ALTER TABLE ym_image_task ADD COLUMN client_task_id VARCHAR(128) NULL', 'SELECT 1');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+-- idx_ym_image_task_client：client_task_id 唯一性查询索引（幂等早返回依赖，必须放在加列之后）
+SET @has_client_idx = (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@db AND table_name='ym_image_task' AND index_name='idx_ym_image_task_client');
+SET @sql = IF(@has_client_idx=0, 'ALTER TABLE ym_image_task ADD INDEX idx_ym_image_task_client (client_task_id)', 'SELECT 1');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+-- 幂等自愈：清理历史遗留的 client_task_id 重复数据（TOCTOU 竞态已产生的脏数据）
+-- 同一 client_task_id 仅保留 id 最小的一条，其余置 NULL（UNIQUE INDEX 允许多个 NULL，不丢业务数据）。
+-- 幂等可重复执行：去重后该 JOIN 不再命中任何行。
+UPDATE ym_image_task t
+INNER JOIN (
+  SELECT client_task_id, MIN(id) AS keep_id
+  FROM ym_image_task
+  WHERE client_task_id IS NOT NULL AND client_task_id <> ''
+  GROUP BY client_task_id
+  HAVING COUNT(*) > 1
+) d ON t.client_task_id = d.client_task_id AND t.id <> d.keep_id
+SET t.client_task_id = NULL;
+
+-- 幂等硬约束：防止同一 client_task_id 并发提交导致重复生图+重复扣费（TOCTOU 竞态）
+SET @has_unique_client = (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@db AND table_name='ym_image_task' AND index_name='uk_ym_image_task_client');
+SET @sql = IF(@has_unique_client=0, 'ALTER TABLE ym_image_task ADD UNIQUE INDEX uk_ym_image_task_client (client_task_id)', 'SELECT 1');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;

@@ -1202,12 +1202,25 @@ function normalizeStatus(raw) {
 async function readApiResponse(response) {
   const result = await response.json().catch(() => null)
   if (!response.ok || !result || result.code !== 0) {
-    throw new Error(result?.message || `接口请求失败：${response.status}`)
+    const errMsg = result?.message || `接口请求失败：${response.status}`
+    console.error('[readApiResponse] 请求失败', { status: response.status, code: result?.code, message: errMsg, url: response.url })
+    throw new Error(errMsg)
   }
   return result.data
 }
 
-async function submitImageTask({ prompt, imageUrls, model, size, resolution }) {
+// 全局锁：同一时间只允许一个 submitImageTask 请求在飞，
+// 防止 watch 恢复逻辑 / 重复点击 / 任何其他路径并发提交。
+let _imageTaskSubmitting = false
+
+async function submitImageTask({ prompt, imageUrls, model, size, resolution, clientTaskId }) {
+  if (_imageTaskSubmitting) {
+    console.warn('[submitImageTask] 并发提交被拦截：已有生图请求在飞，本次忽略')
+    throw new Error('生图请求正在处理中，请勿重复提交')
+  }
+  _imageTaskSubmitting = true
+  console.log('[submitImageTask] 开始提交', { model: model || chatModel.value, size: size || chatRatio.value, promptLen: prompt?.length || 0, hasImages: imageUrls?.length || 0, clientTaskId })
+  try {
   // 恢复场景（刷新后重新提交）必须沿用占位图层持久化的生成参数 genMeta，
   // 不能用刷新后重置为默认的 chatModel/chatRatio/chatResolution（否则会换模型/比例重出）。
   const body = {
@@ -1220,6 +1233,8 @@ async function submitImageTask({ prompt, imageUrls, model, size, resolution }) {
   if (imageUrls?.length) {
     body.image_urls = imageUrls
   }
+  // 客户端幂等键：落盘到后端，供刷新重提时按它命中已有任务、跳过重复扣费+外部调用。
+  if (clientTaskId) body.client_task_id = clientTaskId
 
   const data = await readApiResponse(
     await fetch(apiPath('/api/image-tasks'), {
@@ -1234,6 +1249,24 @@ async function submitImageTask({ prompt, imageUrls, model, size, resolution }) {
   const taskId = data?.tasks?.[0]?.taskId || data?.tasks?.[0]?.task_id
   if (!taskId) throw new Error('生图任务提交成功，但没有返回 task_id')
   return taskId
+  } finally {
+    _imageTaskSubmitting = false
+  }
+}
+
+// 刷新恢复专用：凭 client_task_id 只查回已有 task_id，不建任务、不扣费、不调中转站。
+// 命中则直接续轮询（零重提）；查不到（真·从未提交成功）才走 submitImageTask 新建。
+async function resolveImageTaskByClientId(clientTaskId) {
+  try {
+    const data = await readApiResponse(
+      await fetch(apiPath('/api/image-tasks/by-client-task-id?client_task_id=' + encodeURIComponent(clientTaskId)), {
+        headers: { ...userStore.authHeaders() },
+      }),
+    )
+    return data?.exists ? (data.taskId || data.task_id || '') : ''
+  } catch (e) {
+    return ''
+  }
 }
 
 async function fetchImageTask(taskId) {
@@ -1374,13 +1407,18 @@ async function resumeImageTaskPolling(taskId, placeholderId) {
 //   - 无 taskId（提交阶段就被刷新中断）：重新提交任务（resumeInterruptedNoTaskId）
 // 配合 startImagePoll 的 taskId 守卫 + _pollingTasks 的 layer.id 占位，可安全被多次调用（幂等）。
 function resumeInterruptedPlaceholders() {
+  // sendChat 执行期间完全跳过：否则 addChatMessages/addGeneratingPlaceholderLayer
+  // 触发的 layers 变化会让 watch 把"还没拿到 taskId 的新占位图"当"需恢复"的，
+  // 抢先调 submitImageTask 导致重复提交（Console 可见 [submitImageTask] 并发提交被拦截）
+  if (_sendChatActive) return
   const layersToResume = (doc.value?.payload?.layers || []).filter((layer) => {
     const s = normalizeStatus(layer.status)
     return (
       layer.type === 'placeholder' &&
       !isTaskDone(s) &&
       !isTaskFailed(s) &&
-      !_pollingTasks.has(layer.taskId || layer.id) // 已在轮询/恢复中的不重复处理，避免重复改状态触发监听回环
+      !_pollingTasks.has(layer.taskId || layer.id) && // 已在轮询/恢复中的不重复处理，避免重复改状态触发监听回环
+      !_submittingPlaceholderIds.has(layer.id) // 正在主提交流程(sendChat)中的占位图，由 sendChat 自己处理，恢复逻辑不要抢
     )
   })
   for (const layer of layersToResume) {
@@ -1407,7 +1445,8 @@ function retryFailedNoTaskPlaceholders() {
       isTaskFailed(s) &&
       !layer.taskId &&
       retryable &&
-      !_pollingTasks.has(layer.id)
+      !_pollingTasks.has(layer.id) &&
+      !_submittingPlaceholderIds.has(layer.id)
     )
   })
   for (const layer of failed) {
@@ -1423,7 +1462,32 @@ async function resumeInterruptedNoTaskId(layer) {
   _pollingTasks.add(layer.id)
   const prompt = layer.prompt || layer.genMeta?.prompt || ''
   const imageUrls = Array.isArray(layer.genMeta?.referenceImageUrls) ? layer.genMeta.referenceImageUrls : []
+  // 客户端幂等键：优先顶层，回退 genMeta（刷新重提时原样带回后端命中已有任务）
+  const clientTaskId = layer.clientTaskId || layer.genMeta?.clientTaskId || ''
   updateGeneratingPlaceholder(layer.id, { status: 'processing', statusText: '生成任务恢复中...' })
+  // 核心修复：刷新时的「提交阶段中断」不应再 POST /create 重提生图。
+  // 同一 clientTaskId 的任务极可能已被后端建好（仅前端刷新瞬间把响应弄丢了），
+  // 先 GET 按 clientTaskId 查回已有 task_id，命中则直接续轮询、零重提；
+  // 若首次查询时后端还在处理 POST 请求（任务尚未落库），等 3 秒后重试一次；
+  // 仅两次都查不到（真·从未提交成功）才走下面的 POST /create 新建。
+  if (clientTaskId) {
+    let existingTaskId = await resolveImageTaskByClientId(clientTaskId)
+    if (!existingTaskId) {
+      // 首次查不到：后端可能还在处理原 POST（任务尚未落库），等 3 秒再查
+      updateGeneratingPlaceholder(layer.id, { statusText: '正在查找已有任务...' })
+      await new Promise((r) => setTimeout(r, 3000))
+      existingTaskId = await resolveImageTaskByClientId(clientTaskId)
+    }
+    if (existingTaskId) {
+      _pollingTasks.add(existingTaskId)
+      updateGeneratingPlaceholder(layer.id, { taskId: existingTaskId, lastError: '', networkFailed: false })
+      await startImagePoll(existingTaskId, layer.id, layer.chatMessageId || '', prompt)
+      _pollingTasks.delete(layer.id)
+      _pollingTasks.delete(existingTaskId)
+      return
+    }
+  }
+  // 真·从未提交成功（连已有任务都查不到）：才累计重试次数并 POST /create 新建
   // 累计重试次数并持久化，配合 retryFailedNoTaskPlaceholders 的 <3 上限，避免后端持续失败时每次刷新都无脑重提
   const attempts = Number(layer.resumeAttempts || 0) + 1
   updateGeneratingPlaceholder(layer.id, { resumeAttempts: attempts })
@@ -1432,6 +1496,7 @@ async function resumeInterruptedNoTaskId(layer) {
     taskId = await submitImageTask({
       prompt,
       imageUrls,
+      clientTaskId,
       model: layer.genMeta?.model,
       size: layer.genMeta?.ratio,
       resolution: layer.genMeta?.resolution,
@@ -1536,6 +1601,9 @@ function purgeEmptyUrlPlaceholders() {
 // 服务端 doc 合并（syncFromServer）可能在 onMounted 恢复扫描之后异步覆盖本地图层，
 // 导致已扫描出来的占位层被替换掉、而恢复逻辑不会重跑。这里对图层列表做幂等重扫，
 // 配合 startImagePoll 的 taskId 守卫，确保恢复不漏、也不重复起轮询。
+// 但必须跳过「正在主提交流程(sendChat)中、尚未拿到 taskId 的占位图」，
+// 否则 watch 触发时会把刚创建的占位图当作"需要恢复"的，重复调 submitImageTask。
+const _submittingPlaceholderIds = new Set()
 watch(() => doc.value?.payload?.layers, resumeInterruptedPlaceholders)
 
 function firstUrl(value) {
@@ -1896,15 +1964,24 @@ async function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId
     // 视口中心的世界坐标 = (viewportSize/2 - viewOffset) / viewScale
     const cx = (viewportSize.width / 2 - viewOffset.value.x) / viewScale.value
     const cy = (viewportSize.height / 2 - viewOffset.value.y) / viewScale.value
+    // 客户端幂等键：同一张生图稳定携带，刷新重提时后端按它命中已有任务、跳过重复扣费+外部调用。
+    function genClientTaskId() {
+      if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID()
+      return 'c-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10)
+    }
+    const clientTaskId = genClientTaskId()
     const layer = {
       id: `placeholder-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       type: 'placeholder',
       name: layerName(index),
       prompt,
+      // 客户端幂等键（顶层 + genMeta 各存一份：resume 时从 genMeta 取用，保险）
+      clientTaskId,
       // 生成参数随占位图层持久化，供「刷新后恢复完成」路径（路径 B）也能造出完整历史记录。
       // 修复前创建的旧在途图层可能没有 genMeta，恢复时优雅降级（prompt 兜底，其余字段允许为空）。
       genMeta: {
         prompt,
+        clientTaskId,
         model: genMeta.model || '',
         ratio: genMeta.ratio || '',
         resolution: genMeta.resolution || '',
@@ -2471,29 +2548,46 @@ function handleViewerWheel(e) {
 // 拖拽基准：start 时记录起始偏移，move 中只算 delta，全程不写响应式状态 → 不触发 Vue 重渲染 → 零延迟跟手
 let _dragBaseX = 0
 let _dragBaseY = 0
+let _dragImgEl = null
+let _dragCaptureEl = null
 
 // 开始拖动
 function startViewerDrag(e) {
   if (e.button !== 0) return
+  e.preventDefault() // 杀掉浏览器原生图片拖拽 ghost + 文本选区 + 手势，避免"能拖但不跟手"的残影
   imageViewer.isDragging = true
   imageViewer.dragStartX = e.clientX
   imageViewer.dragStartY = e.clientY
   _dragBaseX = imageViewer.translateX
   _dragBaseY = imageViewer.translateY
   // 指针捕获：放大后图片超出容器，鼠标移出边界仍能持续收到 pointermove，避免掉帧卡顿
-  try { e.currentTarget.setPointerCapture(e.pointerId) } catch (_) {}
-  // 关掉 transition + 缓存 img 元素（拖拽全程直写 transform，不依赖 Vue patch）
+  try {
+    e.currentTarget.setPointerCapture(e.pointerId)
+    _dragCaptureEl = e.currentTarget
+  } catch (_) {}
+  // 关掉 transition（!important 强制，任何 CSS 都压不过）→ 拖拽零延迟跟手
   try {
     const img = e.currentTarget.querySelector('img')
-    if (img) { img.classList.add('is-dragging'); imageViewer._imgEl = img }
+    if (img) {
+      img.classList.add('is-dragging')
+      img.style.setProperty('transition', 'none', 'important')
+      _dragImgEl = img
+    }
   } catch (_) {}
+  // 用 window 级监听保证 move/up 全程不丢事件（不受 pointerleave/capture 边界影响）
+  window.addEventListener('pointermove', moveViewerDrag)
+  window.addEventListener('pointerup', stopViewerDrag)
+  window.addEventListener('pointercancel', stopViewerDrag)
 }
 
 // 拖动中：只算 delta 直写 DOM，零响应式、零 Vue 重渲染、零延迟跟手
 function moveViewerDrag(e) {
   if (!imageViewer.isDragging) return
-  const el = imageViewer._imgEl
+  // 每次重新取节点，防御 Vue 重渲染替换 <img> 导致缓存节点失效
+  const el = document.querySelector('.uc-image-viewer-content img')
   if (!el) return
+  // 防御：万一节点被替换过，重新强杀 transition
+  el.style.setProperty('transition', 'none', 'important')
   const dx = e.clientX - imageViewer.dragStartX
   const dy = e.clientY - imageViewer.dragStartY
   el.style.transform = viewerImgTransform(_dragBaseX + dx, _dragBaseY + dy)
@@ -2507,10 +2601,17 @@ function stopViewerDrag(e) {
   imageViewer.translateX = _dragBaseX + dx
   imageViewer.translateY = _dragBaseY + dy
   imageViewer.isDragging = false
-  const img = imageViewer._imgEl
-  if (img) img.classList.remove('is-dragging')
-  try { if (e?.currentTarget?.hasPointerCapture?.(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId) } catch (_) {}
-  imageViewer._imgEl = null
+  const img = document.querySelector('.uc-image-viewer-content img')
+  if (img) {
+    img.classList.remove('is-dragging')
+    img.style.removeProperty('transition') // 恢复 CSS 过渡（缩放/旋转动画需要）
+  }
+  try { if (_dragCaptureEl?.hasPointerCapture?.(e.pointerId)) _dragCaptureEl.releasePointerCapture(e.pointerId) } catch (_) {}
+  _dragCaptureEl = null
+  _dragImgEl = null
+  window.removeEventListener('pointermove', moveViewerDrag)
+  window.removeEventListener('pointerup', stopViewerDrag)
+  window.removeEventListener('pointercancel', stopViewerDrag)
 }
 
 // 下载图片（优先 fetch+blob，大文件/跨域 fallback 新标签页打开）
@@ -2909,16 +3010,80 @@ function removeLayer(id) {
   selectedLayerIds.value = selectedLayerId.value ? [selectedLayerId.value] : []
 }
 
-function startLayerDrag(event, layer) {
-  // 隐形/死亡占位图层（无图、且未处于轮询恢复中）：不拦截画布 pointerdown，
-  // 直接放行让事件冒泡到 stage，保证该区域框选多选正常可用。
-  if (
-    layer.type === 'placeholder' &&
-    !layer.url &&
-    !_pollingTasks.has(layer.taskId || layer.id)
-  ) {
-    return
+/**
+ * 【Bug修复】占位图优先选中：检查当前点击位置是否有占位图与被点击图层重叠。
+ * 如果有，返回应该优先选中的占位图层；否则返回 null。
+ *
+ * 判定逻辑：
+ * 1. 遍历所有占位图层（type === 'placeholder'）
+ * 2. 检查占位图的 bounding box 是否与被点击图层在点击坐标处重叠
+ * 3. 如果有多个占位图重叠，选择 zIndex 最高的那个
+ */
+function findOverlappingPlaceholder(event, clickedLayer) {
+  // 仅处理占位图与普通图层重叠的场景
+  const placeholders = layers.value.filter(
+    (l) => l.type === 'placeholder' && l.id !== clickedLayer.id
+  )
+  if (!placeholders.length) return null
+
+  // 计算点击位置在画布坐标系中的坐标
+  const stage = event.currentTarget.closest('.canvas-viewport')?.parentElement
+  if (!stage) return null
+
+  // 将 event.clientX/Y 转换为画布坐标
+  const viewScaleVal = viewScale || 1
+  const offsetX = doc.value?.payload?.view?.offset?.x || 0
+  const offsetY = doc.value?.payload?.view?.offset?.y || 0
+  const canvasX = (event.clientX - stage.getBoundingClientRect().left) / viewScaleVal - offsetX
+  const canvasY = (event.clientY - stage.getBoundingClientRect().top) / viewScaleVal - offsetY
+
+  // 检查每个占位图是否覆盖了这个画布坐标，且与被点击图层有重叠
+  let bestPlaceholder = null
+  let bestZ = -Infinity
+
+  for (const ph of placeholders) {
+    // 占位图矩形
+    const phLeft = ph.x
+    const phTop = ph.y
+    const phRight = ph.x + ph.width
+    const phBottom = ph.y + ph.height
+
+    // 点击坐标在占位图范围内
+    const pointInside = canvasX >= phLeft && canvasX <= phRight && canvasY >= phTop && canvasY <= phBottom
+    if (!pointInside) continue
+
+    // 占位图与被点击图层有空间重叠（至少部分相交）
+    const clLeft = clickedLayer.x
+    const clTop = clickedLayer.y
+    const clRight = clickedLayer.x + clickedLayer.width
+    const clBottom = clickedLayer.y + clickedLayer.height
+
+    const overlap =
+      phLeft < clRight && phRight > clLeft && phTop < clBottom && phBottom > clTop
+    if (!overlap) continue
+
+    // 多个占位图重叠时，选 zIndex 最高的
+    const z = ph.zIndex || 0
+    if (z > bestZ) {
+      bestZ = z
+      bestPlaceholder = ph
+    }
   }
+
+  return bestPlaceholder
+}
+
+function startLayerDrag(event, layer) {
+  // 【Bug修复】占位图优先选中：当点击的图层不是占位图时，检查该位置是否有占位图重叠，
+  // 如果有，将选中目标切换为占位图（确保占位图在重叠时始终被优先选中）。
+  if (layer.type !== 'placeholder') {
+    const overlappingPlaceholder = findOverlappingPlaceholder(event, layer)
+    if (overlappingPlaceholder) {
+      // 用占位图替换当前 layer 进行后续选中+拖拽逻辑
+      layer = overlappingPlaceholder
+    }
+  }
+
   if (!userStore.requireLogin()) return
   if (activeTool.value === 'hand') return
   if (activeTool.value === 'annotate') return
@@ -2934,14 +3099,17 @@ function startLayerDrag(event, layer) {
   event.currentTarget.setPointerCapture(event.pointerId)
 
   // 选中图片时置顶为前景：将当前图层 zIndex 设为最高
-  const maxZ = layers.value.reduce((max, l) => Math.max(max, l.zIndex || 0), 0)
-  const currentZ = layer.zIndex || 0
-  if (currentZ < maxZ) {
-    canvas.updateDocument(props.id, (draft) => {
-      const target = draft.payload.layers.find((l) => l.id === layer.id)
-      if (target) target.zIndex = maxZ + 1
-      return draft
-    })
+  // 但占位图不修改zIndex（保持占位图的优先级，确保占位图始终在最上层）
+  if (layer.type !== 'placeholder') {
+    const maxZ = layers.value.reduce((max, l) => Math.max(max, l.zIndex || 0), 0)
+    const currentZ = layer.zIndex || 0
+    if (currentZ < maxZ) {
+      canvas.updateDocument(props.id, (draft) => {
+        const target = draft.payload.layers.find((l) => l.id === layer.id)
+        if (target) target.zIndex = maxZ + 1
+        return draft
+      })
+    }
   }
 
   const draggingGroup =
@@ -4410,7 +4578,14 @@ function getElementClickStyle(key) {
   }
 }
 
+// sendChat 执行锁：sendChat 运行期间，watch 触发的 resumeInterruptedPlaceholders 必须完全跳过，
+// 否则 addChatMessages/addGeneratingPlaceholderLayer 触发的 layers 变化会让 watch
+// 把"还没拿到 taskId 的新占位图"当成"需要恢复"的，抢先调 submitImageTask 导致重复提交。
+let _sendChatActive = false
+
 async function sendChat() {
+  if (_sendChatActive) return // 仅挡 sendChat 重入；不再因"别的图在生成"而拒收，放开并发生图
+  _sendChatActive = true
   const text = getEditorPrompt()
   const elementHint = buildElementLocationHint()
   // 优化后的提示词格式 - 坐标清晰明确
@@ -4505,11 +4680,16 @@ async function sendChat() {
     resolution: chatResolution.value,
     referenceImageUrls: imageUrls,
   }, assistantId)
+  // 标记此占位图正在主提交流程中，防止 watch 触发的 resumeInterruptedPlaceholders
+  // 把它当作"需要恢复"的占位图而重复调 submitImageTask（导致一次提交2个生图请求）
+  _submittingPlaceholderIds.add(placeholderId)
   let submitted = false
 
   try {
-    const taskId = await submitImageTask({ prompt: fullPrompt, imageUrls })
+    const ph = layers.value.find((l) => l.id === placeholderId)
+    const taskId = await submitImageTask({ prompt: fullPrompt, imageUrls, clientTaskId: ph?.clientTaskId || '' })
     submitted = true
+    _sendChatActive = false // 首批 POST 已返回即开门，二批可在首批后台轮询期间进入
     updateChatMessage(assistantId, {
       taskId,
       text: `任务已提交，模型 ${chatModel.value}｜${chatRatio.value}｜${chatResolution.value}，正在生成...`,
@@ -4544,8 +4724,15 @@ async function sendChat() {
       })
       updateChatMessage(assistantId, { text: '生成任务已暂停（页面刷新），正在恢复...' })
     } else if (!submitted) {
-      // 真正提交失败（服务端明确报错，非刷新中断）：无后台任务，移除占位卡避免死卡
-      removeLayer(placeholderId)
+      // 提交阶段失败（服务端报错 / 后端掉线 / 超时等）：保留占位图、标 failed，
+      // 用户可手动重试。不再 removeLayer 静默消失（后端不稳定时会导致占位图突然消失）。
+      const lastError = `[submitFail] ${error?.name || 'Error'}: ${error?.message || error}`
+      updateGeneratingPlaceholder(placeholderId, {
+        progress: 1,
+        status: 'failed',
+        statusText: friendly,
+        lastError,
+      })
       showCopyPasteToast(friendly)
     } else {
       // 原始提交即失败（服务端明确报错，非刷新中断）：把真实错误存到图层，供后续排查
@@ -4559,6 +4746,8 @@ async function sendChat() {
       updateChatMessage(assistantId, { text: `生成失败：${friendly}` })
     }
   } finally {
+    _sendChatActive = false
+    _submittingPlaceholderIds.delete(placeholderId)
     chatGenerating.value = false
   }
 }
@@ -5965,7 +6154,6 @@ async function loadImageForCrop(layer) {
                   : undefined,
               zIndex: layer.zIndex,
               '--canvas-inverse-scale': 1 / viewScale,
-              pointerEvents: (layer.type === 'placeholder' && !layer.url && !_pollingTasks.has(layer.taskId || layer.id)) ? 'none' : undefined,
             }"
             @pointerdown="startLayerDrag($event, layer)"
             @pointermove="moveLayer"
@@ -7327,9 +7515,6 @@ async function loadImageForCrop(layer) {
           :style="{ cursor: imageViewer.isDragging ? 'grabbing' : 'grab' }"
           @wheel.prevent="handleViewerWheel"
           @pointerdown="startViewerDrag"
-          @pointermove="moveViewerDrag"
-          @pointerup="stopViewerDrag"
-          @pointerleave="stopViewerDrag"
         >
           <!-- 上一张按钮 -->
           <button
