@@ -1,5 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import ImageViewer from '../components/ImageViewer.vue'
 import { useUserStore } from '../stores/user'
 import { apiPath } from '../utils/apiBase'
 
@@ -12,6 +13,60 @@ const users = ref([])
 const roles = ref([])
 const stats = ref(null)
 
+function parseImageUrls(raw) {
+  if (!raw) return []
+  if (Array.isArray(raw)) return raw.filter((url) => typeof url === 'string' && url.trim())
+  if (typeof raw !== 'string') return []
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed)
+      ? parsed.filter((url) => typeof url === 'string' && url.trim())
+      : typeof parsed === 'string' && parsed.trim()
+        ? [parsed]
+        : []
+  } catch {
+    return raw.trim() ? [raw.trim()] : []
+  }
+}
+
+function normalizeImageStats(imageStats) {
+  if (!imageStats) return imageStats
+  return {
+    ...imageStats,
+    tasks: (imageStats.tasks || []).map((task) => {
+      const persisted = parseImageUrls(task.resultUrls)
+      const original = parseImageUrls(task.imageUrls)
+      return { ...task, previewUrls: [...new Set(persisted.length ? persisted : original)] }
+    }),
+  }
+}
+
+const taskImageViewer = reactive({ open: false, urls: [], index: 0, title: '' })
+
+function openTaskImageViewer(task, index = 0) {
+  if (!task.previewUrls?.length) return
+  taskImageViewer.urls = task.previewUrls
+  taskImageViewer.index = Math.min(index, task.previewUrls.length - 1)
+  taskImageViewer.title = task.taskId || '生图结果'
+  taskImageViewer.open = true
+}
+
+function closeTaskImageViewer() {
+  taskImageViewer.open = false
+}
+
+function downloadTaskImage(image) {
+  if (!image?.url) return
+  const link = document.createElement('a')
+  link.href = image.url
+  link.download = image.name || '生图结果'
+  link.target = '_blank'
+  link.rel = 'noopener'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+}
+
 const finishedTaskCount = computed(
   () => (stats.value?.summary?.completedTasks || 0) + (stats.value?.summary?.failedTasks || 0),
 )
@@ -23,6 +78,7 @@ const overallSuccessRate = computed(() => {
 
 const providerLabelMap = {
   apimart: 'APIMart',
+  'apimart-direct': 'APIMart',
   gettoken: 'GetToken',
   proxy: 'Proxy 兜底',
   agnes: 'Agnes',
@@ -30,7 +86,11 @@ const providerLabelMap = {
 }
 
 function providerLabel(provider) {
-  return providerLabelMap[provider] || provider
+  return providerLabelMap[provider] || provider || '未知'
+}
+
+function taskProviderLabel(provider) {
+  return provider === 'proxy' ? 'Proxy' : providerLabel(provider)
 }
 
 /* ── 角色判断 ── */
@@ -249,7 +309,7 @@ async function reloadTaskPage(p) {
   taskCurrentPage.value = target
   try {
     const imageStats = await api('/api/admin/image-stats' + buildImageStatsQuery())
-    stats.value = imageStats
+    stats.value = normalizeImageStats(imageStats)
   } catch (e) {
     /* 静默失败，仍展示已分页数据 */
   } finally {
@@ -359,7 +419,7 @@ async function loadConsole() {
   try {
     /* 所有角色都能看统计 */
     const imageStats = await api('/api/admin/image-stats' + buildImageStatsQuery())
-    stats.value = imageStats
+    stats.value = normalizeImageStats(imageStats)
 
     /* 仅管理员加载账号和角色 */
     if (isAdmin.value) {
@@ -1539,26 +1599,53 @@ onUnmounted(() => {
             </div>
           </div>
         </div>
-        <div class="console-table tasks-table">
+        <div :class="['console-table', 'tasks-table', { 'tasks-table-admin': isAdmin }]">
           <div class="console-row console-row-head">
+            <span>时间</span>
             <span>任务</span>
             <span v-if="isAdmin">用户</span>
             <span>模型</span>
+            <span>通道</span>
             <span>状态</span>
             <span>图片</span>
-            <span>时间</span>
           </div>
           <div v-for="task in pagedTasks" :key="task.taskId" class="console-row">
+            <span>{{ formatTime(task.createdAt) }}</span>
             <span>
               <strong>{{ task.taskId }}</strong>
-              <span v-if="isAdmin && task.isFallback" class="fallback-badge" title="该图由兜底通道生成">兜底</span>
               <small>{{ shortPrompt(task.prompt) }}</small>
             </span>
             <span v-if="isAdmin">{{ task.userName || task.userId || '匿名' }}</span>
             <span>{{ task.requestedModel || task.model }}</span>
+            <span class="task-provider-cell">
+              {{ taskProviderLabel(task.provider) }}
+              <span v-if="task.isFallback" class="fallback-badge" title="该图由 Proxy 兜底通道生成">兜底</span>
+            </span>
             <span :class="['status-pill', taskStatusKey(task.status)]">{{ taskStatusLabel(task.status) }}</span>
-            <span>{{ task.imageCount }} 张 / {{ task.miCost }} 米值</span>
-            <span>{{ formatTime(task.createdAt) }}</span>
+            <span class="task-image-cell">
+              <span v-if="task.previewUrls?.length" class="task-thumbnails">
+                <button
+                  v-for="(url, index) in task.previewUrls.slice(0, 3)"
+                  :key="url"
+                  type="button"
+                  class="task-thumbnail"
+                  :title="`查看第 ${index + 1} 张图片`"
+                  @click="openTaskImageViewer(task, index)"
+                >
+                  <img :src="url" :alt="`任务 ${task.taskId} 的第 ${index + 1} 张图片`" loading="lazy" />
+                </button>
+                <button
+                  v-if="task.previewUrls.length > 3"
+                  type="button"
+                  class="task-thumbnail-more"
+                  title="查看全部图片"
+                  @click="openTaskImageViewer(task, 3)"
+                >
+                  +{{ task.previewUrls.length - 3 }}
+                </button>
+              </span>
+              <small>{{ task.imageCount || task.previewUrls?.length || 0 }} 张 / {{ task.miCost || 0 }} 米值</small>
+            </span>
           </div>
           <p v-if="!taskReloading && pagedTasks.length === 0" class="console-empty">暂无匹配任务。</p>
         </div>
@@ -1574,10 +1661,77 @@ onUnmounted(() => {
         </div>
       </section>
     </section>
+
+    <ImageViewer
+      :open="taskImageViewer.open"
+      :images="taskImageViewer.urls"
+      :start-index="taskImageViewer.index"
+      @close="closeTaskImageViewer"
+      @change="taskImageViewer.index = $event"
+      @download="downloadTaskImage"
+    />
   </main>
 </template>
 
 <style scoped>
+.tasks-table.tasks-table-admin .console-row {
+  grid-template-columns: 112px minmax(220px, 1.6fr) 100px 110px 116px 92px 188px;
+}
+.tasks-table:not(.tasks-table-admin) .console-row {
+  grid-template-columns: 112px minmax(220px, 1.6fr) 110px 116px 92px 188px;
+}
+.task-provider-cell {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.task-image-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.task-image-cell small {
+  flex: 0 0 auto;
+  color: var(--yq-muted);
+  font-size: 11px;
+}
+.task-thumbnails {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+.task-thumbnail,
+.task-thumbnail-more {
+  width: 36px;
+  height: 36px !important;
+  padding: 0;
+  overflow: hidden;
+  border: 2px solid var(--yq-bg-main);
+  border-radius: 6px;
+  background: var(--yq-border);
+  color: var(--yq-text);
+}
+.task-thumbnail + .task-thumbnail,
+.task-thumbnail-more {
+  margin-left: -8px;
+}
+.task-thumbnail:hover,
+.task-thumbnail-more:hover {
+  position: relative;
+  z-index: 1;
+  transform: translateY(-1px);
+}
+.task-thumbnail img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.task-thumbnail-more {
+  font-size: 11px;
+  font-weight: 700;
+}
 .console-accounts-filters {
   display: flex;
   align-items: center;

@@ -61,7 +61,8 @@ public class ImageTaskController {
     // 客户端幂等：同一张生图前端带 client_task_id，刷新重提时直接返回已有任务，
     // 跳过米值扣减与外部生图调用，杜绝重复生图+重复扣费。
     if (request.clientTaskId() != null && !request.clientTaskId().isBlank()) {
-      ImageTaskLogService.ExistingTask existing = imageTaskLogService.findExistingByClientTaskId(request.clientTaskId());
+      ImageTaskLogService.ExistingTask existing =
+          imageTaskLogService.findExistingByClientTaskId(userId, request.clientTaskId());
       if (existing != null) {
         return ApiResponse.ok(imageTaskLogService.buildResponseFromEntity(existing));
       }
@@ -69,7 +70,7 @@ public class ImageTaskController {
     // 先扣后生成：原子扣减成功才发起外部调用；不足则抛 402，绝不发起外部调用
     MiValueDtos.DeductResult deduct = miValueService.checkAndDeduct(userId, MiBizType.IMAGE);
     try {
-      ImageGenerationDtos.CreateTaskResponse response = imageGenerationClient.createTask(request);
+      ImageGenerationDtos.CreateTaskResponse response = imageGenerationClient.createTask(request, userId);
       // 关联外部任务 id 到流水，供异步失败回滚
       if (response.tasks() != null && !response.tasks().isEmpty()
           && response.tasks().get(0).taskId() != null) {
@@ -88,7 +89,7 @@ public class ImageTaskController {
       // DuplicateKey 只可能在 recordCreated 时抛出，说明扣费+外部调用已完成；
       // 真正的保障是前端的 chatGenerating 守卫 + DB UNIQUE INDEX 从本源杜绝双扣费。
       ImageTaskLogService.ExistingTask existing =
-          imageTaskLogService.findExistingByClientTaskId(request.clientTaskId());
+          imageTaskLogService.findExistingByClientTaskId(userId, request.clientTaskId());
       if (existing != null) {
         return ApiResponse.ok(imageTaskLogService.buildResponseFromEntity(existing));
       }
@@ -116,8 +117,9 @@ public class ImageTaskController {
       @RequestParam("client_task_id") String clientTaskId,
       @RequestHeader(value = "Authorization", required = false) String authorization) {
     // 与 create 保持一致的鉴权（仅校验登录态）
-    adminAuthService.requireUserId(authorization);
-    ImageTaskLogService.ExistingTask existing = imageTaskLogService.findExistingByClientTaskId(clientTaskId);
+    Long userId = adminAuthService.requireUserId(authorization);
+    ImageTaskLogService.ExistingTask existing =
+        imageTaskLogService.findExistingByClientTaskId(userId, clientTaskId);
     Map<String, Object> body = new java.util.HashMap<>();
     body.put("exists", existing != null);
     body.put("task_id", existing == null ? null : existing.taskId);
@@ -125,8 +127,14 @@ public class ImageTaskController {
   }
 
   @GetMapping("/{taskId}")
-  public ApiResponse<ImageGenerationDtos.TaskStatusResponse> get(@PathVariable String taskId)
+  public ApiResponse<ImageGenerationDtos.TaskStatusResponse> get(
+      @PathVariable String taskId,
+      @RequestHeader(value = "Authorization", required = false) String authorization)
       throws Exception {
+    Long userId = adminAuthService.requireUserId(authorization);
+    if (!imageTaskLogService.isOwnedByUser(userId, taskId)) {
+      throw new ApiException(404, "Image task not found");
+    }
     ImageGenerationDtos.TaskStatusResponse response = imageGenerationClient.getTask(taskId);
     // 异步轮询到终态：失败则回退米值，成功则确认流水
     if (isTerminalFailed(response.status())) {

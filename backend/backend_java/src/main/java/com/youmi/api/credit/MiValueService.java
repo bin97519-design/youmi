@@ -91,6 +91,10 @@ public class MiValueService {
     }
   }
 
+  public boolean isTaskOwnedByUser(Long userId, String taskId, MiBizType bizType) {
+    return repository.isTaskOwnedByUser(taskId, userId, bizType);
+  }
+
   /** 查询用户当前余额 */
   public int getBalance(Long userId) {
     return repository.getBalance(userId);

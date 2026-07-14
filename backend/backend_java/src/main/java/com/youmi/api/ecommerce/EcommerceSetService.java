@@ -228,7 +228,7 @@ public class EcommerceSetService {
       final String taskModel = model;
       final String taskRatio = def.ratio;
       CompletableFuture.runAsync(() -> {
-        executeGenerationTask(dbId, setId, def, taskModel, taskRatio);
+        executeGenerationTask(userId, dbId, setId, def, taskModel, taskRatio);
       }, asyncExecutor);
 
       sortOrder++;
@@ -241,7 +241,8 @@ public class EcommerceSetService {
   /**
    * 异步执行单个生图任务。
    */
-  private void executeGenerationTask(long dbId, String setId, TaskDef def, String model, String ratio) {
+  private void executeGenerationTask(
+      Long userId, long dbId, String setId, TaskDef def, String model, String ratio) {
     try {
       concurrencyLimiter.acquire();
       try {
@@ -271,8 +272,8 @@ public class EcommerceSetService {
         );
 
         // 调用图片生成
-        ImageGenerationDtos.CreateTaskResponse response = imageGenerationClient.createTask(request);
-        imageTaskLogService.recordCreated(null, request, response);
+        ImageGenerationDtos.CreateTaskResponse response = imageGenerationClient.createTask(request, userId);
+        imageTaskLogService.recordCreated(userId, request, response);
 
         // 更新 task_id 和状态
         String providerTaskId = "";
@@ -310,7 +311,8 @@ public class EcommerceSetService {
   /**
    * 轮询进度，同时更新正在处理的任务状态。
    */
-  public EcommerceSetDtos.ProgressResponse pollProgress(String setId) {
+  public EcommerceSetDtos.ProgressResponse pollProgress(Long userId, String setId) {
+    validateOwnership(userId, setId);
     String mainStatus = getStatus(setId);
     if (mainStatus == null) {
       throw new ApiException(404, "套图不存在：" + setId);
@@ -426,7 +428,8 @@ public class EcommerceSetService {
   /**
    * 获取生图结果。
    */
-  public EcommerceSetDtos.ResultResponse getResult(String setId) {
+  public EcommerceSetDtos.ResultResponse getResult(Long userId, String setId) {
+    validateOwnership(userId, setId);
     String mainStatus = getStatus(setId);
     if (mainStatus == null) {
       throw new ApiException(404, "套图不存在：" + setId);

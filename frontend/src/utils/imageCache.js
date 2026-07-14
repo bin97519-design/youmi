@@ -10,6 +10,11 @@
  */
 
 import { persistToOss } from './ossUpload'
+import { useUserStore } from '../stores/user'
+
+function authHeaders() {
+  return useUserStore().authHeaders()
+}
 
 const CACHE_NAME = 'youmi-image-cache-v1'
 const MAX_CACHE_ENTRIES = 500
@@ -125,7 +130,7 @@ export async function refreshExpiredUrl(url) {
   try {
     const resp = await fetch('/api/v1/file/refresh-url', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ url }),
     })
     const data = await resp.json()
@@ -165,7 +170,7 @@ async function handleImgError(imgEl, url) {
   try {
     const resp = await fetch('/api/v1/file/refresh-url', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ url }),
     })
     const data = await resp.json().catch(() => ({}))

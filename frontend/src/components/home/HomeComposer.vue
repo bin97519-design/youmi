@@ -574,6 +574,7 @@ async function uploadRemoteFile(file) {
     formData.append('file', file)
     const response = await fetch(UPLOAD_ENDPOINT, {
       method: 'POST',
+      headers: { ...userStore.authHeaders() },
       body: formData,
     })
     if (!response.ok) {

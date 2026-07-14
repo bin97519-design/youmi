@@ -70,10 +70,11 @@ public class ImageTaskLogService {
    * @param clientTaskId 前端生成的客户端幂等键（空值直接返回 null）
    * @return 已存在的任务快照，未命中返回 null
    */
-  public ExistingTask findExistingByClientTaskId(String clientTaskId) {
-    if (clientTaskId == null || clientTaskId.isBlank()) return null;
+  public ExistingTask findExistingByClientTaskId(Long userId, String clientTaskId) {
+    if (userId == null || clientTaskId == null || clientTaskId.isBlank()) return null;
     List<ExistingTask> rows = jdbcTemplate.query(
-        "SELECT task_id, provider, model, requested_model, size, resolution, requested_count, status, raw_response FROM ym_image_task WHERE client_task_id = ? LIMIT 1",
+        "SELECT task_id, provider, model, requested_model, size, resolution, requested_count, status, raw_response "
+            + "FROM ym_image_task WHERE user_id = ? AND client_task_id = ? LIMIT 1",
         (rs, i) -> new ExistingTask(
             rs.getString("task_id"),
             rs.getString("provider"),
@@ -84,8 +85,16 @@ public class ImageTaskLogService {
             rs.getInt("requested_count"),
             rs.getString("status"),
             rs.getString("raw_response")),
-        clientTaskId);
+        userId, clientTaskId);
     return rows.isEmpty() ? null : rows.get(0);
+  }
+
+  public boolean isOwnedByUser(Long userId, String taskId) {
+    if (userId == null || taskId == null || taskId.isBlank()) return false;
+    Integer count = jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM ym_image_task WHERE task_id = ? AND user_id = ?",
+        Integer.class, taskId, userId);
+    return count != null && count > 0;
   }
 
   /** 已落库生图任务的轻量快照，用于幂等早返回时构造响应。 */

@@ -1,8 +1,9 @@
-$env:MYSQL_URL = "jdbc:mysql://rm-uf65sj38p60279hc04o.mysql.rds.aliyuncs.com:3306/office_dashboard?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false"
-$env:MYSQL_USER = "hm_rds"
-$env:MYSQL_PASSWORD = "hm321@2023"
-$env:REDIS_HOST = "139.224.246.245"
-$env:REDIS_PASSWORD = "common@2024"
+if (-not $env:MYSQL_PASSWORD) {
+  $env:MYSQL_PASSWORD = [Environment]::GetEnvironmentVariable("MYSQL_PASSWORD", "User")
+}
+if (-not $env:MYSQL_PASSWORD) {
+  throw "MYSQL_PASSWORD is not configured. Set it in the current shell or the user environment."
+}
 $env:YOUMI_IMAGE_API_KEY = [Environment]::GetEnvironmentVariable("YOUMI_IMAGE_API_KEY", "User")
 if (-not $env:YOUMI_IMAGE_API_KEY) {
   $env:YOUMI_IMAGE_API_KEY = [Environment]::GetEnvironmentVariable("APIMART_API_KEY", "User")
@@ -18,4 +19,4 @@ $env:IMAGE_PROXY_API_KEY = [Environment]::GetEnvironmentVariable("IMAGE_PROXY_AP
 $env:OSS_ACCESS_KEY_ID = [Environment]::GetEnvironmentVariable("OSS_ACCESS_KEY_ID", "User")
 $env:OSS_ACCESS_KEY_SECRET = [Environment]::GetEnvironmentVariable("OSS_ACCESS_KEY_SECRET", "User")
 
-mvn -f backend/pom.xml spring-boot:run
+& (Join-Path $PSScriptRoot "mvnw.cmd") -Dspring-boot.run.profiles=dev spring-boot:run

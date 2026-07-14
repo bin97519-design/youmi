@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>YOUMI 项目使用说明</title>
+  <style>
+    :root {
+      --ink: #172033;
+      --muted: #667085;
+      --line: #dfe4ea;
+      --soft: #f5f7fa;
+      --paper: #ffffff;
+      --brand: #146b60;
+      --brand-soft: #e7f4f1;
+      --accent: #d89216;
+      --danger: #b42318;
+      --shadow: 0 12px 30px rgba(23, 32, 51, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: #edf1f4;
+      font: 15px/1.72 "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+      letter-spacing: 0;
+    }
+    a { color: var(--brand); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code, kbd {
+      font-family: Consolas, "SFMono-Regular", monospace;
+      font-size: 0.92em;
+    }
+    kbd {
+      display: inline-block;
+      min-width: 28px;
+      padding: 1px 7px;
+      color: #273247;
+      text-align: center;
+      background: #fff;
+      border: 1px solid #cbd2dc;
+      border-bottom-width: 2px;
+      border-radius: 4px;
+    }
+
+    .masthead {
+      color: #fff;
+      background: #172033;
+      border-bottom: 4px solid var(--accent);
+    }
+    .masthead-inner {
+      width: min(1180px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 42px 0 38px;
+    }
+    .brand-row { display: flex; align-items: center; gap: 14px; }
+    .brand-mark {
+      display: grid;
+      width: 44px;
+      height: 44px;
+      place-items: center;
+      color: #172033;
+      font-weight: 800;
+      background: #f4d65e;
+      border-radius: 6px;
+    }
+    h1 { margin: 0; font-size: 30px; line-height: 1.25; }
+    .lead { max-width: 760px; margin: 16px 0 0; color: #cbd4e1; font-size: 16px; }
+    .meta { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 20px; color: #aeb9ca; font-size: 13px; }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 240px minmax(0, 1fr);
+      gap: 24px;
+      width: min(1180px, calc(100% - 40px));
+      margin: 24px auto 64px;
+      align-items: start;
+    }
+    .toc {
+      position: sticky;
+      top: 18px;
+      padding: 18px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      box-shadow: var(--shadow);
+    }
+    .toc strong { display: block; margin-bottom: 10px; font-size: 14px; }
+    .toc a {
+      display: block;
+      padding: 6px 8px;
+      color: #4c5870;
+      border-left: 2px solid transparent;
+    }
+    .toc a:hover, .toc a.active {
+      color: var(--brand);
+      background: var(--brand-soft);
+      border-left-color: var(--brand);
+      text-decoration: none;
+    }
+    .toc .sub { padding-left: 20px; font-size: 13px; }
+
+    main { min-width: 0; }
+    section {
+      margin-bottom: 18px;
+      padding: 28px 32px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      box-shadow: var(--shadow);
+      scroll-margin-top: 18px;
+    }
+    h2 { margin: 0 0 18px; font-size: 23px; line-height: 1.35; }
+    h3 { margin: 26px 0 10px; font-size: 17px; }
+    h4 { margin: 20px 0 8px; font-size: 15px; }
+    p { margin: 9px 0; }
+    ul, ol { margin: 9px 0; padding-left: 24px; }
+    li + li { margin-top: 5px; }
+
+    .quick-grid, .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 16px;
+    }
+    .feature {
+      padding: 16px;
+      background: var(--soft);
+      border: 1px solid var(--line);
+      border-radius: 5px;
+    }
+    .feature b { display: block; margin-bottom: 4px; }
+    .feature p { margin: 0; color: var(--muted); font-size: 14px; }
+
+    .steps { margin: 16px 0 0; padding: 0; list-style: none; counter-reset: step; }
+    .steps li {
+      position: relative;
+      min-height: 40px;
+      padding: 0 0 18px 48px;
+      counter-increment: step;
+    }
+    .steps li::before {
+      position: absolute;
+      left: 0;
+      top: 0;
+      display: grid;
+      width: 32px;
+      height: 32px;
+      place-items: center;
+      color: #fff;
+      font-weight: 700;
+      content: counter(step);
+      background: var(--brand);
+      border-radius: 50%;
+    }
+    .steps li:not(:last-child)::after {
+      position: absolute;
+      left: 15px;
+      top: 34px;
+      bottom: 2px;
+      width: 2px;
+      content: "";
+      background: #d7e4e1;
+    }
+
+    .note, .warning, .success {
+      margin: 16px 0;
+      padding: 13px 16px;
+      border-left: 4px solid;
+      border-radius: 4px;
+    }
+    .note { background: #edf4fb; border-color: #3976a8; }
+    .warning { background: #fff6e5; border-color: var(--accent); }
+    .success { background: var(--brand-soft); border-color: var(--brand); }
+    .note strong, .warning strong, .success strong { display: block; margin-bottom: 3px; }
+
+    .table-wrap { overflow-x: auto; margin: 14px 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 11px 12px; text-align: left; vertical-align: top; border: 1px solid var(--line); }
+    th { background: #eef2f5; white-space: nowrap; }
+    td:first-child { font-weight: 600; }
+    .status { display: inline-block; padding: 1px 8px; border-radius: 3px; font-size: 12px; font-weight: 700; }
+    .status.ok { color: #086b56; background: #dff4ed; }
+    .status.wait { color: #8a5800; background: #fff0c7; }
+    .status.bad { color: var(--danger); background: #fee4e2; }
+    .route { white-space: nowrap; color: #35415a; }
+
+    .shortcut-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 24px; }
+    .shortcut { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px dashed var(--line); }
+    .shortcut span { color: var(--muted); }
+
+    details { margin: 10px 0; border: 1px solid var(--line); border-radius: 5px; background: #fff; }
+    summary { padding: 12px 14px; font-weight: 700; cursor: pointer; }
+    details > div { padding: 0 14px 14px; color: #4f5c71; }
+
+    .footer { margin-top: 28px; color: var(--muted); text-align: center; font-size: 13px; }
+    .print-button {
+      position: fixed;
+      right: 20px;
+      bottom: 20px;
+      padding: 10px 15px;
+      color: #fff;
+      background: var(--brand);
+      border: 0;
+      border-radius: 5px;
+      box-shadow: var(--shadow);
+      cursor: pointer;
+    }
+
+    @media (max-width: 860px) {
+      .layout { grid-template-columns: 1fr; width: min(100% - 24px, 720px); }
+      .toc { position: static; }
+      .toc nav { columns: 2; }
+      .masthead-inner { width: calc(100% - 28px); padding: 30px 0; }
+      section { padding: 22px 20px; }
+    }
+    @media (max-width: 580px) {
+      h1 { font-size: 25px; }
+      .quick-grid, .feature-grid, .shortcut-grid { grid-template-columns: 1fr; }
+      .toc nav { columns: 1; }
+      .meta { display: block; }
+      .meta span { display: block; margin-top: 4px; }
+      .print-button { display: none; }
+    }
+    @media print {
+      body { background: #fff; font-size: 11pt; }
+      .masthead { color: #111; background: #fff; border-bottom: 2px solid #111; }
+      .lead, .meta { color: #444; }
+      .layout { display: block; width: 100%; margin: 0; }
+      .toc, .print-button { display: none; }
+      section { margin: 0; padding: 18px 0; border: 0; box-shadow: none; break-inside: avoid; }
+      h2, h3 { break-after: avoid; }
+      a { color: inherit; }
+    }
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <div class="masthead-inner">
+      <div class="brand-row">
+        <div class="brand-mark">Y</div>
+        <h1>YOUMI 项目使用说明</h1>
+      </div>
+      <p class="lead">面向电商运营、设计人员和系统管理员的操作手册，覆盖 AI 生图、无限画布、电商套图、历史任务、米值及管理控制台。</p>
+      <div class="meta">
+        <span>文档版本：1.0</span>
+        <span>更新日期：2026-07-14</span>
+        <span>本地访问：<a href="http://127.0.0.1:5173/">http://127.0.0.1:5173/</a></span>
+      </div>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="toc" aria-label="文档目录">
+      <strong>目录</strong>
+      <nav id="tocNav">
+        <a href="#overview">1. 系统概览</a>
+        <a href="#start">2. 开始使用</a>
+        <a href="#home">3. 首页生图</a>
+        <a href="#canvas">4. 无限画布</a>
+        <a class="sub" href="#canvas-tools">画布工具</a>
+        <a class="sub" href="#canvas-ai">对话生图</a>
+        <a class="sub" href="#assets">素材与历史</a>
+        <a href="#ecommerce">5. 电商套图</a>
+        <a href="#models">6. 模型与兜底</a>
+        <a href="#credits">7. 米值与任务</a>
+        <a href="#console">8. 管理控制台</a>
+        <a href="#security">9. 数据保存与隔离</a>
+        <a href="#shortcuts">10. 快捷键</a>
+        <a href="#faq">11. 常见问题</a>
+      </nav>
+    </aside>
+
+    <main>
+      <section id="overview">
+        <h2>1. 系统概览</h2>
+        <p>YOUMI 是一套电商 AI 图片生产与画布编辑系统。用户可以上传产品图、生成主图或详情页、在无限画布中继续编辑，并从历史任务和素材库复用结果。</p>
+        <div class="feature-grid">
+          <div class="feature"><b>AI 主图与详情页</b><p>输入商品信息、参考图、比例和清晰度，生成可继续编辑的电商图片。</p></div>
+          <div class="feature"><b>无限画布</b><p>管理多张图片、元素框、连接线和图层，支持缩放、平移、撤销与下载。</p></div>
+          <div class="feature"><b>电商套图</b><p>一次配置主图和详情页方案，批量生成整套电商视觉内容。</p></div>
+          <div class="feature"><b>运营控制台</b><p>查看模型用量、中转站成功率、14 天趋势、任务明细和米值消耗。</p></div>
+        </div>
+        <div class="note"><strong>建议</strong>虽然画布列表和编辑页面可以直接打开，但上传、云端保存、生图、历史任务和控制台数据均依赖登录账号。正式使用前请先登录。</div>
+      </section>
+
+      <section id="start">
+        <h2>2. 开始使用</h2>
+        <ol class="steps">
+          <li><b>打开系统</b><br>访问首页，在右上角或侧栏打开登录窗口。</li>
+          <li><b>登录账号</b><br>输入账号和密码。登录成功后，头像区域会显示账号、用户编号和米值余额。</li>
+          <li><b>选择工作入口</b><br>从首页快捷入口进入 AI 主图、AI 详情页、竞品复刻、电商套图、反推提示词或我的画布。</li>
+          <li><b>提交生成任务</b><br>填写提示词和参数，确认预计消耗后提交。生成完成的图片会自动进入画布和历史记录。</li>
+        </ol>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>入口</th><th>地址</th><th>用途</th></tr></thead>
+            <tbody>
+              <tr><td>首页</td><td class="route">/</td><td>快捷生图、详情页策划和功能入口。</td></tr>
+              <tr><td>我的画布</td><td class="route">/canvas</td><td>创建、打开、重命名和删除画布。</td></tr>
+              <tr><td>电商套图</td><td class="route">/ecommerce-set</td><td>批量生成主图和详情页。</td></tr>
+              <tr><td>历史生成</td><td class="route">/history</td><td>查看 AI 任务进度、结果和可复用素材。</td></tr>
+              <tr><td>控制台</td><td class="route">/console</td><td>查看运营统计；管理员还可管理用户和角色。</td></tr>
+              <tr><td>米值/会员</td><td class="route">/points</td><td>查看余额、套餐和充值入口。</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="home">
+        <h2>3. 首页生图</h2>
+        <h3>快速生成主图</h3>
+        <ol>
+          <li>选择“生成主图”或对应快捷入口。</li>
+          <li>输入商品、卖点、风格、场景和文案要求；需要保持产品外观时上传参考图。</li>
+          <li>选择模型、图片比例、分辨率和生成张数。</li>
+          <li>确认预计米值消耗，点击“生图”。</li>
+          <li>任务完成后打开结果，可下载或进入画布继续处理。</li>
+        </ol>
+
+        <h3>生成详情页</h3>
+        <p>详情页支持首屏引导、痛点共鸣、核心卖点、细节材质、使用场景、对比升级、规格参数和信任转化等屏幕类型。可以编辑每屏文案和提示词，也可以选择分屏生成。</p>
+        <div class="warning"><strong>参考图使用原则</strong>需要保持产品主体、颜色、结构或包装时，应上传清晰参考图，并在提示词中明确“保持产品外观”。参考图过多或互相矛盾会降低结果稳定性。</div>
+
+        <h3>竞品复刻与反推提示词</h3>
+        <ul>
+          <li><b>竞品复刻：</b>上传竞品页面或图片，再上传自己的产品图，系统按竞品结构生成映射方案。</li>
+          <li><b>反推提示词：</b>上传图片，系统分析画面并生成可编辑提示词，可继续带入生图流程。</li>
+        </ul>
+      </section>
+
+      <section id="canvas">
+        <h2>4. 无限画布</h2>
+        <p>无限画布是图片组织、对话生图和二次编辑的主要工作区。画布内容会先保存在当前浏览器，并在登录后同步到当前账号的服务器空间。</p>
+
+        <h3 id="canvas-tools">4.1 画布工具</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>工具</th><th>操作方式</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td>添加</td><td>左侧“+”</td><td>本地上传图片/文件，或从历史生成导入。</td></tr>
+              <tr><td>选择</td><td><kbd>V</kbd></td><td>选中、移动图片或元素；支持框选多个图层。</td></tr>
+              <tr><td>抓手</td><td><kbd>H</kbd></td><td>拖动画布视野，不移动图片。</td></tr>
+              <tr><td>聚焦</td><td><kbd>F</kbd></td><td>聚焦选中图层；未选中时适应整个画面。</td></tr>
+              <tr><td>标记</td><td><kbd>M</kbd></td><td>选择图片中的识别元素，用于局部参考或编辑。</td></tr>
+              <tr><td>小地图</td><td>左下角</td><td>查看全部图层分布和当前视野位置。</td></tr>
+              <tr><td>主题</td><td>顶部太阳/月亮按钮</td><td>切换开灯与关灯主题，不影响画布内容。</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>图片查看与编辑</h3>
+        <ul>
+          <li>双击画布图片可进入大图查看器。</li>
+          <li>在查看器中可以拖拽图片、滚轮缩放、旋转、复位和下载。</li>
+          <li>选中图层后可移动、删除、下载或执行上下文菜单中的相关操作。</li>
+          <li>系统最多保留 50 步撤销记录。</li>
+        </ul>
+
+        <h3 id="canvas-ai">4.2 对话生图</h3>
+        <ol class="steps">
+          <li><b>准备参考内容</b><br>先选中一张或多张图片，或选中图片中的识别元素。</li>
+          <li><b>输入需求</b><br>在右侧对话窗口描述需要生成或修改的内容。</li>
+          <li><b>选择参数</b><br>选择模型、比例和分辨率，点击发送。</li>
+          <li><b>等待完成</b><br>画布会出现进度占位卡；生成完成后自动替换为图片。</li>
+        </ol>
+        <div class="success"><strong>刷新恢复</strong>任务生成期间刷新页面，系统会根据画布里保存的任务编号恢复轮询，不会因为刷新重复提交同一张图。</div>
+
+        <h3 id="assets">4.3 我的素材与历史记录</h3>
+        <ul>
+          <li><b>历史记录：</b>对话生图成功后自动记录，可再次添加到画布或下载。</li>
+          <li><b>我的素材：</b>在画布图片的右键菜单中选择“添加到我的素材”。</li>
+          <li>素材面板和历史面板都支持拖动；面板位置会被记住。</li>
+          <li>历史记录跟随当前画布，不同画布之间不会混用。</li>
+        </ul>
+      </section>
+
+      <section id="ecommerce">
+        <h2>5. 电商套图</h2>
+        <ol class="steps">
+          <li><b>准备商品信息</b><br>上传产品图，填写商品名称、核心卖点、平台和补充说明；也可从生成历史导入。</li>
+          <li><b>策划与优化</b><br>使用 AI 优化产品信息和卖点，检查后可手动修改。</li>
+          <li><b>配置主图</b><br>选择主图类型、主图卖点、比例和张数。</li>
+          <li><b>配置详情页</b><br>选择分屏或整版生成、页面比例和生成张数。</li>
+          <li><b>开始生成</b><br>选择模型，确认总张数和预计消耗后提交。</li>
+          <li><b>处理结果</b><br>在结果区查看主图和详情页，可下载、重新策划或导入画布。</li>
+        </ol>
+        <div class="warning"><strong>生成失败时</strong>先查看失败提示，再点击“重新生成”。如果某张参考图失效，重新上传后再提交；不要连续快速点击生成按钮。</div>
+      </section>
+
+      <section id="models">
+        <h2>6. 模型与兜底关系</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>界面模型</th><th>主要通道</th><th>失败后的处理</th><th>适用建议</th></tr></thead>
+            <tbody>
+              <tr><td>gpt-image-2</td><td>APIMart</td><td>切换 Proxy，仍使用 GPT-image2</td><td>电商文案、排版和综合图像生成。</td></tr>
+              <tr><td>banana2</td><td>GetToken</td><td>切换 Proxy，仍使用香蕉2对应模型</td><td>快速出图和参考图编辑。</td></tr>
+              <tr><td>banana-pro</td><td>GetToken</td><td>切换 Proxy，仍使用香蕉 Pro 对应模型</td><td>更复杂的画面和质量要求。</td></tr>
+              <tr><td>agnes-image-2.1-flash</td><td>Agnes</td><td>无兜底通道</td><td>同步快速生成；失败后需要手动重试或更换模型。</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>管理员在控制台任务列表中可以看到“兜底”标记。普通用户只看到最终任务状态，不需要手动选择中转站。</p>
+      </section>
+
+      <section id="credits">
+        <h2>7. 米值与任务状态</h2>
+        <p>提交生图或视频任务时，系统先检查米值并扣除对应费用。任务调用失败时会按任务流水执行回退，避免重复退款。</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>状态</th><th>含义</th><th>建议操作</th></tr></thead>
+            <tbody>
+              <tr><td><span class="status wait">等待中</span></td><td>任务已进入队列，尚未开始处理。</td><td>保持页面打开或稍后从历史记录查看。</td></tr>
+              <tr><td><span class="status wait">生成中</span></td><td>模型正在处理，画布会显示进度。</td><td>无需重复提交；允许刷新后恢复。</td></tr>
+              <tr><td><span class="status ok">已完成</span></td><td>图片已经生成并写入记录。</td><td>下载、加入素材或继续编辑。</td></tr>
+              <tr><td><span class="status bad">失败</span></td><td>模型、网络、内容审核或文件处理失败。</td><td>阅读中文错误提示，调整后重试。</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note"><strong>计费说明</strong>具体单价以提交按钮旁显示的“预计消耗”和当前后台配置为准。不要仅根据历史任务里的旧单价估算。</div>
+      </section>
+
+      <section id="console">
+        <h2>8. 管理控制台</h2>
+        <h3>所有已登录用户</h3>
+        <ul>
+          <li>查看与本人权限范围相符的概览、米值和生图统计。</li>
+          <li>查看模型用量、中转站成功率、近 14 天趋势和最近任务。</li>
+          <li>按状态、模型、用户和日期筛选最近任务；普通用户只能看到自己的数据。</li>
+        </ul>
+
+        <h3>管理员专属功能</h3>
+        <ul>
+          <li>创建、编辑和筛选用户，配置所属店铺、套餐、状态和角色。</li>
+          <li>创建、编辑和删除角色。</li>
+          <li>查看全系统任务与中转站统计，识别兜底任务。</li>
+          <li>查看或删除指定用户的画布。管理端操作需要同时指定用户和画布编号，避免误操作同名画布。</li>
+        </ul>
+        <div class="warning"><strong>权限提醒</strong>删除用户、角色或画布属于管理操作。执行前应确认账号、用户编号和画布名称，不要只根据名称判断。</div>
+      </section>
+
+      <section id="security">
+        <h2>9. 数据保存与账号隔离</h2>
+        <ul>
+          <li>画布在浏览器本地和服务器端都按用户编号分开保存。</li>
+          <li>切换账号时，系统会取消旧账号待执行的同步，并重新加载新账号数据。</li>
+          <li>画布详情、保存和删除均同时校验登录用户与画布编号。</li>
+          <li>生图、视频和电商套图任务只能由任务所属用户查询。</li>
+          <li>上传文件和自动转存图片存放在对应用户目录中；文件签名、刷新和删除均需要登录。</li>
+          <li>退出公共电脑前请主动退出账号，不要把登录后的浏览器交给其他人使用。</li>
+        </ul>
+        <div class="note"><strong>本地缓存</strong>清除浏览器站点数据会删除尚未同步的本地内容。重要画布应保持登录并等待保存状态完成后再关闭页面。</div>
+      </section>
+
+      <section id="shortcuts">
+        <h2>10. 画布快捷键</h2>
+        <div class="shortcut-grid">
+          <div class="shortcut"><span>选择工具</span><kbd>V</kbd></div>
+          <div class="shortcut"><span>抓手工具</span><kbd>H</kbd></div>
+          <div class="shortcut"><span>聚焦/适应画面</span><kbd>F</kbd></div>
+          <div class="shortcut"><span>标记元素</span><kbd>M</kbd></div>
+          <div class="shortcut"><span>缩放画布</span><kbd>Ctrl + 滚轮</kbd></div>
+          <div class="shortcut"><span>平移画布</span><kbd>空格 + 拖拽</kbd></div>
+          <div class="shortcut"><span>临时选中元素</span><kbd>Ctrl + 点击</kbd></div>
+          <div class="shortcut"><span>撤销</span><kbd>Ctrl + Z</kbd></div>
+          <div class="shortcut"><span>删除选中图层</span><kbd>Delete</kbd></div>
+          <div class="shortcut"><span>关闭面板</span><kbd>Esc</kbd></div>
+          <div class="shortcut"><span>发送对话</span><kbd>Enter</kbd></div>
+          <div class="shortcut"><span>对话换行</span><kbd>Ctrl + Enter</kbd></div>
+        </div>
+      </section>
+
+      <section id="faq">
+        <h2>11. 常见问题</h2>
+        <details open>
+          <summary>登录后还是看不到自己的画布怎么办？</summary>
+          <div>先刷新页面并确认右上角账号和用户编号正确。仍为空时检查后端服务是否运行、网络是否正常，再重新登录。不要在未登录状态下反复创建同名画布。</div>
+        </details>
+        <details>
+          <summary>任务一直显示生成中怎么办？</summary>
+          <div>可以刷新画布，系统会恢复任务轮询。若长时间没有变化，到“历史生成”或“控制台”的最近任务中查看状态；失败任务会显示错误信息。</div>
+        </details>
+        <details>
+          <summary>为什么控制台显示“兜底”？</summary>
+          <div>主中转站调用失败后，系统自动切换到该模型配置的备用通道。兜底不代表任务失败，只表示最终结果由备用通道完成。</div>
+        </details>
+        <details>
+          <summary>为什么 Agnes 失败后没有自动切换？</summary>
+          <div>Agnes 当前没有配置兜底通道。请手动重试，或改用 banana2、banana-pro、gpt-image-2。</div>
+        </details>
+        <details>
+          <summary>图片加载失败或缩略图空白怎么办？</summary>
+          <div>先确认仍处于登录状态并刷新页面。系统会尝试刷新 OSS 地址；若是旧的第三方临时地址失效，可从历史任务重新导入，或重新生成。</div>
+        </details>
+        <details>
+          <summary>为什么米值不足或消耗与预计不同？</summary>
+          <div>以提交前界面显示的预计消耗为准。生成张数、业务类型和后台单价都会影响总消耗；管理员可在控制台核对任务和米值流水。</div>
+        </details>
+        <details>
+          <summary>切换账号后会看到上一账号的数据吗？</summary>
+          <div>不会。当前版本在账号变化时会立即切换本地缓存空间并重新加载服务器数据。若旧页面仍停留在打开状态，刷新即可。</div>
+        </details>
+
+        <div class="footer">YOUMI 项目使用说明 · 本文档可使用浏览器打印功能导出为 PDF</div>
+      </section>
+    </main>
+  </div>
+
+  <button class="print-button" type="button" onclick="window.print()">打印 / 导出 PDF</button>
+
+  <script>
+    (() => {
+      const links = Array.from(document.querySelectorAll('#tocNav a'));
+      const sections = links
+        .map((link) => document.querySelector(link.getAttribute('href')))
+        .filter(Boolean);
+      const markActive = () => {
+        let current = sections[0];
+        for (const section of sections) {
+          if (section.getBoundingClientRect().top <= 120) current = section;
+        }
+        links.forEach((link) => {
+          link.classList.toggle('active', link.getAttribute('href') === '#' + current.id);
+        });
+      };
+      document.addEventListener('scroll', markActive, { passive: true });
+      markActive();
+    })();
+  </script>
+</body>
+</html>

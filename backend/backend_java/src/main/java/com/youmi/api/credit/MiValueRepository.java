@@ -96,6 +96,14 @@ public class MiValueRepository {
         rs.getString("biz_type")), taskId).stream().findFirst();
   }
 
+  public boolean isTaskOwnedByUser(String taskId, Long userId, MiBizType bizType) {
+    if (taskId == null || taskId.isBlank() || userId == null || bizType == null) return false;
+    Integer count = jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM ym_mi_value_log WHERE task_id = ? AND user_id = ? AND biz_type = ?",
+        Integer.class, taskId, userId, bizType.name());
+    return count != null && count > 0;
+  }
+
   /** 按自增 id 查找流水（供回滚时取 price / user_id） */
   public Optional<LogRow> findLogById(long logId) {
     String sql = "SELECT id, user_id, price, status, biz_type FROM ym_mi_value_log WHERE id = ?";

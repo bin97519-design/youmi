@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import CaseGallery from '../components/home/CaseGallery.vue'
 import HomeComposer from '../components/home/HomeComposer.vue'
@@ -235,7 +235,11 @@ async function submitImageTask(
 }
 
 async function fetchImageTask(taskId) {
-  return readApiResponse(await fetch(apiPath(`/api/image-tasks/${encodeURIComponent(taskId)}`)))
+  return readApiResponse(
+    await fetch(apiPath(`/api/image-tasks/${encodeURIComponent(taskId)}`), {
+      headers: { ...userStore.authHeaders() },
+    }),
+  )
 }
 
 function failGeneration(error) {
@@ -505,16 +509,6 @@ onMounted(() => {
   if (userStore.isAuthenticated && !canvasStore.serverSynced) {
     canvasStore.syncFromServer()
   }
-
-  // 监听登录状态：登录成功后立即从服务器拉取数据
-  watch(
-    () => userStore.isAuthenticated,
-    (authed) => {
-      if (authed && !canvasStore.serverSynced) {
-        canvasStore.syncFromServer()
-      }
-    },
-  )
 
   // 点击外部关闭用户菜单
   const onClickOutside = (e) => {

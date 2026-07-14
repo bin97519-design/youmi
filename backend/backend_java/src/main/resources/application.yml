@@ -15,6 +15,8 @@ spring:
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
       database: ${REDIS_DATABASE:0}
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT:1s}
+      timeout: ${REDIS_TIMEOUT:1s}
   sql:
     init:
       mode: always
@@ -53,9 +55,7 @@ youmi:
     apimart-direct-api-key: ${YOUMI_IMAGE_APIMART_DIRECT_API_KEY:${APIMART_API_KEY:${APIMART_IMAGE_API_KEY:}}}
     apimart-direct-generation-path: ${YOUMI_IMAGE_APIMART_DIRECT_GENERATION_PATH:/v1/images/generations}
     apimart-direct-task-path: ${YOUMI_IMAGE_APIMART_DIRECT_TASK_PATH:/v1/tasks}
-    apimart-direct-fallback-base-url: ${YOUMI_IMAGE_APIMART_DIRECT_FALLBACK_BASE_URL:https://aiuxu.com}
     fallback-enabled: ${YOUMI_IMAGE_FALLBACK_ENABLED:true}
-    fallback-provider: gettoken
     get-token-base-url: https://nb.gettoken.cn/openapi/v1
     get-token-api-key: ${GETTOKEN_API_KEY:${YOUMI_GETTOKEN_API_KEY:}}
     get-token-query-path: /query

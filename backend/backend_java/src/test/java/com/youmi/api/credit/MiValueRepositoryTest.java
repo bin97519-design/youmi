@@ -1,6 +1,7 @@
 package com.youmi.api.credit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Optional;
@@ -133,5 +134,8 @@ class MiValueRepositoryTest {
     Optional<MiValueRepository.LogRow> byTask = repository.findLogByTaskId("agnes-video:task1");
     assertTrue(byTask.isPresent());
     assertEquals(logId, byTask.get().logId());
+    assertTrue(repository.isTaskOwnedByUser("agnes-video:task1", USER, MiBizType.VIDEO));
+    assertFalse(repository.isTaskOwnedByUser("agnes-video:task1", 99002L, MiBizType.VIDEO));
+    assertFalse(repository.isTaskOwnedByUser("agnes-video:task1", USER, MiBizType.IMAGE));
   }
 }

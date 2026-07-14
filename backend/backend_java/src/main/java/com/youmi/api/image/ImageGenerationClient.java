@@ -50,8 +50,7 @@ public class ImageGenerationClient {
   private final HttpClient httpClient;
   private final Map<String, List<String>> persistedImageCache = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<String, FailoverState> failoverStates = new ConcurrentHashMap<>();
-  // APIMart 直连：记录每个 task 创建时实际使用的 base url（主站或 fallback 代理域名），
-  // 轮询 GET 必须用同一个域名才能拿到 task_id。
+  // APIMart 直连：记录 task 创建所用的 base url，轮询 GET 必须保持同源。
   private final ConcurrentHashMap<String, String> apimartDirectTaskBaseUrl = new ConcurrentHashMap<>();
 
   // 下列依赖为字段注入（required=false）：测试构造时可为 null，运行时由 Spring 注入。
@@ -59,6 +58,7 @@ public class ImageGenerationClient {
   private JdbcTemplate jdbcTemplate;
   // 异步持久化去重：标记正在持久化的复合 taskId（其值 = ym_image_task.task_id）
   private final ConcurrentHashMap<String, Boolean> persistingTaskIds = new ConcurrentHashMap<>();
+  private final ThreadLocal<Long> requestUserId = new ThreadLocal<>();
   // 持久化专用线程池：避免轮询请求内同步阻塞，且不引入自注入造成的循环依赖
   private final ThreadPoolTaskExecutor persistExecutor = buildPersistExecutor();
 
@@ -113,6 +113,16 @@ public class ImageGenerationClient {
     return properties.isProxyConfigured();
   }
 
+  public ImageGenerationDtos.CreateTaskResponse createTask(
+      ImageGenerationDtos.CreateTaskRequest request, Long userId) throws Exception {
+    requestUserId.set(userId);
+    try {
+      return createTask(request);
+    } finally {
+      requestUserId.remove();
+    }
+  }
+
   public ImageGenerationDtos.CreateTaskResponse createTask(ImageGenerationDtos.CreateTaskRequest request)
       throws Exception {
     if (request == null || request.prompt() == null || request.prompt().isBlank()) {
@@ -146,7 +156,7 @@ public class ImageGenerationClient {
       }
     }
 
-    // gpt-image-2 / dall-e 等：优先走 APIMart 直连（aiuxu.com），失败兜底 Proxy（GetToken 不支持 gpt-image-2，跳过）
+    // gpt-image-2：APIMart（apib.ai）失败后直接兜底 Proxy。
     if (properties.isProxyModel(resolvedModel)) {
       boolean apimartConfigured = properties.isApimartDirectConfigured();
       boolean proxyConfigured = isProxyConfigured();
@@ -330,7 +340,7 @@ public class ImageGenerationClient {
    * APIMart 直连 GPT-Image-2 标准通道（主通道）
    * 端点：POST https://apib.ai/v1/images/generations
    * 异步：返回 task_id，轮询 GET /v1/tasks/{task_id}
-   * 模型名：gpt-image-2，official_fallback=true
+   * 模型名：gpt-image-2。APIMart 失败后由本系统切换到 Proxy。
    */
   private ImageGenerationDtos.CreateTaskResponse createApimartDirectTask(ImageGenerationDtos.CreateTaskRequest request)
       throws Exception {
@@ -345,7 +355,6 @@ public class ImageGenerationClient {
     body.put("size", size);
     body.put("resolution", resolution);
     body.put("n", count);
-    body.put("official_fallback", true);
     putIfPresent(body, "image_urls", request.normalizedImageUrls());
     System.out.println("[apimart-direct] size=" + size + " resolution=" + resolution
         + " request.size()=" + request.size() + " request.ratio()=" + request.ratio()
@@ -361,7 +370,7 @@ public class ImageGenerationClient {
       throw new ApiException(502, "APIMart direct did not return task_id");
     }
 
-    // 记录该 task 实际创建所用的 base url（可能是 fallback 代理域名），轮询 GET 必须同源
+    // 记录 task 创建所用的 APIMart 域名，轮询 GET 保持同源。
     for (ImageGenerationDtos.TaskRef raw : rawTasks) {
       apimartDirectTaskBaseUrl.put(raw.taskId(), result.usedBaseUrl);
     }
@@ -590,10 +599,12 @@ public class ImageGenerationClient {
       // 1) 超时即触发切换（无需先查询主任务，避免无谓等待）
       if (!state.failoverTriggered && timeout) {
         triggerBackup(state, "timeout");
+        markFallbackProvider(cleanTaskId, state);
       }
 
       // 2) 已触发且备份任务已创建：直接返回备份任务状态（taskId 仍用原始值，前端无感知）
       if (state.failoverTriggered && state.backupTaskId != null) {
+        markFallbackProvider(cleanTaskId, state);
         if (!state.failoverLogged) {
           state.failoverLogged = true;
           System.out.println("[image-failover] " + new java.util.Date()
@@ -668,6 +679,7 @@ public class ImageGenerationClient {
     }
     triggerBackup(state, "error");
     if (state.failoverTriggered && state.backupTaskId != null) {
+      markFallbackProvider(cleanTaskId, state);
       if (!state.failoverLogged) {
         state.failoverLogged = true;
         System.out.println("[image-failover] " + new java.util.Date()
@@ -861,7 +873,7 @@ public class ImageGenerationClient {
     String cleanTaskId = taskId == null ? "" : taskId.trim();
     if (cleanTaskId.isBlank()) throw new ApiException(400, "taskId is required");
 
-    // 优先用该 task 创建时实际使用的域名（可能是 fallback 代理），否则用主站
+    // 使用创建任务时的 APIMart 域名；进程重启后回到配置的 apib.ai。
     String baseUrl = apimartDirectTaskBaseUrl.getOrDefault(cleanTaskId, properties.normalizedApimartDirectBaseUrl());
     String suffix = properties.normalizedApimartDirectTaskPath() + "/" + encode(cleanTaskId);
     if (properties.getLanguage() != null && !properties.getLanguage().isBlank()) {
@@ -885,7 +897,7 @@ public class ImageGenerationClient {
         + " dataKeys=" + (data.isObject() ? iteratorToList(data.fieldNames()) : "not-object")
         + " rawSnippet=" + compact(root.toString()).substring(0, Math.min(200, compact(root.toString()).length())));
 
-    // 有图就当作完成——aiuxu.com 状态词不统一，不应因为状态词不认识而卡住
+    // 有图且进度完成时按成功处理，兼容 APIMart 状态词差异。
     boolean hasImages = !imageUrls.isEmpty();
     boolean done = isDoneStatus(status) || (hasImages && progress != null && progress >= 100);
     if (done && hasImages) {
@@ -974,7 +986,7 @@ public class ImageGenerationClient {
     return send(request, "Proxy");
   }
 
-  /** APIMart 直连 POST 的结果：响应体 + 实际使用的 base url（主站或 fallback 代理域名） */
+  /** APIMart 直连 POST 的结果：响应体 + 创建任务使用的 base url。 */
   private static final class ApimartDirectSendResult {
     final JsonNode root;
     final String usedBaseUrl;
@@ -985,29 +997,9 @@ public class ImageGenerationClient {
     }
   }
 
-  /** 将 endpoint 的基址从 fromBase 换成 toBase（用于主站↔fallback 代理域名切换） */
-  private static String swapApimartDirectBase(String endpoint, String fromBase, String toBase) {
-    if (fromBase != null && !fromBase.isEmpty() && endpoint.startsWith(fromBase)) {
-      return toBase + endpoint.substring(fromBase.length());
-    }
-    return endpoint;
-  }
-
-  /** 判断异常是否为网络层不可达（IOException 及其子类 SSLException / SocketTimeoutException / HttpTimeoutException） */
-  private static boolean isNetworkError(Throwable e) {
-    return e != null && e.getCause() instanceof IOException;
-  }
-
-  /**
-   * APIMart 直连 POST：优先打主站（api.apimart.ai），仅当网络层不可达（IOException / SSLException /
-   * SocketTimeoutException）时，自动用 fallback 代理域名（apib.ai）重试一次。
-   * API 业务错误（4xx/5xx 非 IO 类）不重试，原样抛出。
-   */
+  /** APIMart 直连 POST：只请求 apib.ai；任何失败均交给上层切换到 Proxy。 */
   private ApimartDirectSendResult sendApimartDirectPost(String endpoint, Map<String, Object> body) throws Exception {
     String primaryBase = properties.normalizedApimartDirectBaseUrl();
-    String fallbackBase = properties.normalizedApimartDirectFallbackBaseUrl();
-    String fallbackEndpoint = swapApimartDirectBase(endpoint, primaryBase, fallbackBase);
-
     HttpRequest request = HttpRequest.newBuilder()
         .uri(URI.create(endpoint))
         .timeout(Duration.ofSeconds(Math.max(5, properties.getTimeoutSeconds())))
@@ -1016,49 +1008,16 @@ public class ImageGenerationClient {
         .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
         .build();
 
-    System.out.println("[apimart-direct] trying primary...");
-    try {
-      JsonNode root = send(request, "APIMart-direct");
-      return new ApimartDirectSendResult(root, primaryBase);
-    } catch (ApiException e) {
-      if (isNetworkError(e) && !fallbackEndpoint.equals(endpoint)) {
-        System.out.println("[apimart-direct] primary failed, retrying fallback...");
-        HttpRequest fallbackRequest = HttpRequest.newBuilder()
-            .uri(URI.create(fallbackEndpoint))
-            .timeout(Duration.ofSeconds(Math.max(5, properties.getTimeoutSeconds())))
-            .header("Authorization", "Bearer " + properties.getApimartDirectApiKey())
-            .header("Content-Type", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
-            .build();
-        JsonNode root = send(fallbackRequest, "APIMart-direct");
-        return new ApimartDirectSendResult(root, fallbackBase);
-      }
-      throw e;
-    }
+    JsonNode root = send(request, "APIMart-direct");
+    return new ApimartDirectSendResult(root, primaryBase);
   }
 
-  /**
-   * APIMart 直连任务轮询 GET：优先用创建 task 时的域名（baseUrl），网络层不可达时自动用
-   * 另一个域名（主站 / fallback 代理）重试一次。仅网络错误重试，API 业务错误原样抛出。
-   */
+  /** APIMart 轮询只访问创建任务时的 apib.ai；失败后由上层切换到 Proxy。 */
   private JsonNode sendApimartDirectGet(String baseUrl, String suffix) throws Exception {
-    String fallbackBase = properties.normalizedApimartDirectFallbackBaseUrl();
-    String altBase = baseUrl.equals(fallbackBase)
-        ? properties.normalizedApimartDirectBaseUrl()
-        : fallbackBase;
-    System.out.println("[apimart-direct] trying primary (GET) baseUrl=" + baseUrl);
     try {
       return doApimartDirectGet(baseUrl + suffix);
-    } catch (IOException primaryError) {
-      if (altBase.equals(baseUrl)) {
-        throw wrapApimartDirectGetError(primaryError);
-      }
-      System.out.println("[apimart-direct] primary failed, retrying fallback (GET) baseUrl=" + altBase);
-      try {
-        return doApimartDirectGet(altBase + suffix);
-      } catch (IOException fallbackError) {
-        throw wrapApimartDirectGetError(fallbackError);
-      }
+    } catch (IOException error) {
+      throw wrapApimartDirectGetError(error);
     }
   }
 
@@ -1399,11 +1358,30 @@ public class ImageGenerationClient {
     if (safeTaskId.length() > 80) {
       safeTaskId = safeTaskId.substring(safeTaskId.length() - 80);
     }
-    return java.time.LocalDate.now()
+    String relativeName = java.time.LocalDate.now()
         + "/ai-" + System.currentTimeMillis()
         + "-" + safeTaskId
         + "-" + index
         + "-" + filename;
+    Long ownerId = resolveTaskOwner(taskId);
+    if (ownerId != null && ossStorageService != null) {
+      return ossStorageService.scopeUserDir(ownerId, "generated") + "/" + relativeName;
+    }
+    return "system/generated/" + relativeName;
+  }
+
+  private Long resolveTaskOwner(String taskId) {
+    Long current = requestUserId.get();
+    if (current != null) return current;
+    if (jdbcTemplate == null || taskId == null || taskId.isBlank()) return null;
+    try {
+      List<Long> owners = jdbcTemplate.query(
+          "SELECT user_id FROM ym_image_task WHERE task_id = ? AND user_id IS NOT NULL LIMIT 1",
+          (rs, rn) -> rs.getLong("user_id"), taskId);
+      return owners.isEmpty() ? null : owners.get(0);
+    } catch (Exception ignored) {
+      return null;
+    }
   }
 
   private DownloadedImage downloadImage(String taskId, int index, String imageUrl) throws Exception {
@@ -1761,6 +1739,23 @@ public class ImageGenerationClient {
     }
     state.backupProvider = null;
     state.failoverReason = "timeout"; // Reset so the next poll can retry the chain.
+  }
+
+  /** Proxy 备份任务创建成功后立即落库，控制台无需等到下一次成功轮询才显示兜底。 */
+  private void markFallbackProvider(String originalTaskId, FailoverState state) {
+    if (jdbcTemplate == null || state == null || !state.failoverTriggered
+        || !PROVIDER_PROXY.equals(state.backupProvider)) {
+      return;
+    }
+    try {
+      jdbcTemplate.update(
+          "UPDATE ym_image_task SET provider = ? WHERE task_id = ?",
+          PROVIDER_PROXY,
+          originalTaskId);
+    } catch (RuntimeException error) {
+      System.err.println("[image-failover] failed to persist provider=proxy for task="
+          + originalTaskId + ": " + error.getMessage());
+    }
   }
 
   /**

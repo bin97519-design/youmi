@@ -45,7 +45,6 @@ youmi:
     proxy-generation-path: ${PROXY_GENERATION_PATH:/api/images/jobs}
     proxy-task-path: ${PROXY_TASK_PATH:/api/images/jobs}
     fallback-enabled: true
-    fallback-provider: gettoken
     get-token-base-url: https://nb.gettoken.cn/openapi/v1
     get-token-api-key: ${GETTOKEN_API_KEY:}
     get-token-query-path: /query

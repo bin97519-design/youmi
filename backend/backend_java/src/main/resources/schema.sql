@@ -205,19 +205,19 @@ SET @sql = IF(@has_client_idx=0, 'ALTER TABLE ym_image_task ADD INDEX idx_ym_ima
 PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
 
 -- 幂等自愈：清理历史遗留的 client_task_id 重复数据（TOCTOU 竞态已产生的脏数据）
--- 同一 client_task_id 仅保留 id 最小的一条，其余置 NULL（UNIQUE INDEX 允许多个 NULL，不丢业务数据）。
+-- 同一用户的同一 client_task_id 仅保留 id 最小的一条，其余置 NULL。
 -- 幂等可重复执行：去重后该 JOIN 不再命中任何行。
 UPDATE ym_image_task t
 INNER JOIN (
-  SELECT client_task_id, MIN(id) AS keep_id
+  SELECT user_id, client_task_id, MIN(id) AS keep_id
   FROM ym_image_task
   WHERE client_task_id IS NOT NULL AND client_task_id <> ''
-  GROUP BY client_task_id
+  GROUP BY user_id, client_task_id
   HAVING COUNT(*) > 1
-) d ON t.client_task_id = d.client_task_id AND t.id <> d.keep_id
+) d ON t.user_id = d.user_id AND t.client_task_id = d.client_task_id AND t.id <> d.keep_id
 SET t.client_task_id = NULL;
 
 -- 幂等硬约束：防止同一 client_task_id 并发提交导致重复生图+重复扣费（TOCTOU 竞态）
-SET @has_unique_client = (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@db AND table_name='ym_image_task' AND index_name='uk_ym_image_task_client');
-SET @sql = IF(@has_unique_client=0, 'ALTER TABLE ym_image_task ADD UNIQUE INDEX uk_ym_image_task_client (client_task_id)', 'SELECT 1');
+SET @client_unique_cols = (SELECT GROUP_CONCAT(column_name ORDER BY seq_in_index) FROM information_schema.statistics WHERE table_schema=@db AND table_name='ym_image_task' AND index_name='uk_ym_image_task_client');
+SET @sql = IF(@client_unique_cols='user_id,client_task_id', 'SELECT 1', IF(@client_unique_cols IS NULL, 'ALTER TABLE ym_image_task ADD UNIQUE INDEX uk_ym_image_task_client (user_id, client_task_id)', 'ALTER TABLE ym_image_task DROP INDEX uk_ym_image_task_client, ADD UNIQUE INDEX uk_ym_image_task_client (user_id, client_task_id)'));
 PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;

@@ -3,6 +3,7 @@ package com.youmi.api.admin;
 import com.youmi.api.canvas.CanvasDocument;
 import com.youmi.api.canvas.CanvasDtos;
 import com.youmi.api.canvas.CanvasRepository;
+import com.youmi.api.common.ApiException;
 import com.youmi.api.common.ApiResponse;
 import java.util.List;
 import java.util.Map;
@@ -58,9 +59,11 @@ public class AdminCanvasController {
   @GetMapping("/{docId}")
   public ApiResponse<CanvasDtos.AdminCanvasDetail> get(
       @PathVariable String docId,
+      @RequestParam(value = "userId", required = false) Long userId,
       @RequestHeader(value = "Authorization", required = false) String authorization) {
     adminAuthService.requireAdmin(authorization);
-    Optional<CanvasDocument> doc = canvasRepository.findByDocId(docId);
+    if (userId == null) throw new ApiException(400, "userId is required");
+    Optional<CanvasDocument> doc = canvasRepository.findByDocIdAndUserId(docId, userId);
     if (doc.isEmpty()) {
       return ApiResponse.fail(404, "画布不存在");
     }
@@ -76,9 +79,11 @@ public class AdminCanvasController {
   @DeleteMapping("/{docId}")
   public ApiResponse<Object> delete(
       @PathVariable String docId,
+      @RequestParam(value = "userId", required = false) Long userId,
       @RequestHeader(value = "Authorization", required = false) String authorization) {
     adminAuthService.requireAdmin(authorization);
-    canvasRepository.deleteByDocId(docId);
-    return ApiResponse.ok(Map.of("docId", docId));
+    if (userId == null) throw new ApiException(400, "userId is required");
+    canvasRepository.deleteByDocIdAndUserId(docId, userId);
+    return ApiResponse.ok(Map.of("docId", docId, "userId", userId));
   }
 }

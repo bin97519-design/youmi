@@ -1,4 +1,9 @@
 import { apiPath } from './apiBase';
+import { useUserStore } from '../stores/user';
+
+function authHeaders() {
+  return useUserStore().authHeaders();
+}
 
 function readUploadSign(payload) {
   const data = payload?.data || payload || {};
@@ -40,7 +45,7 @@ export async function uploadFileDirect(file, options = {}) {
   if (!file) throw new Error('No file selected');
   const signResponse = await fetch(apiPath('/api/file/oss-sign'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(options.headers || {}) },
     body: JSON.stringify({
       fileName: file.name || 'upload.png',
       contentType: file.type || 'application/octet-stream',
@@ -84,7 +89,7 @@ export async function persistToOss(url, options = {}) {
     const timer = setTimeout(() => controller.abort(), options.timeout || 30000)
     const resp = await fetch(apiPath('/api/v1/file/upload-from-url'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ url, dir: options.dir || 'youmi/ai' }),
       signal: controller.signal,
     })

@@ -13,7 +13,6 @@ public class ImageGenerationProperties {
   private String generationPath = "/v1/images/generations";
   private String taskPath = "/v1/tasks";
   private String apiKey = "";
-  private String fallbackProvider = "gettoken";
   private boolean fallbackEnabled = true;
   private String getTokenBaseUrl = "https://nb.gettoken.cn/openapi/v1";
   private String getTokenApiKey = "";
@@ -22,7 +21,6 @@ public class ImageGenerationProperties {
   private String defaultSize = "9:16";
   private String defaultResolution = "2K";
   private String language = "zh";
-  private boolean officialFallback = false;
   private boolean persistGeneratedImages = true;
   private String uploadEndpoint = "http://101.133.149.214/youmi-api/api/v1/file/upload";
   private String uploadFieldName = "file";
@@ -43,8 +41,6 @@ public class ImageGenerationProperties {
   private String apimartDirectApiKey = "";
   private String apimartDirectGenerationPath = "/v1/images/generations";
   private String apimartDirectTaskPath = "/v1/tasks";
-  // APIMart 直连主站不可达（被墙 / DNS 通但 TCP 超时）时的备用域名（之前能用过的代理 apib.ai）
-  private String apimartDirectFallbackBaseUrl = "https://aiuxu.com";
   private Map<String, String> modelAliases = defaultModelAliases();
 
   public String getBaseUrl() {
@@ -77,14 +73,6 @@ public class ImageGenerationProperties {
 
   public void setApiKey(String apiKey) {
     this.apiKey = apiKey;
-  }
-
-  public String getFallbackProvider() {
-    return fallbackProvider;
-  }
-
-  public void setFallbackProvider(String fallbackProvider) {
-    this.fallbackProvider = fallbackProvider;
   }
 
   public boolean isFallbackEnabled() {
@@ -149,14 +137,6 @@ public class ImageGenerationProperties {
 
   public void setLanguage(String language) {
     this.language = language;
-  }
-
-  public boolean isOfficialFallback() {
-    return officialFallback;
-  }
-
-  public void setOfficialFallback(boolean officialFallback) {
-    this.officialFallback = officialFallback;
   }
 
   public boolean isPersistGeneratedImages() {
@@ -419,14 +399,6 @@ public class ImageGenerationProperties {
     this.apimartDirectTaskPath = apimartDirectTaskPath;
   }
 
-  public String getApimartDirectFallbackBaseUrl() {
-    return apimartDirectFallbackBaseUrl;
-  }
-
-  public void setApimartDirectFallbackBaseUrl(String apimartDirectFallbackBaseUrl) {
-    this.apimartDirectFallbackBaseUrl = apimartDirectFallbackBaseUrl;
-  }
-
   public boolean isApimartDirectConfigured() {
     return apimartDirectApiKey != null && !apimartDirectApiKey.isBlank();
   }
@@ -444,13 +416,6 @@ public class ImageGenerationProperties {
   public String normalizedApimartDirectTaskPath() {
     if (apimartDirectTaskPath == null || apimartDirectTaskPath.isBlank()) return "/v1/tasks";
     return apimartDirectTaskPath.startsWith("/") ? apimartDirectTaskPath : "/" + apimartDirectTaskPath;
-  }
-
-  public String normalizedApimartDirectFallbackBaseUrl() {
-    if (apimartDirectFallbackBaseUrl == null || apimartDirectFallbackBaseUrl.isBlank()) return "https://aiuxu.com";
-    return apimartDirectFallbackBaseUrl.endsWith("/")
-        ? apimartDirectFallbackBaseUrl.substring(0, apimartDirectFallbackBaseUrl.length() - 1)
-        : apimartDirectFallbackBaseUrl;
   }
 
   /** 判断请求的模型是否应走 Agnes provider */

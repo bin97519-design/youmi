@@ -98,8 +98,8 @@ public class EcommerceSetController {
   public ApiResponse<EcommerceSetDtos.ProgressResponse> pollProgress(
       @RequestHeader(value = "Authorization", required = false) String authorization,
       @PathVariable String setId) {
-    requireUserId(authorization);
-    return ApiResponse.ok(ecommerceSetService.pollProgress(setId));
+    Long userId = requireUserId(authorization);
+    return ApiResponse.ok(ecommerceSetService.pollProgress(userId, setId));
   }
 
   /**
@@ -110,8 +110,8 @@ public class EcommerceSetController {
   public ApiResponse<EcommerceSetDtos.ResultResponse> getResult(
       @RequestHeader(value = "Authorization", required = false) String authorization,
       @PathVariable String setId) {
-    requireUserId(authorization);
-    return ApiResponse.ok(ecommerceSetService.getResult(setId));
+    Long userId = requireUserId(authorization);
+    return ApiResponse.ok(ecommerceSetService.getResult(userId, setId));
   }
 
   /**
@@ -123,9 +123,9 @@ public class EcommerceSetController {
       @RequestHeader(value = "Authorization", required = false) String authorization,
       @PathVariable String setId,
       @PathVariable Long imageId) throws Exception {
-    requireUserId(authorization);
+    Long userId = requireUserId(authorization);
     // 获取图片 URL
-    EcommerceSetDtos.ResultResponse result = ecommerceSetService.getResult(setId);
+    EcommerceSetDtos.ResultResponse result = ecommerceSetService.getResult(userId, setId);
     String imageUrl = null;
     for (EcommerceSetDtos.ResultImage img : result.mainImages()) {
       if (img.id() == imageId) { imageUrl = img.imageUrl(); break; }

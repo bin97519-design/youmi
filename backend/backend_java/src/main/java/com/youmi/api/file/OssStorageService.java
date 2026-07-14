@@ -62,9 +62,9 @@ public class OssStorageService {
     }
   }
 
-  public String uploadFile(MultipartFile file) {
+  public String uploadFile(MultipartFile file, String dir) {
     try {
-      String objectName = buildUploadObjectName(file.getOriginalFilename(), LocalDate.now().toString());
+      String objectName = buildUploadObjectName(file.getOriginalFilename(), dir);
       ObjectMetadata metadata = new ObjectMetadata();
       metadata.setContentType(file.getContentType() == null ? "application/octet-stream" : file.getContentType());
       metadata.setContentLength(file.getSize());
@@ -368,6 +368,23 @@ public class OssStorageService {
     }
   }
 
+  public String scopeUserDir(Long userId, String dir) {
+    if (userId == null) throw new ApiException(401, "Login required");
+    return "users/" + userId + "/" + normalizeDir(dir);
+  }
+
+  public String requireUserObject(Long userId, String objectName) {
+    if (userId == null) throw new ApiException(401, "Login required");
+    if (isBlank(objectName)) throw new ApiException(400, "File name is required");
+    String normalized = objectName.trim().replace("\\", "/");
+    while (normalized.startsWith("/")) normalized = normalized.substring(1);
+    String prefix = "users/" + userId + "/";
+    if (normalized.contains("..") || !normalized.startsWith(prefix)) {
+      throw new ApiException(403, "No permission to access this file");
+    }
+    return normalized;
+  }
+
   public void deleteFile(String objectName) {
     try {
       OSS oss = ossClient();
@@ -503,5 +520,4 @@ public class OssStorageService {
     return value == null || value.isBlank();
   }
 }
-
 

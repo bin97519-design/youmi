@@ -332,7 +332,7 @@ public class AdminService {
         SELECT t.id, t.task_id, t.user_id, u.nickname AS user_name, t.provider, t.prompt, t.model, t.requested_model,
                t.size, t.resolution, t.requested_count, t.status, t.progress, t.image_count, t.mi_cost,
                t.money_cost, t.error_message, t.created_at, t.updated_at, t.completed_at,
-               t.result_urls, t.persist_status
+               t.image_urls, t.result_urls, t.persist_status
         FROM ym_image_task t
         LEFT JOIN ym_sys_user u ON u.id = t.user_id
         WHERE 1=1
@@ -561,6 +561,7 @@ public class AdminService {
         time(rs, "updated_at"),
         time(rs, "completed_at"),
         isFallback,
+        rs.getString("image_urls"),
         rs.getString("result_urls"),
         rs.getString("persist_status"));
   }

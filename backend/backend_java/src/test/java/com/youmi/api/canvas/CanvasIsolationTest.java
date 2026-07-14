@@ -221,7 +221,10 @@ class CanvasIsolationTest {
   @Order(5)
   @DisplayName("M5: 管理员可按 docId 查看他人画布且 ownerId 正确")
   void m5_adminSeesOtherDetail() throws Exception {
-    MvcResult result = performGet("/api/admin/canvas/doc-b-1", tokenA);
+    MvcResult result = mockMvc.perform(get("/api/admin/canvas/doc-b-1")
+            .param("userId", String.valueOf(USER_B_ID))
+            .header("Authorization", "Bearer " + tokenA))
+        .andReturn();
     assertEquals(200, result.getResponse().getStatus(), "管理员应可查看他人画布详情");
 
     JsonNode data = objectMapper.readTree(result.getResponse().getContentAsString()).get("data");
@@ -234,6 +237,7 @@ class CanvasIsolationTest {
   @DisplayName("M6: 管理员删除他人画布后，原主再访问该 docId 被过滤（body.code=404, data=null）")
   void m6_adminDeletesOther() throws Exception {
     mockMvc.perform(delete("/api/admin/canvas/doc-b-1")
+            .param("userId", String.valueOf(USER_B_ID))
             .header("Authorization", "Bearer " + tokenA))
         .andExpect(status().isOk());
 
@@ -255,7 +259,10 @@ class CanvasIsolationTest {
         .andExpect(status().isForbidden());
 
     // A 的画布未被删除，管理员仍能取到
-    MvcResult result = performGet("/api/admin/canvas/doc-a-1", tokenA);
+    MvcResult result = mockMvc.perform(get("/api/admin/canvas/doc-a-1")
+            .param("userId", String.valueOf(USER_A_ID))
+            .header("Authorization", "Bearer " + tokenA))
+        .andReturn();
     assertEquals(200, result.getResponse().getStatus(), "A 的画布应仍存在");
   }
 }

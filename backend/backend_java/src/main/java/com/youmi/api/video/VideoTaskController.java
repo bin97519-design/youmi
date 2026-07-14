@@ -54,8 +54,14 @@ public class VideoTaskController {
   }
 
   @GetMapping("/{taskId}")
-  public ApiResponse<VideoGenerationDtos.TaskStatusResponse> get(@PathVariable String taskId)
+  public ApiResponse<VideoGenerationDtos.TaskStatusResponse> get(
+      @PathVariable String taskId,
+      @RequestHeader(value = "Authorization", required = false) String authorization)
       throws Exception {
+    Long userId = adminAuthService.requireUserId(authorization);
+    if (!miValueService.isTaskOwnedByUser(userId, taskId, MiBizType.VIDEO)) {
+      throw new ApiException(404, "Video task not found");
+    }
     VideoGenerationDtos.TaskStatusResponse response = videoGenerationClient.getTask(taskId);
     if (isTerminalFailed(response.getStatus())) {
       miValueService.rollbackByTaskId(taskId);

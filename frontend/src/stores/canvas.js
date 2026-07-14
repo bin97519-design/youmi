@@ -360,6 +360,20 @@ export const useCanvasStore = defineStore('canvas', {
     serverSynced: false,
   }),
   actions: {
+    async reloadUserScope() {
+      if (this._serverSyncTimer) {
+        clearTimeout(this._serverSyncTimer);
+        this._serverSyncTimer = null;
+      }
+      authFailed = false;
+      this.documents = loadLocal();
+      this.serverSynced = false;
+      const userStore = useUserStore();
+      if (userStore.isAuthenticated) {
+        await this.syncFromServer();
+      }
+    },
+
     persist() {
       // localStorage 立即同步写（防止意外关页面丢图）
       saveLocal(this.documents);

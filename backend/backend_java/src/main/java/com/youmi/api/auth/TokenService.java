@@ -18,11 +18,13 @@ import org.springframework.stereotype.Service;
 public class TokenService {
   private static final String PREFIX = "youmi:auth:token:";
   private static final Logger log = LoggerFactory.getLogger(TokenService.class);
+  private static final long REDIS_RETRY_DELAY_MS = 30_000L;
 
   private final StringRedisTemplate redisTemplate;
   private final Duration ttl;
   private final Map<String, FallbackToken> fallbackTokens = new ConcurrentHashMap<>();
   private final Path fallbackFile;
+  private volatile long redisRetryAfterMs;
 
   public TokenService(StringRedisTemplate redisTemplate, @Value("${youmi.auth.token-ttl-seconds}") long ttlSeconds) {
     this.redisTemplate = redisTemplate;
@@ -67,30 +69,34 @@ public class TokenService {
     String token = UUID.randomUUID().toString().replace("-", "");
     String key = PREFIX + token;
     FallbackToken fb = new FallbackToken(userId, Instant.now().plus(ttl));
-    try {
-      redisTemplate.opsForValue().set(key, String.valueOf(userId), ttl);
-      // 同步写文件备份
-      fallbackTokens.put(token, fb);
-      saveFallbackToFile();
-    } catch (RuntimeException e) {
-      log.warn("Redis unavailable, using file fallback: {}", e.getMessage());
-      fallbackTokens.put(token, fb);
-      saveFallbackToFile();
+    if (canUseRedis()) {
+      try {
+        redisTemplate.opsForValue().set(key, String.valueOf(userId), ttl);
+        redisRetryAfterMs = 0L;
+      } catch (RuntimeException e) {
+        markRedisUnavailable("Redis unavailable, using file fallback", e);
+      }
     }
+    // 文件始终保留一份，Redis 故障时可以无缝降级。
+    fallbackTokens.put(token, fb);
+    saveFallbackToFile();
     return token;
   }
 
   public Optional<Long> getUserId(String token) {
     if (token == null || token.isBlank()) return Optional.empty();
     String key = PREFIX + token;
-    try {
-      String userId = redisTemplate.opsForValue().get(key);
-      if (userId != null && !userId.isBlank()) {
-        redisTemplate.expire(key, ttl);
-        return Optional.of(Long.valueOf(userId));
+    if (canUseRedis()) {
+      try {
+        String userId = redisTemplate.opsForValue().get(key);
+        redisRetryAfterMs = 0L;
+        if (userId != null && !userId.isBlank()) {
+          redisTemplate.expire(key, ttl);
+          return Optional.of(Long.valueOf(userId));
+        }
+      } catch (RuntimeException e) {
+        markRedisUnavailable("Redis read failed, trying file fallback", e);
       }
-    } catch (RuntimeException e) {
-      log.warn("Redis read failed, trying file fallback: {}", e.getMessage());
     }
     // 文件降级
     FallbackToken fb = fallbackTokens.get(token);
@@ -109,7 +115,23 @@ public class TokenService {
     if (token == null || token.isBlank()) return;
     fallbackTokens.remove(token);
     saveFallbackToFile();
-    try { redisTemplate.delete(PREFIX + token); } catch (RuntimeException ignored) {}
+    if (canUseRedis()) {
+      try {
+        redisTemplate.delete(PREFIX + token);
+        redisRetryAfterMs = 0L;
+      } catch (RuntimeException e) {
+        markRedisUnavailable("Redis revoke failed, using file fallback", e);
+      }
+    }
+  }
+
+  private boolean canUseRedis() {
+    return System.currentTimeMillis() >= redisRetryAfterMs;
+  }
+
+  private void markRedisUnavailable(String message, RuntimeException error) {
+    redisRetryAfterMs = System.currentTimeMillis() + REDIS_RETRY_DELAY_MS;
+    log.warn("{}: {}; retrying in {} seconds", message, error.getMessage(), REDIS_RETRY_DELAY_MS / 1000);
   }
 
   private record FallbackToken(Long userId, Instant expiresAt) {}

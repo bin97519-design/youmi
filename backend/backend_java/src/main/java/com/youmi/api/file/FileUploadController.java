@@ -1,5 +1,6 @@
 package com.youmi.api.file;
 
+import com.youmi.api.admin.AdminAuthService;
 import com.youmi.api.common.ApiException;
 import com.youmi.api.common.ApiResponse;
 import java.io.InputStream;
@@ -21,6 +22,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -30,6 +32,7 @@ import org.springframework.web.multipart.MultipartFile;
 @RequestMapping({"/api/file", "/api/v1/file"})
 public class FileUploadController {
   private final OssStorageService ossStorageService;
+  private final AdminAuthService adminAuthService;
 
   @Value("${youmi.file.upload-dir:uploads}")
   private String uploadDir;
@@ -37,60 +40,82 @@ public class FileUploadController {
   @Value("${youmi.file.public-prefix:/uploads}")
   private String publicPrefix;
 
-  public FileUploadController(OssStorageService ossStorageService) {
+  public FileUploadController(OssStorageService ossStorageService, AdminAuthService adminAuthService) {
     this.ossStorageService = ossStorageService;
+    this.adminAuthService = adminAuthService;
   }
 
   @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-  public ApiResponse<Map<String, Object>> upload(@RequestParam("file") MultipartFile file) throws Exception {
+  public ApiResponse<Map<String, Object>> upload(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @RequestParam("file") MultipartFile file) throws Exception {
+    Long userId = adminAuthService.requireUserId(authorization);
     if (file == null || file.isEmpty()) {
       throw new ApiException(400, "上传文件不能为空");
     }
     if (ossStorageService.isConfigured()) {
-      String objectName = ossStorageService.uploadFile(file);
+      String objectName = ossStorageService.uploadFile(
+          file, ossStorageService.scopeUserDir(userId, LocalDate.now().toString()));
       String url = ossStorageService.getFileUrl(objectName);
       Map<String, Object> data = uploadResult(url, objectName, file.getOriginalFilename(), file.getSize(), file.getContentType());
       data.put("storage", "oss");
       return ApiResponse.ok(data);
     }
-    Map<String, Object> data = saveLocalFile(file);
+    Map<String, Object> data = saveLocalFile(userId, file);
     data.put("storage", "local");
     return ApiResponse.ok(data);
   }
 
   @PostMapping("/oss-sign")
-  public ApiResponse<Map<String, Object>> createOssUploadSignature(@RequestBody Map<String, Object> request) {
+  public ApiResponse<Map<String, Object>> createOssUploadSignature(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @RequestBody Map<String, Object> request) {
+    Long userId = adminAuthService.requireUserId(authorization);
     String fileName = stringValue(request, "fileName");
     String contentType = stringValue(request, "contentType");
     String dir = stringValue(request, "dir");
     Integer expireSeconds = numberValue(request == null ? null : request.get("expireSeconds"));
-    return ApiResponse.ok(ossStorageService.createPutUploadSignature(fileName, contentType, dir, expireSeconds));
+    return ApiResponse.ok(ossStorageService.createPutUploadSignature(
+        fileName, contentType, ossStorageService.scopeUserDir(userId, dir), expireSeconds));
   }
 
   @PostMapping("/oss-cors")
-  public ApiResponse<Map<String, Object>> configureOssCors() {
+  public ApiResponse<Map<String, Object>> configureOssCors(
+      @RequestHeader(value = "Authorization", required = false) String authorization) {
+    adminAuthService.requireAdmin(authorization);
     return ApiResponse.ok(ossStorageService.configureDirectUploadCors());
   }
 
   @PostMapping("/oss-sts")
   public ApiResponse<Map<String, Object>> createOssStsCredential(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
       @RequestBody(required = false) Map<String, Object> request) {
+    Long userId = adminAuthService.requireUserId(authorization);
     String dir = stringValue(request, "dir");
     Integer durationSeconds = numberValue(request == null ? null : request.get("durationSeconds"));
-    return ApiResponse.ok(ossStorageService.createStsUploadCredential(dir, durationSeconds));
+    return ApiResponse.ok(ossStorageService.createStsUploadCredential(
+        ossStorageService.scopeUserDir(userId, dir), durationSeconds));
   }
 
   @PostMapping("/oss-multipart/init")
-  public ApiResponse<Map<String, Object>> initOssMultipartUpload(@RequestBody Map<String, Object> request) {
+  public ApiResponse<Map<String, Object>> initOssMultipartUpload(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @RequestBody Map<String, Object> request) {
+    Long userId = adminAuthService.requireUserId(authorization);
     String fileName = stringValue(request, "fileName");
     String contentType = stringValue(request, "contentType");
     String dir = stringValue(request, "dir");
-    return ApiResponse.ok(ossStorageService.initMultipartUpload(fileName, contentType, dir));
+    return ApiResponse.ok(ossStorageService.initMultipartUpload(
+        fileName, contentType, ossStorageService.scopeUserDir(userId, dir)));
   }
 
   @PostMapping("/oss-multipart/part-sign")
-  public ApiResponse<Map<String, Object>> createOssMultipartPartSignature(@RequestBody Map<String, Object> request) {
+  public ApiResponse<Map<String, Object>> createOssMultipartPartSignature(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @RequestBody Map<String, Object> request) {
+    Long userId = adminAuthService.requireUserId(authorization);
     String objectName = stringValue(request, "objectName");
+    objectName = ossStorageService.requireUserObject(userId, objectName);
     String uploadId = stringValue(request, "uploadId");
     Integer partNumber = numberValue(request == null ? null : request.get("partNumber"));
     Integer expireSeconds = numberValue(request == null ? null : request.get("expireSeconds"));
@@ -99,8 +124,12 @@ public class FileUploadController {
 
   @PostMapping("/oss-multipart/complete")
   @SuppressWarnings("unchecked")
-  public ApiResponse<Map<String, Object>> completeOssMultipartUpload(@RequestBody Map<String, Object> request) {
+  public ApiResponse<Map<String, Object>> completeOssMultipartUpload(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @RequestBody Map<String, Object> request) {
+    Long userId = adminAuthService.requireUserId(authorization);
     String objectName = stringValue(request, "objectName");
+    objectName = ossStorageService.requireUserObject(userId, objectName);
     String uploadId = stringValue(request, "uploadId");
     Object parts = request == null ? null : request.get("parts");
     return ApiResponse.ok(
@@ -108,29 +137,47 @@ public class FileUploadController {
   }
 
   @PostMapping("/oss-multipart/abort")
-  public ApiResponse<Void> abortOssMultipartUpload(@RequestBody Map<String, Object> request) {
-    ossStorageService.abortMultipartUpload(stringValue(request, "objectName"), stringValue(request, "uploadId"));
+  public ApiResponse<Void> abortOssMultipartUpload(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @RequestBody Map<String, Object> request) {
+    Long userId = adminAuthService.requireUserId(authorization);
+    String objectName = ossStorageService.requireUserObject(userId, stringValue(request, "objectName"));
+    ossStorageService.abortMultipartUpload(objectName, stringValue(request, "uploadId"));
     return ApiResponse.ok(null);
   }
 
   @GetMapping("/url/{fileName}")
-  public ApiResponse<String> getFileUrl(@PathVariable String fileName) {
-    return ApiResponse.ok(ossStorageService.getFileUrl(fileName));
+  public ApiResponse<String> getFileUrl(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @PathVariable String fileName) {
+    Long userId = adminAuthService.requireUserId(authorization);
+    return ApiResponse.ok(ossStorageService.getFileUrl(
+        ossStorageService.requireUserObject(userId, fileName)));
   }
 
   @GetMapping("/url")
-  public ApiResponse<String> getFileUrlByQuery(@RequestParam String fileName) {
-    return ApiResponse.ok(ossStorageService.getFileUrl(fileName));
+  public ApiResponse<String> getFileUrlByQuery(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @RequestParam String fileName) {
+    Long userId = adminAuthService.requireUserId(authorization);
+    return ApiResponse.ok(ossStorageService.getFileUrl(
+        ossStorageService.requireUserObject(userId, fileName)));
   }
 
   @DeleteMapping("/{fileName}")
-  public ApiResponse<Void> deleteFile(@PathVariable String fileName) {
-    ossStorageService.deleteFile(fileName);
+  public ApiResponse<Void> deleteFile(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @PathVariable String fileName) {
+    Long userId = adminAuthService.requireUserId(authorization);
+    ossStorageService.deleteFile(ossStorageService.requireUserObject(userId, fileName));
     return ApiResponse.ok(null);
   }
 
   @PostMapping("/upload-from-url")
-  public ApiResponse<Map<String, Object>> uploadFromUrl(@RequestBody Map<String, String> request) throws Exception {
+  public ApiResponse<Map<String, Object>> uploadFromUrl(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @RequestBody Map<String, String> request) throws Exception {
+    Long userId = adminAuthService.requireUserId(authorization);
     String fileUrl = request == null ? "" : request.get("url");
     if (fileUrl == null || fileUrl.isBlank()) {
       throw new ApiException(400, "url 不能为空");
@@ -148,7 +195,9 @@ public class FileUploadController {
     }
 
     String extension = extension(null, contentType);
-    String objectName = LocalDate.now() + "/ai-" + System.currentTimeMillis() + extension;
+    String requestedDir = request == null ? null : request.get("dir");
+    String objectName = ossStorageService.scopeUserDir(userId, requestedDir)
+        + "/ai-" + System.currentTimeMillis() + extension;
     if (ossStorageService.isConfigured()) {
       try (InputStream inputStream = connection.getInputStream()) {
         ossStorageService.uploadStream(inputStream, objectName, contentType);
@@ -160,7 +209,8 @@ public class FileUploadController {
     }
 
     try (InputStream inputStream = connection.getInputStream()) {
-      Map<String, Object> data = saveLocalStream(inputStream, objectName, contentType, contentLength);
+      Map<String, Object> data = saveLocalStream(
+          userId, inputStream, objectName, contentType, contentLength);
       data.put("storage", "local");
       return ApiResponse.ok(data);
     }
@@ -171,7 +221,10 @@ public class FileUploadController {
    * 用于对话窗口缩略图等场景，防止签名过期导致图片裂图。
    */
   @PostMapping("/refresh-url")
-  public ApiResponse<Map<String, Object>> refreshUrl(@RequestBody Map<String, String> request) {
+  public ApiResponse<Map<String, Object>> refreshUrl(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @RequestBody Map<String, String> request) {
+    Long userId = adminAuthService.requireUserId(authorization);
     String url = request == null ? "" : request.get("url");
     if (url == null || url.isBlank()) {
       throw new ApiException(400, "url 不能为空");
@@ -183,6 +236,7 @@ public class FileUploadController {
     if (objectName == null || objectName.isBlank()) {
       throw new ApiException(400, "无法从 URL 解析 objectName");
     }
+    objectName = ossStorageService.requireUserObject(userId, objectName);
     // 重新签名，7 天有效期
     String freshUrl = ossStorageService.getPresignedFileUrl(objectName);
     Map<String, Object> data = new LinkedHashMap<>();
@@ -191,8 +245,9 @@ public class FileUploadController {
     return ApiResponse.ok(data);
   }
 
-  private Map<String, Object> saveLocalFile(MultipartFile file) throws Exception {
+  private Map<String, Object> saveLocalFile(Long userId, MultipartFile file) throws Exception {
     return saveLocalStream(
+        userId,
         file.getInputStream(),
         file.getOriginalFilename(),
         file.getContentType(),
@@ -200,6 +255,7 @@ public class FileUploadController {
   }
 
   private Map<String, Object> saveLocalStream(
+      Long userId,
       InputStream inputStream,
       String originalName,
       String contentType,
@@ -207,7 +263,8 @@ public class FileUploadController {
     String ext = extension(originalName, contentType);
     String day = LocalDate.now().toString();
     String filename = System.currentTimeMillis() + "-" + UUID.randomUUID().toString().replace("-", "") + ext;
-    Path targetDir = Paths.get(uploadDir).toAbsolutePath().normalize().resolve(day);
+    Path targetDir = Paths.get(uploadDir).toAbsolutePath().normalize()
+        .resolve("users").resolve(String.valueOf(userId)).resolve(day);
     Files.createDirectories(targetDir);
     Path target = targetDir.resolve(filename).normalize();
     if (!target.startsWith(targetDir)) {
@@ -218,8 +275,9 @@ public class FileUploadController {
     String prefix = publicPrefix == null || publicPrefix.isBlank() ? "/uploads" : publicPrefix.trim();
     if (!prefix.startsWith("/")) prefix = "/" + prefix;
     if (prefix.endsWith("/")) prefix = prefix.substring(0, prefix.length() - 1);
-    String url = prefix + "/" + day + "/" + filename;
-    return uploadResult(url, day + "/" + filename, originalName, size, contentType);
+    String scopedName = "users/" + userId + "/" + day + "/" + filename;
+    String url = prefix + "/" + scopedName;
+    return uploadResult(url, scopedName, originalName, size, contentType);
   }
 
   private Map<String, Object> uploadResult(

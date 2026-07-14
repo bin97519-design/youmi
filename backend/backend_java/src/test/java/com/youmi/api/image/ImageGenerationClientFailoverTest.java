@@ -13,6 +13,7 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.youmi.api.common.ApiException;
+import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.net.http.HttpClient;
@@ -20,6 +21,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
 
 /**
@@ -42,6 +44,8 @@ class ImageGenerationClientFailoverTest {
   @Test
   void getToken500PollException_triggersProxyFailover() throws Exception {
     ImageGenerationClient client = buildClient(500, "{\"error\":\"internal server error\"}", true);
+    JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+    ReflectionTestUtils.setField(client, "jdbcTemplate", jdbcTemplate);
 
     ImageGenerationDtos.TaskStatusResponse resp = client.getTask("gettoken:xxx");
 
@@ -54,6 +58,44 @@ class ImageGenerationClientFailoverTest {
         argThat(req -> req.uri().toString().contains("47.90.226.52")), any());
     verify(mockHttpClient, atLeastOnce()).send(
         argThat(req -> req.uri().toString().contains("gettoken")), any());
+    verify(jdbcTemplate).update(
+        "UPDATE ym_image_task SET provider = ? WHERE task_id = ?", "proxy", "gettoken:xxx");
+  }
+
+  @Test
+  void apimartNetworkFailure_goesDirectlyToProxyWithoutAlternateDomain() throws Exception {
+    ImageGenerationProperties props = new ImageGenerationProperties();
+    props.setApimartDirectApiKey("test-apimart-key");
+    props.setApimartDirectBaseUrl("https://apib.ai");
+    props.setProxyApiKey("test-proxy-key");
+    props.setProxyBaseUrl("http://47.90.226.52");
+    props.setProxyGenerationPath("/api/images/jobs");
+    props.setProxyTaskPath("/api/images/jobs");
+    props.setPersistGeneratedImages(false);
+    props.setTimeoutSeconds(5);
+
+    ImageGenerationClient client = new ImageGenerationClient(new ObjectMapper(), props);
+    mockHttpClient = mock(HttpClient.class);
+    when(mockHttpClient.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
+        .thenAnswer(inv -> {
+          HttpRequest request = inv.getArgument(0);
+          if (request.uri().toString().contains("apib.ai")) {
+            throw new IOException("APIMart unavailable");
+          }
+          return mockResponse(200, "{\"job_id\":\"proxy-job\",\"status\":\"submitted\"}");
+        });
+    ReflectionTestUtils.setField(client, "httpClient", mockHttpClient);
+
+    ImageGenerationDtos.CreateTaskRequest request = new ImageGenerationDtos.CreateTaskRequest(
+        "a product", "gpt-image-2", "1:1", "1:1", "2K",
+        null, null, null, null, null, null, null, null, null, null, null);
+    ImageGenerationDtos.CreateTaskResponse response = client.createTask(request);
+
+    assertEquals("proxy", response.provider());
+    verify(mockHttpClient, never()).send(
+        argThat(req -> req.uri().toString().contains("aiuxu.com")), any());
+    verify(mockHttpClient, atLeastOnce()).send(
+        argThat(req -> req.uri().toString().contains("47.90.226.52")), any());
   }
 
   // ============ 异常路径：599 ============

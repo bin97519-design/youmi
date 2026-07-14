@@ -106,6 +106,7 @@ public final class AdminDtos {
       String updatedAt,
       String completedAt,
       Boolean isFallback,
+      String imageUrls,
       String resultUrls,
       String persistStatus) {
   }

@@ -10,6 +10,7 @@ import {
   watch,
 } from 'vue'
 import { useRouter } from 'vue-router'
+import ImageViewer from '../components/ImageViewer.vue'
 import { layerName, useCanvasStore } from '../stores/canvas'
 import { useUserStore } from '../stores/user'
 import { apiPath } from '../utils/apiBase'
@@ -1140,6 +1141,8 @@ function uploadFile(file, onProgress) {
       form.append('file', file)
       const xhr = new XMLHttpRequest()
       xhr.open('POST', '/api/file/upload')
+      const uploadToken = userStore.token
+      if (uploadToken) xhr.setRequestHeader('Authorization', `Bearer ${uploadToken}`)
       xhr.timeout = 120000
       xhr.withCredentials = false
       xhr.upload.onprogress = (e) => {
@@ -1272,7 +1275,9 @@ async function resolveImageTaskByClientId(clientTaskId) {
 async function fetchImageTask(taskId) {
   // 与 submitImageTask 保持一致，统一走 apiPath 代理前缀（避免裸路径在部分部署下漏代理）
   return readApiResponse(
-    await fetch(apiPath('/api/image-tasks/' + encodeURIComponent(taskId))),
+    await fetch(apiPath('/api/image-tasks/' + encodeURIComponent(taskId)), {
+      headers: { ...userStore.authHeaders() },
+    }),
   )
 }
 
@@ -2657,6 +2662,11 @@ async function downloadImage() {
   }
 }
 
+async function downloadViewerImage(image) {
+  if (!image?.url) return
+  await downloadFileByUrl(image.url, image.name || 'image')
+}
+
 /**
  * 通用文件下载：通过后端代理下载跨域图片，解决 a.download 对跨域 URL 无效的问题。
  * 后端代理使用流式传输，边从 CDN 接收边向前端发送，大图片也能快速开始下载。
@@ -3644,7 +3654,7 @@ function renderMessageContent(message) {
       + `<button class="chat-gen-action-btn chat-gen-action--dislike" data-msg-id="${mid}" title="点踩">👎</button>`
       + `</div>`
       + `</div>`
-  } else if (message.generating) {
+  } else if (message.generating && !/^(生成|生图)失败/.test(String(message.text || '').trim())) {
     html += `<div class="chat-gen-preview chat-gen-preview--loading"><div class="chat-gen-skeleton"></div></div>`
   }
   return html
@@ -4852,7 +4862,10 @@ async function sendChat() {
         statusText: friendly,
         lastError,
       })
-      updateChatMessage(assistantId, { text: `生成失败：${friendly}` })
+      updateChatMessage(assistantId, {
+        text: `生成失败：${friendly}`,
+        generating: false,
+      })
       showCopyPasteToast(friendly)
     } else {
       // 原始提交即失败（服务端明确报错，非刷新中断）：把真实错误存到图层，供后续排查
@@ -4863,7 +4876,10 @@ async function sendChat() {
         statusText: friendly,
         lastError,
       })
-      updateChatMessage(assistantId, { text: `生成失败：${friendly}` })
+      updateChatMessage(assistantId, {
+        text: `生成失败：${friendly}`,
+        generating: false,
+      })
     }
   } finally {
     _sendChatActive = false
@@ -7614,109 +7630,13 @@ async function loadImageForCrop(layer) {
     </div>
   </Teleport>
 
-  <!-- 图片查看器 -->
-  <Teleport to="body">
-    <div
-      v-if="imageViewer.show"
-      class="uc-image-viewer-overlay"
-      tabindex="0"
-      @click.self="closeImageViewer"
-      @keydown.escape="closeImageViewer"
-      @keydown.left="switchImageViewer(-1)"
-      @keydown.right="switchImageViewer(1)"
-    >
-      <div class="uc-image-viewer-container">
-        <!-- 关闭按钮 -->
-        <button class="uc-image-viewer-close" @click="closeImageViewer">
-          <i class="ri-close-line"></i>
-        </button>
-
-        <!-- 图片显示区域 -->
-        <div
-          class="uc-image-viewer-content"
-          :style="{ cursor: imageViewer.isDragging ? 'grabbing' : 'grab' }"
-          @wheel.prevent="handleViewerWheel"
-          @pointerdown="startViewerDrag"
-        >
-          <!-- 上一张按钮 -->
-          <button
-            v-if="imageViewer.images.length > 1"
-            class="uc-image-viewer-nav uc-image-viewer-nav-prev"
-            title="上一张 (←)"
-            @click.stop="switchImageViewer(-1)"
-          >
-            <i class="ri-arrow-left-s-line"></i>
-          </button>
-
-          <img
-            ref="imageViewerImgRef"
-            :src="imageViewer.url"
-            :alt="imageViewer.name"
-            draggable="false"
-          />
-
-          <!-- 下一张按钮 -->
-          <button
-            v-if="imageViewer.images.length > 1"
-            class="uc-image-viewer-nav uc-image-viewer-nav-next"
-            title="下一张 (→)"
-            @click.stop="switchImageViewer(1)"
-          >
-            <i class="ri-arrow-right-s-line"></i>
-          </button>
-        </div>
-
-        <!-- 底部工具栏 -->
-        <div class="uc-image-viewer-toolbar">
-          <!-- 左右翻转 -->
-          <button class="uc-viewer-tool-btn" title="左右翻转" @click="flipImage('x')">
-            <i class="ri-arrow-left-right-line"></i>
-          </button>
-
-          <!-- 上下翻转 -->
-          <button class="uc-viewer-tool-btn" title="上下翻转" @click="flipImage('y')">
-            <i class="ri-arrow-up-down-line"></i>
-          </button>
-
-          <div class="uc-viewer-tool-divider"></div>
-
-          <!-- 左旋转 -->
-          <button class="uc-viewer-tool-btn" title="左旋转" @click="rotateImage(-90)">
-            <i class="ri-arrow-go-back-line"></i>
-          </button>
-
-          <!-- 右旋转 -->
-          <button class="uc-viewer-tool-btn" title="右旋转" @click="rotateImage(90)">
-            <i class="ri-arrow-go-forward-line"></i>
-          </button>
-
-          <div class="uc-viewer-tool-divider"></div>
-
-          <!-- 缩小 -->
-          <button class="uc-viewer-tool-btn" title="缩小" @click="zoomImage(-0.25)">
-            <i class="ri-zoom-out-line"></i>
-          </button>
-
-          <!-- 放大 -->
-          <button class="uc-viewer-tool-btn" title="放大" @click="zoomImage(0.25)">
-            <i class="ri-zoom-in-line"></i>
-          </button>
-
-          <div class="uc-viewer-tool-divider"></div>
-
-          <!-- 下载 -->
-          <button class="uc-viewer-tool-btn" title="下载" @click="downloadImage">
-            <i class="ri-download-line"></i>
-          </button>
-        </div>
-
-        <!-- 页码指示器 -->
-        <div v-if="imageViewer.images.length > 1" class="uc-image-viewer-page">
-          {{ imageViewer.currentIndex + 1 }} / {{ imageViewer.images.length }}
-        </div>
-      </div>
-    </div>
-  </Teleport>
+  <ImageViewer
+    :open="imageViewer.show"
+    :images="imageViewer.images"
+    :start-index="imageViewer.currentIndex"
+    @close="closeImageViewer"
+    @download="downloadViewerImage"
+  />
 
   <!-- 视频查看器 -->
   <Teleport to="body">
