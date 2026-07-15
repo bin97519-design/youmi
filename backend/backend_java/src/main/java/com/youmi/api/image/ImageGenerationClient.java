@@ -594,15 +594,8 @@ public class ImageGenerationClient {
     FailoverState state = failoverStates.get(cleanTaskId);
     if (state != null && !PROVIDER_ANNES.equals(state.primaryProvider)) {
       long elapsed = System.currentTimeMillis() - state.createdAt;
-      boolean timeout = elapsed > PROVIDER_TIMEOUT_MS;
 
-      // 1) 超时即触发切换（无需先查询主任务，避免无谓等待）
-      if (!state.failoverTriggered && timeout) {
-        triggerBackup(state, "timeout");
-        markFallbackProvider(cleanTaskId, state);
-      }
-
-      // 2) 已触发且备份任务已创建：直接返回备份任务状态（taskId 仍用原始值，前端无感知）
+      // 已触发且备份任务已创建：直接返回备份任务状态（taskId 仍用原始值，前端无感知）
       if (state.failoverTriggered && state.backupTaskId != null) {
         markFallbackProvider(cleanTaskId, state);
         if (!state.failoverLogged) {
@@ -638,7 +631,8 @@ public class ImageGenerationClient {
       primaryResp = getTaskInternal(cleanTaskId);
     } catch (Exception pollError) {
       // 轮询主任务抛异常（如 GetToken 中转站 500/599）：满足前置条件则触发故障转移兜底
-      if (state != null && !PROVIDER_ANNES.equals(state.primaryProvider) && !state.failoverTriggered) {
+      if (state != null && failoverStates.get(cleanTaskId) == state
+          && !PROVIDER_ANNES.equals(state.primaryProvider) && !state.failoverTriggered) {
         System.out.println("[image-failover] poll exception, triggering backup: " + pollError.getMessage());
         ImageGenerationDtos.TaskStatusResponse backupResp = pollBackupIfTriggered(cleanTaskId, state);
         if (backupResp != null) {
@@ -649,8 +643,16 @@ public class ImageGenerationClient {
       throw pollError;
     }
 
-    // 3) 轮询中发现主任务返回失败/错误：同样触发切换（需求 2）
-    if (state != null && !PROVIDER_ANNES.equals(state.primaryProvider) && !state.failoverTriggered) {
+    // 主任务已经出图、正在转存 OSS 时，不再参与超时故障转移。
+    // persisting 是本系统在上游 completed 后生成的内部状态，不代表模型仍在生成。
+    if (state != null && isPrimaryGenerationComplete(primaryResp)) {
+      failoverStates.remove(cleanTaskId, state);
+      return primaryResp;
+    }
+
+    // 轮询中发现主任务返回失败/错误：立即触发切换。
+    if (state != null && failoverStates.get(cleanTaskId) == state
+        && !PROVIDER_ANNES.equals(state.primaryProvider) && !state.failoverTriggered) {
       if (isTerminalErrorStatus(primaryResp.status(), primaryResp.error())) {
         ImageGenerationDtos.TaskStatusResponse backupResp = pollBackupIfTriggered(cleanTaskId, state);
         if (backupResp != null) {
@@ -660,9 +662,43 @@ public class ImageGenerationClient {
       }
     }
 
+    // 只有查询确认主任务仍未完成后，才允许按创建时间触发超时兜底。
+    // 旧逻辑在查询前先判断 120 秒，导致 APIMart 已 completed 仍会误建 Proxy 任务。
+    if (state != null && failoverStates.get(cleanTaskId) == state
+        && !PROVIDER_ANNES.equals(state.primaryProvider) && !state.failoverTriggered) {
+      long elapsed = System.currentTimeMillis() - state.createdAt;
+      if (elapsed > PROVIDER_TIMEOUT_MS) {
+        triggerBackup(state, "timeout");
+        markFallbackProvider(cleanTaskId, state);
+        if (state.failoverTriggered && state.backupTaskId != null) {
+          if (!state.failoverLogged) {
+            state.failoverLogged = true;
+            System.out.println("[image-failover] " + new java.util.Date()
+                + " | reason=provider_" + state.failoverReason + "(" + (elapsed / 1000) + "s)"
+                + " | from=" + state.primaryProvider
+                + " | to=" + state.backupProvider
+                + " | originalTaskId=" + cleanTaskId
+                + " | backupTaskId=" + state.backupTaskId);
+          }
+          ImageGenerationDtos.TaskStatusResponse backupResp = getTaskInternal(state.backupTaskId);
+          if (isTerminalStatus(backupResp.status())) {
+            failoverStates.remove(cleanTaskId);
+          }
+          return new ImageGenerationDtos.TaskStatusResponse(
+              backupResp.provider(),
+              cleanTaskId,
+              backupResp.status(),
+              backupResp.progress(),
+              backupResp.imageUrls(),
+              backupResp.error(),
+              backupResp.raw());
+        }
+      }
+    }
+
     // 主任务已终态（完成或最终失败）：清理追踪状态，防止内存泄漏
     if (state != null && isTerminalStatus(primaryResp.status())) {
-      failoverStates.remove(cleanTaskId);
+      failoverStates.remove(cleanTaskId, state);
     }
     return primaryResp;
   }
@@ -1660,11 +1696,11 @@ public class ImageGenerationClient {
     final long createdAt;                                     // 主任务创建时间 (System.currentTimeMillis())
     final ImageGenerationDtos.CreateTaskRequest originalRequest; // 原始请求（用于重试备份）
     final String primaryProvider;                             // 主中转站名称
-    String backupProvider = null;                             // 备用中转站
-    String backupTaskId = null;                               // 备份任务 taskId（懒创建）
-    boolean failoverTriggered = false;                        // 是否已触发切换
-    boolean failoverLogged = false;                           // 切换日志是否已打印
-    String failoverReason = "timeout";                        // 触发原因：timeout / error
+    volatile String backupProvider = null;                    // 备用中转站
+    volatile String backupTaskId = null;                      // 备份任务 taskId（懒创建）
+    volatile boolean failoverTriggered = false;               // 是否已触发切换
+    volatile boolean failoverLogged = false;                  // 切换日志是否已打印
+    volatile String failoverReason = "timeout";               // 触发原因：timeout / error
 
     FailoverState(long createdAt, ImageGenerationDtos.CreateTaskRequest originalRequest, String primaryProvider) {
       this.createdAt = createdAt;
@@ -1719,26 +1755,29 @@ public class ImageGenerationClient {
 
   /** 触发故障转移：计算备用 provider 并创建备份任务；失败则重置以便下次轮询重试 */
   private void triggerBackup(FailoverState state, String reason) {
-    List<String> backups = determineBackupProviders(
-        state.primaryProvider, properties.resolveModel(state.originalRequest.model()));
-    if (backups.isEmpty()) return;
-    state.failoverReason = reason;
-    for (String backup : backups) {
-      state.backupProvider = backup;
-      try {
-        createBackupTask(state);
-        state.failoverTriggered = true;
-        return;
-      } catch (Exception e) {
-        System.out.println("[image-failover] backup task create failed"
-            + " | to=" + backup
-            + " | reason=" + reason
-            + " | error=" + e.getMessage());
-        state.backupTaskId = null;
+    synchronized (state) {
+      if (state.failoverTriggered) return;
+      List<String> backups = determineBackupProviders(
+          state.primaryProvider, properties.resolveModel(state.originalRequest.model()));
+      if (backups.isEmpty()) return;
+      state.failoverReason = reason;
+      for (String backup : backups) {
+        state.backupProvider = backup;
+        try {
+          createBackupTask(state);
+          state.failoverTriggered = true;
+          return;
+        } catch (Exception e) {
+          System.out.println("[image-failover] backup task create failed"
+              + " | to=" + backup
+              + " | reason=" + reason
+              + " | error=" + e.getMessage());
+          state.backupTaskId = null;
+        }
       }
+      state.backupProvider = null;
+      state.failoverReason = "timeout"; // Reset so the next poll can retry the chain.
     }
-    state.backupProvider = null;
-    state.failoverReason = "timeout"; // Reset so the next poll can retry the chain.
   }
 
   /** Proxy 备份任务创建成功后立即落库，控制台无需等到下一次成功轮询才显示兜底。 */
@@ -1774,6 +1813,16 @@ public class ImageGenerationClient {
   /** 是否为终态（完成或失败）：用于清理追踪状态，防止内存泄漏 */
   private boolean isTerminalStatus(String status) {
     return isDoneStatus(status) || isTerminalErrorStatus(status, null);
+  }
+
+  private boolean isPrimaryGenerationComplete(ImageGenerationDtos.TaskStatusResponse response) {
+    if (response == null) return false;
+    if (isTerminalErrorStatus(response.status(), response.error())) return false;
+    if (isDoneStatus(response.status())) return true;
+    return response.status() != null
+        && "persisting".equalsIgnoreCase(response.status().trim())
+        && response.imageUrls() != null
+        && !response.imageUrls().isEmpty();
   }
 
   /** 主任务是否返回失败/错误（含 error 字段），用于提前触发切换 */

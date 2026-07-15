@@ -1,8 +1,11 @@
 package com.youmi.api.image;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.atLeastOnce;
@@ -12,14 +15,22 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
 import com.youmi.api.common.ApiException;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
+import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -96,6 +107,131 @@ class ImageGenerationClientFailoverTest {
         argThat(req -> req.uri().toString().contains("aiuxu.com")), any());
     verify(mockHttpClient, atLeastOnce()).send(
         argThat(req -> req.uri().toString().contains("47.90.226.52")), any());
+  }
+
+  @Test
+  void timedOutApimartCompleted_doesNotTriggerProxyFailover() throws Exception {
+    HttpServer server = jsonServer("""
+        {"data":{"status":"completed","progress":100,
+        "result":{"images":[{"url":"https://cdn.example.com/final.png"}]}}}
+        """, null);
+    try {
+      ImageGenerationClient client = newApimartDirectClient(serverBaseUrl(server));
+      String taskId = "apimart-direct:done-task";
+      ImageGenerationDtos.CreateTaskRequest request = gptImageRequest();
+      getFailoverStates(client).put(taskId,
+          newFailoverState(request, "apimart-direct", System.currentTimeMillis() - 121_000L));
+
+      ImageGenerationDtos.TaskStatusResponse response = client.getTask(taskId);
+
+      assertEquals("apimart-direct", response.provider());
+      assertEquals("persisting", response.status());
+      assertEquals(1, response.imageUrls().size());
+      assertFalse(getFailoverStates(client).containsKey(taskId));
+      verify(mockHttpClient, never()).send(
+          argThat(req -> req.uri().toString().contains("47.90.226.52")), any());
+    } finally {
+      server.stop(0);
+    }
+  }
+
+  @Test
+  void timedOutApimartProcessing_checksPrimaryBeforeProxyFailover() throws Exception {
+    AtomicInteger sequence = new AtomicInteger();
+    AtomicInteger primaryOrder = new AtomicInteger();
+    AtomicInteger proxyOrder = new AtomicInteger();
+    HttpServer server = jsonServer(
+        "{\"data\":{\"status\":\"processing\",\"progress\":50}}",
+        () -> primaryOrder.compareAndSet(0, sequence.incrementAndGet()));
+    try {
+      ImageGenerationClient client = newApimartDirectClient(serverBaseUrl(server));
+      when(mockHttpClient.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
+          .thenAnswer(inv -> {
+            HttpRequest request = inv.getArgument(0);
+            if ("POST".equalsIgnoreCase(request.method())) {
+              proxyOrder.compareAndSet(0, sequence.incrementAndGet());
+              return mockResponse(200, "{\"job_id\":\"proxy-timeout\",\"status\":\"submitted\"}");
+            }
+            return mockResponse(200, "{\"status\":\"completed\",\"progress\":100}");
+          });
+
+      String taskId = "apimart-direct:slow-task";
+      getFailoverStates(client).put(taskId,
+          newFailoverState(gptImageRequest(), "apimart-direct", System.currentTimeMillis() - 121_000L));
+
+      ImageGenerationDtos.TaskStatusResponse response = client.getTask(taskId);
+
+      assertEquals("proxy", response.provider());
+      assertEquals(taskId, response.taskId());
+      assertTrue(primaryOrder.get() > 0);
+      assertTrue(proxyOrder.get() > primaryOrder.get(), "Primary must be polled before proxy failover");
+    } finally {
+      server.stop(0);
+    }
+  }
+
+  @Test
+  void completedConcurrentPoll_preventsStaleTimeoutFailover() throws Exception {
+    CountDownLatch processingRequestEntered = new CountDownLatch(1);
+    CountDownLatch releaseProcessingResponse = new CountDownLatch(1);
+    AtomicInteger requests = new AtomicInteger();
+    HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.setExecutor(command -> {
+      Thread worker = new Thread(command);
+      worker.setDaemon(true);
+      worker.start();
+    });
+    server.createContext("/", exchange -> {
+      if (requests.incrementAndGet() == 1) {
+        processingRequestEntered.countDown();
+        try {
+          releaseProcessingResponse.await(3, TimeUnit.SECONDS);
+        } catch (InterruptedException interrupted) {
+          Thread.currentThread().interrupt();
+        }
+        sendJson(exchange, "{\"data\":{\"status\":\"processing\",\"progress\":50}}");
+      } else {
+        sendJson(exchange, """
+            {"data":{"status":"completed","progress":100,
+            "result":{"images":[{"url":"https://cdn.example.com/final.png"}]}}}
+            """);
+      }
+    });
+    server.start();
+    try {
+      ImageGenerationClient client = newApimartDirectClient(serverBaseUrl(server));
+      String taskId = "apimart-direct:concurrent-task";
+      getFailoverStates(client).put(taskId,
+          newFailoverState(gptImageRequest(), "apimart-direct", System.currentTimeMillis() - 121_000L));
+
+      AtomicReference<ImageGenerationDtos.TaskStatusResponse> slowResponse = new AtomicReference<>();
+      AtomicReference<Throwable> slowError = new AtomicReference<>();
+      Thread slowPoll = new Thread(() -> {
+        try {
+          slowResponse.set(client.getTask(taskId));
+        } catch (Throwable error) {
+          slowError.set(error);
+        }
+      });
+      slowPoll.start();
+      assertTrue(processingRequestEntered.await(3, TimeUnit.SECONDS));
+
+      ImageGenerationDtos.TaskStatusResponse completedResponse = client.getTask(taskId);
+      releaseProcessingResponse.countDown();
+      slowPoll.join(3_000L);
+
+      assertEquals("apimart-direct", completedResponse.provider());
+      assertEquals("persisting", completedResponse.status());
+      assertNotNull(slowResponse.get());
+      assertEquals("apimart-direct", slowResponse.get().provider());
+      assertEquals("processing", slowResponse.get().status());
+      assertNull(slowError.get());
+      verify(mockHttpClient, never()).send(
+          argThat(req -> req.uri().toString().contains("47.90.226.52")), any());
+    } finally {
+      releaseProcessingResponse.countDown();
+      server.stop(0);
+    }
   }
 
   // ============ 异常路径：599 ============
@@ -338,6 +474,52 @@ class ImageGenerationClientFailoverTest {
     return client;
   }
 
+  private ImageGenerationClient newApimartDirectClient(String baseUrl) {
+    ImageGenerationProperties props = new ImageGenerationProperties();
+    props.setApimartDirectApiKey("test-apimart-key");
+    props.setApimartDirectBaseUrl(baseUrl);
+    props.setApimartDirectTaskPath("/v1/tasks");
+    props.setProxyApiKey("test-proxy-key");
+    props.setProxyBaseUrl("http://47.90.226.52");
+    props.setProxyGenerationPath("/api/images/jobs");
+    props.setProxyTaskPath("/api/images/jobs");
+    props.setPersistGeneratedImages(false);
+    props.setTimeoutSeconds(5);
+
+    ImageGenerationClient client = new ImageGenerationClient(new ObjectMapper(), props);
+    mockHttpClient = mock(HttpClient.class);
+    ReflectionTestUtils.setField(client, "httpClient", mockHttpClient);
+    return client;
+  }
+
+  private HttpServer jsonServer(String body, Runnable beforeResponse) throws IOException {
+    HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext("/", exchange -> {
+      if (beforeResponse != null) beforeResponse.run();
+      sendJson(exchange, body);
+    });
+    server.start();
+    return server;
+  }
+
+  private void sendJson(HttpExchange exchange, String body) throws IOException {
+    byte[] payload = body.getBytes(StandardCharsets.UTF_8);
+    exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+    exchange.sendResponseHeaders(200, payload.length);
+    exchange.getResponseBody().write(payload);
+    exchange.close();
+  }
+
+  private String serverBaseUrl(HttpServer server) {
+    return "http://127.0.0.1:" + server.getAddress().getPort();
+  }
+
+  private ImageGenerationDtos.CreateTaskRequest gptImageRequest() {
+    return new ImageGenerationDtos.CreateTaskRequest(
+        "a product", "gpt-image-2", "1:1", "1:1", "2K",
+        null, null, null, null, null, null, null, null, null, null, null);
+  }
+
   @SuppressWarnings("unchecked")
   private Map<String, Object> getFailoverStates(ImageGenerationClient client) throws Exception {
     Field f = ImageGenerationClient.class.getDeclaredField("failoverStates");
@@ -347,11 +529,16 @@ class ImageGenerationClientFailoverTest {
 
   private Object newFailoverState(ImageGenerationClient client,
       ImageGenerationDtos.CreateTaskRequest req, String primaryProvider) throws Exception {
+    return newFailoverState(req, primaryProvider, System.currentTimeMillis());
+  }
+
+  private Object newFailoverState(ImageGenerationDtos.CreateTaskRequest req,
+      String primaryProvider, long createdAt) throws Exception {
     Class<?> fsClass = Class.forName("com.youmi.api.image.ImageGenerationClient$FailoverState");
     Constructor<?> ctor = fsClass.getDeclaredConstructor(
         long.class, ImageGenerationDtos.CreateTaskRequest.class, String.class);
     ctor.setAccessible(true);
-    return ctor.newInstance(System.currentTimeMillis(), req, primaryProvider);
+    return ctor.newInstance(createdAt, req, primaryProvider);
   }
 
   @SuppressWarnings("unchecked")
