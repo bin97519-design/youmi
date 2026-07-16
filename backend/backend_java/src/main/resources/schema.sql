@@ -109,15 +109,19 @@ CREATE TABLE IF NOT EXISTS ym_ecommerce_set_task (
     selling_point_type VARCHAR(64),
     selling_point_title VARCHAR(128),
     prompt TEXT,
+    ratio VARCHAR(16),
     status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
     progress INT DEFAULT 0,
     image_url VARCHAR(512),
     thumbnail_url VARCHAR(512),
     error_message TEXT,
+    billing_log_id BIGINT,
+    retry_count INT NOT NULL DEFAULT 0,
     sort_order INT DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_ecommerce_set_task_set_id (set_id)
+    INDEX idx_ecommerce_set_task_set_id (set_id),
+    INDEX idx_ecommerce_task_status (set_id, status)
 );
 
 CREATE TABLE IF NOT EXISTS ym_mi_value_log (
@@ -197,6 +201,23 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 -- client_task_id：前端对同一张生图稳定携带的客户端幂等键
 SET @has_client_task_id = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@db AND table_name='ym_image_task' AND column_name='client_task_id');
 SET @sql = IF(@has_client_task_id=0, 'ALTER TABLE ym_image_task ADD COLUMN client_task_id VARCHAR(128) NULL', 'SELECT 1');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+-- ── 电商套图任务可靠性（计费关联、单张重试、终态查询） ──
+SET @has_ecommerce_ratio = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@db AND table_name='ym_ecommerce_set_task' AND column_name='ratio');
+SET @sql = IF(@has_ecommerce_ratio=0, 'ALTER TABLE ym_ecommerce_set_task ADD COLUMN ratio VARCHAR(16) NULL AFTER prompt', 'SELECT 1');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+SET @has_ecommerce_billing = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@db AND table_name='ym_ecommerce_set_task' AND column_name='billing_log_id');
+SET @sql = IF(@has_ecommerce_billing=0, 'ALTER TABLE ym_ecommerce_set_task ADD COLUMN billing_log_id BIGINT NULL AFTER error_message', 'SELECT 1');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+SET @has_ecommerce_retry = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@db AND table_name='ym_ecommerce_set_task' AND column_name='retry_count');
+SET @sql = IF(@has_ecommerce_retry=0, 'ALTER TABLE ym_ecommerce_set_task ADD COLUMN retry_count INT NOT NULL DEFAULT 0 AFTER billing_log_id', 'SELECT 1');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+SET @has_ecommerce_status_idx = (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@db AND table_name='ym_ecommerce_set_task' AND index_name='idx_ecommerce_task_status');
+SET @sql = IF(@has_ecommerce_status_idx=0, 'ALTER TABLE ym_ecommerce_set_task ADD INDEX idx_ecommerce_task_status (set_id, status)', 'SELECT 1');
 PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
 
 -- idx_ym_image_task_client：client_task_id 唯一性查询索引（幂等早返回依赖，必须放在加列之后）

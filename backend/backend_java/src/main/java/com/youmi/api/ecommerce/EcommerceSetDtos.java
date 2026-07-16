@@ -24,6 +24,7 @@ public class EcommerceSetDtos {
 
   /** 主图配置 */
   public record MainImageConfig(
+      String type,
       List<String> sellingPoints,
       int count,
       String ratio) {}
@@ -32,7 +33,9 @@ public class EcommerceSetDtos {
   public record DetailPageConfig(
       String mode,
       String ratio,
-      int count) {}
+      int count,
+      String style,
+      String notes) {}
 
   /** 策划响应 */
   public record PlanningResponse(
@@ -42,13 +45,17 @@ public class EcommerceSetDtos {
   /** 生图启动响应 */
   public record GenerationResponse(
       String setId,
-      int totalTasks) {}
+      int totalTasks,
+      int consumedMi,
+      int balance) {}
 
   /** 进度响应 */
   public record ProgressResponse(
       String setId,
       String status,
       int completed,
+      int failed,
+      int finished,
       int total,
       List<ProgressItem> items) {}
 
@@ -76,7 +83,23 @@ public class EcommerceSetDtos {
       String sellingPointType,
       String sellingPointTitle,
       String imageUrl,
-      String thumbnailUrl) {}
+      String thumbnailUrl,
+      String status,
+      String errorMessage) {}
+
+  /** 单张失败图片重试响应 */
+  public record RetryResponse(
+      long imageId,
+      String status,
+      int consumedMi,
+      int balance) {}
+
+  /** 当前用户最近生成、可作为产品参考的图片 */
+  public record SourceImage(
+      String taskId,
+      String imageUrl,
+      String prompt,
+      String createdAt) {}
 
   /** 画布导入响应 */
   public record CanvasImportResponse(

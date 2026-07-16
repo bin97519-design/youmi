@@ -19,4 +19,9 @@ $env:IMAGE_PROXY_API_KEY = [Environment]::GetEnvironmentVariable("IMAGE_PROXY_AP
 $env:OSS_ACCESS_KEY_ID = [Environment]::GetEnvironmentVariable("OSS_ACCESS_KEY_ID", "User")
 $env:OSS_ACCESS_KEY_SECRET = [Environment]::GetEnvironmentVariable("OSS_ACCESS_KEY_SECRET", "User")
 
-& (Join-Path $PSScriptRoot "mvnw.cmd") -Dspring-boot.run.profiles=dev spring-boot:run
+$bundledMaven = Join-Path $PSScriptRoot ".mvn\apache-maven-3.9.6\bin\mvn.cmd"
+if (Test-Path $bundledMaven) {
+  & $bundledMaven "-Dspring-boot.run.profiles=dev" "spring-boot:run"
+} else {
+  & (Join-Path $PSScriptRoot "mvnw.cmd") "-Dspring-boot.run.profiles=dev" "spring-boot:run"
+}

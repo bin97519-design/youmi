@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useEcommerceSetStore } from '../../stores/ecommerceSet'
 
 const store = useEcommerceSetStore()
@@ -41,6 +41,13 @@ const models = ['agnes-image-2.1-flash', 'banana2', 'bananapro', 'gpt-image-2']
 
 const showNotes = ref(false)
 const notesDraft = ref(store.config.detailPage.notes || '')
+const confirming = ref(false)
+const totalImages = computed(
+  () => (store.config.mainImage.count || 0) + (store.config.detailPage.count || 0),
+)
+const canGenerate = computed(
+  () => !!store.productImageUrl && !!store.productDescription.trim() && totalImages.value > 0,
+)
 
 function isSelected(pt) {
   return (store.config.mainImage.sellingPoints || []).includes(pt)
@@ -68,10 +75,10 @@ async function handleStartGeneration() {
   try {
     // 策划/优化是可选动作：若尚未创建 setId，则先创建再生成
     if (!store.setId) {
-    if (!store.productImageUrl || !store.productDescription) {
-      window.alert('请同时上传产品图并填写产品描述（两者均为必填）')
-      return
-    }
+      if (!store.productImageUrl || !store.productDescription) {
+        window.alert('请同时上传产品图并填写产品描述（两者均为必填）')
+        return
+      }
       await store.createPlanning()
     }
     await store.startGeneration()
@@ -81,20 +88,13 @@ async function handleStartGeneration() {
 }
 
 function showConfirmDialog() {
-  const mainCount = store.config.mainImage.count
-  const detailCount = store.config.detailPage.count
-  const total = mainCount + detailCount
-  const msg =
-    '即将生成 ' +
-    mainCount +
-    ' 张主图 + ' +
-    detailCount +
-    ' 张详情页，共 ' +
-    total +
-    ' 张图片，是否确认？'
-  if (window.confirm(msg)) {
-    handleStartGeneration()
-  }
+  if (!canGenerate.value) return
+  confirming.value = true
+}
+
+async function confirmGeneration() {
+  confirming.value = false
+  await handleStartGeneration()
 }
 </script>
 
@@ -226,9 +226,36 @@ function showConfirmDialog() {
     </div>
 
     <div class="es-actions">
-      <button class="es-primary-btn" @click="showConfirmDialog">
-        <i class="ri-play-circle-line" aria-hidden="true"></i>
-        <span>开始生成</span>
+      <div class="es-generation-summary">
+        <span>{{ canGenerate ? '预计生成' : '请先完成产品图和描述' }}</span>
+        <strong>{{ totalImages }} 张</strong>
+        <span v-if="canGenerate">失败自动退米值</span>
+      </div>
+      <div v-if="confirming" class="es-inline-confirm" role="dialog" aria-label="确认生成">
+        <div>
+          <strong>确认生成 {{ totalImages }} 张套图？</strong>
+          <span>
+            {{ store.config.mainImage.count }} 张主图 + {{ store.config.detailPage.count }} 张详情页
+          </span>
+        </div>
+        <button type="button" title="取消" @click="confirming = false">
+          <i class="ri-close-line" aria-hidden="true"></i>
+        </button>
+        <button class="confirm" type="button" title="确认生成" @click="confirmGeneration">
+          <i class="ri-check-line" aria-hidden="true"></i>
+        </button>
+      </div>
+      <button
+        v-else
+        class="es-primary-btn"
+        :disabled="store.generationLoading || !canGenerate"
+        @click="showConfirmDialog"
+      >
+        <i
+          :class="store.generationLoading ? 'ri-loader-4-line es-spin' : 'ri-play-circle-line'"
+          aria-hidden="true"
+        ></i>
+        <span>{{ store.generationLoading ? '正在提交...' : '开始生成' }}</span>
       </button>
     </div>
   </div>
@@ -399,6 +426,28 @@ function showConfirmDialog() {
   flex-direction: column;
   gap: 8px;
   margin-top: 8px;
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  margin-inline: -16px;
+  padding: 12px 16px 16px;
+  background: rgba(255, 255, 255, 0.96);
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  backdrop-filter: blur(8px);
+}
+.es-generation-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #64748b;
+  font-size: 11px;
+}
+.es-generation-summary strong {
+  color: #0f172a;
+  font-size: 13px;
+}
+.es-generation-summary span:last-child {
+  margin-left: auto;
 }
 .es-primary-btn {
   display: flex;
@@ -418,5 +467,64 @@ function showConfirmDialog() {
 }
 .es-primary-btn:hover {
   background: #334155;
+}
+.es-primary-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.es-inline-confirm {
+  min-height: 44px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 36px 36px;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 8px 7px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+}
+.es-inline-confirm > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.es-inline-confirm strong,
+.es-inline-confirm span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.es-inline-confirm strong {
+  color: #0f172a;
+  font-size: 12px;
+}
+.es-inline-confirm span {
+  color: #64748b;
+  font-size: 10px;
+}
+.es-inline-confirm button {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid #dbe2ea;
+  border-radius: 7px;
+  background: #fff;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 17px;
+}
+.es-inline-confirm button.confirm {
+  border-color: #1e293b;
+  background: #1e293b;
+  color: #fff;
+}
+.es-spin {
+  animation: es-spin 0.8s linear infinite;
+}
+@keyframes es-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

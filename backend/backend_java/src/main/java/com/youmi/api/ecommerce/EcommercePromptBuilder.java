@@ -33,7 +33,8 @@ public class EcommercePromptBuilder {
       EcommerceSetDtos.SellingPoint sellingPoint,
       EcommerceSetDtos.PlanningData planning,
       EcommerceSetDtos.MainImageConfig config,
-      String platform) {
+      String platform,
+      String textLanguage) {
     String template = getSellingPointTemplate(sellingPoint.type());
     String prompt = template
         .replace("{description}", sellingPoint.description())
@@ -55,6 +56,10 @@ public class EcommercePromptBuilder {
     // 平台规范约束
     sb.append(applyPlatformConstraints(platform, "main_image"));
 
+    if (textLanguage != null && !textLanguage.isBlank()) {
+      sb.append(" 画面中如需文字，统一使用").append(textLanguage).append("，不得混用其他语言。");
+    }
+
     // 主图通用质量要求
     sb.append(" 高清商品摄影风格，专业打光，构图精准，色彩准确还原。");
 
@@ -73,7 +78,8 @@ public class EcommercePromptBuilder {
   public String buildDetailPagePrompt(
       EcommerceSetDtos.PlanningData planning,
       EcommerceSetDtos.DetailPageConfig config,
-      String platform) {
+      String platform,
+      String textLanguage) {
     StringBuilder sb = new StringBuilder();
 
     sb.append("电商详情页设计：").append(planning.productName());
@@ -106,17 +112,24 @@ public class EcommercePromptBuilder {
     }
 
     // 详情页风格
-    String mode = config != null && config.mode() != null ? config.mode() : "comprehensive";
+    String mode = config != null && config.style() != null ? config.style() : "简约";
     sb.append("。详情页风格：");
     switch (mode) {
-      case "minimalist" -> sb.append("极简风格，留白充足，突出产品本身");
-      case "luxury" -> sb.append("奢华风格，高级质感，暗调光影");
+      case "minimalist", "简约" -> sb.append("极简风格，留白充足，突出产品本身");
+      case "luxury", "高端" -> sb.append("高端风格，高级质感，克制光影");
       case "lifestyle" -> sb.append("生活方式风格，场景融入，温馨氛围");
       default -> sb.append("综合风格，信息丰富，层次分明");
     }
 
     // 平台规范
     sb.append(applyPlatformConstraints(platform, "detail_page"));
+
+    if (config != null && config.notes() != null && !config.notes().isBlank()) {
+      sb.append(" 分屏构思：").append(config.notes()).append("。");
+    }
+    if (textLanguage != null && !textLanguage.isBlank()) {
+      sb.append(" 画面中如需文字，统一使用").append(textLanguage).append("，不得混用其他语言。");
+    }
 
     // 详情页通用质量要求
     sb.append(" 专业电商详情页排版，高清产品图，统一色调，规范字体。");

@@ -1,13 +1,13 @@
 <script setup>
 import { ref, computed } from 'vue'
-import { useRouter } from 'vue-router'
 import { useEcommerceSetStore } from '../../stores/ecommerceSet'
 import { uploadFileDirect } from '../../utils/ossUpload'
 
 const store = useEcommerceSetStore()
-const router = useRouter()
 const fileInput = ref(null)
 const uploading = ref(false)
+const historyOpen = ref(false)
+const historyLoading = ref(false)
 
 // 卖点类型配色（去紫去粉，使用中性/低饱和色板）
 const POINT_TYPE_COLORS = {
@@ -76,8 +76,19 @@ function clearProductImage() {
   store.productImageUrl = ''
 }
 
-function importFromHistory() {
-  router.push('/history')
+async function importFromHistory() {
+  historyOpen.value = true
+  historyLoading.value = true
+  try {
+    await store.fetchRecentImages()
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+function selectHistoryImage(image) {
+  store.productImageUrl = image.imageUrl
+  historyOpen.value = false
 }
 
 /* 产品信息重新优化（复用原有 AI 策划能力） */
@@ -91,7 +102,15 @@ async function handleOptimize() {
 }
 
 const hasPlanning = computed(() => !!store.planningData)
-const productInfo = computed(() => store.planningData?.productInfo || store.planningData || {})
+const productInfo = computed(() => {
+  const planning = store.planningData?.productInfo || store.planningData || {}
+  return {
+    name: planning.name || planning.productName,
+    category: planning.category,
+    material: planning.material,
+    craft: planning.craft || planning.craftsmanship,
+  }
+})
 const sellingPoints = computed(() => store.planningData?.sellingPoints || [])
 </script>
 
@@ -99,7 +118,10 @@ const sellingPoints = computed(() => store.planningData?.sellingPoints || [])
   <div class="es-planning-step">
     <!-- 产品图片上传 -->
     <div class="es-section">
-      <label class="es-label">产品图片<small class="es-req">* 必填</small></label>
+      <label class="es-label">
+        产品图片
+        <small class="es-req">* 必填</small>
+      </label>
       <div
         v-if="!store.productImageUrl"
         class="es-upload-zone"
@@ -129,11 +151,35 @@ const sellingPoints = computed(() => store.planningData?.sellingPoints || [])
         <i class="ri-history-line" aria-hidden="true"></i>
         <span>从生成历史导入</span>
       </button>
+      <div v-if="historyOpen" class="es-history-picker">
+        <div class="es-history-head">
+          <strong>选择最近生成图片</strong>
+          <button type="button" title="关闭" @click="historyOpen = false">
+            <i class="ri-close-line" aria-hidden="true"></i>
+          </button>
+        </div>
+        <div v-if="historyLoading" class="es-history-empty">正在加载...</div>
+        <div v-else-if="!store.recentImages.length" class="es-history-empty">暂无可用历史图片</div>
+        <div v-else class="es-history-grid">
+          <button
+            v-for="image in store.recentImages"
+            :key="image.taskId"
+            type="button"
+            :title="image.prompt || '选择图片'"
+            @click="selectHistoryImage(image)"
+          >
+            <img :src="image.imageUrl" alt="历史生成图片" />
+          </button>
+        </div>
+      </div>
     </div>
 
     <!-- 产品描述 -->
     <div class="es-section">
-      <label class="es-label">产品描述<small class="es-req">* 必填</small></label>
+      <label class="es-label">
+        产品描述
+        <small class="es-req">* 必填</small>
+      </label>
       <textarea
         v-model="store.productDescription"
         class="es-textarea"
@@ -145,12 +191,14 @@ const sellingPoints = computed(() => store.planningData?.sellingPoints || [])
     <!-- 产品信息重新优化 -->
     <button
       class="es-primary-btn"
-      :disabled="(!store.productImageUrl || !store.productDescription) || store.planningLoading"
+      :disabled="!store.productImageUrl || !store.productDescription || store.planningLoading"
       @click="handleOptimize"
     >
       <i v-if="store.planningLoading" class="ri-loader-4-line es-spin" aria-hidden="true"></i>
       <i v-else class="ri-magic-line" aria-hidden="true"></i>
-      <span>{{ store.planningLoading ? '优化中...' : '产品信息重新优化' }}</span>
+      <span>
+        {{ store.planningLoading ? '分析中...' : hasPlanning ? '重新分析产品' : 'AI 分析产品' }}
+      </span>
     </button>
 
     <!-- 优化结果（可选预览） -->
@@ -197,7 +245,7 @@ const sellingPoints = computed(() => store.planningData?.sellingPoints || [])
           </div>
         </div>
       </div>
-      <p class="es-optimize-tip">已生成卖点建议，可在下方「主图卖点」中多选套用。</p>
+      <p class="es-optimize-tip">套图策划已同步至右侧工作区。</p>
     </div>
   </div>
 </template>
@@ -326,6 +374,59 @@ const sellingPoints = computed(() => store.planningData?.sellingPoints || [])
 }
 .es-import-history {
   margin-top: 2px;
+}
+.es-history-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+.es-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #334155;
+}
+.es-history-head button {
+  border: 0;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+}
+.es-history-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  max-height: 190px;
+  overflow-y: auto;
+}
+.es-history-grid button {
+  aspect-ratio: 1;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+}
+.es-history-grid button:hover {
+  border-color: #475569;
+}
+.es-history-grid img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+.es-history-empty {
+  padding: 18px 0;
+  color: #94a3b8;
+  font-size: 12px;
+  text-align: center;
 }
 
 /* Textarea */

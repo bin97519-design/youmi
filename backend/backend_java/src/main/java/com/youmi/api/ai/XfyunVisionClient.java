@@ -40,6 +40,40 @@ public class XfyunVisionClient {
     return properties.getModel();
   }
 
+  public String analyzeImage(
+      String systemPrompt,
+      String userPrompt,
+      String imageUrl) throws Exception {
+    if (!properties.isConfigured()) {
+      throw new IllegalStateException("Xfyun vision api key is not configured");
+    }
+
+    List<Map<String, Object>> content = new ArrayList<>();
+    content.add(Map.of("type", "text", "text", userPrompt));
+    if (imageUrl != null && !imageUrl.isBlank()) {
+      content.add(Map.of(
+          "type", "image_url",
+          "image_url", Map.of("url", imageUrl.trim())));
+    }
+
+    Map<String, Object> systemMessage = new LinkedHashMap<>();
+    systemMessage.put("role", "system");
+    systemMessage.put("content", systemPrompt);
+
+    Map<String, Object> userMessage = new LinkedHashMap<>();
+    userMessage.put("role", "user");
+    userMessage.put("content", content);
+
+    Map<String, Object> body = new LinkedHashMap<>();
+    body.put("model", properties.getModel());
+    body.put("max_tokens", properties.getMaxTokens());
+    body.put("temperature", properties.getTemperature());
+    body.put("stream", false);
+    body.put("messages", List.of(systemMessage, userMessage));
+
+    return sendChat(body);
+  }
+
   public List<VisionElement> detectImageElements(String imageUrl) throws Exception {
     if (!properties.isConfigured()) {
       throw new IllegalStateException("Xfyun vision api key is not configured");

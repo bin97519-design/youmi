@@ -6,7 +6,7 @@ const store = useEcommerceSetStore()
 
 const progressPercent = computed(() => {
   if (store.progress.total === 0) return 0
-  return Math.round((store.progress.completed / store.progress.total) * 100)
+  return Math.round((store.progress.finished / store.progress.total) * 100)
 })
 
 const isFailed = computed(() => store.progress.status === 'FAILED')
@@ -31,11 +31,23 @@ function cardText(idx) {
   return loadingTexts[idx % loadingTexts.length]
 }
 
-// 单卡进度（基于总进度 + 轻微错位，纯展示用）
 function cardPercent(idx) {
-  const base = progressPercent.value
-  const offset = ((idx * 7) % 18) - 9
-  return Math.max(0, Math.min(99, base + offset))
+  const item = store.progress.items?.[idx]
+  if (['COMPLETED', 'FAILED'].includes(item?.status)) return 100
+  if (Number.isFinite(item?.progress)) return Math.max(0, Math.min(99, item.progress))
+  return 0
+}
+
+function cardStatus(idx) {
+  const item = store.progress.items?.[idx]
+  if (item?.status === 'COMPLETED') return '已完成'
+  if (item?.status === 'FAILED') return '生成失败，米值已退回'
+  return cardText(idx)
+}
+
+function isProcessing(idx) {
+  const status = store.progress.items?.[idx]?.status
+  return !['COMPLETED', 'FAILED'].includes(status)
 }
 
 function retryGeneration() {
@@ -48,9 +60,9 @@ function retryGeneration() {
     <!-- 总进度 -->
     <div class="es-progress-section">
       <div class="es-progress-header">
-        <span class="es-progress-title">{{ isFailed ? '生成失败' : '生成中…' }}</span>
+        <span class="es-progress-title">{{ isFailed ? '生成失败' : '正在生成套图' }}</span>
         <span class="es-progress-count">
-          {{ store.progress.completed }} / {{ store.progress.total || cardCount }}
+          已完成 {{ store.progress.finished }} / {{ store.progress.total || cardCount }}
         </span>
       </div>
       <div class="es-progress-bar">
@@ -61,7 +73,14 @@ function retryGeneration() {
 
     <!-- 加载卡片网格 -->
     <div v-if="!isFailed" class="es-loading-grid">
-      <div v-for="idx in cardCount" :key="idx" class="es-loading-card">
+      <div
+        v-for="idx in cardCount"
+        :key="idx"
+        :class="[
+          'es-loading-card',
+          { failed: store.progress.items?.[idx - 1]?.status === 'FAILED' },
+        ]"
+      >
         <div class="es-loading-logo">
           <svg class="es-breath-logo" viewBox="0 0 48 48" fill="none" aria-hidden="true">
             <circle cx="24" cy="24" r="9" fill="currentColor" opacity="0.9" />
@@ -77,10 +96,10 @@ function retryGeneration() {
             />
           </svg>
         </div>
-        <div class="es-loading-bar">
+        <div :class="['es-loading-bar', { indeterminate: isProcessing(idx - 1) }]">
           <div class="es-loading-fill" :style="{ width: cardPercent(idx - 1) + '%' }"></div>
         </div>
-        <div class="es-loading-text">{{ cardText(idx - 1) }}</div>
+        <div class="es-loading-text">{{ cardStatus(idx - 1) }}</div>
       </div>
     </div>
 
@@ -194,6 +213,18 @@ function retryGeneration() {
   border-radius: 2px;
   transition: width 0.5s ease;
 }
+.es-loading-bar.indeterminate .es-loading-fill {
+  width: 38% !important;
+  animation: es-loading-slide 1.3s ease-in-out infinite;
+}
+@keyframes es-loading-slide {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(285%);
+  }
+}
 .es-loading-text {
   font-size: 11px;
   color: #94a3b8;
@@ -224,5 +255,24 @@ function retryGeneration() {
 }
 .es-retry-btn:hover {
   background: rgba(220, 38, 38, 0.06);
+}
+
+@media (max-width: 720px) {
+  .es-generating-step {
+    padding: 16px;
+  }
+  .es-progress-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .es-loading-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .es-loading-card {
+    min-width: 0;
+    padding: 14px 10px;
+  }
 }
 </style>

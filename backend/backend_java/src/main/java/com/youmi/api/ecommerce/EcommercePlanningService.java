@@ -2,45 +2,33 @@ package com.youmi.api.ecommerce;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.youmi.api.ai.DashScopeProperties;
+import com.youmi.api.ai.XfyunVisionClient;
 import com.youmi.api.common.ApiException;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /**
  * 电商套图 AI 策划服务。
- * 调用 DashScope API（兼容 OpenAI 格式）生成结构化策划方案。
+ * 调用讯飞视觉模型生成结构化策划方案。
  */
 @Service
 public class EcommercePlanningService {
   private static final Logger log = LoggerFactory.getLogger(EcommercePlanningService.class);
 
   private final ObjectMapper objectMapper;
-  private final DashScopeProperties dashScopeProperties;
+  private final XfyunVisionClient xfyunVisionClient;
   private final EcommerceSetProperties ecommerceSetProperties;
-  private final HttpClient httpClient;
 
   public EcommercePlanningService(
       ObjectMapper objectMapper,
-      DashScopeProperties dashScopeProperties,
+      XfyunVisionClient xfyunVisionClient,
       EcommerceSetProperties ecommerceSetProperties) {
     this.objectMapper = objectMapper;
-    this.dashScopeProperties = dashScopeProperties;
+    this.xfyunVisionClient = xfyunVisionClient;
     this.ecommerceSetProperties = ecommerceSetProperties;
-    this.httpClient = HttpClient.newBuilder()
-        .version(HttpClient.Version.HTTP_1_1)
-        .connectTimeout(Duration.ofSeconds(Math.max(3, dashScopeProperties.getTimeoutSeconds())))
-        .build();
   }
 
   /**
@@ -54,52 +42,37 @@ public class EcommercePlanningService {
   public EcommerceSetDtos.PlanningData generatePlanning(
       String productImageUrl,
       String productDescription) throws Exception {
-    if (!dashScopeProperties.isConfigured()) {
-      throw new ApiException(400, "DashScope API key is not configured");
+    if (!xfyunVisionClient.isConfigured()) {
+      log.warn("[planning] Xfyun vision is not configured, using local ecommerce planning");
+      return buildFallbackPlanning(productDescription);
     }
+
+    try {
+      EcommerceSetDtos.PlanningData planning = generateAiPlanning(productImageUrl, productDescription);
+      log.info("[planning] Xfyun vision analysis succeeded, model={}", xfyunVisionClient.model());
+      return planning;
+    } catch (Exception e) {
+      log.warn("[planning] Xfyun vision analysis failed, using local ecommerce planning: {}", e.getMessage());
+      return buildFallbackPlanning(productDescription);
+    }
+  }
+
+  private EcommerceSetDtos.PlanningData generateAiPlanning(
+      String productImageUrl,
+      String productDescription) throws Exception {
 
     String systemPrompt = ecommerceSetProperties.getPlanningSystemPrompt();
-    String model = ecommerceSetProperties.getPlanningModel();
-
-    // 构造 user message
-    List<Map<String, Object>> userContent = new ArrayList<>();
-
-    // 如果有图片 URL，构造多模态消息
-    if (productImageUrl != null && !productImageUrl.isBlank()) {
-      Map<String, Object> imagePart = new LinkedHashMap<>();
-      imagePart.put("type", "image_url");
-      imagePart.put("image_url", Map.of("url", productImageUrl.trim()));
-      userContent.add(imagePart);
-    }
-
-    // 文本部分
     StringBuilder textBuilder = new StringBuilder();
     if (productDescription != null && !productDescription.isBlank()) {
-      textBuilder.append("产品描述：").append(productDescription.trim());
+      textBuilder.append("请先仔细识别产品图片中的产品外观、颜色、材质、结构、配件和可见文字，再结合以下产品描述生成策划。\n")
+          .append("产品描述：").append(productDescription.trim());
     } else {
-      textBuilder.append("请根据产品图片生成策划方案。");
+      textBuilder.append("请仔细识别产品图片中的产品外观、颜色、材质、结构、配件和可见文字，并据此生成策划方案。");
     }
-    Map<String, Object> textPart = new LinkedHashMap<>();
-    textPart.put("type", "text");
-    textPart.put("text", textBuilder.toString());
-    userContent.add(textPart);
 
-    Map<String, Object> userMessage = new LinkedHashMap<>();
-    userMessage.put("role", "user");
-    userMessage.put("content", userContent);
-
-    Map<String, Object> systemMessage = new LinkedHashMap<>();
-    systemMessage.put("role", "system");
-    systemMessage.put("content", systemPrompt);
-
-    Map<String, Object> body = new LinkedHashMap<>();
-    body.put("model", model);
-    body.put("messages", List.of(systemMessage, userMessage));
-    body.put("max_tokens", dashScopeProperties.getMaxTokens());
-    body.put("temperature", dashScopeProperties.getTemperature());
-
-    String responseText = sendChat(body);
-    log.info("[planning] DashScope raw response (first 800 chars): {}",
+    String responseText = xfyunVisionClient.analyzeImage(
+        systemPrompt, textBuilder.toString(), productImageUrl);
+    log.info("[planning] Xfyun raw response (first 800 chars): {}",
         responseText.length() > 800 ? responseText.substring(0, 800) + "..." : responseText);
 
     // 提取纯 JSON（去除 markdown 代码块包裹）
@@ -112,47 +85,31 @@ public class EcommercePlanningService {
     return parsePlanningData(json);
   }
 
-  /**
-   * 发送 chat 请求到 DashScope API。
-   */
-  private String sendChat(Map<String, Object> body) throws Exception {
-    String endpoint = dashScopeProperties.normalizedBaseUrl() + dashScopeProperties.normalizedChatPath();
-    HttpRequest request = HttpRequest.newBuilder()
-        .uri(URI.create(endpoint))
-        .timeout(Duration.ofSeconds(Math.max(8, dashScopeProperties.getTimeoutSeconds())))
-        .header("Authorization", "Bearer " + dashScopeProperties.getApiKey())
-        .header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
-        .build();
-
-    HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-    log.info("[planning] DashScope response status: {}", response.statusCode());
-
-    if (response.statusCode() < 200 || response.statusCode() >= 300) {
-      log.error("[planning] DashScope error body: {}", compact(response.body()));
-      throw new ApiException(502, "DashScope request failed: " + response.statusCode() + " " + compact(response.body()));
+  private EcommerceSetDtos.PlanningData buildFallbackPlanning(String productDescription) {
+    String description = productDescription == null ? "" : productDescription.trim();
+    String productName = description.isBlank() ? "电商商品" : description.split("[，。,.;；\n]", 2)[0].trim();
+    if (productName.length() > 24) {
+      productName = productName.substring(0, 24);
     }
 
-    JsonNode root = objectMapper.readTree(response.body());
-    String content = readContent(root);
-    if (content.isBlank()) {
-      throw new ApiException(502, "DashScope returned empty content");
-    }
-    return content;
-  }
+    List<EcommerceSetDtos.SellingPoint> sellingPoints = List.of(
+        new EcommerceSetDtos.SellingPoint(
+            "核心卖点", "产品核心价值", "突出产品主体和最重要的用户价值", "主体居中，高对比展示"),
+        new EcommerceSetDtos.SellingPoint(
+            "材质工艺", "材质与细节", "用近景展示材质、边缘和工艺细节", "局部特写，真实质感"),
+        new EcommerceSetDtos.SellingPoint(
+            "使用场景", "场景化展示", "结合目标用户的日常使用场景展示效果", "自然光场景，保持产品清晰"),
+        new EcommerceSetDtos.SellingPoint(
+            "品质保障", "专业品质", "传达可靠、专业和易于信任的品牌感", "简洁版式，克制文字信息"));
 
-  /**
-   * 从 OpenAI 兼容格式的响应中提取 message content。
-   */
-  private String readContent(JsonNode root) {
-    JsonNode choices = root.path("choices");
-    if (choices.isArray() && choices.size() > 0) {
-      JsonNode message = choices.get(0).path("message");
-      if (!message.isMissingNode()) {
-        return message.path("content").asText("").trim();
-      }
-    }
-    return root.path("content").asText("").trim();
+    return new EcommerceSetDtos.PlanningData(
+        productName,
+        "电商商品",
+        "",
+        "",
+        sellingPoints,
+        "注重品质、功能和购买效率的电商用户",
+        List.of("商品主图", "详情页展示", "社交电商推广"));
   }
 
   /**
@@ -229,4 +186,5 @@ public class EcommercePlanningService {
     String compacted = body.replaceAll("\\s+", " ").trim();
     return compacted.length() > 400 ? compacted.substring(0, 400) + "..." : compacted;
   }
+
 }

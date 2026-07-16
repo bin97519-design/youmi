@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -114,6 +115,15 @@ public class EcommerceSetController {
     return ApiResponse.ok(ecommerceSetService.getResult(userId, setId));
   }
 
+  /** GET /api/v1/ecommerce-sets/source-images */
+  @GetMapping("/source-images")
+  public ApiResponse<java.util.List<EcommerceSetDtos.SourceImage>> getRecentSourceImages(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @RequestParam(value = "limit", defaultValue = "24") int limit) {
+    Long userId = requireUserId(authorization);
+    return ApiResponse.ok(ecommerceSetService.getRecentSourceImages(userId, limit));
+  }
+
   /**
    * GET /api/v1/ecommerce-sets/{setId}/images/{imageId}/download
    * 下载单张图片（代理转发，解决跨域）
@@ -175,6 +185,16 @@ public class EcommerceSetController {
       @PathVariable Long imageId) throws Exception {
     Long userId = requireUserId(authorization);
     return ApiResponse.ok(ecommerceSetService.importToCanvas(userId, setId, imageId));
+  }
+
+  /** POST /api/v1/ecommerce-sets/{setId}/images/{imageId}/retry */
+  @PostMapping("/{setId}/images/{imageId}/retry")
+  public ApiResponse<EcommerceSetDtos.RetryResponse> retryImage(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @PathVariable String setId,
+      @PathVariable Long imageId) {
+    Long userId = requireUserId(authorization);
+    return ApiResponse.ok(ecommerceSetService.retryImage(userId, setId, imageId));
   }
 
   // ==================== 鉴权辅助 ====================

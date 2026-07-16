@@ -1,8 +1,9 @@
 <script setup>
-import { computed, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import EcommerceSetPanel from '../components/ecommerce/EcommerceSetPanel.vue'
 import GeneratingStep from '../components/ecommerce/GeneratingStep.vue'
+import PlanningWorkspace from '../components/ecommerce/PlanningWorkspace.vue'
 import ResultStep from '../components/ecommerce/ResultStep.vue'
 import { useEcommerceSetStore } from '../stores/ecommerceSet'
 
@@ -13,10 +14,20 @@ const hasResults = computed(
   () => (store.results.mainImages?.length || 0) + (store.results.detailPages?.length || 0) > 0,
 )
 const isGenerating = computed(() => store.currentStep === 'generating')
+let unsubscribe = null
 
 function goBack() {
   router.push('/')
 }
+
+onMounted(async () => {
+  await store.resumeDraft()
+  unsubscribe = store.$subscribe(() => store.persistDraft(), { detached: true })
+})
+
+onBeforeUnmount(() => {
+  unsubscribe?.()
+})
 
 // 页面离开时清理轮询
 watch(
@@ -59,6 +70,9 @@ watch(
 
       <!-- 生成结果 -->
       <ResultStep v-else-if="hasResults" />
+
+      <!-- 套图策划 -->
+      <PlanningWorkspace v-else-if="store.planningData" />
 
       <!-- 空状态 -->
       <div v-else class="canvas-empty">
@@ -226,5 +240,41 @@ watch(
   text-align: center;
   line-height: 1.6;
   margin: 0;
+}
+
+@media (max-width: 900px) {
+  .ecommerce-set-page {
+    flex-direction: column;
+  }
+
+  .workbench-config {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    height: 52vh;
+    min-height: 360px;
+    border-right: 0;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  }
+
+  .workbench-main {
+    min-height: 0;
+    height: auto;
+  }
+}
+
+@media (max-width: 560px) {
+  .workbench-config {
+    height: 58vh;
+    min-height: 340px;
+  }
+
+  .config-header {
+    padding: 8px 12px;
+  }
+
+  .canvas-empty {
+    padding: 28px 20px;
+  }
 }
 </style>

@@ -1,7 +1,35 @@
 import { defineStore } from 'pinia'
 import { apiPath } from '../utils/apiBase'
+import { useUserStore } from './user'
 
 const API_PREFIX = '/api/v1/ecommerce-sets'
+const DRAFT_KEY = 'youmi:ecommerce-set:draft'
+const DRAFT_VERSION = 1
+
+function createDefaultConfig() {
+  return {
+    platform: '天猫',
+    mainImage: {
+      type: '品牌首图',
+      count: 3,
+      ratio: '1:1',
+      sellingPoints: [],
+    },
+    detailPage: {
+      mode: 'whole',
+      ratio: '9:16',
+      count: 1,
+      style: '简约',
+      notes: '',
+    },
+    language: '中文(简体)',
+    model: 'agnes-image-2.1-flash',
+  }
+}
+
+function requestHeaders() {
+  return { 'Content-Type': 'application/json', ...useUserStore().authHeaders() }
+}
 
 /**
  * 电商套图 Store
@@ -19,32 +47,20 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
     productDescription: '',
     planningData: null,
     planningLoading: false,
+    generationLoading: false,
+    errorMessage: '',
+    billing: { consumedMi: 0, balance: null },
+    recentImages: [],
 
     // 配置相关
-    config: {
-      platform: '天猫',
-      mainImage: {
-        type: '品牌首图',
-        count: 3,
-        ratio: '1:1',
-        sellingPoints: [],
-      },
-      detailPage: {
-        mode: 'whole',
-        ratio: '9:16',
-        count: 1,
-        style: '简约',
-        notes: '',
-      },
-      // 画面文字语言（前端展示项，后端未使用该字段时仅作为备注随配置提交）
-      language: '中文(简体)',
-      model: 'agnes-image-2.1-flash',
-    },
+    config: createDefaultConfig(),
 
     // 进度相关
     progress: {
       status: '',
       completed: 0,
+      failed: 0,
+      finished: 0,
       total: 0,
       items: [],
     },
@@ -58,16 +74,75 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
   }),
 
   actions: {
+    persistDraft() {
+      try {
+        localStorage.setItem(
+          DRAFT_KEY,
+          JSON.stringify({
+            version: DRAFT_VERSION,
+            currentStep: this.currentStep,
+            setId: this.setId,
+            productImageUrl: this.productImageUrl,
+            productDescription: this.productDescription,
+            planningData: this.planningData,
+            config: this.config,
+            billing: this.billing,
+          }),
+        )
+      } catch (err) {
+        console.warn('[ecommerceSet] persist draft failed:', err)
+      }
+    },
+
+    restoreDraft() {
+      try {
+        const raw = localStorage.getItem(DRAFT_KEY)
+        if (!raw) return false
+        const draft = JSON.parse(raw)
+        if (draft.version !== DRAFT_VERSION) return false
+        const defaults = createDefaultConfig()
+        this.currentStep = ['config', 'generating', 'result'].includes(draft.currentStep)
+          ? draft.currentStep
+          : 'config'
+        this.setId = draft.setId || null
+        this.productImageUrl = draft.productImageUrl || ''
+        this.productDescription = draft.productDescription || ''
+        this.planningData = draft.planningData || null
+        this.config = {
+          ...defaults,
+          ...draft.config,
+          mainImage: { ...defaults.mainImage, ...draft.config?.mainImage },
+          detailPage: { ...defaults.detailPage, ...draft.config?.detailPage },
+        }
+        this.billing = { ...this.billing, ...draft.billing }
+        return true
+      } catch (err) {
+        localStorage.removeItem(DRAFT_KEY)
+        console.warn('[ecommerceSet] restore draft failed:', err)
+        return false
+      }
+    },
+
+    async resumeDraft() {
+      if (!this.restoreDraft() || !this.setId || this.currentStep === 'config') return
+      const savedStep = this.currentStep
+      const progress = await this.pollProgress()
+      if (progress && savedStep === 'generating' && this.currentStep === 'generating') {
+        this.startPolling()
+      }
+    },
+
     /**
      * 创建AI策划
      * POST /api/v1/ecommerce-sets/
      */
     async createPlanning() {
       this.planningLoading = true
+      this.errorMessage = ''
       try {
-        const res = await fetch(apiPath(API_PREFIX + '/'), {
+        const res = await fetch(apiPath(API_PREFIX + '/planning'), {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: requestHeaders(),
           body: JSON.stringify({
             productImageUrl: this.productImageUrl,
             productDescription: this.productDescription,
@@ -77,11 +152,12 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
         if (json.code !== 0) {
           throw new Error(json.message || '策划创建失败')
         }
-        this.setId = json.data.id
+        this.setId = json.data.setId
         this.planningData = json.data.planning || json.data
         return json.data
       } catch (err) {
         console.error('[ecommerceSet] createPlanning error:', err)
+        this.errorMessage = err.message || '策划创建失败'
         throw err
       } finally {
         this.planningLoading = false
@@ -97,8 +173,8 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
       try {
         const res = await fetch(apiPath(`${API_PREFIX}/${this.setId}/planning`), {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ planning: planningJson }),
+          headers: requestHeaders(),
+          body: JSON.stringify({ planningData: planningJson }),
         })
         const json = await res.json()
         if (json.code !== 0) {
@@ -108,6 +184,7 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
         return json.data
       } catch (err) {
         console.error('[ecommerceSet] updatePlanning error:', err)
+        this.errorMessage = err.message || '策划更新失败'
         throw err
       }
     },
@@ -119,9 +196,9 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
     async confirmPlanning() {
       if (!this.setId) return
       try {
-        const res = await fetch(apiPath(`${API_PREFIX}/${this.setId}/confirm-planning`), {
+        const res = await fetch(apiPath(`${API_PREFIX}/${this.setId}/confirm`), {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: requestHeaders(),
         })
         const json = await res.json()
         if (json.code !== 0) {
@@ -131,6 +208,7 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
         return json.data
       } catch (err) {
         console.error('[ecommerceSet] confirmPlanning error:', err)
+        this.errorMessage = err.message || '策划确认失败'
         throw err
       }
     },
@@ -141,11 +219,20 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
      */
     async startGeneration() {
       if (!this.setId) return
+      if (this.generationLoading) return
+      this.generationLoading = true
+      this.errorMessage = ''
       try {
         const res = await fetch(apiPath(`${API_PREFIX}/${this.setId}/generate`), {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ config: this.config }),
+          headers: requestHeaders(),
+          body: JSON.stringify({
+            platform: this.config.platform,
+            model: this.config.model,
+            textLanguage: this.config.language,
+            mainImage: this.config.mainImage,
+            detailPage: this.config.detailPage,
+          }),
         })
         const json = await res.json()
         if (json.code !== 0) {
@@ -155,14 +242,23 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
         this.progress = {
           status: 'GENERATING',
           completed: 0,
-          total: json.data.total || 0,
+          failed: 0,
+          finished: 0,
+          total: json.data.totalTasks || 0,
           items: json.data.items || [],
+        }
+        this.billing = {
+          consumedMi: json.data.consumedMi || 0,
+          balance: json.data.balance ?? null,
         }
         this.startPolling()
         return json.data
       } catch (err) {
         console.error('[ecommerceSet] startGeneration error:', err)
+        this.errorMessage = err.message || '生图启动失败'
         throw err
+      } finally {
+        this.generationLoading = false
       }
     },
 
@@ -175,7 +271,7 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
       try {
         const res = await fetch(apiPath(`${API_PREFIX}/${this.setId}/progress`), {
           method: 'GET',
-          headers: { 'Content-Type': 'application/json' },
+          headers: requestHeaders(),
         })
         const json = await res.json()
         if (json.code !== 0) {
@@ -184,20 +280,25 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
         this.progress = {
           status: json.data.status || this.progress.status,
           completed: json.data.completed ?? this.progress.completed,
+          failed: json.data.failed ?? this.progress.failed,
+          finished: json.data.finished ?? this.progress.finished,
           total: json.data.total ?? this.progress.total,
           items: json.data.items || this.progress.items,
         }
-        if (this.progress.status === 'COMPLETED') {
+        if (['COMPLETED', 'PARTIAL_FAILED'].includes(this.progress.status)) {
           this.stopPolling()
           this.currentStep = 'result'
           await this.fetchResult()
         } else if (this.progress.status === 'FAILED') {
           this.stopPolling()
+          this.currentStep = 'result'
+          await this.fetchResult()
         }
         return json.data
       } catch (err) {
         console.error('[ecommerceSet] pollProgress error:', err)
-        throw err
+        this.errorMessage = err.message || '进度查询失败，正在自动重试'
+        return null
       }
     },
 
@@ -206,6 +307,7 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
      */
     startPolling() {
       this.stopPolling()
+      void this.pollProgress()
       this.pollingTimer = setInterval(() => {
         this.pollProgress()
       }, 3000)
@@ -230,7 +332,7 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
       try {
         const res = await fetch(apiPath(`${API_PREFIX}/${this.setId}/result`), {
           method: 'GET',
-          headers: { 'Content-Type': 'application/json' },
+          headers: requestHeaders(),
         })
         const json = await res.json()
         if (json.code !== 0) {
@@ -243,23 +345,90 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
         return json.data
       } catch (err) {
         console.error('[ecommerceSet] fetchResult error:', err)
+        this.errorMessage = err.message || '结果获取失败'
         throw err
       }
     },
 
-    /**
-     * 导入图片到画布
-     * 通过事件通知画布添加图层
-     */
-    async importToCanvas(imageUrl) {
+    async retryImage(imageId) {
+      this.errorMessage = ''
       try {
-        window.dispatchEvent(
-          new CustomEvent('ecommerce-set:import-to-canvas', {
-            detail: { imageUrl },
-          }),
-        )
+        const res = await fetch(apiPath(`${API_PREFIX}/${this.setId}/images/${imageId}/retry`), {
+          method: 'POST',
+          headers: requestHeaders(),
+        })
+        const json = await res.json()
+        if (json.code !== 0) throw new Error(json.message || '重试失败')
+        this.billing = {
+          consumedMi: this.billing.consumedMi + (json.data.consumedMi || 0),
+          balance: json.data.balance ?? this.billing.balance,
+        }
+        this.currentStep = 'generating'
+        this.progress.status = 'GENERATING'
+        this.startPolling()
+        return json.data
       } catch (err) {
-        console.error('[ecommerceSet] importToCanvas error:', err)
+        this.errorMessage = err.message || '重试失败'
+        throw err
+      }
+    },
+
+    async retryFailedImages(imageIds) {
+      const ids = [...new Set((imageIds || []).filter(Boolean))]
+      if (!ids.length || this.generationLoading) return
+      this.generationLoading = true
+      this.errorMessage = ''
+      this.stopPolling()
+      let submitted = 0
+      let consumedMi = 0
+      let balance = this.billing.balance
+      const errors = []
+      try {
+        for (const imageId of ids) {
+          try {
+            const res = await fetch(
+              apiPath(`${API_PREFIX}/${this.setId}/images/${imageId}/retry`),
+              { method: 'POST', headers: requestHeaders() },
+            )
+            const json = await res.json()
+            if (json.code !== 0) throw new Error(json.message || '重试失败')
+            submitted += 1
+            consumedMi += json.data.consumedMi || 0
+            balance = json.data.balance ?? balance
+          } catch (err) {
+            errors.push(err.message || '重试失败')
+          }
+        }
+        if (!submitted) throw new Error(errors[0] || '批量重试失败')
+        this.billing = {
+          consumedMi: this.billing.consumedMi + consumedMi,
+          balance,
+        }
+        this.currentStep = 'generating'
+        this.progress.status = 'GENERATING'
+        if (errors.length) this.errorMessage = `${errors.length} 张未能提交重试`
+        this.startPolling()
+        return { submitted, failed: errors.length }
+      } catch (err) {
+        this.errorMessage = err.message || '批量重试失败'
+        throw err
+      } finally {
+        this.generationLoading = false
+      }
+    },
+
+    async fetchRecentImages() {
+      this.errorMessage = ''
+      try {
+        const res = await fetch(apiPath(`${API_PREFIX}/source-images?limit=24`), {
+          headers: requestHeaders(),
+        })
+        const json = await res.json()
+        if (json.code !== 0) throw new Error(json.message || '历史图片加载失败')
+        this.recentImages = json.data || []
+        return this.recentImages
+      } catch (err) {
+        this.errorMessage = err.message || '历史图片加载失败'
         throw err
       }
     },
@@ -282,6 +451,14 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
       }
     },
 
+    async downloadImages(imageUrls) {
+      const urls = [...new Set((imageUrls || []).filter(Boolean))]
+      for (const url of urls) {
+        await this.downloadImage(url)
+        await new Promise((resolve) => setTimeout(resolve, 180))
+      }
+    },
+
     /**
      * 重置所有状态
      */
@@ -293,27 +470,16 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
       this.productDescription = ''
       this.planningData = null
       this.planningLoading = false
-      this.config = {
-        platform: '天猫',
-        mainImage: {
-          type: '品牌首图',
-          count: 3,
-          ratio: '1:1',
-          sellingPoints: [],
-        },
-        detailPage: {
-          mode: 'whole',
-          ratio: '9:16',
-          count: 1,
-          style: '简约',
-          notes: '',
-        },
-        language: '中文(简体)',
-        model: 'agnes-image-2.1-flash',
-      }
+      this.generationLoading = false
+      this.errorMessage = ''
+      this.billing = { consumedMi: 0, balance: null }
+      this.recentImages = []
+      this.config = createDefaultConfig()
       this.progress = {
         status: '',
         completed: 0,
+        failed: 0,
+        finished: 0,
         total: 0,
         items: [],
       }
@@ -321,6 +487,7 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
         mainImages: [],
         detailPages: [],
       }
+      localStorage.removeItem(DRAFT_KEY)
     },
   },
 })
