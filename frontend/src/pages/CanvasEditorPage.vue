@@ -15,6 +15,7 @@ import { layerName, useCanvasStore } from '../stores/canvas'
 import { useUserStore } from '../stores/user'
 import { apiPath } from '../utils/apiBase'
 import { cachedImgHtml } from '../utils/imageCache'
+import { createStoredZip } from '../utils/storedZip'
 import {
   MAX_IMAGE_UPLOAD_BYTES,
   uploadFileDirect,
@@ -2754,6 +2755,86 @@ async function downloadImage() {
 async function downloadViewerImage(image) {
   if (!image?.url) return
   await downloadFileByUrl(image.url, image.name || 'image')
+}
+
+function imageExtension(url, contentType) {
+  const type = String(contentType || '').toLowerCase()
+  if (type.includes('png')) return '.png'
+  if (type.includes('jpeg') || type.includes('jpg')) return '.jpg'
+  if (type.includes('webp')) return '.webp'
+  if (type.includes('gif')) return '.gif'
+  if (type.includes('avif')) return '.avif'
+  const match = String(url || '').split('?')[0].match(/\.(png|jpe?g|webp|gif|avif)$/i)
+  return match ? `.${match[1].toLowerCase().replace('jpeg', 'jpg')}` : '.png'
+}
+
+function safeDownloadName(value, fallback) {
+  const withoutControls = [...String(value || '')]
+    .map((character) => (character.charCodeAt(0) < 32 ? '_' : character))
+    .join('')
+  const cleaned = withoutControls
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .trim()
+    .replace(/[. ]+$/g, '')
+  return cleaned || fallback
+}
+
+async function fetchImageForZip(layer, index) {
+  const url = layer.url
+  const isCrossOrigin = url.startsWith('http') && !url.startsWith(location.origin)
+  const requestUrl = isCrossOrigin
+    ? apiPath('/api/image-tasks/proxy-download?url=' + encodeURIComponent(url))
+    : url
+  const response = await fetch(requestUrl, {
+    headers: isCrossOrigin ? { ...userStore.authHeaders() } : undefined,
+  })
+  if (!response.ok) throw new Error(`${layer.name || `第 ${index + 1} 张图片`}下载失败`)
+  const blob = await response.blob()
+  const extension = imageExtension(url, blob.type)
+  const rawName = safeDownloadName(layer.name, `图片-${index + 1}`)
+  const baseName = rawName.replace(/\.(png|jpe?g|webp|gif|avif)$/i, '')
+  return { baseName, extension, data: new Uint8Array(await blob.arrayBuffer()) }
+}
+
+function uniqueZipFileName(baseName, extension, usedNames) {
+  let candidate = `${baseName}${extension}`
+  let suffix = 2
+  while (usedNames.has(candidate.toLowerCase())) {
+    candidate = `${baseName}-${suffix}${extension}`
+    suffix += 1
+  }
+  usedNames.add(candidate.toLowerCase())
+  return candidate
+}
+
+async function downloadLayersAsZip(imageLayers) {
+  const toastId = ++downloadToastId
+  const usedNames = new Set()
+  const files = []
+  try {
+    for (let index = 0; index < imageLayers.length; index += 1) {
+      showDownloadToast(`正在准备 ${index + 1}/${imageLayers.length} 张图片…`, toastId, true)
+      const image = await fetchImageForZip(imageLayers[index], index)
+      files.push({
+        name: uniqueZipFileName(image.baseName, image.extension, usedNames),
+        data: image.data,
+      })
+    }
+    showDownloadToast('正在生成 ZIP…', toastId, true)
+    const zipBlob = createStoredZip(files)
+    const blobUrl = URL.createObjectURL(zipBlob)
+    const link = document.createElement('a')
+    link.href = blobUrl
+    link.download = `画布图片-${imageLayers.length}张-${Date.now()}.zip`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    window.setTimeout(() => URL.revokeObjectURL(blobUrl), 5000)
+    showDownloadToast(`已打包下载 ${imageLayers.length} 张图片`, toastId)
+  } catch (error) {
+    console.error('[downloadLayersAsZip] error:', error)
+    showDownloadToast(error.message || '图片打包失败，请重试', toastId)
+  }
 }
 
 /**
@@ -6274,12 +6355,31 @@ function contextMenuDeleteLayer() {
   if (contextMenu.layerId) removeLayer(contextMenu.layerId)
   closeContextMenu()
 }
-function contextMenuDownloadLayer() {
-  const layer = contextMenu.layer
-  if (!layer || !layer.url) return
-  console.log('[contextMenuDownloadLayer] url:', layer.url, 'name:', layer.name)
-  downloadFileByUrl(layer.url, layer.name || 'image')
+function contextMenuDownloadLayers() {
+  const targetId = contextMenu.layerId
+  const ids =
+    selectedLayerIds.value.length > 1 && selectedLayerIds.value.includes(targetId)
+      ? [...selectedLayerIds.value]
+      : [targetId]
+  const imageLayers = ids
+    .map((id) => layers.value.find((layer) => layer.id === id))
+    .filter(isRealImageLayer)
   closeContextMenu()
+  if (!imageLayers.length) return
+  if (imageLayers.length === 1) {
+    const layer = imageLayers[0]
+    void downloadFileByUrl(layer.url, layer.name || 'image')
+    return
+  }
+  void downloadLayersAsZip(imageLayers)
+}
+
+function contextMenuDownloadCount() {
+  const targetId = contextMenu.layerId
+  if (selectedLayerIds.value.length <= 1 || !selectedLayerIds.value.includes(targetId)) return 1
+  return selectedLayerIds.value
+    .map((id) => layers.value.find((layer) => layer.id === id))
+    .filter(isRealImageLayer).length
 }
 function contextMenuAddToReference() {
   // 支持多选：如果右键的图层在已选中列表中，把所有选中的图片图层都加为参考图
@@ -8289,9 +8389,9 @@ async function loadImageForCrop(layer) {
         <i class="ri-folder-image-line"></i>
         添加到我的素材
       </button>
-      <button class="uc-context-menu-item" @click="contextMenuDownloadLayer">
+      <button class="uc-context-menu-item" @click="contextMenuDownloadLayers">
         <i class="ri-download-2-line"></i>
-        下载图片
+        {{ contextMenuDownloadCount() > 1 ? `下载 ${contextMenuDownloadCount()} 张图片（ZIP）` : '下载图片' }}
       </button>
       <div class="uc-context-menu-divider"></div>
       <button class="uc-context-menu-item" @click="openCropPicker(contextMenu.x, contextMenu.y)">
