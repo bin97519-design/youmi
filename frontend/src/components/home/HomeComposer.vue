@@ -569,6 +569,7 @@ async function uploadRemoteFile(file) {
   try {
     return await uploadFileDirect(file, { dir: 'youmi-home/uploads' })
   } catch (ossError) {
+    if (ossError?.code === 'IMAGE_TOO_LARGE') throw ossError
     console.warn('[upload] OSS 直传失败，fallback 到 Java 后端中转:', ossError.message)
     const formData = new FormData()
     formData.append('file', file)

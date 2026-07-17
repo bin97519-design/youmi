@@ -51,6 +51,7 @@ const reversePromptCategories = ref([
 let generationTimer = null
 const TASK_POLL_INTERVAL = 2500
 const TASK_MAX_POLLS = 120
+const TASK_RESULT_SYNC_DELAY = 15000
 const DEFAULT_IMAGE_MODEL = 'gpt image 2'
 
 const nowLabel = computed(() => {
@@ -180,6 +181,34 @@ function isTaskDone(status) {
   return ['completed', 'succeeded', 'success', 'done'].includes(String(status || '').toLowerCase())
 }
 
+function isTaskImageReady(task) {
+  const status = String(task?.status || '').toLowerCase()
+  return (isTaskDone(status) || status === 'persisting') && Boolean(task?.imageUrls?.[0])
+}
+
+function syncPersistedResultOnce(taskId, temporaryUrl, detailIndex = null) {
+  window.setTimeout(async () => {
+    try {
+      const status = await fetchImageTask(taskId)
+      const permanentUrl = status.imageUrls?.[0]
+      if (!isTaskDone(status.status) || !permanentUrl || permanentUrl === temporaryUrl) return
+      if (!generation.value) return
+      if (detailIndex == null) {
+        if (generation.value.taskId === taskId && generation.value.resultUrl === temporaryUrl) {
+          generation.value.resultUrl = permanentUrl
+        }
+        return
+      }
+      if (generation.value.detailTaskIds?.[detailIndex] === taskId) {
+        generation.value.detailResults[detailIndex] = permanentUrl
+        if (generation.value.resultUrl === temporaryUrl) generation.value.resultUrl = permanentUrl
+      }
+    } catch (error) {
+      console.warn('[syncPersistedResultOnce] 永久地址同步失败，保留临时地址:', error.message)
+    }
+  }, TASK_RESULT_SYNC_DELAY)
+}
+
 function isTaskFailed(status) {
   return ['failed', 'error', 'cancelled', 'canceled'].includes(String(status || '').toLowerCase())
 }
@@ -298,7 +327,7 @@ async function runMainImageTask(payload) {
           generation.value.progress,
           status.progress,
         )
-        if (status.status && !isTaskDone(status.status)) {
+        if (status.status && !isTaskImageReady(status)) {
           generation.value.statusText = `任务状态：${status.status}`
         }
 
@@ -307,7 +336,7 @@ async function runMainImageTask(payload) {
           return
         }
 
-        if (isTaskDone(status.status)) {
+        if (isTaskImageReady(status)) {
           const url = status.imageUrls?.[0]
           if (!url) {
             failGeneration('任务完成，但没有返回图片地址')
@@ -319,6 +348,9 @@ async function runMainImageTask(payload) {
           generation.value.resultUrl = url
           generation.value.statusText = '生成完成'
           clearGenerationTimer()
+          if (String(status.status || '').toLowerCase() === 'persisting') {
+            syncPersistedResultOnce(task.taskId, url)
+          }
           return
         }
 
@@ -375,7 +407,7 @@ async function startDetailImages() {
         )
         if (!generation.value) return
 
-        const completed = statuses.filter((status) => isTaskDone(status.status)).length
+        const completed = statuses.filter((status) => isTaskImageReady(status)).length
         const failed = statuses.find((status) => isTaskFailed(status.status))
         generation.value.progress = Math.max(
           generation.value.progress,
@@ -402,6 +434,12 @@ async function startDetailImages() {
           generation.value.resultUrl = generation.value.detailResults.find(Boolean) || ''
           generation.value.statusText = '生成完成'
           clearGenerationTimer()
+          statuses.forEach((status, index) => {
+            const url = status.imageUrls?.[0]
+            if (url && String(status.status || '').toLowerCase() === 'persisting') {
+              syncPersistedResultOnce(generation.value.detailTaskIds[index], url, index)
+            }
+          })
           return
         }
 

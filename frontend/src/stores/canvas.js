@@ -4,7 +4,10 @@ import { apiPath } from '../utils/apiBase';
 
 const STORAGE_KEY = 'youmi_canvas_documents_v3';
 const OFFLINE_QUEUE_KEY = 'youmi_canvas_offline_queue_v1';
-const PERSIST_DEBOUNCE_MS = 500;  // 服务器同步防抖，500ms 足够（localStorage 立即写）
+const DELETED_DOCUMENTS_KEY = 'youmi_canvas_deleted_documents_v1';
+const PERSIST_DEBOUNCE_MS = 1000; // 本地立即落盘，云端在操作停止 1 秒后合并保存
+const dirtyDocumentIds = new Set();
+const inFlightSavePromises = new Map();
 
 /**
  * 按当前登录用户隔离 localStorage key，避免同浏览器多账号串台（看到别人的画布）。
@@ -140,19 +143,53 @@ function seed() {
 }
 
 function mergeSeedDocuments(documents) {
-  const seeds = seed();
-  const existingIds = new Set(documents.map((doc) => doc.id));
-  return [...documents, ...seeds.filter((doc) => !existingIds.has(doc.id))];
+  const deletedIds = loadDeletedDocumentIds();
+  const visibleDocuments = documents.filter((doc) => !deletedIds.has(doc.id));
+  const seeds = seed().filter((doc) => !deletedIds.has(doc.id));
+  const existingIds = new Set(visibleDocuments.map((doc) => doc.id));
+  return [...visibleDocuments, ...seeds.filter((doc) => !existingIds.has(doc.id))];
 }
 
 function loadLocal() {
   try {
     const data = JSON.parse(localStorage.getItem(storageKey(STORAGE_KEY)) || 'null');
-    const result = Array.isArray(data) && data.length ? mergeSeedDocuments(data) : seed();
-    return result;
+    return mergeSeedDocuments(Array.isArray(data) ? data : []);
   } catch {
-    return seed();
+    return mergeSeedDocuments([]);
   }
+}
+
+function loadDeletedDocumentIds() {
+  try {
+    const data = JSON.parse(localStorage.getItem(storageKey(DELETED_DOCUMENTS_KEY)) || '[]');
+    return new Set(Array.isArray(data) ? data.filter(Boolean) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveDeletedDocumentIds(ids) {
+  try {
+    localStorage.setItem(
+      storageKey(DELETED_DOCUMENTS_KEY),
+      JSON.stringify([...new Set(ids)].slice(-500)),
+    );
+  } catch (e) {
+    console.warn('deleted canvas markers write failed:', e);
+  }
+}
+
+function markDocumentDeleted(id) {
+  if (!id) return;
+  const ids = loadDeletedDocumentIds();
+  ids.add(id);
+  saveDeletedDocumentIds(ids);
+}
+
+function restoreDocumentId(id) {
+  const ids = loadDeletedDocumentIds();
+  if (!ids.delete(id)) return;
+  saveDeletedDocumentIds(ids);
 }
 
 function saveLocal(documents) {
@@ -214,7 +251,10 @@ async function syncToServer(doc, { skipQueue = false } = {}) {
   const headers = getAuthHeaders();
   if (!headers.Authorization) return false;
   // 检查 localStorage 里是否已有离线队列（说明之前保存失败过），如果有就直接跳过避免刷屏
-  if (!skipQueue && loadOfflineQueue().length > 0) return false;
+  if (!skipQueue && loadOfflineQueue().length > 0) {
+    pushOfflineQueue(doc);
+    return false;
+  }
   try {
     const res = await fetch(apiPath('/api/canvas/save'), {
       method: 'POST',
@@ -299,14 +339,20 @@ async function flushOfflineQueue() {
 
 async function syncDeleteFromServer(docId) {
   const headers = getAuthHeaders();
-  if (!headers.Authorization) return;
+  if (!headers.Authorization) return false;
   try {
-    await fetch(apiPath(`/api/canvas/${docId}`), {
+    const response = await fetch(apiPath(`/api/canvas/${docId}`), {
       method: 'DELETE',
       headers: { ...headers },
     });
+    if (!response.ok) {
+      console.warn(`Delete canvas from server failed: HTTP ${response.status}`);
+      return false;
+    }
+    return true;
   } catch (e) {
     console.warn('Delete canvas from server failed:', e);
+    return false;
   }
 }
 
@@ -318,8 +364,9 @@ async function loadFromServer() {
     const payload = await response.json().catch(() => ({}));
     if (payload.code !== 0 || !Array.isArray(payload.data)) return [];
     // 并行请求每个文档的完整 payload（list 只返回 summary，不含 payload）
+    const deletedIds = loadDeletedDocumentIds();
     const docs = await Promise.all(
-      payload.data.map(async (item) => {
+      payload.data.filter((item) => !deletedIds.has(item.docId)).map(async (item) => {
         let fullPayload = item.payload || null;
         if (!fullPayload) {
           try {
@@ -365,6 +412,7 @@ export const useCanvasStore = defineStore('canvas', {
         clearTimeout(this._serverSyncTimer);
         this._serverSyncTimer = null;
       }
+      dirtyDocumentIds.clear();
       authFailed = false;
       this.documents = loadLocal();
       this.serverSynced = false;
@@ -374,22 +422,57 @@ export const useCanvasStore = defineStore('canvas', {
       }
     },
 
-    persist() {
+    _scheduleServerSync() {
+      if (this._serverSyncTimer) clearTimeout(this._serverSyncTimer);
+      this._serverSyncTimer = setTimeout(async () => {
+        this._serverSyncTimer = null;
+        await this._flushDirtyDocuments();
+      }, PERSIST_DEBOUNCE_MS);
+    },
+
+    async _syncDirtyDocument(id, { skipQueue = false, drain = false } = {}) {
+      const activeSave = inFlightSavePromises.get(id);
+      if (activeSave) await activeSave;
+      if (!dirtyDocumentIds.has(id)) return true;
+
+      dirtyDocumentIds.delete(id);
+      const doc = this.documents.find((item) => item.id === id);
+      if (!doc?.payload) return true;
+
+      const savePromise = syncToServer(doc, { skipQueue });
+      inFlightSavePromises.set(id, savePromise);
+      let ok = false;
+      try {
+        ok = await savePromise;
+      } finally {
+        if (inFlightSavePromises.get(id) === savePromise) inFlightSavePromises.delete(id);
+      }
+
+      // 立即保存需要等到调用期间产生的最新修改也完成，避免旧请求后到覆盖新内容。
+      if (drain && dirtyDocumentIds.has(id)) {
+        return this._syncDirtyDocument(id, { skipQueue, drain: true });
+      }
+      return ok;
+    },
+
+    async _flushDirtyDocuments({ docIds = null, skipQueue = false, drain = false } = {}) {
+      const requestedIds = Array.isArray(docIds) ? docIds : docIds ? [docIds] : null;
+      if (requestedIds) requestedIds.forEach((id) => id && dirtyDocumentIds.add(id));
+      const targetIds = requestedIds || Array.from(dirtyDocumentIds);
+      const results = await Promise.all(
+        [...new Set(targetIds)].map((id) => this._syncDirtyDocument(id, { skipQueue, drain })),
+      );
+      if (!skipQueue) await flushOfflineQueue();
+      if (dirtyDocumentIds.size > 0) this._scheduleServerSync();
+      return results.every(Boolean);
+    },
+
+    persist(docIds) {
       // localStorage 立即同步写（防止意外关页面丢图）
       saveLocal(this.documents);
-      // 服务器同步防抖，避免拖动 / 批量操作时打爆后端
-      if (this._serverSyncTimer) {
-        clearTimeout(this._serverSyncTimer);
-      }
-      this._serverSyncTimer = setTimeout(() => {
-        this._serverSyncTimer = null;
-        // 同步所有需要同步的画布（不仅第一个）
-        for (const doc of this.documents) {
-          if (doc && doc.payload) syncToServer(doc);
-        }
-        // 顺便尝试清空离线队列
-        flushOfflineQueue();
-      }, PERSIST_DEBOUNCE_MS);
+      const ids = Array.isArray(docIds) ? docIds : docIds ? [docIds] : [];
+      ids.forEach((id) => dirtyDocumentIds.add(id));
+      if (ids.length) this._scheduleServerSync();
     },
 
     async syncFromServer() {
@@ -399,7 +482,7 @@ export const useCanvasStore = defineStore('canvas', {
         return;
       }
       const merged = [...this.documents];
-      let needFlush = false;
+      const docsToFlush = new Set();
       for (const serverDoc of serverDocs) {
         const existingIndex = merged.findIndex((d) => d.id === serverDoc.id);
         if (existingIndex >= 0) {
@@ -409,7 +492,7 @@ export const useCanvasStore = defineStore('canvas', {
 
           // 保护：本地有图层但服务器是空的 → 保留本地，并触发一次同步
           if (localLayerCount > 0 && serverLayerCount === 0) {
-            needFlush = true;
+            docsToFlush.add(localDoc.id);
             continue;  // 不覆盖
           }
 
@@ -419,7 +502,7 @@ export const useCanvasStore = defineStore('canvas', {
 
           // 本地比服务器更新 → 保留本地，触发同步让服务器跟上
           if (localUpdatedAt > serverUpdatedAt && localLayerCount > 0) {
-            needFlush = true;
+            docsToFlush.add(localDoc.id);
             continue;
           }
 
@@ -487,23 +570,25 @@ export const useCanvasStore = defineStore('canvas', {
       saveLocal(this.documents);
       this.serverSynced = true;
       // 本地有数据但服务器缺失的 → 立即同步到服务器
-      if (needFlush) {
-        this.flushNow();
+      if (docsToFlush.size) {
+        await this.flushNow(Array.from(docsToFlush));
       }
     },
 
     createDocument() {
       const doc = makeCanvasDocument();
+      restoreDocumentId(doc.id);
       this.documents.unshift(doc);
-      this.persist();
+      this.persist(doc.id);
       return doc;
     },
     ensureDocument(id) {
       let doc = this.documents.find((item) => item.id === id);
       if (!doc) {
         doc = makeCanvasDocument(id);
+        restoreDocumentId(id);
         this.documents.unshift(doc);
-        this.persist();
+        this.persist(id);
       }
       return doc;
     },
@@ -521,7 +606,7 @@ export const useCanvasStore = defineStore('canvas', {
         // 保留 generationHistory 的 imageUrl，不再清理
         return next;
       });
-      this.persist();
+      this.persist(id);
       // 检测是否新增了 placeholder 图层 → 立即同步服务器（绕过 500ms 防抖）
       // 确保刷新时服务器返回的数据里已有占位图层，不被旧数据覆盖
       const docAfter = this.documents.find((d) => d.id === id);
@@ -529,17 +614,11 @@ export const useCanvasStore = defineStore('canvas', {
         (l) => l.type === 'placeholder' && !placeholderIdsBefore.has(l.id),
       );
       if (hasNewPlaceholder) {
-        // 清掉 persist 刚设的防抖 timer，立即同步
-        if (this._serverSyncTimer) {
-          clearTimeout(this._serverSyncTimer);
-          this._serverSyncTimer = null;
-        }
-        for (const doc of this.documents) {
-          if (doc && doc.payload) syncToServer(doc, { skipQueue: true });
-        }
+        void this.flushNow(id);
       }
     },
     removeDocument(id) {
+      markDocumentDeleted(id);
       this.documents = this.documents.filter((doc) => doc.id !== id);
       saveLocal(this.documents);
       // 同步删除服务器记录（await 确保删除完成，避免刷新时又被拉回来）
@@ -553,6 +632,7 @@ export const useCanvasStore = defineStore('canvas', {
      * 删除画布（等待服务器删除完成后再返回，防止刷新后被拉回）
      */
     async removeDocumentAsync(id) {
+      markDocumentDeleted(id);
       this.documents = this.documents.filter((doc) => doc.id !== id);
       saveLocal(this.documents);
       await syncDeleteFromServer(id);
@@ -561,22 +641,20 @@ export const useCanvasStore = defineStore('canvas', {
     },
     markOpened(id) {
       this.documents = this.documents.map((doc) => (doc.id === id ? { ...doc, lastOpenedAt: Date.now() } : doc));
-      this.persist();
+      this.persist(id);
     },
 
     // 立即刷写：场景：用户上传/AI 生图完成 / 占位图创建 → 立即同步服务器，不等防抖
     // 返回 Promise，调用方可 await 确保服务器已收到再允许刷新
-    async flushNow() {
+    async flushNow(docIds) {
       if (this._serverSyncTimer) {
         clearTimeout(this._serverSyncTimer);
         this._serverSyncTimer = null;
       }
       saveLocal(this.documents);
-      const promises = [];
-      for (const doc of this.documents) {
-        if (doc && doc.payload) promises.push(syncToServer(doc, { skipQueue: true }));
-      }
-      await Promise.all(promises);
+      const ids = Array.isArray(docIds) ? docIds : docIds ? [docIds] : Array.from(dirtyDocumentIds);
+      if (!ids.length) return true;
+      return this._flushDirtyDocuments({ docIds: ids, skipQueue: true, drain: true });
     },
 
     /**
@@ -596,7 +674,7 @@ export const useCanvasStore = defineStore('canvas', {
         // persist 会在后续失败时将 doc 分入离线队列，待网络/服务端恢复后自动重试，
         // 既避免「静默失败」也保证云端 ym_canvas_document.title 最终一致。
         console.error('[canvas] 编辑画布名称即时落库失败，已降级为防抖重试');
-        this.persist();
+        this.persist(doc.id);
       }
       return ok;
     },
@@ -639,7 +717,7 @@ export const useCanvasStore = defineStore('canvas', {
               if (target) target.detection = reused;
               return d;
             });
-            this.flushNow();
+            void this.flushNow(docId);
             return { boxes: reused.boxes, status: 'done' };
           }
         }
@@ -705,7 +783,7 @@ export const useCanvasStore = defineStore('canvas', {
           }
           return d;
         });
-        this.flushNow();
+        void this.flushNow(docId);
         return { boxes, status: 'done' };
       } catch (err) {
         const msg = err?.message || String(err);
@@ -722,7 +800,7 @@ export const useCanvasStore = defineStore('canvas', {
           }
           return d;
         });
-        this.flushNow();
+        void this.flushNow(docId);
         return { boxes: [], status: 'failed', errorMessage: msg };
       }
     },

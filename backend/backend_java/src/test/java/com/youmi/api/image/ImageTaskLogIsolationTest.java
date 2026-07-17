@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.sql.Timestamp;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -29,7 +31,9 @@ class ImageTaskLogIsolationTest {
           user_id BIGINT,
           provider VARCHAR(64), model VARCHAR(64), requested_model VARCHAR(64),
           size VARCHAR(32), resolution VARCHAR(32), requested_count INT,
-          status VARCHAR(32), raw_response CLOB
+          status VARCHAR(32), progress INT DEFAULT 0, image_count INT DEFAULT 0,
+          mi_cost INT DEFAULT 0, money_cost DECIMAL(12, 4), image_urls CLOB,
+          error_message CLOB, raw_response CLOB, completed_at TIMESTAMP NULL
         )
         """);
     service = new ImageTaskLogService(jdbcTemplate, new ObjectMapper());
@@ -51,6 +55,26 @@ class ImageTaskLogIsolationTest {
     assertEquals("task-b", taskB.taskId);
     assertTrue(service.isOwnedByUser(101L, "task-a"));
     assertFalse(service.isOwnedByUser(202L, "task-a"));
+  }
+
+  @Test
+  void firstAvailableImageFreezesGenerationCompletionTime() throws Exception {
+    insert("task-a", "client-a", 101L, "banana2");
+    ImageGenerationDtos.TaskStatusResponse persisting = new ImageGenerationDtos.TaskStatusResponse(
+        "gettoken", "task-a", "persisting", 100, List.of("https://cdn.example.com/result.png"), null, null);
+
+    service.recordStatus(persisting);
+    Timestamp firstCompletedAt = jdbcTemplate.queryForObject(
+        "SELECT completed_at FROM ym_image_task WHERE task_id = 'task-a'", Timestamp.class);
+    Thread.sleep(10);
+    service.recordStatus(persisting);
+    Timestamp secondCompletedAt = jdbcTemplate.queryForObject(
+        "SELECT completed_at FROM ym_image_task WHERE task_id = 'task-a'", Timestamp.class);
+
+    assertNotNull(firstCompletedAt);
+    assertEquals(firstCompletedAt, secondCompletedAt);
+    assertEquals(1, jdbcTemplate.queryForObject(
+        "SELECT image_count FROM ym_image_task WHERE task_id = 'task-a'", Integer.class));
   }
 
   private void insert(String taskId, String clientTaskId, Long userId, String model) {

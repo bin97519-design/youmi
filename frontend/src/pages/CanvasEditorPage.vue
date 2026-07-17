@@ -390,7 +390,8 @@ const chatReferenceImages = ref([])
 const activeChatReferenceId = ref('')
 const chatUploading = ref(false)
 const uploadProgress = ref(null) // { fileName, loaded, total, percent } | null
-const chatGenerating = ref(false)
+const activeChatTaskCount = ref(0)
+const chatGenerating = computed(() => activeChatTaskCount.value > 0)
 const chatSelectOpen = ref(null) // 'model' | 'ratio' | 'resolution' | null
 
 function toggleChatSelect(name) {
@@ -411,7 +412,7 @@ function recordGenerationToHistory(record) {
     return draft
   })
   // localStorage 已在 updateDocument→persist 内同步即时写；这里强制 flush，让服务器也立即跟上
-  canvas.flushNow?.()
+  canvas.flushNow?.(props.id)
 }
 // 对话窗口选中的模型参数也归属文档（payload.chatConfig），未持久化过则保持默认
 const initialChatConfig = doc.value?.payload?.chatConfig || {}
@@ -424,6 +425,7 @@ const chatModelOptions = ['banana2', 'banana-pro', 'gpt-image-2', 'agnes-image-2
 const chatRatioOptions = ['auto', '1:1', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
 const chatResolutionOptions = ['1K', '2K', '4K']
 const TASK_POLL_INTERVAL = 2500
+const TASK_RESULT_SYNC_DELAY = 15000
 // 对话窗口选中的模型参数变化时，落库到按文档隔离的 payload.chatConfig
 watch([chatModel, chatRatio, chatResolution], () => {
   canvas.updateDocument(props.id, (draft) => {
@@ -1135,6 +1137,7 @@ function uploadFile(file, onProgress) {
     dir: 'youmi-canvas/uploads',
     onProgress,
   }).catch((ossError) => {
+    if (ossError?.code === 'IMAGE_TOO_LARGE') throw ossError
     console.warn('[upload] OSS 直传失败，fallback 到 Java 后端中转:', ossError.message)
     return new Promise((resolve, reject) => {
       const form = new FormData()
@@ -1186,6 +1189,11 @@ function isTaskDone(status) {
   return ['completed', 'succeeded', 'success', 'done'].includes(String(status || '').toLowerCase())
 }
 
+function isTaskImageReady(task) {
+  const status = String(task?.status || '').toLowerCase()
+  return (isTaskDone(status) || status === 'persisting') && Boolean(extractTaskImageUrl(task))
+}
+
 function isTaskFailed(status) {
   return ['failed', 'error', 'cancelled', 'canceled'].includes(String(status || '').toLowerCase())
 }
@@ -1206,24 +1214,25 @@ async function readApiResponse(response) {
   const result = await response.json().catch(() => null)
   if (!response.ok || !result || result.code !== 0) {
     const errMsg = result?.message || `接口请求失败：${response.status}`
-    console.error('[readApiResponse] 请求失败', { status: response.status, code: result?.code, message: errMsg, url: response.url })
+    console.error('[readApiResponse] 请求失败', {
+      status: response.status,
+      code: result?.code,
+      message: errMsg,
+      url: response.url,
+    })
     throw new Error(errMsg)
   }
   return result.data
 }
 
-// 全局锁：同一时间只允许一个 submitImageTask 请求在飞，
-// 防止 watch 恢复逻辑 / 重复点击 / 任何其他路径并发提交。
-let _imageTaskSubmitting = false
-
 async function submitImageTask({ prompt, imageUrls, model, size, resolution, clientTaskId }) {
-  if (_imageTaskSubmitting) {
-    console.warn('[submitImageTask] 并发提交被拦截：已有生图请求在飞，本次忽略')
-    throw new Error('生图请求正在处理中，请勿重复提交')
-  }
-  _imageTaskSubmitting = true
-  console.log('[submitImageTask] 开始提交', { model: model || chatModel.value, size: size || chatRatio.value, promptLen: prompt?.length || 0, hasImages: imageUrls?.length || 0, clientTaskId })
-  try {
+  console.log('[submitImageTask] 开始提交', {
+    model: model || chatModel.value,
+    size: size || chatRatio.value,
+    promptLen: prompt?.length || 0,
+    hasImages: imageUrls?.length || 0,
+    clientTaskId,
+  })
   // 恢复场景（刷新后重新提交）必须沿用占位图层持久化的生成参数 genMeta，
   // 不能用刷新后重置为默认的 chatModel/chatRatio/chatResolution（否则会换模型/比例重出）。
   const body = {
@@ -1252,9 +1261,6 @@ async function submitImageTask({ prompt, imageUrls, model, size, resolution, cli
   const taskId = data?.tasks?.[0]?.taskId || data?.tasks?.[0]?.task_id
   if (!taskId) throw new Error('生图任务提交成功，但没有返回 task_id')
   return taskId
-  } finally {
-    _imageTaskSubmitting = false
-  }
 }
 
 // 刷新恢复专用：凭 client_task_id 只查回已有 task_id，不建任务、不扣费、不调中转站。
@@ -1262,11 +1268,16 @@ async function submitImageTask({ prompt, imageUrls, model, size, resolution, cli
 async function resolveImageTaskByClientId(clientTaskId) {
   try {
     const data = await readApiResponse(
-      await fetch(apiPath('/api/image-tasks/by-client-task-id?client_task_id=' + encodeURIComponent(clientTaskId)), {
-        headers: { ...userStore.authHeaders() },
-      }),
+      await fetch(
+        apiPath(
+          '/api/image-tasks/by-client-task-id?client_task_id=' + encodeURIComponent(clientTaskId),
+        ),
+        {
+          headers: { ...userStore.authHeaders() },
+        },
+      ),
     )
-    return data?.exists ? (data.taskId || data.task_id || '') : ''
+    return data?.exists ? data.taskId || data.task_id || '' : ''
   } catch (e) {
     return ''
   }
@@ -1291,6 +1302,7 @@ async function pollImageTaskUntilDone(taskId, placeholderId, assistantId, prompt
     // 组件已卸载（页面刷新/导航）：由 onMounted 的恢复逻辑在重载后接管，这里直接退出
     if (!_mounted.value) return false
     const status = await fetchImageTask(taskId)
+    const imageReady = isTaskImageReady(status)
     const progress = normalizeProgress(status.progress, Math.min(96, 10 + (index + 1) * 7))
     const progressText = Number.isFinite(Number(status.progress)) ? ` ${progress}%` : ''
     updateGeneratingPlaceholder(placeholderId, {
@@ -1299,7 +1311,7 @@ async function pollImageTaskUntilDone(taskId, placeholderId, assistantId, prompt
       // 避免后端/中转站透传的原始词（IN_PROGRESS/PENDING/GENERATING/代理自有词）大小写不一致导致恢复过滤器匹配不上。
       status: normalizeStatus(status.status) || 'processing',
     })
-    if (!isTaskDone(status.status) && assistantId) {
+    if (!imageReady && assistantId) {
       updateChatMessage(assistantId, {
         text: `正在生成${progressText}，任务状态：${status.status || 'processing'}`,
         generating: true,
@@ -1310,7 +1322,7 @@ async function pollImageTaskUntilDone(taskId, placeholderId, assistantId, prompt
       throw new Error(friendlyImageError(status.error || 'APIMart 生图任务失败'))
     }
 
-    if (isTaskDone(status.status)) {
+    if (imageReady) {
       let url = extractTaskImageUrl(status)
       if (!url) throw new Error('任务完成，但没有返回图片地址')
       // 后端已在异步持久化完成后返回永久 OSS URL（persist_status=DONE），
@@ -1337,8 +1349,9 @@ async function pollImageTaskUntilDone(taskId, placeholderId, assistantId, prompt
       } else {
         refUrls = Array.isArray(refUrls) ? refUrls : []
       }
+      const historyId = `gen-${Date.now()}`
       recordGenerationToHistory({
-        id: `gen-${Date.now()}`,
+        id: historyId,
         prompt: meta.prompt || placeholderLayer?.prompt || prompt || '',
         model: meta.model || '',
         ratio: meta.ratio || '',
@@ -1354,11 +1367,60 @@ async function pollImageTaskUntilDone(taskId, placeholderId, assistantId, prompt
           generating: false,
         })
       }
+      if (String(status.status || '').toLowerCase() === 'persisting') {
+        void syncPersistedImageOnce({
+          taskId,
+          layerId: placeholderId,
+          historyId,
+          assistantId,
+          temporaryUrl: url,
+          documentId: props.id,
+        })
+      }
       return true
     }
   }
 
   throw new Error('轮询超时，任务仍未完成')
+}
+
+async function syncPersistedImageOnce({
+  taskId,
+  layerId,
+  historyId,
+  assistantId,
+  temporaryUrl,
+  documentId,
+}) {
+  await wait(TASK_RESULT_SYNC_DELAY)
+  if (!_mounted.value || props.id !== documentId) return
+  try {
+    const status = await fetchImageTask(taskId)
+    const permanentUrl = extractTaskImageUrl(status)
+    if (!isTaskDone(status.status) || !permanentUrl || permanentUrl === temporaryUrl) return
+    generationHistory.value = generationHistory.value.map((record) =>
+      record.id === historyId ? { ...record, imageUrl: permanentUrl } : record,
+    )
+    canvas.updateDocument(documentId, (draft) => {
+      draft.payload.layers = draft.payload.layers.map((layer) =>
+        layer.id === layerId && layer.url === temporaryUrl
+          ? { ...layer, url: permanentUrl, thumbnailUrl: permanentUrl }
+          : layer,
+      )
+      draft.payload.generationHistory = generationHistory.value.slice(-200)
+      if (assistantId) {
+        draft.payload.chat = (draft.payload.chat || []).map((message) =>
+          message.id === assistantId && message.imageUrl === temporaryUrl
+            ? { ...message, imageUrl: permanentUrl }
+            : message,
+        )
+      }
+      return draft
+    })
+    void canvas.flushNow?.(documentId)
+  } catch (error) {
+    console.warn('[syncPersistedImageOnce] 永久地址同步失败，保留临时地址:', error.message)
+  }
 }
 
 // 刷新/导航后恢复被中断（processing/interrupted）的生图任务轮询。
@@ -1417,10 +1479,6 @@ async function resumeImageTaskPolling(taskId, placeholderId) {
 //   - 无 taskId（提交阶段就被刷新中断）：重新提交任务（resumeInterruptedNoTaskId）
 // 配合 startImagePoll 的 taskId 守卫 + _pollingTasks 的 layer.id 占位，可安全被多次调用（幂等）。
 function resumeInterruptedPlaceholders() {
-  // sendChat 执行期间完全跳过：否则 addChatMessages/addGeneratingPlaceholderLayer
-  // 触发的 layers 变化会让 watch 把"还没拿到 taskId 的新占位图"当"需恢复"的，
-  // 抢先调 submitImageTask 导致重复提交（Console 可见 [submitImageTask] 并发提交被拦截）
-  if (_sendChatActive) return
   const layersToResume = (doc.value?.payload?.layers || []).filter((layer) => {
     const s = normalizeStatus(layer.status)
     return (
@@ -1471,7 +1529,9 @@ async function resumeInterruptedNoTaskId(layer) {
   if (_pollingTasks.has(layer.id)) return
   _pollingTasks.add(layer.id)
   const prompt = layer.prompt || layer.genMeta?.prompt || ''
-  const imageUrls = Array.isArray(layer.genMeta?.referenceImageUrls) ? layer.genMeta.referenceImageUrls : []
+  const imageUrls = Array.isArray(layer.genMeta?.referenceImageUrls)
+    ? layer.genMeta.referenceImageUrls
+    : []
   // 客户端幂等键：优先顶层，回退 genMeta（刷新重提时原样带回后端命中已有任务）
   const clientTaskId = layer.clientTaskId || layer.genMeta?.clientTaskId || ''
   updateGeneratingPlaceholder(layer.id, { status: 'processing', statusText: '生成任务恢复中...' })
@@ -1490,7 +1550,11 @@ async function resumeInterruptedNoTaskId(layer) {
     }
     if (existingTaskId) {
       _pollingTasks.add(existingTaskId)
-      updateGeneratingPlaceholder(layer.id, { taskId: existingTaskId, lastError: '', networkFailed: false })
+      updateGeneratingPlaceholder(layer.id, {
+        taskId: existingTaskId,
+        lastError: '',
+        networkFailed: false,
+      })
       await startImagePoll(existingTaskId, layer.id, layer.chatMessageId || '', prompt)
       _pollingTasks.delete(layer.id)
       _pollingTasks.delete(existingTaskId)
@@ -1523,7 +1587,8 @@ async function resumeInterruptedNoTaskId(layer) {
     // readApiResponse 抛的 Error（code!==0 / 无 task_id）→ 后端真拒绝，才计入重试上限。
     const isNetworkError =
       error?.name === 'AbortError' ||
-      (error?.name === 'TypeError' && /Failed to fetch|NetworkError|network/i.test(error?.message || ''))
+      (error?.name === 'TypeError' &&
+        /Failed to fetch|NetworkError|network/i.test(error?.message || ''))
     if (isNetworkError) {
       // 标记 failed + networkFailed：由 retryFailedNoTaskPlaceholders 在下次挂载重试；
       // resumeAttempts 归零（不计入后端失败上限），且 failed 不会触发 watch 重扫，避免同挂载内死循环。
@@ -1680,7 +1745,11 @@ function friendlyImageError(raw) {
     }
     return '提示词过长，请精简描述或拆分为多次生成后重试。'
   }
-  if (lower.includes('exceed') || lower.includes('too long') || lower.includes('maximum input length')) {
+  if (
+    lower.includes('exceed') ||
+    lower.includes('too long') ||
+    lower.includes('maximum input length')
+  ) {
     return '提示词过长，请精简描述或拆分为多次生成后重试。'
   }
   if (lower.includes('not configured') || lower.includes('api key')) {
@@ -1689,7 +1758,12 @@ function friendlyImageError(raw) {
   if (lower.includes('timeout') || lower.includes('timed out')) {
     return '生图服务响应超时，请稍后重试。'
   }
-  if (lower.includes('rate') || lower.includes('ratelimit') || lower.includes('429') || lower.includes('too many')) {
+  if (
+    lower.includes('rate') ||
+    lower.includes('ratelimit') ||
+    lower.includes('429') ||
+    lower.includes('too many')
+  ) {
     return '生图请求过于频繁，请稍候再试。'
   }
   // 兜底：剥掉 "XXX request failed: 4xx " 这类内部前缀，尽量保留可读信息
@@ -1944,7 +2018,7 @@ async function pasteLayerFromBuffer(buffer) {
   showCopyPasteToast(els.length ? `已粘贴图层（含 ${els.length} 个分层元素）` : '已粘贴图层')
 }
 
-async function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '') {
+function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '') {
   pushUndo()
   const referenceImages = chatReferenceImages.value.filter(
     (image) => !image.uploading && !image.error,
@@ -1995,7 +2069,9 @@ async function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId
         model: genMeta.model || '',
         ratio: genMeta.ratio || '',
         resolution: genMeta.resolution || '',
-        referenceImageUrls: Array.isArray(genMeta.referenceImageUrls) ? genMeta.referenceImageUrls : [],
+        referenceImageUrls: Array.isArray(genMeta.referenceImageUrls)
+          ? genMeta.referenceImageUrls
+          : [],
       },
       // 关联的聊天消息 id：刷新后恢复轮询完成时用来更新聊天卡片文案（否则 assistantId 为空，
       // pollImageTaskUntilDone 会跳过所有 chatMessage 更新，卡片永远停在"正在恢复..."）。
@@ -2023,8 +2099,8 @@ async function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId
 
   selectedLayerId.value = layerId
   selectedLayerIds.value = [layerId]
-  // 占位图创建后立即同步服务器（await 确保到达），确保刷新后服务器返回的数据里已有占位图层
-  await canvas.flushNow?.()
+  // 本地已同步落盘；服务器保存放到后台，避免网络延迟阻塞下一次生图提交。
+  void canvas.flushNow?.(props.id)
   return layerId
 }
 
@@ -2601,7 +2677,9 @@ function startViewerDrag(e) {
   try {
     e.currentTarget.setPointerCapture(e.pointerId)
     _dragCaptureEl = e.currentTarget
-  } catch (_) {}
+  } catch {
+    // Pointer capture is best-effort across browsers.
+  }
   // 关掉 transition（!important 强制，任何 CSS 都压不过）→ 拖拽零延迟跟手
   try {
     const img = imageViewerImgRef.value
@@ -2610,7 +2688,9 @@ function startViewerDrag(e) {
       img.style.setProperty('transition', 'none', 'important')
       _dragImgEl = img
     }
-  } catch (_) {}
+  } catch {
+    // Drag styling is best-effort when the image unmounts mid-gesture.
+  }
   // 用 window 级监听保证 move/up 全程不丢事件（不受 pointerleave/capture 边界影响）
   window.addEventListener('pointermove', moveViewerDrag)
   window.addEventListener('pointerup', stopViewerDrag)
@@ -2640,7 +2720,12 @@ function stopViewerDrag(e) {
     img.classList.remove('is-dragging')
     img.style.removeProperty('transition') // 恢复 CSS 过渡（缩放/旋转动画需要）
   }
-  try { if (_dragCaptureEl?.hasPointerCapture?.(e.pointerId)) _dragCaptureEl.releasePointerCapture(e.pointerId) } catch (_) {}
+  try {
+    if (_dragCaptureEl?.hasPointerCapture?.(e.pointerId))
+      _dragCaptureEl.releasePointerCapture(e.pointerId)
+  } catch {
+    // The pointer may already have been released by the browser.
+  }
   _dragCaptureEl = null
   _dragImgEl = null
   window.removeEventListener('pointermove', moveViewerDrag)
@@ -3061,7 +3146,7 @@ function removeLayer(id) {
 function findOverlappingPlaceholder(event, clickedLayer) {
   // 仅处理占位图与普通图层重叠的场景
   const placeholders = layers.value.filter(
-    (l) => l.type === 'placeholder' && l.id !== clickedLayer.id
+    (l) => l.type === 'placeholder' && l.id !== clickedLayer.id,
   )
   if (!placeholders.length) return null
 
@@ -3070,7 +3155,7 @@ function findOverlappingPlaceholder(event, clickedLayer) {
   if (!stage) return null
 
   // 将 event.clientX/Y 转换为画布坐标
-  const viewScaleVal = viewScale || 1
+  const viewScaleVal = viewScale.value || 1
   const offsetX = doc.value?.payload?.view?.offset?.x || 0
   const offsetY = doc.value?.payload?.view?.offset?.y || 0
   const canvasX = (event.clientX - stage.getBoundingClientRect().left) / viewScaleVal - offsetX
@@ -3088,7 +3173,8 @@ function findOverlappingPlaceholder(event, clickedLayer) {
     const phBottom = ph.y + ph.height
 
     // 点击坐标在占位图范围内
-    const pointInside = canvasX >= phLeft && canvasX <= phRight && canvasY >= phTop && canvasY <= phBottom
+    const pointInside =
+      canvasX >= phLeft && canvasX <= phRight && canvasY >= phTop && canvasY <= phBottom
     if (!pointInside) continue
 
     // 占位图与被点击图层有空间重叠（至少部分相交）
@@ -3097,8 +3183,7 @@ function findOverlappingPlaceholder(event, clickedLayer) {
     const clRight = clickedLayer.x + clickedLayer.width
     const clBottom = clickedLayer.y + clickedLayer.height
 
-    const overlap =
-      phLeft < clRight && phRight > clLeft && phTop < clBottom && phBottom > clTop
+    const overlap = phLeft < clRight && phRight > clLeft && phTop < clBottom && phBottom > clTop
     if (!overlap) continue
 
     // 多个占位图重叠时，选 zIndex 最高的
@@ -3645,15 +3730,16 @@ function renderMessageContent(message) {
   if (message.imageUrl) {
     const imgEsc = escHtml(message.imageUrl)
     const mid = escHtml(message.id || '')
-    html += `<div class="chat-gen-preview" data-msg-id="${mid}">`
-      + `<img class="chat-gen-preview-img" src="${imgEsc}" alt="生成结果" loading="lazy" />`
-      + `<div class="chat-gen-preview-actions">`
-      + `<button class="chat-gen-action-btn chat-gen-action--regen-prompt" data-msg-id="${mid}" title="编辑提示词重新生成">✏️</button>`
-      + `<button class="chat-gen-action-btn chat-gen-action--regen" data-msg-id="${mid}" title="使用相同参数重新生成">🔄</button>`
-      + `<button class="chat-gen-action-btn chat-gen-action--like" data-msg-id="${mid}" title="点赞">👍</button>`
-      + `<button class="chat-gen-action-btn chat-gen-action--dislike" data-msg-id="${mid}" title="点踩">👎</button>`
-      + `</div>`
-      + `</div>`
+    html +=
+      `<div class="chat-gen-preview" data-msg-id="${mid}">` +
+      `<img class="chat-gen-preview-img" src="${imgEsc}" alt="生成结果" loading="lazy" />` +
+      `<div class="chat-gen-preview-actions">` +
+      `<button class="chat-gen-action-btn chat-gen-action--regen-prompt" data-msg-id="${mid}" title="编辑提示词重新生成">✏️</button>` +
+      `<button class="chat-gen-action-btn chat-gen-action--regen" data-msg-id="${mid}" title="使用相同参数重新生成">🔄</button>` +
+      `<button class="chat-gen-action-btn chat-gen-action--like" data-msg-id="${mid}" title="点赞">👍</button>` +
+      `<button class="chat-gen-action-btn chat-gen-action--dislike" data-msg-id="${mid}" title="点踩">👎</button>` +
+      `</div>` +
+      `</div>`
   } else if (message.generating && !/^(生成|生图)失败/.test(String(message.text || '').trim())) {
     html += `<div class="chat-gen-preview chat-gen-preview--loading"><div class="chat-gen-skeleton"></div></div>`
   }
@@ -4576,7 +4662,7 @@ function syncPillsToEditor() {
   if (leadBr && leadBr.nodeType === Node.ELEMENT_NODE && leadBr.tagName === 'BR') {
     // 仅当编辑器直接子级文本节点中不存在真实文字时才移除，避免破坏用户已输入的文本
     const hasDirectText = Array.from(editor.childNodes).some(
-      (n) => n.nodeType === Node.TEXT_NODE && n.textContent.trim().length > 0
+      (n) => n.nodeType === Node.TEXT_NODE && n.textContent.trim().length > 0,
     )
     if (!hasDirectText) leadBr.remove()
   }
@@ -4706,14 +4792,7 @@ function getElementClickStyle(key) {
   }
 }
 
-// sendChat 执行锁：sendChat 运行期间，watch 触发的 resumeInterruptedPlaceholders 必须完全跳过，
-// 否则 addChatMessages/addGeneratingPlaceholderLayer 触发的 layers 变化会让 watch
-// 把"还没拿到 taskId 的新占位图"当成"需要恢复"的，抢先调 submitImageTask 导致重复提交。
-let _sendChatActive = false
-
 async function sendChat() {
-  if (_sendChatActive) return // 仅挡 sendChat 重入；不再因"别的图在生成"而拒收，放开并发生图
-  _sendChatActive = true
   const text = getEditorPrompt()
   const elementHint = buildElementLocationHint()
   // 优化后的提示词格式 - 坐标清晰明确
@@ -4794,98 +4873,117 @@ async function sendChat() {
     if (sel) {
       const range = document.createRange()
       range.selectNodeContents(editorEl)
-      range.collapse(true)   // true = 折叠到开头
+      range.collapse(true) // true = 折叠到开头
       sel.removeAllRanges()
       sel.addRange(range)
     }
   }
   chatText.value = ''
+  chatReferenceImages.value.forEach((image) => {
+    if (image.localUrl?.startsWith('blob:')) URL.revokeObjectURL(image.localUrl)
+  })
+  chatReferenceImages.value = []
+  activeChatReferenceId.value = ''
   selectedDetectedElements.value = new Set()
   elementClickPositions.value = {}
-  chatGenerating.value = true
-  const placeholderId = await addGeneratingPlaceholderLayer(fullPrompt, {
+  const taskConfig = {
     model: chatModel.value,
     ratio: chatRatio.value,
     resolution: chatResolution.value,
-    referenceImageUrls: imageUrls,
-  }, assistantId)
+  }
+  const placeholderId = addGeneratingPlaceholderLayer(
+    fullPrompt,
+    {
+      ...taskConfig,
+      referenceImageUrls: imageUrls,
+    },
+    assistantId,
+  )
   // 标记此占位图正在主提交流程中，防止 watch 触发的 resumeInterruptedPlaceholders
   // 把它当作"需要恢复"的占位图而重复调 submitImageTask（导致一次提交2个生图请求）
   _submittingPlaceholderIds.add(placeholderId)
-  let submitted = false
+  activeChatTaskCount.value += 1
 
-  try {
-    const ph = layers.value.find((l) => l.id === placeholderId)
-    const taskId = await submitImageTask({ prompt: fullPrompt, imageUrls, clientTaskId: ph?.clientTaskId || '' })
-    submitted = true
-    _sendChatActive = false // 首批 POST 已返回即开门，二批可在首批后台轮询期间进入
-    updateChatMessage(assistantId, {
-      taskId,
-      text: `任务已提交，模型 ${chatModel.value}｜${chatRatio.value}｜${chatResolution.value}，正在生成...`,
-    })
-    updateGeneratingPlaceholder(placeholderId, { taskId, progress: 8, status: 'processing' })
+  void (async () => {
+    let submitted = false
+    try {
+      const ph = layers.value.find((l) => l.id === placeholderId)
+      const taskId = await submitImageTask({
+        prompt: fullPrompt,
+        imageUrls,
+        clientTaskId: ph?.clientTaskId || '',
+        model: taskConfig.model,
+        size: taskConfig.ratio,
+        resolution: taskConfig.resolution,
+      })
+      submitted = true
+      updateChatMessage(assistantId, {
+        taskId,
+        text: `任务已提交，模型 ${taskConfig.model}｜${taskConfig.ratio}｜${taskConfig.resolution}，正在生成...`,
+      })
+      updateGeneratingPlaceholder(placeholderId, { taskId, progress: 8, status: 'processing' })
 
-    // 核心轮询逻辑（与刷新后恢复流程共用，统一走幂等守卫 startImagePoll）
-    const done = await startImagePoll(taskId, placeholderId, assistantId, fullPrompt)
-    if (!done) return
-    // 历史记录已在 pollImageTaskUntilDone 的「图片落地」完成点统一写入
-    // （聊天生图 A / 刷新恢复 B 共用 recordGenerationToHistory），此处不重复 push，避免双写。
-  } catch (error) {
-    const friendly = friendlyImageError(error.message || error)
-    // 判断是否「页面刷新/导航导致的中断」而非真正失败：浏览器卸载会中断进行中的 fetch。
-    // 注意：不再要求 !_mounted —— 卸载时 fetch 的 abort 可能在 onUnmounted 把 _mounted 置 false 之前就 reject，
-    // 若加 !_mounted 守卫会误判为「提交阶段失败」进而误删占位图（即「立即刷新占位图消失」的根因）。
-    // 发送路径里的 AbortError / TypeError / Failed to fetch 只可能来自导航中断（该 fetch 无其他 abort 来源），
-    // 因此放宽判定是安全的，且「保留(标 interrupted)优于误删」。
-    const isInterruption =
-      error?.name === 'AbortError' ||
-      error?.name === 'TypeError' ||
-      error?.message === 'Failed to fetch'
-    if (isInterruption) {
-      // 刷新/导航中断：无论提交阶段还是轮询阶段，一律保留占位图，标记 interrupted 供 onMounted 恢复逻辑接管
-      // （提交阶段中断时还没有 taskId，恢复逻辑会重新提交任务，见 resumeInterruptedNoTaskId）
-      const current = layers.value.find((l) => l.id === placeholderId)
-      updateGeneratingPlaceholder(placeholderId, {
-        progress: current?.progress || 1,
-        status: 'interrupted',
-        statusText: '生成任务恢复中...',
-        taskId: current?.taskId,
-      })
-      updateChatMessage(assistantId, { text: '生成任务已暂停（页面刷新），正在恢复...' })
-    } else if (!submitted) {
-      // 提交阶段失败（服务端报错 / 后端掉线 / 超时等）：保留占位图、标 failed，
-      // 用户可手动重试。不再 removeLayer 静默消失（后端不稳定时会导致占位图突然消失）。
-      const lastError = `[submitFail] ${error?.name || 'Error'}: ${error?.message || error}`
-      updateGeneratingPlaceholder(placeholderId, {
-        progress: 1,
-        status: 'failed',
-        statusText: friendly,
-        lastError,
-      })
-      updateChatMessage(assistantId, {
-        text: `生成失败：${friendly}`,
-        generating: false,
-      })
-      showCopyPasteToast(friendly)
-    } else {
-      // 原始提交即失败（服务端明确报错，非刷新中断）：把真实错误存到图层，供后续排查
-      const lastError = `[submitFail] ${error?.name || 'Error'}: ${error?.message || error}`
-      updateGeneratingPlaceholder(placeholderId, {
-        progress: 1,
-        status: 'failed',
-        statusText: friendly,
-        lastError,
-      })
-      updateChatMessage(assistantId, {
-        text: `生成失败：${friendly}`,
-        generating: false,
-      })
+      // 核心轮询逻辑（与刷新后恢复流程共用，统一走幂等守卫 startImagePoll）
+      const done = await startImagePoll(taskId, placeholderId, assistantId, fullPrompt)
+      if (!done) return
+      // 历史记录已在 pollImageTaskUntilDone 的「图片落地」完成点统一写入
+      // （聊天生图 A / 刷新恢复 B 共用 recordGenerationToHistory），此处不重复 push，避免双写。
+    } catch (error) {
+      const friendly = friendlyImageError(error.message || error)
+      // 判断是否「页面刷新/导航导致的中断」而非真正失败：浏览器卸载会中断进行中的 fetch。
+      // 注意：不再要求 !_mounted —— 卸载时 fetch 的 abort 可能在 onUnmounted 把 _mounted 置 false 之前就 reject，
+      // 若加 !_mounted 守卫会误判为「提交阶段失败」进而误删占位图（即「立即刷新占位图消失」的根因）。
+      // 发送路径里的 AbortError / TypeError / Failed to fetch 只可能来自导航中断（该 fetch 无其他 abort 来源），
+      // 因此放宽判定是安全的，且「保留(标 interrupted)优于误删」。
+      const isInterruption =
+        error?.name === 'AbortError' ||
+        error?.name === 'TypeError' ||
+        error?.message === 'Failed to fetch'
+      if (isInterruption) {
+        // 刷新/导航中断：无论提交阶段还是轮询阶段，一律保留占位图，标记 interrupted 供 onMounted 恢复逻辑接管
+        // （提交阶段中断时还没有 taskId，恢复逻辑会重新提交任务，见 resumeInterruptedNoTaskId）
+        const current = layers.value.find((l) => l.id === placeholderId)
+        updateGeneratingPlaceholder(placeholderId, {
+          progress: current?.progress || 1,
+          status: 'interrupted',
+          statusText: '生成任务恢复中...',
+          taskId: current?.taskId,
+        })
+        updateChatMessage(assistantId, { text: '生成任务已暂停（页面刷新），正在恢复...' })
+      } else if (!submitted) {
+        // 提交阶段失败（服务端报错 / 后端掉线 / 超时等）：保留占位图、标 failed，
+        // 用户可手动重试。不再 removeLayer 静默消失（后端不稳定时会导致占位图突然消失）。
+        const lastError = `[submitFail] ${error?.name || 'Error'}: ${error?.message || error}`
+        updateGeneratingPlaceholder(placeholderId, {
+          progress: 1,
+          status: 'failed',
+          statusText: friendly,
+          lastError,
+        })
+        updateChatMessage(assistantId, {
+          text: `生成失败：${friendly}`,
+          generating: false,
+        })
+        showCopyPasteToast(friendly)
+      } else {
+        // 原始提交即失败（服务端明确报错，非刷新中断）：把真实错误存到图层，供后续排查
+        const lastError = `[submitFail] ${error?.name || 'Error'}: ${error?.message || error}`
+        updateGeneratingPlaceholder(placeholderId, {
+          progress: 1,
+          status: 'failed',
+          statusText: friendly,
+          lastError,
+        })
+        updateChatMessage(assistantId, {
+          text: `生成失败：${friendly}`,
+          generating: false,
+        })
+      }
+    } finally {
+      _submittingPlaceholderIds.delete(placeholderId)
+      activeChatTaskCount.value = Math.max(0, activeChatTaskCount.value - 1)
     }
-  } finally {
-    _sendChatActive = false
-    _submittingPlaceholderIds.delete(placeholderId)
-    chatGenerating.value = false
-  }
+  })()
 }
 
 function handleChatBoxClick(event) {
@@ -5699,7 +5797,12 @@ onMounted(() => {
   // 另见组件级 watch：服务端 doc 合并（syncFromServer）异步覆盖本地图层后也会幂等重扫。
   // 延迟 ~400ms 触发：onMounted 刚挂载时 Vite 代理 / 鉴权请求可能尚未就绪，过早重提易触发
   // 「Failed to fetch」被误判为失败；延迟后首轮重提命中率更高。
-  setTimeout(() => { resumeInterruptedPlaceholders(); retryFailedNoTaskPlaceholders(); cleanupDeadPlaceholders(); purgeEmptyUrlPlaceholders() }, 400)
+  setTimeout(() => {
+    resumeInterruptedPlaceholders()
+    retryFailedNoTaskPlaceholders()
+    cleanupDeadPlaceholders()
+    purgeEmptyUrlPlaceholders()
+  }, 400)
   const onCtrlDown = (e) => {
     if (e.key === 'Control') ctrlHeld.value = true
   }

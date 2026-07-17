@@ -41,6 +41,7 @@ async function handleFileChange(e) {
     store.productImageUrl = url
   } catch (err) {
     console.error('[PlanningStep] upload failed:', err)
+    window.alert(err instanceof Error ? err.message : '图片上传失败，请稍后重试。')
   } finally {
     uploading.value = false
     if (fileInput.value) fileInput.value.value = ''
@@ -67,6 +68,7 @@ async function handleDrop(e) {
     store.productImageUrl = url
   } catch (err) {
     console.error('[PlanningStep] drop upload failed:', err)
+    window.alert(err instanceof Error ? err.message : '图片上传失败，请稍后重试。')
   } finally {
     uploading.value = false
   }

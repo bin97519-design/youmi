@@ -12,6 +12,8 @@ const errorText = ref('')
 const users = ref([])
 const roles = ref([])
 const stats = ref(null)
+const elapsedClock = ref(Date.now())
+let elapsedTimer = null
 
 function parseImageUrls(raw) {
   if (!raw) return []
@@ -697,6 +699,37 @@ function formatTime(value) {
   return String(value).replace('T', ' ').slice(0, 16)
 }
 
+function taskDuration(task) {
+  const startedAt = Date.parse(task?.createdAt || '')
+  if (!Number.isFinite(startedAt)) return '-'
+  const status = taskStatusKey(task?.status)
+  const terminal =
+    status === 'COMPLETED' || status === 'FAILED' || Boolean(task?.previewUrls?.length)
+  const completedAt = Date.parse(task?.completedAt || '')
+  const updatedAt = Date.parse(task?.updatedAt || '')
+  let endedAt = elapsedClock.value
+  if (Number.isFinite(completedAt)) endedAt = completedAt
+  else if (terminal && Number.isFinite(updatedAt)) endedAt = updatedAt
+  const seconds = Math.max(0, Math.floor((endedAt - startedAt) / 1000))
+  if (seconds < 1) return '<1秒'
+  if (seconds < 60) return `${seconds}秒`
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = seconds % 60
+  if (minutes < 60) return `${minutes}分${String(remainingSeconds).padStart(2, '0')}秒`
+  const hours = Math.floor(minutes / 60)
+  return `${hours}时${String(minutes % 60).padStart(2, '0')}分`
+}
+
+function isTaskRunning(task) {
+  const status = taskStatusKey(task?.status)
+  return (
+    status !== 'COMPLETED' &&
+    status !== 'FAILED' &&
+    !task?.completedAt &&
+    !task?.previewUrls?.length
+  )
+}
+
 function shortPrompt(value) {
   const text = String(value || '')
   return text.length > 42 ? `${text.slice(0, 42)}...` : text
@@ -985,10 +1018,14 @@ watch([activeTab, stats], () => {
 
 onMounted(() => {
   loadConsole()
+  elapsedTimer = window.setInterval(() => {
+    elapsedClock.value = Date.now()
+  }, 1000)
   document.addEventListener('click', onDocClick)
 })
 
 onUnmounted(() => {
+  if (elapsedTimer) window.clearInterval(elapsedTimer)
   document.removeEventListener('click', onDocClick)
 })
 </script>
@@ -1608,6 +1645,7 @@ onUnmounted(() => {
             <span>通道</span>
             <span>状态</span>
             <span>图片</span>
+            <span>耗时</span>
           </div>
           <div v-for="task in pagedTasks" :key="task.taskId" class="console-row">
             <span>{{ formatTime(task.createdAt) }}</span>
@@ -1646,6 +1684,7 @@ onUnmounted(() => {
               </span>
               <small>{{ task.imageCount || task.previewUrls?.length || 0 }} 张 / {{ task.miCost || 0 }} 米值</small>
             </span>
+            <span :class="['task-duration', { live: isTaskRunning(task) }]" :title="isTaskRunning(task) ? '任务进行中，耗时实时更新' : '从发起生图到任务结束的耗时'">{{ taskDuration(task) }}</span>
           </div>
           <p v-if="!taskReloading && pagedTasks.length === 0" class="console-empty">暂无匹配任务。</p>
         </div>
@@ -1675,10 +1714,18 @@ onUnmounted(() => {
 
 <style scoped>
 .tasks-table.tasks-table-admin .console-row {
-  grid-template-columns: 112px minmax(220px, 1.6fr) 100px 110px 116px 92px 188px;
+  grid-template-columns: 112px minmax(220px, 1.6fr) 100px 110px 116px 92px 188px 92px;
 }
 .tasks-table:not(.tasks-table-admin) .console-row {
-  grid-template-columns: 112px minmax(220px, 1.6fr) 110px 116px 92px 188px;
+  grid-template-columns: 112px minmax(220px, 1.6fr) 110px 116px 92px 188px 92px;
+}
+.task-duration {
+  color: var(--yq-text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.task-duration.live {
+  color: #818cf8;
 }
 .task-provider-cell {
   display: flex;

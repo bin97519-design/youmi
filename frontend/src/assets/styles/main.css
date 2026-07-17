@@ -4639,6 +4639,20 @@ body {
   letter-spacing: 0;
 }
 
+.yh-logo-version {
+  margin-top: 1px;
+  color: rgba(255, 255, 255, 0.48);
+  font-size: 8px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.yh-rail.is-expanded .yh-logo-version {
+  font-size: 9px;
+}
+
 .yh-rail-nav {
   width: 100%;
   display: flex;
@@ -15204,6 +15218,9 @@ body {
 }
 [data-theme='light'] .yh-logo-sub {
   color: #666;
+}
+[data-theme='light'] .yh-logo-version {
+  color: #94a3b8;
 }
 
 /* 亮色主题：左侧导航图标 SVG 颜色覆盖 */

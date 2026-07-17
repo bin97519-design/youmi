@@ -9,6 +9,7 @@ import com.youmi.api.credit.MiValueService;
 import com.youmi.api.image.ImageGenerationClient;
 import com.youmi.api.image.ImageGenerationDtos;
 import com.youmi.api.image.ImageTaskLogService;
+import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -326,8 +327,9 @@ public class EcommerceSetService {
         );
 
         // 调用图片生成
+        Timestamp requestStartedAt = new Timestamp(System.currentTimeMillis());
         ImageGenerationDtos.CreateTaskResponse response = imageGenerationClient.createTask(request, userId);
-        imageTaskLogService.recordCreated(userId, request, response);
+        imageTaskLogService.recordCreated(userId, request, response, requestStartedAt);
 
         // 更新 task_id 和状态
         String providerTaskId = "";

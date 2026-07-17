@@ -61,6 +61,8 @@ public class ImageGenerationClient {
   private final ThreadLocal<Long> requestUserId = new ThreadLocal<>();
   // 持久化专用线程池：避免轮询请求内同步阻塞，且不引入自注入造成的循环依赖
   private final ThreadPoolTaskExecutor persistExecutor = buildPersistExecutor();
+  // Agnes 上游是同步接口；用独立线程池包装成内部异步任务，避免一次生成阻塞后续提交。
+  private final ThreadPoolTaskExecutor agnesExecutor = buildAgnesExecutor();
 
   @Autowired
   public ImageGenerationClient(
@@ -88,6 +90,18 @@ public class ImageGenerationClient {
     executor.setMaxPoolSize(16);
     executor.setQueueCapacity(64);
     executor.setThreadNamePrefix("img-persist-");
+    executor.setWaitForTasksToCompleteOnShutdown(false);
+    executor.setDaemon(true);
+    executor.initialize();
+    return executor;
+  }
+
+  private static ThreadPoolTaskExecutor buildAgnesExecutor() {
+    ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+    executor.setCorePoolSize(2);
+    executor.setMaxPoolSize(8);
+    executor.setQueueCapacity(32);
+    executor.setThreadNamePrefix("agnes-generate-");
     executor.setWaitForTasksToCompleteOnShutdown(false);
     executor.setDaemon(true);
     executor.initialize();
@@ -393,78 +407,22 @@ public class ImageGenerationClient {
     String ratio = properties.normalizeSize(request.size(), request.ratio());
     String resolution = properties.normalizeResolution(resolvedModel, request.resolution());
     int count = request.requestedCount();
-    List<String> imageUrls = request.normalizedImageUrls();
-    boolean isImageEdit = imageUrls != null && !imageUrls.isEmpty();
-
-    // Agnes 支持语义化参数：size="4K" + ratio="4:3"（速查表 V2）
-    // 也支持像素格式 "4096x3072"，但语义化更简洁且由 Agnes 自动计算像素
     String agnesSize = resolutionToAgnesSize(resolution);
     String agnesRatio = normalizeAgnesRatio(ratio);
-
-    Map<String, Object> body = new LinkedHashMap<>();
-    body.put("model", resolvedModel);
-    body.put("prompt", request.prompt().trim());
-    body.put("size", agnesSize);
-    body.put("ratio", agnesRatio);
-
-    // 文生图才传 n
-    if (!isImageEdit) {
-      body.put("n", count);
-    }
-
-    // extra_body：包含 response_format 和图生图的 image[]
-    Map<String, Object> extraBody = new LinkedHashMap<>();
-    extraBody.put("response_format", "url");
-
-    if (isImageEdit) {
-      // 图生图：image 数组（Agnes 文档要求）
-      extraBody.put("image", imageUrls);
-    }
-
-    body.put("extra_body", extraBody);
-
-    String endpoint = properties.normalizedAgnesBaseUrl() + properties.normalizedAgnesGenerationPath();
-    String bodyJson = objectMapper.writeValueAsString(body);
-    System.out.println("[agnes] model=" + resolvedModel + " isEdit=" + isImageEdit + " size=" + agnesSize + " ratio=" + agnesRatio + " prompt=" + compact(request.prompt()));
-
-    JsonNode root = sendAgnesPost(endpoint, body);
-
-    // Agnes 是同步 API，响应直接包含 data[0].url
-    List<String> generatedUrls = new ArrayList<>();
-    JsonNode data = root.path("data");
-    if (data.isArray()) {
-      for (JsonNode item : data) {
-        String url = text(item, "url");
-        if (!url.isBlank()) addUrl(generatedUrls, url);
-        // 也检查 b64_json
-        String b64 = text(item, "b64_json");
-        if (!b64.isBlank() && url.isBlank()) {
-          addUrl(generatedUrls, "data:image/png;base64," + b64);
-        }
-      }
-    }
-
-    if (generatedUrls.isEmpty()) {
-      throw new ApiException(502, "Agnes did not return image URLs: " + compact(root.toString()));
-    }
-
-    // Agnes 同步返回结果，构造一个已完成的 task ref
     String agnesTaskId = AGNES_TASK_PREFIX + java.util.UUID.randomUUID().toString().replace("-", "");
+    Long ownerId = requestUserId.get();
 
-    // Agnes 返回的 URL 是临时 CDN 链接（platform-outputs.agnes-ai.space），
-    // 需要转存到自己的 OSS，否则下载慢且可能过期
-    System.out.println("[agnes] persisting " + generatedUrls.size() + " image(s) to OSS...");
-    List<String> persistedUrls = persistImageUrls(agnesTaskId, generatedUrls);
-    // 用转存后的 URL 替换原始 URL
-    generatedUrls = persistedUrls;
-    System.out.println("[agnes] persisted to OSS: " + generatedUrls);
+    agnesTaskCache.put(agnesTaskId, AgnesTaskState.processing());
+    try {
+      agnesExecutor.execute(() -> runAgnesTask(
+          agnesTaskId, request, resolvedModel, agnesSize, agnesRatio, ownerId));
+    } catch (RuntimeException rejected) {
+      agnesTaskCache.remove(agnesTaskId);
+      throw new ApiException(503, "Agnes task queue is full, please retry later");
+    }
 
-    // 缓存结果，这样 getTask 时可以直接返回
-    agnesResultCache.put(agnesTaskId, new AgnesCachedResult(generatedUrls, root));
-
-    List<ImageGenerationDtos.TaskRef> tasks = List.of(
-        new ImageGenerationDtos.TaskRef(agnesTaskId, "completed"));
-
+    ObjectNode queued = objectMapper.createObjectNode();
+    queued.put("status", "submitted");
     return new ImageGenerationDtos.CreateTaskResponse(
         PROVIDER_ANNES,
         request.model(),
@@ -472,14 +430,106 @@ public class ImageGenerationClient {
         agnesSize + " " + agnesRatio,
         resolution,
         count,
-        tasks,
-        root);
+        List.of(new ImageGenerationDtos.TaskRef(agnesTaskId, "submitted")),
+        queued);
   }
 
-  /** Agnes 结果缓存（同步 API 返回后需要缓存给 getTask 查询） */
-  private final Map<String, AgnesCachedResult> agnesResultCache = new ConcurrentHashMap<>();
+  private void runAgnesTask(
+      String agnesTaskId,
+      ImageGenerationDtos.CreateTaskRequest request,
+      String resolvedModel,
+      String agnesSize,
+      String agnesRatio,
+      Long ownerId) {
+    if (ownerId != null) requestUserId.set(ownerId);
+    try {
+      List<String> imageUrls = request.normalizedImageUrls();
+      boolean isImageEdit = imageUrls != null && !imageUrls.isEmpty();
 
-  private record AgnesCachedResult(List<String> imageUrls, JsonNode raw) {}
+    // Agnes 支持语义化参数：size="4K" + ratio="4:3"（速查表 V2）
+    // 也支持像素格式 "4096x3072"，但语义化更简洁且由 Agnes 自动计算像素
+      Map<String, Object> body = new LinkedHashMap<>();
+      body.put("model", resolvedModel);
+      body.put("prompt", request.prompt().trim());
+      body.put("size", agnesSize);
+      body.put("ratio", agnesRatio);
+
+    // 文生图才传 n
+      if (!isImageEdit) {
+        body.put("n", request.requestedCount());
+      }
+
+    // extra_body：包含 response_format 和图生图的 image[]
+      Map<String, Object> extraBody = new LinkedHashMap<>();
+      extraBody.put("response_format", "url");
+
+      if (isImageEdit) {
+      // 图生图：image 数组（Agnes 文档要求）
+        extraBody.put("image", imageUrls);
+      }
+
+      body.put("extra_body", extraBody);
+
+      String endpoint = properties.normalizedAgnesBaseUrl() + properties.normalizedAgnesGenerationPath();
+      System.out.println("[agnes] model=" + resolvedModel + " isEdit=" + isImageEdit + " size=" + agnesSize + " ratio=" + agnesRatio + " prompt=" + compact(request.prompt()));
+
+      JsonNode root = sendAgnesPost(endpoint, body);
+
+    // Agnes 是同步 API，响应直接包含 data[0].url
+      List<String> generatedUrls = new ArrayList<>();
+      JsonNode data = root.path("data");
+      if (data.isArray()) {
+        for (JsonNode item : data) {
+          String url = text(item, "url");
+          if (!url.isBlank()) addUrl(generatedUrls, url);
+        // 也检查 b64_json
+          String b64 = text(item, "b64_json");
+          if (!b64.isBlank() && url.isBlank()) {
+            addUrl(generatedUrls, "data:image/png;base64," + b64);
+          }
+        }
+      }
+
+      if (generatedUrls.isEmpty()) {
+        throw new ApiException(502, "Agnes did not return image URLs: " + compact(root.toString()));
+      }
+
+    // Agnes 返回的 URL 是临时 CDN 链接（platform-outputs.agnes-ai.space），
+    // 需要转存到自己的 OSS，否则下载慢且可能过期
+      System.out.println("[agnes] persisting " + generatedUrls.size() + " image(s) to OSS...");
+      List<String> persistedUrls = persistImageUrls(agnesTaskId, generatedUrls);
+    // 用转存后的 URL 替换原始 URL
+      generatedUrls = persistedUrls;
+      System.out.println("[agnes] persisted to OSS: " + generatedUrls);
+
+      agnesTaskCache.put(agnesTaskId, AgnesTaskState.completed(generatedUrls, root));
+    } catch (Exception error) {
+      String message = error.getMessage() == null || error.getMessage().isBlank()
+          ? error.getClass().getSimpleName()
+          : error.getMessage();
+      agnesTaskCache.put(agnesTaskId, AgnesTaskState.failed(message));
+      System.err.println("[agnes] async task failed taskId=" + agnesTaskId + ": " + message);
+    } finally {
+      requestUserId.remove();
+    }
+  }
+
+  private final Map<String, AgnesTaskState> agnesTaskCache = new ConcurrentHashMap<>();
+
+  private record AgnesTaskState(
+      String status, Integer progress, List<String> imageUrls, String error, JsonNode raw) {
+    static AgnesTaskState processing() {
+      return new AgnesTaskState("processing", 1, List.of(), null, null);
+    }
+
+    static AgnesTaskState completed(List<String> imageUrls, JsonNode raw) {
+      return new AgnesTaskState("completed", 100, List.copyOf(imageUrls), null, raw);
+    }
+
+    static AgnesTaskState failed(String error) {
+      return new AgnesTaskState("failed", 0, List.of(), error, null);
+    }
+  }
 
   /** Agnes HTTP POST：Bearer token 用 agnes-api-key */
   private JsonNode sendAgnesPost(String endpoint, Map<String, Object> body) throws Exception {
@@ -956,9 +1006,9 @@ public class ImageGenerationClient {
         root);
   }
 
-  /** Agnes 同步任务查询：直接从缓存返回已完成结果 */
+  /** Agnes 内部异步任务查询。 */
   private ImageGenerationDtos.TaskStatusResponse getAgnesTask(String agnesTaskId) {
-    AgnesCachedResult cached = agnesResultCache.get(agnesTaskId);
+    AgnesTaskState cached = agnesTaskCache.get(agnesTaskId);
     if (cached == null) {
       return new ImageGenerationDtos.TaskStatusResponse(
           PROVIDER_ANNES,
@@ -972,10 +1022,10 @@ public class ImageGenerationClient {
     return new ImageGenerationDtos.TaskStatusResponse(
         PROVIDER_ANNES,
         agnesTaskId,
-        "completed",
-        100,
+        cached.status(),
+        cached.progress(),
         cached.imageUrls(),
-        null,
+        cached.error(),
         cached.raw());
   }
 
@@ -1234,10 +1284,16 @@ public class ImageGenerationClient {
 
   /** 触发异步持久化：提交到专用线程池执行，避免轮询请求内同步阻塞与循环依赖 */
   private void triggerAsyncPersist(String dbTaskId, List<String> temporaryUrls) {
+    // 去重必须发生在入队前。轮询频率高于转存速度时，如果等任务开始执行后才去重，
+    // 同一任务会反复塞入队列并最终挤满线程池。
+    if (persistingTaskIds.putIfAbsent(dbTaskId, Boolean.TRUE) != null) {
+      return;
+    }
     try {
       List<String> urls = new ArrayList<>(temporaryUrls);
-      persistExecutor.execute(() -> runPersistTask(dbTaskId, urls));
+      persistExecutor.execute(() -> runPersistTaskClaimed(dbTaskId, urls));
     } catch (Exception e) {
+      persistingTaskIds.remove(dbTaskId);
       System.out.println("[image-persist] trigger async persist failed for task=" + dbTaskId
           + ": " + e.getMessage());
     }
@@ -1285,10 +1341,14 @@ public class ImageGenerationClient {
    */
   private void runPersistTask(String taskId, List<String> temporaryUrls) {
     if (jdbcTemplate == null) return;
-    // 并发幂等：已在处理中则跳过
     if (persistingTaskIds.putIfAbsent(taskId, Boolean.TRUE) != null) {
       return;
     }
+    runPersistTaskClaimed(taskId, temporaryUrls);
+  }
+
+  /** 执行已取得去重标记的转存任务；调用方必须先占用 persistingTaskIds。 */
+  private void runPersistTaskClaimed(String taskId, List<String> temporaryUrls) {
     try {
       // 二次确认：DB 若已是 DONE 直接跳过（重启/重复触发保护）
       PersistState existing = getPersistState(taskId);
@@ -1299,7 +1359,8 @@ public class ImageGenerationClient {
       List<String> persisted = persistImageUrls(taskId, temporaryUrls);
       String resultJson = objectMapper.writeValueAsString(persisted);
       jdbcTemplate.update(
-          "UPDATE ym_image_task SET result_urls = ?, persist_status = 'DONE' WHERE task_id = ?",
+          "UPDATE ym_image_task SET result_urls = ?, persist_status = 'DONE', "
+              + "status = 'completed', progress = 100 WHERE task_id = ?",
           resultJson, taskId);
       System.out.println("[image-persist-async] persisted " + persisted.size()
           + " image(s) for task=" + taskId);
@@ -1308,7 +1369,8 @@ public class ImageGenerationClient {
           + ": " + e.getMessage());
       try {
         jdbcTemplate.update(
-            "UPDATE ym_image_task SET persist_status = 'FAILED' WHERE task_id = ? AND persist_status <> 'DONE'",
+            "UPDATE ym_image_task SET persist_status = 'FAILED', status = 'completed', progress = 100 "
+                + "WHERE task_id = ? AND persist_status <> 'DONE'",
             taskId);
       } catch (Exception ignore) {
         // 忽略写入失败

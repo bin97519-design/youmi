@@ -25,6 +25,14 @@ public class ImageTaskLogService {
       Long userId,
       ImageGenerationDtos.CreateTaskRequest request,
       ImageGenerationDtos.CreateTaskResponse response) {
+    recordCreated(userId, request, response, new Timestamp(System.currentTimeMillis()));
+  }
+
+  public void recordCreated(
+      Long userId,
+      ImageGenerationDtos.CreateTaskRequest request,
+      ImageGenerationDtos.CreateTaskResponse response,
+      Timestamp requestStartedAt) {
     if (response == null || response.tasks() == null) return;
     String prompt = request == null || request.prompt() == null ? "" : request.prompt().trim();
     String raw = rawString(response.raw());
@@ -33,9 +41,9 @@ public class ImageTaskLogService {
       jdbcTemplate.update("""
           INSERT INTO ym_image_task (
             task_id, client_task_id, user_id, provider, task_type, prompt, model, requested_model, size, resolution,
-            requested_count, status, progress, raw_response
+            requested_count, status, progress, raw_response, created_at
           )
-          VALUES (?, ?, ?, ?, 'IMAGE', ?, ?, ?, ?, ?, ?, ?, 0, ?)
+          VALUES (?, ?, ?, ?, 'IMAGE', ?, ?, ?, ?, ?, ?, ?, 0, ?, COALESCE(?, CURRENT_TIMESTAMP))
           ON DUPLICATE KEY UPDATE
             user_id = COALESCE(VALUES(user_id), user_id),
             provider = VALUES(provider),
@@ -59,7 +67,8 @@ public class ImageTaskLogService {
           response.resolution(),
           response.n(),
           normalizeStatus(task.status(), "submitted"),
-          raw);
+          raw,
+          requestStartedAt);
     }
   }
 
@@ -128,16 +137,17 @@ public class ImageTaskLogService {
   public void recordStatus(ImageGenerationDtos.TaskStatusResponse response) {
     if (response == null || response.taskId() == null || response.taskId().isBlank()) return;
     List<String> imageUrls = response.imageUrls() == null ? List.of() : response.imageUrls();
-    int imageCount = isDone(response.status()) ? imageUrls.size() : 0;
+    boolean imageGenerated = isDone(response.status()) || !imageUrls.isEmpty();
+    int imageCount = imageGenerated ? imageUrls.size() : 0;
     int miCost = imageCount * MI_COST_PER_IMAGE;
     BigDecimal moneyCost = extractMoneyCost(response.raw());
-    Timestamp completedAt = isDone(response.status()) ? Timestamp.valueOf(LocalDateTime.now()) : null;
+    Timestamp completedAt = imageGenerated ? Timestamp.valueOf(LocalDateTime.now()) : null;
 
     jdbcTemplate.update("""
         UPDATE ym_image_task
         SET provider = COALESCE(NULLIF(?, ''), provider),
             status = ?, progress = ?, image_count = ?, mi_cost = ?, money_cost = ?,
-            image_urls = ?, error_message = ?, raw_response = ?, completed_at = COALESCE(?, completed_at)
+            image_urls = ?, error_message = ?, raw_response = ?, completed_at = COALESCE(completed_at, ?)
         WHERE task_id = ?
         """,
         response.provider(),

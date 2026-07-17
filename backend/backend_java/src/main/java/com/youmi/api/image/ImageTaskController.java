@@ -12,6 +12,7 @@ import java.io.OutputStream;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.sql.Timestamp;
 import java.util.Map;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.HttpHeaders;
@@ -58,6 +59,7 @@ public class ImageTaskController {
       @RequestBody ImageGenerationDtos.CreateTaskRequest request) throws Exception {
     // 闸门要求登录态
     Long userId = adminAuthService.requireUserId(authorization);
+    Timestamp requestStartedAt = new Timestamp(System.currentTimeMillis());
     // 客户端幂等：同一张生图前端带 client_task_id，刷新重提时直接返回已有任务，
     // 跳过米值扣减与外部生图调用，杜绝重复生图+重复扣费。
     if (request.clientTaskId() != null && !request.clientTaskId().isBlank()) {
@@ -81,7 +83,7 @@ public class ImageTaskController {
       // 回填本次消耗与最新余额
       response.setConsumedMi(deduct.price());
       response.setBalance(miValueService.getBalance(userId));
-      imageTaskLogService.recordCreated(userId, request, response);
+      imageTaskLogService.recordCreated(userId, request, response, requestStartedAt);
       return ApiResponse.ok(response);
     } catch (DuplicateKeyException dke) {
       // 并发竞态：另一个同 client_task_id 的请求先 INSERT 成功了（TOCTOU 被 UNIQUE INDEX 拦截）

@@ -168,6 +168,25 @@ class ImagePersistStateMachineTest {
     assertEquals(1, parsed.size(), "result_urls 应为合法 JSON 数组");
   }
 
+  @Test
+  void repeatedPolling_enqueuesOnlyOnePersistTask() throws Exception {
+    Fixture fx = new Fixture(false, null);
+    fx.setPersistState(null, null);
+
+    String taskId = "apimart-direct:repeated-poll";
+    List<String> temp = List.of("https://temp.host/a.png");
+    for (int i = 0; i < 100; i++) {
+      Object pr = decidePollResponse(fx.client, taskId, temp);
+      assertEquals("persisting", prStatus(pr));
+    }
+
+    assertEquals(1, fx.executor.all.size(), "同一任务重复轮询只能进入队列一次");
+    assertTrue(persistingTaskIds(fx.client).containsKey(taskId), "排队期间应持有去重标记");
+
+    fx.executor.captured.get().run();
+    assertFalse(persistingTaskIds(fx.client).containsKey(taskId), "转存结束后应释放去重标记");
+  }
+
   // ===================== b. runPersistTask 成功 → DONE + 合法 JSON 数组 =====================
   @Test
   void runPersistTask_success_writesDoneWithValidJsonArray() throws Exception {

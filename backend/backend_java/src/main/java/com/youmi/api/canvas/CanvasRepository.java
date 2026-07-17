@@ -41,23 +41,17 @@ public class CanvasRepository {
   }
 
   public void save(CanvasDocument doc) {
-    Optional<CanvasDocument> existing = findByDocIdAndUserId(doc.docId(), doc.userId());
-    if (existing.isPresent()) {
-      String sql = """
-          UPDATE ym_canvas_document
-          SET title = ?, payload_json = ?, thumbnail_url = ?, is_reverse_prompt = ?
-          WHERE doc_id = ? AND user_id = ?
-          """;
-      jdbcTemplate.update(sql, doc.title(), toJson(doc.payload()), doc.thumbnailUrl(),
-          doc.isReversePrompt() ? 1 : 0, doc.docId(), doc.userId());
-    } else {
-      String sql = """
-          INSERT INTO ym_canvas_document (doc_id, user_id, title, payload_json, thumbnail_url, is_reverse_prompt)
-          VALUES (?, ?, ?, ?, ?, ?)
-          """;
-      jdbcTemplate.update(sql, doc.docId(), doc.userId(), doc.title(), toJson(doc.payload()),
-          doc.thumbnailUrl(), doc.isReversePrompt() ? 1 : 0);
-    }
+    String sql = """
+        INSERT INTO ym_canvas_document (doc_id, user_id, title, payload_json, thumbnail_url, is_reverse_prompt)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          title = VALUES(title),
+          payload_json = VALUES(payload_json),
+          thumbnail_url = VALUES(thumbnail_url),
+          is_reverse_prompt = VALUES(is_reverse_prompt)
+        """;
+    jdbcTemplate.update(sql, doc.docId(), doc.userId(), doc.title(), toJson(doc.payload()),
+        doc.thumbnailUrl(), doc.isReversePrompt() ? 1 : 0);
   }
 
   public void deleteByDocIdAndUserId(String docId, Long userId) {

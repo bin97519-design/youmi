@@ -31,6 +31,8 @@ import org.springframework.web.multipart.MultipartFile;
 @RestController
 @RequestMapping({"/api/file", "/api/v1/file"})
 public class FileUploadController {
+  private static final long MAX_IMAGE_UPLOAD_BYTES = 20L * 1024 * 1024;
+  private static final String IMAGE_UPLOAD_SIZE_MESSAGE = "图片不能超过 20MB，请压缩后重新上传。";
   private final OssStorageService ossStorageService;
   private final AdminAuthService adminAuthService;
 
@@ -52,6 +54,9 @@ public class FileUploadController {
     Long userId = adminAuthService.requireUserId(authorization);
     if (file == null || file.isEmpty()) {
       throw new ApiException(400, "上传文件不能为空");
+    }
+    if (isImage(file.getContentType()) && file.getSize() > MAX_IMAGE_UPLOAD_BYTES) {
+      throw new ApiException(400, IMAGE_UPLOAD_SIZE_MESSAGE);
     }
     if (ossStorageService.isConfigured()) {
       String objectName = ossStorageService.uploadFile(
@@ -75,6 +80,10 @@ public class FileUploadController {
     String contentType = stringValue(request, "contentType");
     String dir = stringValue(request, "dir");
     Integer expireSeconds = numberValue(request == null ? null : request.get("expireSeconds"));
+    long size = longValue(request == null ? null : request.get("size"));
+    if (isImage(contentType) && size > MAX_IMAGE_UPLOAD_BYTES) {
+      throw new ApiException(400, IMAGE_UPLOAD_SIZE_MESSAGE);
+    }
     return ApiResponse.ok(ossStorageService.createPutUploadSignature(
         fileName, contentType, ossStorageService.scopeUserDir(userId, dir), expireSeconds));
   }
@@ -325,5 +334,19 @@ public class FileUploadController {
     if (value == null || String.valueOf(value).isBlank()) return null;
     if (value instanceof Number number) return number.intValue();
     return Integer.parseInt(String.valueOf(value));
+  }
+
+  private static long longValue(Object value) {
+    if (value == null || String.valueOf(value).isBlank()) return 0L;
+    if (value instanceof Number number) return number.longValue();
+    try {
+      return Long.parseLong(String.valueOf(value));
+    } catch (NumberFormatException ignored) {
+      return 0L;
+    }
+  }
+
+  private static boolean isImage(String contentType) {
+    return contentType != null && contentType.toLowerCase(Locale.ROOT).startsWith("image/");
   }
 }

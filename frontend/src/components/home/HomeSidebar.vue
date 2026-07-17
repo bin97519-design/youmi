@@ -1,6 +1,9 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import packageInfo from '../../../package.json'
+
+const appVersion = `v${packageInfo.version}`
 
 const props = defineProps({
   expanded: {
@@ -206,6 +209,7 @@ function openConsole() {
         <path class="logo-stroke" d="M99.1 28.1h8.1" />
       </svg>
       <div class="yh-logo-sub">有米AI</div>
+      <div class="yh-logo-version">{{ appVersion }}</div>
     </div>
 
     <nav class="yh-rail-nav" aria-label="主菜单">
