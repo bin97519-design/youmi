@@ -75,6 +75,10 @@ class ImageTaskLogIsolationTest {
     assertEquals(firstCompletedAt, secondCompletedAt);
     assertEquals(1, jdbcTemplate.queryForObject(
         "SELECT image_count FROM ym_image_task WHERE task_id = 'task-a'", Integer.class));
+    assertEquals("completed", jdbcTemplate.queryForObject(
+        "SELECT status FROM ym_image_task WHERE task_id = 'task-a'", String.class));
+    assertEquals(100, jdbcTemplate.queryForObject(
+        "SELECT progress FROM ym_image_task WHERE task_id = 'task-a'", Integer.class));
   }
 
   private void insert(String taskId, String clientTaskId, Long userId, String model) {

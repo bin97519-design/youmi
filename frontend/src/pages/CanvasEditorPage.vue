@@ -15,7 +15,11 @@ import { layerName, useCanvasStore } from '../stores/canvas'
 import { useUserStore } from '../stores/user'
 import { apiPath } from '../utils/apiBase'
 import { cachedImgHtml } from '../utils/imageCache'
-import { uploadFileDirect, persistToOss } from '../utils/ossUpload'
+import {
+  MAX_IMAGE_UPLOAD_BYTES,
+  uploadFileDirect,
+  persistToOss,
+} from '../utils/ossUpload'
 
 const props = defineProps({ id: { type: String, required: true } })
 const router = useRouter()
@@ -118,8 +122,10 @@ const reversePromptCard = reactive({ x: null, y: null, width: 380, height: 240, 
 const reversePromptConnectors = ref([])
 const selectedLayerId = ref('')
 const selectedLayerIds = ref([])
-// 图片复制 / 粘贴的内部 buffer（保底，确保应用内 Ctrl+C → Ctrl+V 100% 可用）
-const clipboardImage = ref(null)
+// 画布内部复制缓冲区，支持多图并保留相对位置和智能分层数据。
+const clipboardLayers = ref([])
+const internalClipboardArmed = ref(false)
+let clipboardPasteCount = 0
 const rightTab = ref('chat')
 
 // ========== 连接线系统 ==========
@@ -390,6 +396,10 @@ const chatReferenceImages = ref([])
 const activeChatReferenceId = ref('')
 const chatUploading = ref(false)
 const uploadProgress = ref(null) // { fileName, loaded, total, percent } | null
+const canvasFileDragActive = ref(false)
+const chatFileDragActive = ref(false)
+let canvasFileDragDepth = 0
+let chatFileDragDepth = 0
 const activeChatTaskCount = ref(0)
 const chatGenerating = computed(() => activeChatTaskCount.value > 0)
 const chatSelectOpen = ref(null) // 'model' | 'ratio' | 'resolution' | null
@@ -425,7 +435,8 @@ const chatModelOptions = ['banana2', 'banana-pro', 'gpt-image-2', 'agnes-image-2
 const chatRatioOptions = ['auto', '1:1', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
 const chatResolutionOptions = ['1K', '2K', '4K']
 const TASK_POLL_INTERVAL = 2500
-const TASK_RESULT_SYNC_DELAY = 15000
+const TASK_RESULT_SYNC_INTERVAL = 10000
+const TASK_RESULT_SYNC_ATTEMPTS = 12
 // 对话窗口选中的模型参数变化时，落库到按文档隔离的 payload.chatConfig
 watch([chatModel, chatRatio, chatResolution], () => {
   canvas.updateDocument(props.id, (draft) => {
@@ -1392,34 +1403,39 @@ async function syncPersistedImageOnce({
   temporaryUrl,
   documentId,
 }) {
-  await wait(TASK_RESULT_SYNC_DELAY)
-  if (!_mounted.value || props.id !== documentId) return
-  try {
-    const status = await fetchImageTask(taskId)
-    const permanentUrl = extractTaskImageUrl(status)
-    if (!isTaskDone(status.status) || !permanentUrl || permanentUrl === temporaryUrl) return
-    generationHistory.value = generationHistory.value.map((record) =>
-      record.id === historyId ? { ...record, imageUrl: permanentUrl } : record,
-    )
-    canvas.updateDocument(documentId, (draft) => {
-      draft.payload.layers = draft.payload.layers.map((layer) =>
-        layer.id === layerId && layer.url === temporaryUrl
-          ? { ...layer, url: permanentUrl, thumbnailUrl: permanentUrl }
-          : layer,
+  for (let attempt = 0; attempt < TASK_RESULT_SYNC_ATTEMPTS; attempt += 1) {
+    await wait(TASK_RESULT_SYNC_INTERVAL)
+    if (!_mounted.value || props.id !== documentId) return
+    try {
+      const status = await fetchImageTask(taskId)
+      const permanentUrl = extractTaskImageUrl(status)
+      if (!permanentUrl || permanentUrl === temporaryUrl) continue
+      generationHistory.value = generationHistory.value.map((record) =>
+        record.id === historyId ? { ...record, imageUrl: permanentUrl } : record,
       )
-      draft.payload.generationHistory = generationHistory.value.slice(-200)
-      if (assistantId) {
-        draft.payload.chat = (draft.payload.chat || []).map((message) =>
-          message.id === assistantId && message.imageUrl === temporaryUrl
-            ? { ...message, imageUrl: permanentUrl }
-            : message,
+      canvas.updateDocument(documentId, (draft) => {
+        draft.payload.layers = draft.payload.layers.map((layer) =>
+          layer.id === layerId && layer.url === temporaryUrl
+            ? { ...layer, url: permanentUrl, thumbnailUrl: permanentUrl }
+            : layer,
         )
+        draft.payload.generationHistory = generationHistory.value.slice(-200)
+        if (assistantId) {
+          draft.payload.chat = (draft.payload.chat || []).map((message) =>
+            message.id === assistantId && message.imageUrl === temporaryUrl
+              ? { ...message, imageUrl: permanentUrl }
+              : message,
+          )
+        }
+        return draft
+      })
+      void canvas.flushNow?.(documentId)
+      return
+    } catch (error) {
+      if (attempt === TASK_RESULT_SYNC_ATTEMPTS - 1) {
+        console.warn('[syncPersistedImageOnce] 永久地址同步失败，保留临时地址:', error.message)
       }
-      return draft
-    })
-    void canvas.flushNow?.(documentId)
-  } catch (error) {
-    console.warn('[syncPersistedImageOnce] 永久地址同步失败，保留临时地址:', error.message)
+    }
   }
 }
 
@@ -1908,16 +1924,22 @@ async function fetchImageBlob(url) {
   }
 }
 
-// 复制：先写内部 buffer（保底），再尝试写入系统剪贴板（可静默失败）
-async function copySelectedImage() {
-  const layer = selectedLayer.value
-  if (!isRealImageLayer(layer)) {
+// 复制选中的一个或多个图片图层。内部缓冲区保留完整图层信息，系统剪贴板写入第一张图作为增强。
+async function copySelectedImages() {
+  const ids = selectedLayerIds.value.length
+    ? new Set(selectedLayerIds.value)
+    : new Set(selectedLayerId.value ? [selectedLayerId.value] : [])
+  const selectedImages = layers.value
+    .filter((layer) => ids.has(layer.id) && isRealImageLayer(layer))
+    .sort((a, b) => (a.zIndex || 0) - (b.zIndex || 0))
+
+  if (!selectedImages.length) {
     showCopyPasteToast('请选择图片图层再复制')
     return
   }
-  // 深拷贝智能分层元素框，粘贴时一并携带
-  const sourceElements = layerDetectedElements.value[layer.id] || []
-  clipboardImage.value = {
+
+  clipboardLayers.value = selectedImages.map((layer) => ({
+    layerId: layer.id,
     url: layer.url,
     type: layer.type,
     name: layer.name,
@@ -1929,12 +1951,17 @@ async function copySelectedImage() {
     zIndex: layer.zIndex,
     x: layer.x,
     y: layer.y,
-    elements: JSON.parse(JSON.stringify(sourceElements)),
-  }
-  showCopyPasteToast('已复制图片')
+    elements: JSON.parse(JSON.stringify(layerDetectedElements.value[layer.id] || [])),
+  }))
+  clipboardPasteCount = 0
+  internalClipboardArmed.value = true
+  showCopyPasteToast(
+    selectedImages.length > 1 ? `已复制 ${selectedImages.length} 张图片` : '已复制图片',
+  )
+
   // 系统剪贴板增强（可选，失败静默降级，不影响内部 buffer）
   try {
-    const blob = await fetchImageBlob(layer.url)
+    const blob = await fetchImageBlob(selectedImages[0].url)
     if (blob) {
       const type = blob.type && blob.type.startsWith('image/') ? blob.type : 'image/png'
       if (navigator.clipboard && navigator.clipboard.write && window.ClipboardItem) {
@@ -1946,76 +1973,53 @@ async function copySelectedImage() {
   }
 }
 
-// 粘贴：内部 buffer 优先（复制图层，携带元素框 + 同层级 + 不自动分层）
-//       系统剪贴板图片降级（外部图片，如截图）
-async function pasteImage() {
-  // 1. 内部 buffer 优先：复制的是画布图层 → 携带智能分层元素框，保持同层级，不自动智能分层
-  if (clipboardImage.value) {
-    try {
-      await pasteLayerFromBuffer(clipboardImage.value)
-    } catch (e) {
-      console.error('[pasteImage] 粘贴图层失败:', e)
-    }
-    return
-  }
-  // 2. 系统剪贴板图片（外部图片，如截图）→ 普通粘贴并允许自动分层
-  try {
-    if (navigator.clipboard && navigator.clipboard.read && window.ClipboardItem) {
-      const items = await navigator.clipboard.read()
-      for (const item of items) {
-        const imageType = (item.types || []).find((t) => String(t).startsWith('image/'))
-        if (imageType) {
-          const blob = await item.getType(imageType)
-          const file = new File([blob], 'pasted.png', { type: imageType })
-          const url = await uploadFileDirect(file)
-          await addImageLayerFromUrl(url, '粘贴图片')
-          return
-        }
-      }
-    }
-  } catch (e) {
-    // 静默降级
-  }
-  // 3. 无内容可粘贴
-}
+// 粘贴内部缓冲区：整批写入一次撤销快照，保留相对位置、层级顺序和智能分层数据。
+async function pasteCopiedLayers() {
+  if (!clipboardLayers.value.length) return false
+  pushUndo()
+  clipboardPasteCount += 1
+  const offset = clipboardPasteCount * 30
+  const maxZ = layers.value.reduce((max, layer) => Math.max(max, layer.zIndex || 0), 0)
+  const nextDetected = { ...layerDetectedElements.value }
+  const newIds = []
+  const stamp = Date.now()
 
-// 从内部 buffer 粘贴图层：携带智能分层元素框，与原始图层同层级，且不再自动智能分层
-async function pasteLayerFromBuffer(buffer) {
-  if (!buffer || !buffer.url) return
-  const newId = `layer-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
-  const els = Array.isArray(buffer.elements) ? JSON.parse(JSON.stringify(buffer.elements)) : []
-  // 关键：先写入元素框（在 watch 触发自动检测前已存在 → watch 会跳过自动分层）
-  if (els.length) {
-    layerDetectedElements.value = { ...layerDetectedElements.value, [newId]: els }
-  }
   canvas.updateDocument(props.id, (draft) => {
-    const index = draft.payload.layers.length
-    const layer = {
-      id: newId,
-      name: layerName(index),
-      url: buffer.url,
-      thumbnailUrl: buffer.thumbnailUrl || buffer.url,
-      naturalWidth: buffer.naturalWidth,
-      naturalHeight: buffer.naturalHeight,
-      width: buffer.width,
-      height: buffer.height,
-      x: (buffer.x ?? 0) + 30,
-      y: (buffer.y ?? 0) + 30,
-      zIndex: buffer.zIndex ?? 1,
-      visible: true,
-      locked: false,
-      source: '复制图层',
-    }
-    draft.payload.layers.push(layer)
-    if (els.length) {
-      draft.payload.detectedElements = draft.payload.detectedElements || {}
-      draft.payload.detectedElements[newId] = els
-    }
+    draft.payload.detectedElements = draft.payload.detectedElements || {}
+    clipboardLayers.value.forEach((buffer, index) => {
+      const newId = `layer-${stamp + index}-${Math.random().toString(36).slice(2, 7)}`
+      const elements = Array.isArray(buffer.elements)
+        ? JSON.parse(JSON.stringify(buffer.elements))
+        : []
+      draft.payload.layers.push({
+        id: newId,
+        name: layerName(draft.payload.layers.length),
+        url: buffer.url,
+        thumbnailUrl: buffer.thumbnailUrl || buffer.url,
+        naturalWidth: buffer.naturalWidth,
+        naturalHeight: buffer.naturalHeight,
+        width: buffer.width,
+        height: buffer.height,
+        x: (buffer.x ?? 0) + offset,
+        y: (buffer.y ?? 0) + offset,
+        zIndex: maxZ + index + 1,
+        visible: true,
+        locked: false,
+        source: '复制图层',
+      })
+      newIds.push(newId)
+      if (elements.length) {
+        nextDetected[newId] = elements
+        draft.payload.detectedElements[newId] = elements
+      }
+    })
     return draft
   })
-  selectedLayerId.value = newId
-  selectedLayerIds.value = [newId]
-  showCopyPasteToast(els.length ? `已粘贴图层（含 ${els.length} 个分层元素）` : '已粘贴图层')
+  layerDetectedElements.value = nextDetected
+  selectedLayerIds.value = newIds
+  selectedLayerId.value = newIds.at(-1) || ''
+  showCopyPasteToast(newIds.length > 1 ? `已粘贴 ${newIds.length} 张图片` : '已粘贴图片')
+  return true
 }
 
 function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '') {
@@ -2945,13 +2949,105 @@ function removeChatReferenceImage(imageId) {
   activeChatReferenceId.value = chatReferenceImages.value.at(-1)?.id || ''
 }
 
-async function addFiles(fileList, options = {}) {
-  const files = [...fileList].filter(
-    (file) => file.type.startsWith('image/') || file.type.startsWith('video/'),
+const IMAGE_FILE_NAME_RE = /\.(avif|bmp|gif|heic|heif|jpe?g|png|webp)$/i
+
+function isImageFile(file) {
+  return Boolean(
+    file &&
+      (String(file.type || '').startsWith('image/') || IMAGE_FILE_NAME_RE.test(file.name || '')),
   )
+}
+
+function isVideoFile(file) {
+  return Boolean(file && String(file.type || '').startsWith('video/'))
+}
+
+function imageFilesFromTransfer(transfer) {
+  if (!transfer) return []
+  const itemFiles = [...(transfer.items || [])]
+    .filter((item) => item.kind === 'file')
+    .map((item) => item.getAsFile())
+    .filter(isImageFile)
+  if (itemFiles.length) return itemFiles
+  return [...(transfer.files || [])].filter(isImageFile)
+}
+
+function transferContainsFiles(transfer) {
+  return [...(transfer?.types || [])].includes('Files')
+}
+
+function stageClientToWorld(clientX, clientY) {
+  const stage = document.querySelector('.stage')
+  const rect = stage?.getBoundingClientRect()
+  const localX = rect ? clientX - rect.left : viewportSize.width / 2
+  const localY = rect ? clientY - rect.top : viewportSize.height / 2
+  return {
+    x: (localX - viewOffset.value.x) / viewScale.value,
+    y: (localY - viewOffset.value.y) / viewScale.value,
+  }
+}
+
+function viewportCenterWorld() {
+  const stage = document.querySelector('.stage')
+  const rect = stage?.getBoundingClientRect()
+  return stageClientToWorld(
+    (rect?.left || 0) + (rect?.width || viewportSize.width) / 2,
+    (rect?.top || 0) + (rect?.height || viewportSize.height) / 2,
+  )
+}
+
+function fitImportedImage(size, useGrid) {
+  const naturalWidth = Math.max(1, Number(size.width) || 1)
+  const naturalHeight = Math.max(1, Number(size.height) || 1)
+  if (!useGrid) {
+    return {
+      width: CANVAS_IMAGE_WIDTH,
+      height: Math.round((CANVAS_IMAGE_WIDTH * naturalHeight) / naturalWidth),
+    }
+  }
+  const scale = Math.min(CANVAS_IMAGE_WIDTH / naturalWidth, 480 / naturalHeight)
+  return {
+    width: Math.max(1, Math.round(naturalWidth * scale)),
+    height: Math.max(1, Math.round(naturalHeight * scale)),
+  }
+}
+
+function gridImportPosition(index, count, width, height, anchor) {
+  const columns = Math.min(4, Math.max(1, Math.ceil(Math.sqrt(count))))
+  const rows = Math.ceil(count / columns)
+  const cellWidth = CANVAS_IMAGE_WIDTH + 32
+  const cellHeight = 512
+  const startX = anchor.x - (columns * cellWidth) / 2
+  const startY = anchor.y - (rows * cellHeight) / 2
+  const column = index % columns
+  const row = Math.floor(index / columns)
+  return {
+    x: Math.round(startX + column * cellWidth + (cellWidth - width) / 2),
+    y: Math.round(startY + row * cellHeight + (cellHeight - height) / 2),
+  }
+}
+
+async function addFiles(fileList, options = {}) {
+  const candidates = [...fileList].filter(
+    (file) => isImageFile(file) || (!options.imagesOnly && isVideoFile(file)),
+  )
+  const oversized = candidates.filter(
+    (file) => isImageFile(file) && Number(file.size || 0) > MAX_IMAGE_UPLOAD_BYTES,
+  )
+  const files = candidates.filter((file) => !oversized.includes(file))
+  if (oversized.length) {
+    const prefix = oversized.length === 1 ? oversized[0].name : `${oversized.length} 张图片`
+    showCopyPasteToast(`${prefix} 超过 20MB，已跳过`)
+  }
+  if (!files.length) return 0
+
+  const useGrid = options.layout === 'grid'
+  const anchor = options.anchor || viewportCenterWorld()
   let uploadedCount = 0
-  for (const file of files) {
-    const isVideo = file.type.startsWith('video/')
+  const uploadedLayerIds = []
+  const failedFiles = []
+  for (const [fileIndex, file] of files.entries()) {
+    const isVideo = isVideoFile(file)
     let referenceImage = null
     if (options.addToChatDeck) {
       const localUrl = URL.createObjectURL(file)
@@ -2967,10 +3063,11 @@ async function addFiles(fileList, options = {}) {
     }
 
     try {
-      uploadProgress.value = { fileName: file.name, loaded: 0, total: file.size, percent: 0 }
+      const progressName = files.length > 1 ? `${fileIndex + 1}/${files.length} ${file.name}` : file.name
+      uploadProgress.value = { fileName: progressName, loaded: 0, total: file.size, percent: 0 }
       const url = await uploadFile(file, (p) => {
         uploadProgress.value = {
-          fileName: file.name,
+          fileName: progressName,
           loaded: p.loaded,
           total: p.total,
           percent: p.percent,
@@ -2993,13 +3090,18 @@ async function addFiles(fileList, options = {}) {
         let layerId = ''
         canvas.updateDocument(props.id, (draft) => {
           const index = draft.payload.layers.length
-          const stageEl2 = document.querySelector('.stage')
-          const sr2 = stageEl2 ? stageEl2.getBoundingClientRect() : null
-          const cx =
-            ((sr2 ? sr2.width : viewportSize.width) / 2 - viewOffset.value.x) / viewScale.value
-          const cy =
-            ((sr2 ? sr2.height : viewportSize.height) / 2 - viewOffset.value.y) / viewScale.value
+          const maxZ = draft.payload.layers.reduce(
+            (max, layer) => Math.max(max, layer.zIndex || 0),
+            0,
+          )
           const base = selectedLayer.value
+          const gridPosition = gridImportPosition(
+            fileIndex,
+            files.length,
+            layerW,
+            layerH,
+            anchor,
+          )
           const layer = {
             id: `layer-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
             type: 'video',
@@ -3010,9 +3112,17 @@ async function addFiles(fileList, options = {}) {
             naturalHeight: size.height,
             width: layerW,
             height: layerH,
-            x: base ? base.x + Math.min(40, base.width / 2) : cx - layerW / 2 + index * 30,
-            y: base ? base.y + 30 : cy - layerH / 2 + index * 25,
-            zIndex: index + 1,
+            x: useGrid
+              ? gridPosition.x
+              : base
+                ? base.x + Math.min(40, base.width / 2)
+                : anchor.x - layerW / 2 + index * 30,
+            y: useGrid
+              ? gridPosition.y
+              : base
+                ? base.y + 30
+                : anchor.y - layerH / 2 + index * 25,
+            zIndex: maxZ + 1,
             visible: true,
             locked: false,
           }
@@ -3023,22 +3133,26 @@ async function addFiles(fileList, options = {}) {
           return draft
         })
         if (referenceImage) referenceImage.layerId = layerId
+        uploadedLayerIds.push(layerId)
         uploadedCount += 1
       } else {
-        // 图片文件：原逻辑
         const size = await imageSize(url)
+        const displaySize = fitImportedImage(size, useGrid)
         let layerId = ''
         canvas.updateDocument(props.id, (draft) => {
           const index = draft.payload.layers.length
-          const width = size.width > size.height ? CANVAS_IMAGE_WIDTH : CANVAS_IMAGE_WIDTH
-          const layerH = Math.round((width * size.height) / size.width)
-          const stageEl3 = document.querySelector('.stage')
-          const sr3 = stageEl3 ? stageEl3.getBoundingClientRect() : null
-          const cx =
-            ((sr3 ? sr3.width : viewportSize.width) / 2 - viewOffset.value.x) / viewScale.value
-          const cy =
-            ((sr3 ? sr3.height : viewportSize.height) / 2 - viewOffset.value.y) / viewScale.value
+          const maxZ = draft.payload.layers.reduce(
+            (max, layer) => Math.max(max, layer.zIndex || 0),
+            0,
+          )
           const base = selectedLayer.value
+          const gridPosition = gridImportPosition(
+            fileIndex,
+            files.length,
+            displaySize.width,
+            displaySize.height,
+            anchor,
+          )
           const layer = {
             id: `layer-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
             name: layerName(index),
@@ -3046,11 +3160,19 @@ async function addFiles(fileList, options = {}) {
             thumbnailUrl: url,
             naturalWidth: size.width,
             naturalHeight: size.height,
-            width,
-            height: layerH,
-            x: base ? base.x + Math.min(40, base.width / 2) : cx - width / 2 + index * 30,
-            y: base ? base.y + 30 : cy - layerH / 2 + index * 25,
-            zIndex: index + 1,
+            width: displaySize.width,
+            height: displaySize.height,
+            x: useGrid
+              ? gridPosition.x
+              : base
+                ? base.x + Math.min(40, base.width / 2)
+                : anchor.x - displaySize.width / 2 + index * 30,
+            y: useGrid
+              ? gridPosition.y
+              : base
+                ? base.y + 30
+                : anchor.y - displaySize.height / 2 + index * 25,
+            zIndex: maxZ + 1,
             visible: true,
             locked: false,
           }
@@ -3061,6 +3183,7 @@ async function addFiles(fileList, options = {}) {
           return draft
         })
         if (referenceImage) referenceImage.layerId = layerId
+        uploadedLayerIds.push(layerId)
         uploadedCount += 1
       }
     } catch (error) {
@@ -3069,8 +3192,18 @@ async function addFiles(fileList, options = {}) {
         referenceImage.uploading = false
         referenceImage.error = true
       }
-      throw error
+      failedFiles.push({ file, error })
+      if (!options.continueOnError) throw error
     }
+  }
+  if (options.selectBatch && uploadedLayerIds.length) {
+    selectedLayerIds.value = uploadedLayerIds
+    selectedLayerId.value = uploadedLayerIds.at(-1)
+  }
+  if (failedFiles.length) {
+    const firstError = failedFiles[0].error?.message || '上传失败'
+    const prefix = failedFiles.length === 1 ? failedFiles[0].file.name : `${failedFiles.length} 个文件`
+    showCopyPasteToast(`${prefix} 上传失败：${firstError}`)
   }
   if (uploadedCount && options.addChatNotice) {
     canvas.updateDocument(props.id, (draft) => {
@@ -3085,6 +3218,160 @@ async function addFiles(fileList, options = {}) {
     })
   }
   return uploadedCount
+}
+
+function resetCanvasFileDrag() {
+  canvasFileDragDepth = 0
+  canvasFileDragActive.value = false
+}
+
+function resetChatFileDrag() {
+  chatFileDragDepth = 0
+  chatFileDragActive.value = false
+}
+
+function handleCanvasDragEnter(event) {
+  if (!transferContainsFiles(event.dataTransfer)) return
+  canvasFileDragDepth += 1
+  canvasFileDragActive.value = true
+}
+
+function handleCanvasDragOver(event) {
+  if (!transferContainsFiles(event.dataTransfer)) return
+  event.dataTransfer.dropEffect = 'copy'
+  canvasFileDragActive.value = true
+}
+
+function handleCanvasDragLeave() {
+  canvasFileDragDepth = Math.max(0, canvasFileDragDepth - 1)
+  if (!canvasFileDragDepth) canvasFileDragActive.value = false
+}
+
+async function handleCanvasFileDrop(event) {
+  const files = imageFilesFromTransfer(event.dataTransfer)
+  resetCanvasFileDrag()
+  if (!files.length || !userStore.requireLogin()) return
+  internalClipboardArmed.value = false
+  await addFiles(files, {
+    imagesOnly: true,
+    continueOnError: true,
+    layout: 'grid',
+    selectBatch: true,
+    anchor: stageClientToWorld(event.clientX, event.clientY),
+  })
+}
+
+async function addImagesToChatDeck(files) {
+  if (!files.length || !userStore.requireLogin()) return 0
+  chatUploading.value = true
+  try {
+    return await addFiles(files, {
+      addChatNotice: true,
+      addToChatDeck: true,
+      imagesOnly: true,
+      continueOnError: true,
+      layout: 'grid',
+      selectBatch: true,
+      anchor: viewportCenterWorld(),
+    })
+  } finally {
+    chatUploading.value = false
+  }
+}
+
+function addCopiedLayersToChatDeck() {
+  if (!clipboardLayers.value.length) return 0
+  clipboardLayers.value.forEach((layer, index) => {
+    chatReferenceImages.value.push({
+      id: `ref-copy-${Date.now()}-${index}-${Math.random().toString(16).slice(2)}`,
+      name: layer.name || `复制图片 ${index + 1}`,
+      url: layer.url,
+      uploading: false,
+      layerId: layer.layerId || '',
+    })
+  })
+  activeChatReferenceId.value = chatReferenceImages.value.at(-1)?.id || ''
+  showCopyPasteToast(
+    clipboardLayers.value.length > 1
+      ? `已添加 ${clipboardLayers.value.length} 张参考图`
+      : '已添加参考图',
+  )
+  return clipboardLayers.value.length
+}
+
+function handleChatDragEnter(event) {
+  if (!transferContainsFiles(event.dataTransfer)) return
+  chatFileDragDepth += 1
+  chatFileDragActive.value = true
+}
+
+function handleChatDragOver(event) {
+  if (!transferContainsFiles(event.dataTransfer)) return
+  event.dataTransfer.dropEffect = 'copy'
+  chatFileDragActive.value = true
+}
+
+function handleChatDragLeave() {
+  chatFileDragDepth = Math.max(0, chatFileDragDepth - 1)
+  if (!chatFileDragDepth) chatFileDragActive.value = false
+}
+
+async function handleChatFileDrop(event) {
+  const files = imageFilesFromTransfer(event.dataTransfer)
+  resetChatFileDrag()
+  if (!files.length) return
+  internalClipboardArmed.value = false
+  await addImagesToChatDeck(files)
+}
+
+async function handleChatUploadPaste(event) {
+  if (internalClipboardArmed.value && clipboardLayers.value.length) {
+    event.preventDefault()
+    event.stopPropagation()
+    addCopiedLayersToChatDeck()
+    return true
+  }
+  const files = imageFilesFromTransfer(event.clipboardData)
+  if (!files.length) return false
+  event.preventDefault()
+  event.stopPropagation()
+  internalClipboardArmed.value = false
+  await addImagesToChatDeck(files)
+  return true
+}
+
+async function handleGlobalPaste(event) {
+  if (event.defaultPrevented) return
+  const target = event.target
+  if (target?.closest?.('input, textarea, [contenteditable="true"], .uc-upload-tile')) return
+  if (internalClipboardArmed.value && clipboardLayers.value.length) {
+    event.preventDefault()
+    await pasteCopiedLayers()
+    return
+  }
+  const files = imageFilesFromTransfer(event.clipboardData)
+  if (!files.length || !userStore.requireLogin()) return
+  event.preventDefault()
+  internalClipboardArmed.value = false
+  await addFiles(files, {
+    imagesOnly: true,
+    continueOnError: true,
+    layout: 'grid',
+    selectBatch: true,
+    anchor: viewportCenterWorld(),
+  })
+}
+
+function disarmInternalClipboard() {
+  internalClipboardArmed.value = false
+}
+
+function handleNativeCopy(event) {
+  const target = event.target
+  const selection = window.getSelection?.().toString().trim()
+  if (selection || target?.closest?.('input, textarea, [contenteditable="true"]')) {
+    internalClipboardArmed.value = false
+  }
 }
 
 async function onFileChange(event) {
@@ -4195,8 +4482,9 @@ function handleEditorLineBreak() {
   updateChatTextFromEditor()
 }
 
-// 粘贴纯文本：阻止浏览器默认插入 HTML（会导致输入框变形）
-function handleEditorPaste(event) {
+// 输入框粘贴：图片进入参考图区域，纯文本保持原有光标位置且不插入 HTML。
+async function handleEditorPaste(event) {
+  if (await handleChatUploadPaste(event)) return
   event.preventDefault()
   const plainText = (event.clipboardData || window.clipboardData).getData('text/plain')
   if (!plainText) return
@@ -5595,13 +5883,18 @@ function onGlobalKeydown(event) {
       const sel = window.getSelection && window.getSelection()
       if (sel && sel.toString().trim()) return
       event.preventDefault()
-      copySelectedImage()
+      copySelectedImages()
       return
     }
     if (ck === 'v') {
       if (inInput) return
-      event.preventDefault()
-      pasteImage().catch(() => {})
+      if (internalClipboardArmed.value && clipboardLayers.value.length) {
+        event.preventDefault()
+        pasteCopiedLayers().catch((error) => {
+          console.error('[clipboard] 粘贴内部图层失败:', error)
+        })
+      }
+      // 未命中内部缓冲区时不拦截，交给 handleGlobalPaste 处理外部剪贴板图片。
       return
     }
   }
@@ -5741,6 +6034,9 @@ onMounted(() => {
   updateViewportSize()
   window.addEventListener('resize', updateViewportSize)
   window.addEventListener('keydown', onGlobalKeydown)
+  window.addEventListener('paste', handleGlobalPaste)
+  window.addEventListener('blur', disarmInternalClipboard)
+  window.addEventListener('copy', handleNativeCopy, true)
   loadUILayout()
   // 连接线/历史/模型参数已从 payload 初始化，这里仅做孤儿连接线清洗
   initDocState()
@@ -5838,6 +6134,9 @@ onMounted(() => {
     window.removeEventListener('mousemove', onGlobalMouseMove)
     window.removeEventListener('click', onDocClick)
     window.removeEventListener('resize', updateViewportSize)
+    window.removeEventListener('paste', handleGlobalPaste)
+    window.removeEventListener('blur', disarmInternalClipboard)
+    window.removeEventListener('copy', handleNativeCopy, true)
     if (_pillObserver) {
       _pillObserver.disconnect()
       _pillObserver = null
@@ -6310,9 +6609,14 @@ async function loadImageForCrop(layer) {
             'annotate-tool': activeTool === 'annotate',
             'is-panning': panState,
             'is-connecting': connecting.active,
+            'is-file-dragging': canvasFileDragActive,
           },
         ]"
         @wheel.prevent="wheelZoom"
+        @dragenter.prevent="handleCanvasDragEnter"
+        @dragover.prevent="handleCanvasDragOver"
+        @dragleave="handleCanvasDragLeave"
+        @drop.prevent="handleCanvasFileDrop"
         @pointerdown="startMarquee($event)"
         @pointermove="onStagePointerMove($event)"
         @pointerup="onStagePointerUp($event)"
@@ -6320,6 +6624,11 @@ async function loadImageForCrop(layer) {
         @contextmenu.prevent="onCanvasContextMenu($event)"
         @pointerdown.right="onStageRightDown($event)"
       >
+        <div v-if="canvasFileDragActive" class="uc-canvas-file-drop" aria-live="polite">
+          <i class="ri-image-add-line" aria-hidden="true"></i>
+          <strong>松开添加图片</strong>
+          <span>支持单张或多张图片</span>
+        </div>
         <!-- 智能对齐辅助线 -->
         <div
           v-for="(guide, idx) in snapGuides"
@@ -7316,8 +7625,16 @@ async function loadImageForCrop(layer) {
               <div class="uc-home-dialog-main">
                 <div
                   class="uc-chat-upload-deck yh-upload-deck"
-                  :class="{ 'has-images': chatReferenceImages.length }"
+                  :class="{
+                    'has-images': chatReferenceImages.length,
+                    'is-file-dragging': chatFileDragActive,
+                  }"
                   :style="{ '--deck-count': chatReferenceImages.length }"
+                  @dragenter.stop.prevent="handleChatDragEnter"
+                  @dragover.stop.prevent="handleChatDragOver"
+                  @dragleave.stop="handleChatDragLeave"
+                  @drop.stop.prevent="handleChatFileDrop"
+                  @paste.stop="handleChatUploadPaste"
                 >
                   <button
                     v-for="(image, index) in chatReferenceImages"
@@ -7350,6 +7667,7 @@ async function loadImageForCrop(layer) {
                     class="uc-upload-tile yh-upload-tile"
                     type="button"
                     :class="{ compact: chatReferenceImages.length }"
+                    title="添加参考图"
                     @click.stop="openImageUpload('chat')"
                   >
                     <span v-if="chatUploading && !chatReferenceImages.length" class="yh-uploading">

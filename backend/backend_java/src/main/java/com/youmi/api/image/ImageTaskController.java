@@ -141,7 +141,7 @@ public class ImageTaskController {
     // 异步轮询到终态：失败则回退米值，成功则确认流水
     if (isTerminalFailed(response.status())) {
       miValueService.rollbackByTaskId(taskId);
-    } else if (isTerminalSuccess(response.status())) {
+    } else if (isTerminalSuccess(response)) {
       miValueService.commitByTaskId(taskId);
     }
     imageTaskLogService.recordStatus(response);
@@ -158,7 +158,12 @@ public class ImageTaskController {
   }
 
   /** 是否为终态成功（需确认流水） */
-  private boolean isTerminalSuccess(String status) {
+  private boolean isTerminalSuccess(ImageGenerationDtos.TaskStatusResponse response) {
+    if (response == null) return false;
+    String status = response.status();
+    if (!isTerminalFailed(status) && response.imageUrls() != null && !response.imageUrls().isEmpty()) {
+      return true;
+    }
     if (status == null) return false;
     String s = status.trim().toLowerCase();
     return s.equals("completed") || s.equals("succeeded") || s.equals("success")

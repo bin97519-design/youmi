@@ -14,6 +14,7 @@ const roles = ref([])
 const stats = ref(null)
 const elapsedClock = ref(Date.now())
 let elapsedTimer = null
+let taskRefreshTimer = null
 
 function parseImageUrls(raw) {
   if (!raw) return []
@@ -38,7 +39,20 @@ function normalizeImageStats(imageStats) {
     tasks: (imageStats.tasks || []).map((task) => {
       const persisted = parseImageUrls(task.resultUrls)
       const original = parseImageUrls(task.imageUrls)
-      return { ...task, previewUrls: [...new Set(persisted.length ? persisted : original)] }
+      const previewUrls = [...new Set(persisted.length ? persisted : original)]
+      const sourceStatus = String(task.status || '').trim().toLowerCase()
+      const failed = ['failed', 'error', 'cancelled', 'canceled'].includes(sourceStatus)
+      const imageGenerated = previewUrls.length > 0 && !failed
+      const persistStatus = String(
+        task.persistStatus || (persisted.length ? 'DONE' : sourceStatus === 'persisting' ? 'PENDING' : ''),
+      ).toUpperCase()
+      return {
+        ...task,
+        sourceStatus,
+        status: imageGenerated ? 'completed' : task.status,
+        persistStatus,
+        previewUrls,
+      }
     }),
   }
 }
@@ -699,6 +713,30 @@ function formatTime(value) {
   return String(value).replace('T', ' ').slice(0, 16)
 }
 
+const shouldRefreshTaskStats = computed(() =>
+  (stats.value?.tasks || []).some(
+    (task) => isTaskRunning(task) || String(task.persistStatus || '').toUpperCase() === 'PENDING',
+  ),
+)
+
+async function refreshTaskStatsSilently() {
+  if (
+    document.hidden ||
+    activeTab.value !== 'stats' ||
+    loading.value ||
+    taskReloading.value ||
+    !shouldRefreshTaskStats.value
+  ) {
+    return
+  }
+  try {
+    const imageStats = await api('/api/admin/image-stats' + buildImageStatsQuery())
+    stats.value = normalizeImageStats(imageStats)
+  } catch {
+    // 保留当前数据，下一轮再同步任务状态与永久链接。
+  }
+}
+
 function taskDuration(task) {
   const startedAt = Date.parse(task?.createdAt || '')
   if (!Number.isFinite(startedAt)) return '-'
@@ -706,10 +744,8 @@ function taskDuration(task) {
   const terminal =
     status === 'COMPLETED' || status === 'FAILED' || Boolean(task?.previewUrls?.length)
   const completedAt = Date.parse(task?.completedAt || '')
-  const updatedAt = Date.parse(task?.updatedAt || '')
-  let endedAt = elapsedClock.value
-  if (Number.isFinite(completedAt)) endedAt = completedAt
-  else if (terminal && Number.isFinite(updatedAt)) endedAt = updatedAt
+  if (terminal && !Number.isFinite(completedAt)) return '--'
+  const endedAt = Number.isFinite(completedAt) ? completedAt : elapsedClock.value
   const seconds = Math.max(0, Math.floor((endedAt - startedAt) / 1000))
   if (seconds < 1) return '<1秒'
   if (seconds < 60) return `${seconds}秒`
@@ -768,11 +804,19 @@ function taskStatusKey(status) {
   if (['COMPLETED', 'SUCCEEDED', 'SUCCESS', 'DONE'].includes(value)) return 'COMPLETED'
   if (['FAILED', 'ERROR', 'CANCELLED', 'CANCELED'].includes(value)) return 'FAILED'
   if (['PENDING', 'WAITING', 'QUEUED', 'SUBMITTED'].includes(value)) return 'PENDING'
-  if (['PROCESSING', 'RUNNING', 'GENERATING', 'IN_PROGRESS'].includes(value)) return 'PROCESSING'
+  if (['PROCESSING', 'RUNNING', 'GENERATING', 'IN_PROGRESS', 'PERSISTING'].includes(value)) return 'PROCESSING'
   return value
 }
 function taskStatusLabel(s) {
   return taskStatusLabelMap[taskStatusKey(s)] || s
+}
+
+function taskPersistStatus(task) {
+  const value = String(task?.persistStatus || '').toUpperCase()
+  if (value === 'PENDING') return { label: '转存中', className: 'pending' }
+  if (value === 'DONE') return { label: '已转存', className: 'done' }
+  if (value === 'FAILED') return { label: '转存失败', className: 'failed' }
+  return null
 }
 
 /* ── 自定义下拉框状态 ── */
@@ -1021,11 +1065,13 @@ onMounted(() => {
   elapsedTimer = window.setInterval(() => {
     elapsedClock.value = Date.now()
   }, 1000)
+  taskRefreshTimer = window.setInterval(refreshTaskStatsSilently, 10000)
   document.addEventListener('click', onDocClick)
 })
 
 onUnmounted(() => {
   if (elapsedTimer) window.clearInterval(elapsedTimer)
+  if (taskRefreshTimer) window.clearInterval(taskRefreshTimer)
   document.removeEventListener('click', onDocClick)
 })
 </script>
@@ -1659,7 +1705,13 @@ onUnmounted(() => {
               {{ taskProviderLabel(task.provider) }}
               <span v-if="task.isFallback" class="fallback-badge" title="该图由 Proxy 兜底通道生成">兜底</span>
             </span>
-            <span :class="['status-pill', taskStatusKey(task.status)]">{{ taskStatusLabel(task.status) }}</span>
+            <span class="task-status-cell">
+              <span :class="['status-pill', taskStatusKey(task.status)]">{{ taskStatusLabel(task.status) }}</span>
+              <small
+                v-if="taskPersistStatus(task)"
+                :class="['persist-status', taskPersistStatus(task).className]"
+              >{{ taskPersistStatus(task).label }}</small>
+            </span>
             <span class="task-image-cell">
               <span v-if="task.previewUrls?.length" class="task-thumbnails">
                 <button
@@ -1726,6 +1778,28 @@ onUnmounted(() => {
 }
 .task-duration.live {
   color: #818cf8;
+}
+.task-status-cell {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.persist-status {
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--yq-muted);
+}
+.persist-status.pending {
+  color: #f59e0b;
+}
+.persist-status.done {
+  color: #34d399;
+}
+.persist-status.failed {
+  color: #fb7185;
 }
 .task-provider-cell {
   display: flex;

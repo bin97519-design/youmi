@@ -137,11 +137,16 @@ public class ImageTaskLogService {
   public void recordStatus(ImageGenerationDtos.TaskStatusResponse response) {
     if (response == null || response.taskId() == null || response.taskId().isBlank()) return;
     List<String> imageUrls = response.imageUrls() == null ? List.of() : response.imageUrls();
-    boolean imageGenerated = isDone(response.status()) || !imageUrls.isEmpty();
+    boolean failed = isFailed(response.status());
+    boolean imageGenerated = !failed && (isDone(response.status()) || !imageUrls.isEmpty());
     int imageCount = imageGenerated ? imageUrls.size() : 0;
     int miCost = imageCount * MI_COST_PER_IMAGE;
     BigDecimal moneyCost = extractMoneyCost(response.raw());
     Timestamp completedAt = imageGenerated ? Timestamp.valueOf(LocalDateTime.now()) : null;
+    String storedStatus = imageGenerated ? "completed" : normalizeStatus(response.status(), "unknown");
+    int storedProgress = imageGenerated
+        ? 100
+        : response.progress() == null ? 0 : Math.max(0, Math.min(100, response.progress()));
 
     jdbcTemplate.update("""
         UPDATE ym_image_task
@@ -151,8 +156,8 @@ public class ImageTaskLogService {
         WHERE task_id = ?
         """,
         response.provider(),
-        normalizeStatus(response.status(), "unknown"),
-        response.progress() == null ? 0 : Math.max(0, Math.min(100, response.progress())),
+        storedStatus,
+        storedProgress,
         imageCount,
         miCost,
         moneyCost,
@@ -167,6 +172,13 @@ public class ImageTaskLogService {
     if (status == null) return false;
     String value = status.trim().toLowerCase();
     return value.equals("completed") || value.equals("succeeded") || value.equals("success") || value.equals("done");
+  }
+
+  private boolean isFailed(String status) {
+    if (status == null) return false;
+    String value = status.trim().toLowerCase();
+    return value.equals("failed") || value.equals("error") || value.equals("cancelled")
+        || value.equals("canceled") || value.contains("fail") || value.contains("error");
   }
 
   private String normalizeStatus(String status, String fallback) {
