@@ -1111,12 +1111,12 @@ async function maybeAutoDetect(layer, force = false) {
   detectingLayerIds.value = next
 }
 
-const autoDetectionEnabled = ref(doc.value?.payload?.ui?.autoDetectionEnabled !== false)
+const autoDetectionEnabled = ref(doc.value?.payload?.ui?.autoDetectionEnabled === true)
 
 watch(
   () => [props.id, doc.value?.payload?.ui?.autoDetectionEnabled],
   ([, enabled]) => {
-    autoDetectionEnabled.value = enabled !== false
+    autoDetectionEnabled.value = enabled === true
   },
   { immediate: true },
 )
