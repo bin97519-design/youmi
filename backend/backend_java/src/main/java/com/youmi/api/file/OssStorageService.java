@@ -25,6 +25,7 @@ import jakarta.annotation.PreDestroy;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.net.URI;
 import java.net.URL;
 import java.net.URLConnection;
 import java.time.LocalDate;
@@ -122,6 +123,27 @@ public class OssStorageService {
 
   public String getFileUrl(String objectName) {
     return buildPublicFileUrl(objectName);
+  }
+
+  /** 判断 URL 是否已经指向当前系统配置的 OSS，避免永久地址被重复下载、重复上传。 */
+  public boolean isOwnFileUrl(String fileUrl) {
+    if (!isConfigured() || isBlank(fileUrl)) return false;
+    try {
+      String actualHost = new URI(fileUrl.trim()).getHost();
+      if (isBlank(actualHost)) return false;
+
+      if (!isBlank(properties.getCustomDomain())) {
+        String custom = properties.getCustomDomain().trim();
+        URI customUri = new URI(custom.startsWith("http") ? custom : "https://" + custom);
+        if (actualHost.equalsIgnoreCase(customUri.getHost())) return true;
+      }
+
+      String endpointHost = new URI(properties.resolveEndpoint()).getHost();
+      String bucketHost = properties.getBucketName() + "." + endpointHost;
+      return actualHost.equalsIgnoreCase(bucketHost);
+    } catch (Exception ignored) {
+      return false;
+    }
   }
 
   public String getPresignedFileUrl(String objectName) {
@@ -520,4 +542,3 @@ public class OssStorageService {
     return value == null || value.isBlank();
   }
 }
-

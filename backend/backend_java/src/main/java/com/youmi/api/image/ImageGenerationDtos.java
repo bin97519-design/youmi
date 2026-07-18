@@ -164,6 +164,7 @@ public class ImageGenerationDtos {
       String status,
       Integer progress,
       List<String> imageUrls,
+      String persistStatus,
       String error,
       JsonNode raw) {}
 }

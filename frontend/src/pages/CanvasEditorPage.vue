@@ -15,6 +15,7 @@ import { layerName, useCanvasStore } from '../stores/canvas'
 import { useUserStore } from '../stores/user'
 import { apiPath } from '../utils/apiBase'
 import { cachedImgHtml } from '../utils/imageCache'
+import { publishImageTaskPersistence } from '../utils/imageTaskSync'
 import { createStoredZip } from '../utils/storedZip'
 import {
   MAX_IMAGE_UPLOAD_BYTES,
@@ -414,7 +415,7 @@ const generationHistory = ref([...(doc.value?.payload?.generationHistory || [])]
 // 历史记录「唯一写入入口」：图进画布 ⇒ 历史必写（聊天生图路径 A 与刷新恢复路径 B 共用）。
 // record 字段：{ id, prompt, model, ratio, resolution, imageUrl, referenceImageUrls, createdAt }
 // 写入后立即写回文档 payload 并强制 flush，确保易丢节点（刷新恢复完成）也不丢记录。
-function recordGenerationToHistory(record) {
+async function recordGenerationToHistory(record) {
   if (!record || !record.imageUrl) return
   generationHistory.value.push(record)
   if (generationHistory.value.length > 200) generationHistory.value.shift()
@@ -423,7 +424,7 @@ function recordGenerationToHistory(record) {
     return draft
   })
   // localStorage 已在 updateDocument→persist 内同步即时写；这里强制 flush，让服务器也立即跟上
-  canvas.flushNow?.(props.id)
+  return canvas.flushNow?.(props.id)
 }
 // 对话窗口选中的模型参数也归属文档（payload.chatConfig），未持久化过则保持默认
 const initialChatConfig = doc.value?.payload?.chatConfig || {}
@@ -436,8 +437,7 @@ const chatModelOptions = ['banana2', 'banana-pro', 'gpt-image-2', 'agnes-image-2
 const chatRatioOptions = ['auto', '1:1', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
 const chatResolutionOptions = ['1K', '2K', '4K']
 const TASK_POLL_INTERVAL = 2500
-const TASK_RESULT_SYNC_INTERVAL = 10000
-const TASK_RESULT_SYNC_ATTEMPTS = 12
+const TASK_RESULT_SYNC_ATTEMPTS = 180
 // 对话窗口选中的模型参数变化时，落库到按文档隔离的 payload.chatConfig
 watch([chatModel, chatRatio, chatResolution], () => {
   canvas.updateDocument(props.id, (draft) => {
@@ -1043,7 +1043,7 @@ function videoSize(src) {
 
 async function maybeAutoDetect(layer, force = false) {
   if (!layer || !layer.url || layer.type === 'placeholder' || layer.type === 'video') return
-  if (!autoDetectionEnabled.value) return
+  if (!force && !autoDetectionEnabled.value) return
   if (_undoRestoring.value) return // 撤销恢复期间不触发自动检测
   if (detectingLayerIds.value.has(layer.id)) return
   // 手动点击「智能分层」时传 force=true，绕过 source 跳过（允许对复制图层/裁图手动分层）
@@ -1111,7 +1111,26 @@ async function maybeAutoDetect(layer, force = false) {
   detectingLayerIds.value = next
 }
 
-const autoDetectionEnabled = ref(true)
+const autoDetectionEnabled = ref(doc.value?.payload?.ui?.autoDetectionEnabled !== false)
+
+watch(
+  () => [props.id, doc.value?.payload?.ui?.autoDetectionEnabled],
+  ([, enabled]) => {
+    autoDetectionEnabled.value = enabled !== false
+  },
+  { immediate: true },
+)
+
+function setAutoDetectionEnabled(enabled) {
+  const next = Boolean(enabled)
+  autoDetectionEnabled.value = next
+  canvas.updateDocument(props.id, (draft) => {
+    draft.payload.ui = draft.payload.ui || {}
+    draft.payload.ui.autoDetectionEnabled = next
+    return draft
+  })
+  void canvas.flushNow?.(props.id)
+}
 
 // 视觉框显隐状态（默认显示）
 const detectionVisible = ref(true)
@@ -1335,10 +1354,12 @@ async function pollImageTaskUntilDone(taskId, placeholderId, assistantId, prompt
     }
 
     if (imageReady) {
-      let url = extractTaskImageUrl(status)
+      const url = extractTaskImageUrl(status)
       if (!url) throw new Error('任务完成，但没有返回图片地址')
-      // 后端已在异步持久化完成后返回永久 OSS URL（persist_status=DONE），
-      // 此处不再二次转存（去掉双重转存 + 30s 自杀式 abort，避免很慢/裂图）。
+      const persistStatus = String(
+        status.persistStatus ||
+          (String(status.status || '').toLowerCase() === 'persisting' ? 'PENDING' : 'DONE'),
+      ).toUpperCase()
       updateGeneratingPlaceholder(placeholderId, {
         progress: 100,
         status: 'completed',
@@ -1348,6 +1369,7 @@ async function pollImageTaskUntilDone(taskId, placeholderId, assistantId, prompt
         placeholderId,
         url,
         prompt && (prompt.includes('买家秀') || hasGridKeywords(prompt)),
+        { taskId, persistStatus },
       )
       // —— 历史记录唯一写入点（路径 A 聊天生图 / 路径 B 刷新后恢复 共用）——
       // 图已落地画布，这里确保同步进历史记录。占位图层上的 genMeta 提供生成参数；
@@ -1362,13 +1384,15 @@ async function pollImageTaskUntilDone(taskId, placeholderId, assistantId, prompt
         refUrls = Array.isArray(refUrls) ? refUrls : []
       }
       const historyId = `gen-${Date.now()}`
-      recordGenerationToHistory({
+      await recordGenerationToHistory({
         id: historyId,
+        taskId,
         prompt: meta.prompt || placeholderLayer?.prompt || prompt || '',
         model: meta.model || '',
         ratio: meta.ratio || '',
         resolution: meta.resolution || '',
         imageUrl: url,
+        persistStatus,
         referenceImageUrls: refUrls,
         createdAt: Date.now(),
       })
@@ -1379,7 +1403,7 @@ async function pollImageTaskUntilDone(taskId, placeholderId, assistantId, prompt
           generating: false,
         })
       }
-      if (String(status.status || '').toLowerCase() === 'persisting') {
+      if (persistStatus === 'PENDING') {
         void syncPersistedImageOnce({
           taskId,
           layerId: placeholderId,
@@ -1388,12 +1412,28 @@ async function pollImageTaskUntilDone(taskId, placeholderId, assistantId, prompt
           temporaryUrl: url,
           documentId: props.id,
         })
+      } else {
+        publishImageTaskPersistence({
+          taskId,
+          documentId: props.id,
+          layerId: placeholderId,
+          imageUrl: url,
+          persistStatus,
+        })
       }
       return true
     }
   }
 
   throw new Error('轮询超时，任务仍未完成')
+}
+
+const _persistSyncTasks = new Set()
+
+function persistSyncDelay(attempt) {
+  if (attempt < 20) return 2000
+  if (attempt < 60) return 5000
+  return 10000
 }
 
 async function syncPersistedImageOnce({
@@ -1404,39 +1444,85 @@ async function syncPersistedImageOnce({
   temporaryUrl,
   documentId,
 }) {
-  for (let attempt = 0; attempt < TASK_RESULT_SYNC_ATTEMPTS; attempt += 1) {
-    await wait(TASK_RESULT_SYNC_INTERVAL)
-    if (!_mounted.value || props.id !== documentId) return
-    try {
-      const status = await fetchImageTask(taskId)
-      const permanentUrl = extractTaskImageUrl(status)
-      if (!permanentUrl || permanentUrl === temporaryUrl) continue
-      generationHistory.value = generationHistory.value.map((record) =>
-        record.id === historyId ? { ...record, imageUrl: permanentUrl } : record,
-      )
-      canvas.updateDocument(documentId, (draft) => {
-        draft.payload.layers = draft.payload.layers.map((layer) =>
-          layer.id === layerId && layer.url === temporaryUrl
-            ? { ...layer, url: permanentUrl, thumbnailUrl: permanentUrl }
-            : layer,
-        )
-        draft.payload.generationHistory = generationHistory.value.slice(-200)
-        if (assistantId) {
-          draft.payload.chat = (draft.payload.chat || []).map((message) =>
-            message.id === assistantId && message.imageUrl === temporaryUrl
-              ? { ...message, imageUrl: permanentUrl }
-              : message,
-          )
+  if (!taskId || _persistSyncTasks.has(taskId)) return
+  _persistSyncTasks.add(taskId)
+  try {
+    for (let attempt = 0; attempt < TASK_RESULT_SYNC_ATTEMPTS; attempt += 1) {
+      await wait(persistSyncDelay(attempt))
+      if (!_mounted.value || props.id !== documentId) return
+      try {
+        const status = await fetchImageTask(taskId)
+        const returnedUrl = extractTaskImageUrl(status)
+        const persistStatus = String(
+          status.persistStatus ||
+            (returnedUrl && returnedUrl !== temporaryUrl ? 'DONE' : 'PENDING'),
+        ).toUpperCase()
+        if (persistStatus === 'PENDING') continue
+
+        const finalUrl = persistStatus === 'DONE' ? returnedUrl || temporaryUrl : temporaryUrl
+        generationHistory.value = generationHistory.value.map((record) => {
+          const matched =
+            (historyId && record.id === historyId) ||
+            record.taskId === taskId ||
+            record.imageUrl === temporaryUrl
+          return matched ? { ...record, imageUrl: finalUrl, persistStatus } : record
+        })
+        canvas.updateDocument(documentId, (draft) => {
+          draft.payload.layers = draft.payload.layers.map((layer) => {
+            if (layer.id !== layerId && layer.taskId !== taskId) return layer
+            const canReplaceUrl =
+              layer.url === temporaryUrl || layer.temporaryUrl === temporaryUrl || !layer.url
+            return {
+              ...layer,
+              ...(canReplaceUrl ? { url: finalUrl, thumbnailUrl: finalUrl } : {}),
+              persistStatus,
+              temporaryUrl: undefined,
+              persistedAt: persistStatus === 'DONE' ? Date.now() : undefined,
+            }
+          })
+          draft.payload.generationHistory = generationHistory.value.slice(-200)
+          draft.payload.chat = (draft.payload.chat || []).map((message) => {
+            const matched =
+              (assistantId && message.id === assistantId) || message.taskId === taskId
+            return matched ? { ...message, imageUrl: finalUrl, persistStatus } : message
+          })
+          return draft
+        })
+        const canvasSaved = await canvas.flushNow?.(documentId)
+        publishImageTaskPersistence({
+          taskId,
+          documentId,
+          layerId,
+          imageUrl: finalUrl,
+          persistStatus,
+          canvasSaved: canvasSaved !== false,
+        })
+        return
+      } catch (error) {
+        if (attempt === TASK_RESULT_SYNC_ATTEMPTS - 1) {
+          console.warn('[syncPersistedImageOnce] 永久地址同步失败，保留临时地址:', error.message)
         }
-        return draft
-      })
-      void canvas.flushNow?.(documentId)
-      return
-    } catch (error) {
-      if (attempt === TASK_RESULT_SYNC_ATTEMPTS - 1) {
-        console.warn('[syncPersistedImageOnce] 永久地址同步失败，保留临时地址:', error.message)
       }
     }
+  } finally {
+    _persistSyncTasks.delete(taskId)
+  }
+}
+
+function resumePersistingImageLayers() {
+  for (const layer of doc.value?.payload?.layers || []) {
+    const persistStatus = String(layer.persistStatus || '').toUpperCase()
+    if (layer.type !== 'image' || !layer.taskId || ['DONE', 'FAILED'].includes(persistStatus)) {
+      continue
+    }
+    void syncPersistedImageOnce({
+      taskId: layer.taskId,
+      layerId: layer.id,
+      historyId: '',
+      assistantId: layer.chatMessageId || '',
+      temporaryUrl: layer.temporaryUrl || layer.url,
+      documentId: props.id,
+    })
   }
 }
 
@@ -1697,6 +1783,7 @@ function purgeEmptyUrlPlaceholders() {
 // 否则 watch 触发时会把刚创建的占位图当作"需要恢复"的，重复调 submitImageTask。
 const _submittingPlaceholderIds = new Set()
 watch(() => doc.value?.payload?.layers, resumeInterruptedPlaceholders)
+watch(() => doc.value?.payload?.layers, resumePersistingImageLayers)
 
 function firstUrl(value) {
   if (!value) return ''
@@ -2119,7 +2206,7 @@ function updateGeneratingPlaceholder(layerId, patch) {
   updateLayer(layerId, nextPatch)
 }
 
-async function replaceGeneratingPlaceholder(layerId, url, skipAutoDetect = false) {
+async function replaceGeneratingPlaceholder(layerId, url, skipAutoDetect = false, persistence = {}) {
   pushUndo()
   try {
     const size = await imageSize(url)
@@ -2137,6 +2224,9 @@ async function replaceGeneratingPlaceholder(layerId, url, skipAutoDetect = false
         type: 'image',
         url,
         thumbnailUrl: url,
+        taskId: persistence.taskId || placeholder.taskId,
+        persistStatus: persistence.persistStatus || placeholder.persistStatus,
+        temporaryUrl: persistence.persistStatus === 'PENDING' ? url : undefined,
         naturalWidth: size.width,
         naturalHeight: size.height,
         width,
@@ -6176,6 +6266,7 @@ onMounted(() => {
   // 「Failed to fetch」被误判为失败；延迟后首轮重提命中率更高。
   setTimeout(() => {
     resumeInterruptedPlaceholders()
+    resumePersistingImageLayers()
     retryFailedNoTaskPlaceholders()
     cleanupDeadPlaceholders()
     purgeEmptyUrlPlaceholders()
@@ -6638,6 +6729,17 @@ async function loadImageForCrop(layer) {
         <em>已保存 · 刚刚</em>
       </div>
       <div class="head-actions">
+        <button
+          class="panel-visibility-btn"
+          :class="{ active: autoDetectionEnabled }"
+          type="button"
+          :title="autoDetectionEnabled ? '关闭自动智能分层' : '开启自动智能分层'"
+          :aria-label="autoDetectionEnabled ? '关闭自动智能分层' : '开启自动智能分层'"
+          :aria-pressed="autoDetectionEnabled"
+          @click="setAutoDetectionEnabled(!autoDetectionEnabled)"
+        >
+          <i :class="autoDetectionEnabled ? 'ri-stack-fill' : 'ri-stack-line'" aria-hidden="true"></i>
+        </button>
         <button
           class="theme-toggle"
           type="button"

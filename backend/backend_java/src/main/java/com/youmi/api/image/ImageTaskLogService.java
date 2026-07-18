@@ -144,6 +144,12 @@ public class ImageTaskLogService {
     BigDecimal moneyCost = extractMoneyCost(response.raw());
     Timestamp completedAt = imageGenerated ? Timestamp.valueOf(LocalDateTime.now()) : null;
     String storedStatus = imageGenerated ? "completed" : normalizeStatus(response.status(), "unknown");
+    String persistStatus = response.persistStatus() == null
+        ? ""
+        : response.persistStatus().trim().toUpperCase();
+    String resultUrls = "DONE".equals(persistStatus)
+        ? rawString(objectMapper.valueToTree(imageUrls))
+        : null;
     int storedProgress = imageGenerated
         ? 100
         : response.progress() == null ? 0 : Math.max(0, Math.min(100, response.progress()));
@@ -152,7 +158,10 @@ public class ImageTaskLogService {
         UPDATE ym_image_task
         SET provider = COALESCE(NULLIF(?, ''), provider),
             status = ?, progress = ?, image_count = ?, mi_cost = ?, money_cost = ?,
-            image_urls = ?, error_message = ?, raw_response = ?, completed_at = COALESCE(completed_at, ?)
+            image_urls = ?,
+            result_urls = CASE WHEN ? = 'DONE' THEN ? ELSE result_urls END,
+            persist_status = CASE WHEN ? IN ('DONE', 'FAILED') THEN ? ELSE persist_status END,
+            error_message = ?, raw_response = ?, completed_at = COALESCE(completed_at, ?)
         WHERE task_id = ?
         """,
         response.provider(),
@@ -162,6 +171,10 @@ public class ImageTaskLogService {
         miCost,
         moneyCost,
         rawString(objectMapper.valueToTree(imageUrls)),
+        persistStatus,
+        resultUrls,
+        persistStatus,
+        persistStatus,
         response.error(),
         rawString(response.raw()),
         completedAt,

@@ -58,7 +58,7 @@ export function makeCanvasDocument(id = String(Date.now()).slice(-4)) {
       generationHistory: [],
       // 对话窗口选中的模型参数（随 payload 持久化）
       chatConfig: {},
-      ui: { detectionVisible: true },
+      ui: { detectionVisible: true, autoDetectionEnabled: true },
     },
   };
 }

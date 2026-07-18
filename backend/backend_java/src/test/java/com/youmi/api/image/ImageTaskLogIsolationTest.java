@@ -33,6 +33,7 @@ class ImageTaskLogIsolationTest {
           size VARCHAR(32), resolution VARCHAR(32), requested_count INT,
           status VARCHAR(32), progress INT DEFAULT 0, image_count INT DEFAULT 0,
           mi_cost INT DEFAULT 0, money_cost DECIMAL(12, 4), image_urls CLOB,
+          result_urls CLOB, persist_status VARCHAR(16) DEFAULT 'PENDING',
           error_message CLOB, raw_response CLOB, completed_at TIMESTAMP NULL
         )
         """);
@@ -61,7 +62,8 @@ class ImageTaskLogIsolationTest {
   void firstAvailableImageFreezesGenerationCompletionTime() throws Exception {
     insert("task-a", "client-a", 101L, "banana2");
     ImageGenerationDtos.TaskStatusResponse persisting = new ImageGenerationDtos.TaskStatusResponse(
-        "gettoken", "task-a", "persisting", 100, List.of("https://cdn.example.com/result.png"), null, null);
+        "gettoken", "task-a", "persisting", 100,
+        List.of("https://cdn.example.com/result.png"), "PENDING", null, null);
 
     service.recordStatus(persisting);
     Timestamp firstCompletedAt = jdbcTemplate.queryForObject(
@@ -79,6 +81,21 @@ class ImageTaskLogIsolationTest {
         "SELECT status FROM ym_image_task WHERE task_id = 'task-a'", String.class));
     assertEquals(100, jdbcTemplate.queryForObject(
         "SELECT progress FROM ym_image_task WHERE task_id = 'task-a'", Integer.class));
+  }
+
+  @Test
+  void permanentResultUpdatesTaskAndStorageStatusTogether() {
+    insert("task-done", "client-done", 101L, "banana2");
+    String permanentUrl = "https://youmi-bucket.oss-cn-shanghai.aliyuncs.com/users/101/generated/a.png";
+    service.recordStatus(new ImageGenerationDtos.TaskStatusResponse(
+        "gettoken", "task-done", "completed", 100,
+        List.of(permanentUrl), "DONE", null, null));
+
+    assertEquals("DONE", jdbcTemplate.queryForObject(
+        "SELECT persist_status FROM ym_image_task WHERE task_id = 'task-done'", String.class));
+    assertTrue(jdbcTemplate.queryForObject(
+        "SELECT result_urls FROM ym_image_task WHERE task_id = 'task-done'", String.class)
+        .contains(permanentUrl));
   }
 
   private void insert(String taskId, String clientTaskId, Long userId, String model) {

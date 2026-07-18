@@ -10,6 +10,7 @@ import com.youmi.api.file.OssStorageService;
 import java.io.ByteArrayInputStream;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.scheduling.annotation.Scheduled;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URI;
@@ -667,6 +668,7 @@ public class ImageGenerationClient {
             backupResp.status(),
             backupResp.progress(),
             backupResp.imageUrls(),
+            backupResp.persistStatus(),
             backupResp.error(),
             backupResp.raw());
       }
@@ -740,6 +742,7 @@ public class ImageGenerationClient {
               backupResp.status(),
               backupResp.progress(),
               backupResp.imageUrls(),
+              backupResp.persistStatus(),
               backupResp.error(),
               backupResp.raw());
         }
@@ -785,6 +788,7 @@ public class ImageGenerationClient {
           backupResp.status(),
           backupResp.progress(),
           backupResp.imageUrls(),
+          backupResp.persistStatus(),
           backupResp.error(),
           backupResp.raw());
     }
@@ -832,6 +836,7 @@ public class ImageGenerationClient {
         text(root, "message"));
 
     List<String> imageUrls = new ArrayList<>();
+    String persistStatus = null;
     collectImageUrls(data.path("result"), imageUrls);
     collectImageUrls(data, imageUrls);
     boolean hasImages = !imageUrls.isEmpty();
@@ -842,6 +847,7 @@ public class ImageGenerationClient {
       PollResult pr = decidePollResponse(cleanTaskId, imageUrls);
       imageUrls = pr.imageUrls();
       status = pr.status();
+      persistStatus = pr.persistStatus();
     }
 
     return new ImageGenerationDtos.TaskStatusResponse(
@@ -850,6 +856,7 @@ public class ImageGenerationClient {
         status.isBlank() ? "unknown" : status,
         progress,
         imageUrls,
+        persistStatus,
         error.isBlank() ? null : error,
         root);
   }
@@ -899,6 +906,7 @@ public class ImageGenerationClient {
         status,
         null,
         imageUrls,
+        imageUrls.isEmpty() ? null : "DONE",
         error.isBlank() ? null : error,
         root);
   }
@@ -917,6 +925,7 @@ public class ImageGenerationClient {
     Integer progress = intValue(root, "progress");
     String error = firstNonBlank(text(root, "errorMessage"), text(root, "error"), text(root, "message"));
     List<String> imageUrls = new ArrayList<>();
+    String persistStatus = null;
     collectGetTokenResultUrls(root, imageUrls);
     boolean hasImages = !imageUrls.isEmpty();
     boolean done = isDoneStatus(status) || (hasImages && progress != null && progress >= 100);
@@ -924,6 +933,7 @@ public class ImageGenerationClient {
       PollResult pr = decidePollResponse(GETTOKEN_TASK_PREFIX + cleanTaskId, imageUrls);
       imageUrls = pr.imageUrls();
       status = pr.status();
+      persistStatus = pr.persistStatus();
     }
     return new ImageGenerationDtos.TaskStatusResponse(
         PROVIDER_GETTOKEN,
@@ -931,6 +941,7 @@ public class ImageGenerationClient {
         status.isBlank() ? "unknown" : status,
         progress,
         imageUrls,
+        persistStatus,
         error.isBlank() ? null : error,
         root);
   }
@@ -975,6 +986,7 @@ public class ImageGenerationClient {
         text(data, "error"),
         text(data, "message"));
     List<String> imageUrls = new ArrayList<>();
+    String persistStatus = null;
     collectImageUrls(data.path("result"), imageUrls);
     collectImageUrls(data, imageUrls);
 
@@ -990,6 +1002,7 @@ public class ImageGenerationClient {
       PollResult pr = decidePollResponse(APIMART_DIRECT_TASK_PREFIX + cleanTaskId, imageUrls);
       imageUrls = pr.imageUrls();
       status = pr.status();
+      persistStatus = pr.persistStatus();
     }
 
     if (done) {
@@ -1002,6 +1015,7 @@ public class ImageGenerationClient {
         status.isBlank() ? "unknown" : status,
         progress,
         imageUrls,
+        persistStatus,
         error.isBlank() ? null : error,
         root);
   }
@@ -1016,6 +1030,7 @@ public class ImageGenerationClient {
           "failed",
           null,
           List.of(),
+          null,
           "Agnes task result expired or not found",
           null);
     }
@@ -1025,6 +1040,7 @@ public class ImageGenerationClient {
         cached.status(),
         cached.progress(),
         cached.imageUrls(),
+        "completed".equalsIgnoreCase(cached.status()) ? "DONE" : null,
         cached.error(),
         cached.raw());
   }
@@ -1253,8 +1269,10 @@ public class ImageGenerationClient {
   /** 持久化状态：PENDING / DONE / FAILED（null 视为 PENDING） */
   private record PersistState(String status, String resultUrls) {}
 
+  private record PendingPersistTask(String taskId, String provider, String imageUrls) {}
+
   /** 轮询返回决策结果 */
-  private record PollResult(List<String> imageUrls, String status) {}
+  private record PollResult(List<String> imageUrls, String status, String persistStatus) {}
 
   /**
    * 根据 DB 持久化状态决定本轮轮询返回给前端的 imageUrls 与 status：
@@ -1268,18 +1286,45 @@ public class ImageGenerationClient {
     if ("DONE".equals(status)) {
       List<String> permanent = parseResultUrls(state.resultUrls());
       if (permanent != null && !permanent.isEmpty()) {
-        return new PollResult(permanent, "completed");
+        return new PollResult(permanent, "completed", "DONE");
       }
       // DONE 但无可用永久 URL：降级返回临时 URL
-      return new PollResult(new ArrayList<>(temporaryUrls), "completed");
+      return new PollResult(new ArrayList<>(temporaryUrls), "completed", "DONE");
+    }
+    if (allUrlsAlreadyPersisted(temporaryUrls) && markPersistedUrls(dbTaskId, temporaryUrls)) {
+      return new PollResult(new ArrayList<>(temporaryUrls), "completed", "DONE");
     }
     if ("FAILED".equals(status)) {
       // 持久化失败，返回中转站临时 URL 兜底（仍可能过期，但至少先出图）
-      return new PollResult(new ArrayList<>(temporaryUrls), "completed");
+      return new PollResult(new ArrayList<>(temporaryUrls), "completed", "FAILED");
     }
     // PENDING / 未知：触发异步持久化（幂等），继续轮询
     triggerAsyncPersist(dbTaskId, temporaryUrls);
-    return new PollResult(new ArrayList<>(temporaryUrls), "persisting");
+    return new PollResult(new ArrayList<>(temporaryUrls), "persisting", "PENDING");
+  }
+
+  private boolean allUrlsAlreadyPersisted(List<String> urls) {
+    return ossStorageService != null
+        && urls != null
+        && !urls.isEmpty()
+        && urls.stream().allMatch(ossStorageService::isOwnFileUrl);
+  }
+
+  private boolean markPersistedUrls(String taskId, List<String> urls) {
+    if (jdbcTemplate == null || urls == null || urls.isEmpty()) return false;
+    try {
+      String resultJson = objectMapper.writeValueAsString(urls);
+      jdbcTemplate.update(
+          "UPDATE ym_image_task SET result_urls = ?, persist_status = 'DONE', "
+              + "status = 'completed', progress = 100 WHERE task_id = ?",
+          resultJson, taskId);
+      persistedImageCache.put(taskId, new ArrayList<>(urls));
+      return true;
+    } catch (Exception e) {
+      System.out.println("[image-persist] mark persisted URL failed for task=" + taskId
+          + ": " + e.getMessage());
+      return false;
+    }
   }
 
   /** 触发异步持久化：提交到专用线程池执行，避免轮询请求内同步阻塞与循环依赖 */
@@ -1335,6 +1380,40 @@ public class ImageGenerationClient {
     return null;
   }
 
+  /** 服务重启或页面关闭后，继续处理已经出图但尚未完成永久化的任务。 */
+  @Scheduled(initialDelay = 15_000L, fixedDelay = 30_000L)
+  public void recoverPendingImagePersistence() {
+    if (jdbcTemplate == null) return;
+    try {
+      List<PendingPersistTask> tasks = jdbcTemplate.query("""
+          SELECT task_id, provider, image_urls
+          FROM ym_image_task
+          WHERE persist_status = 'PENDING'
+            AND status = 'completed'
+            AND image_urls IS NOT NULL
+            AND image_urls <> ''
+          ORDER BY created_at ASC
+          LIMIT 50
+          """, (rs, rowNum) -> new PendingPersistTask(
+              rs.getString("task_id"),
+              rs.getString("provider"),
+              rs.getString("image_urls")));
+      for (PendingPersistTask task : tasks) {
+        List<String> urls = parseResultUrls(task.imageUrls());
+        if (urls == null || urls.isEmpty()) continue;
+        String provider = task.provider() == null ? "" : task.provider().trim().toLowerCase();
+        if (PROVIDER_PROXY.equals(provider) || PROVIDER_ANNES.equals(provider)
+            || allUrlsAlreadyPersisted(urls)) {
+          markPersistedUrls(task.taskId(), urls);
+        } else {
+          triggerAsyncPersist(task.taskId(), urls);
+        }
+      }
+    } catch (Exception e) {
+      System.out.println("[image-persist-recovery] scan failed: " + e.getMessage());
+    }
+  }
+
   /**
    * 异步持久化任务体：下载中转站临时图 + 上传自有 OSS，结果写回 ym_image_task。
    * 由 persistExecutor 线程池执行；幂等：内存标记 + DB 状态二次确认，避免并发轮询双传。
@@ -1355,13 +1434,10 @@ public class ImageGenerationClient {
       if ("DONE".equalsIgnoreCase(existing.status())) {
         return;
       }
-      // 下载 + 上传（逻辑与原 persistImageUrls 一致）
-      List<String> persisted = persistImageUrls(taskId, temporaryUrls);
-      String resultJson = objectMapper.writeValueAsString(persisted);
-      jdbcTemplate.update(
-          "UPDATE ym_image_task SET result_urls = ?, persist_status = 'DONE', "
-              + "status = 'completed', progress = 100 WHERE task_id = ?",
-          resultJson, taskId);
+      List<String> persisted = persistImageUrlsWithRetry(taskId, temporaryUrls);
+      if (!markPersistedUrls(taskId, persisted)) {
+        throw new ApiException(502, "Generated image persistence result could not be saved");
+      }
       System.out.println("[image-persist-async] persisted " + persisted.size()
           + " image(s) for task=" + taskId);
     } catch (Exception e) {
@@ -1378,6 +1454,27 @@ public class ImageGenerationClient {
     } finally {
       persistingTaskIds.remove(taskId);
     }
+  }
+
+  private List<String> persistImageUrlsWithRetry(String taskId, List<String> imageUrls) throws Exception {
+    Exception lastError = null;
+    for (int attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        return persistImageUrls(taskId, imageUrls);
+      } catch (Exception error) {
+        lastError = error;
+        if (attempt == 3) break;
+        System.out.println("[image-persist-async] attempt " + attempt + "/3 failed for task=" + taskId
+            + ": " + error.getMessage());
+        try {
+          Thread.sleep(attempt * 1000L);
+        } catch (InterruptedException interrupted) {
+          Thread.currentThread().interrupt();
+          throw interrupted;
+        }
+      }
+    }
+    throw lastError == null ? new ApiException(502, "Generated image persistence failed") : lastError;
   }
 
   private List<String> persistImageUrls(String taskId, List<String> imageUrls) throws Exception {
@@ -1404,6 +1501,9 @@ public class ImageGenerationClient {
   }
 
   private String persistImageUrl(String taskId, int index, String imageUrl) throws Exception {
+    if (ossStorageService != null && ossStorageService.isOwnFileUrl(imageUrl)) {
+      return imageUrl;
+    }
     DownloadedImage image = downloadImage(taskId, index, imageUrl);
     if (ossStorageService != null && ossStorageService.isConfigured()) {
       String objectName = generatedObjectName(taskId, index, image);

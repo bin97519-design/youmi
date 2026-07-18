@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from
 import ImageViewer from '../components/ImageViewer.vue'
 import { useUserStore } from '../stores/user'
 import { apiPath } from '../utils/apiBase'
+import { subscribeImageTaskPersistence } from '../utils/imageTaskSync'
 
 const userStore = useUserStore()
 const activeTab = ref('stats')
@@ -15,6 +16,7 @@ const stats = ref(null)
 const elapsedClock = ref(Date.now())
 let elapsedTimer = null
 let taskRefreshTimer = null
+let unsubscribeTaskPersistence = null
 
 function parseImageUrls(raw) {
   if (!raw) return []
@@ -719,13 +721,13 @@ const shouldRefreshTaskStats = computed(() =>
   ),
 )
 
-async function refreshTaskStatsSilently() {
+async function refreshTaskStatsSilently({ force = false } = {}) {
   if (
     document.hidden ||
     activeTab.value !== 'stats' ||
     loading.value ||
     taskReloading.value ||
-    !shouldRefreshTaskStats.value
+    (!force && !shouldRefreshTaskStats.value)
   ) {
     return
   }
@@ -735,6 +737,28 @@ async function refreshTaskStatsSilently() {
   } catch {
     // 保留当前数据，下一轮再同步任务状态与永久链接。
   }
+}
+
+function onImageTaskPersistence(detail) {
+  if (!detail?.taskId || !stats.value) return
+  const persistStatus = String(detail.persistStatus || '').toUpperCase()
+  stats.value = {
+    ...stats.value,
+    tasks: (stats.value.tasks || []).map((task) => {
+      if (task.taskId !== detail.taskId) return task
+      return {
+        ...task,
+        status: 'completed',
+        persistStatus,
+        previewUrls: detail.imageUrl ? [detail.imageUrl] : task.previewUrls,
+      }
+    }),
+  }
+  void refreshTaskStatsSilently({ force: true })
+}
+
+function onVisibilityChange() {
+  if (!document.hidden) void refreshTaskStatsSilently({ force: true })
 }
 
 function taskDuration(task) {
@@ -1065,13 +1089,17 @@ onMounted(() => {
   elapsedTimer = window.setInterval(() => {
     elapsedClock.value = Date.now()
   }, 1000)
-  taskRefreshTimer = window.setInterval(refreshTaskStatsSilently, 10000)
+  taskRefreshTimer = window.setInterval(refreshTaskStatsSilently, 5000)
+  unsubscribeTaskPersistence = subscribeImageTaskPersistence(onImageTaskPersistence)
+  document.addEventListener('visibilitychange', onVisibilityChange)
   document.addEventListener('click', onDocClick)
 })
 
 onUnmounted(() => {
   if (elapsedTimer) window.clearInterval(elapsedTimer)
   if (taskRefreshTimer) window.clearInterval(taskRefreshTimer)
+  unsubscribeTaskPersistence?.()
+  document.removeEventListener('visibilitychange', onVisibilityChange)
   document.removeEventListener('click', onDocClick)
 })
 </script>
