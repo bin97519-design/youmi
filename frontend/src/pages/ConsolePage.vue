@@ -60,6 +60,83 @@ function normalizeImageStats(imageStats) {
 }
 
 const taskImageViewer = reactive({ open: false, urls: [], index: 0, title: '' })
+const taskPromptTooltip = reactive({
+  show: false,
+  text: '',
+  left: 0,
+  top: 0,
+  width: 560,
+  above: false,
+  copied: false,
+})
+let taskPromptTooltipHideTimer = null
+
+function cancelTaskPromptTooltipHide() {
+  if (!taskPromptTooltipHideTimer) return
+  window.clearTimeout(taskPromptTooltipHideTimer)
+  taskPromptTooltipHideTimer = null
+}
+
+function showTaskPromptTooltip(task, event) {
+  const text = String(task?.prompt || '').trim()
+  const target = event?.currentTarget
+  if (!text || !(target instanceof HTMLElement)) return
+
+  cancelTaskPromptTooltipHide()
+  const rect = target.getBoundingClientRect()
+  const edge = 16
+  const width = Math.min(560, Math.max(240, window.innerWidth - edge * 2))
+  taskPromptTooltip.text = text
+  taskPromptTooltip.copied = false
+  taskPromptTooltip.width = width
+  taskPromptTooltip.left = Math.min(
+    Math.max(rect.left, edge),
+    Math.max(edge, window.innerWidth - width - edge),
+  )
+  taskPromptTooltip.above = rect.top > window.innerHeight - rect.bottom
+  taskPromptTooltip.top = taskPromptTooltip.above ? rect.top - 8 : rect.bottom + 8
+  taskPromptTooltip.show = true
+}
+
+async function copyTaskPrompt() {
+  const text = taskPromptTooltip.text
+  if (!text) return
+
+  let fallbackInput = null
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      fallbackInput = document.createElement('textarea')
+      fallbackInput.value = text
+      fallbackInput.setAttribute('readonly', '')
+      fallbackInput.style.position = 'fixed'
+      fallbackInput.style.opacity = '0'
+      document.body.appendChild(fallbackInput)
+      fallbackInput.select()
+      if (!document.execCommand('copy')) throw new Error('copy failed')
+    }
+    taskPromptTooltip.copied = true
+    showToast('提示词已复制')
+  } catch {
+    showToast('复制失败，请手动复制', 'error')
+  } finally {
+    fallbackInput?.remove()
+  }
+}
+
+function hideTaskPromptTooltip() {
+  cancelTaskPromptTooltipHide()
+  taskPromptTooltip.show = false
+}
+
+function queueTaskPromptTooltipHide() {
+  cancelTaskPromptTooltipHide()
+  taskPromptTooltipHideTimer = window.setTimeout(() => {
+    taskPromptTooltip.show = false
+    taskPromptTooltipHideTimer = null
+  }, 140)
+}
 
 function openTaskImageViewer(task, index = 0) {
   if (!task.previewUrls?.length) return
@@ -780,6 +857,11 @@ function taskDuration(task) {
   return `${hours}时${String(minutes % 60).padStart(2, '0')}分`
 }
 
+function taskResolution(task) {
+  const resolution = String(task?.resolution || '').trim()
+  return resolution ? resolution.toUpperCase() : '-'
+}
+
 function isTaskRunning(task) {
   const status = taskStatusKey(task?.status)
   return (
@@ -788,11 +870,6 @@ function isTaskRunning(task) {
     !task?.completedAt &&
     !task?.previewUrls?.length
   )
-}
-
-function shortPrompt(value) {
-  const text = String(value || '')
-  return text.length > 42 ? `${text.slice(0, 42)}...` : text
 }
 
 /* ── 中文映射 ── */
@@ -1098,6 +1175,7 @@ onMounted(() => {
 onUnmounted(() => {
   if (elapsedTimer) window.clearInterval(elapsedTimer)
   if (taskRefreshTimer) window.clearInterval(taskRefreshTimer)
+  cancelTaskPromptTooltipHide()
   unsubscribeTaskPersistence?.()
   document.removeEventListener('visibilitychange', onVisibilityChange)
   document.removeEventListener('click', onDocClick)
@@ -1710,7 +1788,10 @@ onUnmounted(() => {
             </div>
           </div>
         </div>
-        <div :class="['console-table', 'tasks-table', { 'tasks-table-admin': isAdmin }]">
+        <div
+          :class="['console-table', 'tasks-table', { 'tasks-table-admin': isAdmin }]"
+          @scroll.passive="hideTaskPromptTooltip"
+        >
           <div class="console-row console-row-head">
             <span>时间</span>
             <span>任务</span>
@@ -1718,14 +1799,22 @@ onUnmounted(() => {
             <span>模型</span>
             <span>通道</span>
             <span>状态</span>
+            <span class="task-resolution">分辨率</span>
             <span>图片</span>
             <span>耗时</span>
           </div>
           <div v-for="task in pagedTasks" :key="task.taskId" class="console-row">
             <span>{{ formatTime(task.createdAt) }}</span>
-            <span>
-              <strong>{{ task.taskId }}</strong>
-              <small>{{ shortPrompt(task.prompt) }}</small>
+            <span class="task-summary">
+              <strong
+                class="task-prompt"
+                @mouseenter="showTaskPromptTooltip(task, $event)"
+                @mouseleave="queueTaskPromptTooltipHide"
+                @click="showTaskPromptTooltip(task, $event)"
+              >
+                {{ task.prompt || '暂无提示词' }}
+              </strong>
+              <small class="task-id" :title="task.taskId">ID · {{ task.taskId }}</small>
             </span>
             <span v-if="isAdmin">{{ task.userName || task.userId || '匿名' }}</span>
             <span>{{ task.requestedModel || task.model }}</span>
@@ -1740,6 +1829,7 @@ onUnmounted(() => {
                 :class="['persist-status', taskPersistStatus(task).className]"
               >{{ taskPersistStatus(task).label }}</small>
             </span>
+            <span class="task-resolution">{{ taskResolution(task) }}</span>
             <span class="task-image-cell">
               <span v-if="task.previewUrls?.length" class="task-thumbnails">
                 <button
@@ -1789,15 +1879,197 @@ onUnmounted(() => {
       @change="taskImageViewer.index = $event"
       @download="downloadTaskImage"
     />
+    <Teleport to="body">
+      <Transition name="task-prompt-tooltip">
+        <aside
+          v-if="taskPromptTooltip.show"
+          :class="['task-prompt-tooltip', { above: taskPromptTooltip.above }]"
+          :style="{
+            left: `${taskPromptTooltip.left}px`,
+            top: `${taskPromptTooltip.top}px`,
+            width: `${taskPromptTooltip.width}px`,
+          }"
+          role="tooltip"
+          @mouseenter="cancelTaskPromptTooltipHide"
+          @mouseleave="queueTaskPromptTooltipHide"
+        >
+          <header>
+            <strong>完整提示词</strong>
+            <button
+              type="button"
+              class="task-prompt-copy"
+              :title="taskPromptTooltip.copied ? '提示词已复制' : '复制完整提示词'"
+              @click="copyTaskPrompt"
+            >
+              <i :class="taskPromptTooltip.copied ? 'ri-check-line' : 'ri-file-copy-line'"></i>
+              <span>{{ taskPromptTooltip.copied ? '已复制' : '复制' }}</span>
+            </button>
+          </header>
+          <p>{{ taskPromptTooltip.text }}</p>
+        </aside>
+      </Transition>
+    </Teleport>
   </main>
 </template>
 
 <style scoped>
 .tasks-table.tasks-table-admin .console-row {
-  grid-template-columns: 112px minmax(220px, 1.6fr) 100px 110px 116px 92px 188px 92px;
+  grid-template-columns: 112px minmax(220px, 1.6fr) 100px 110px 116px 92px 108px 152px 92px;
 }
 .tasks-table:not(.tasks-table-admin) .console-row {
-  grid-template-columns: 112px minmax(220px, 1.6fr) 110px 116px 92px 188px 92px;
+  grid-template-columns: 112px minmax(220px, 1.6fr) 110px 116px 92px 108px 152px 92px;
+}
+.task-summary {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  align-content: center;
+}
+.task-summary .task-prompt,
+.task-summary .task-id {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-summary .task-prompt {
+  color: var(--yq-text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.task-summary .task-id {
+  color: var(--yq-muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.25;
+}
+.task-prompt-tooltip {
+  position: fixed;
+  z-index: 12000;
+  box-sizing: border-box;
+  max-height: min(420px, calc(100vh - 32px));
+  padding: 14px 16px 16px;
+  overflow: auto;
+  border: 1px solid #465267;
+  border-radius: 8px;
+  background: #182235;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.42);
+  color: #f1f5f9;
+  user-select: text;
+}
+.task-prompt-tooltip.above {
+  transform: translateY(-100%);
+}
+.task-prompt-tooltip > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+.task-prompt-tooltip > header > strong {
+  color: #cbd5e1;
+  font-size: 12px;
+  line-height: 1;
+}
+.task-prompt-copy {
+  display: inline-flex;
+  flex: 0 0 82px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 82px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid #536078;
+  border-radius: 6px;
+  background: #243149;
+  color: #e2e8f0;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.task-prompt-copy:hover {
+  border-color: #718096;
+  background: #2e3c56;
+  color: #ffffff;
+}
+.task-prompt-copy i {
+  font-size: 14px;
+}
+.task-prompt-tooltip > p {
+  margin: 0;
+  color: #f8fafc;
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.task-prompt-tooltip-enter-active,
+.task-prompt-tooltip-leave-active {
+  transition: opacity 0.12s ease;
+}
+.task-prompt-tooltip-enter-from,
+.task-prompt-tooltip-leave-to {
+  opacity: 0;
+}
+[data-theme='light'] .task-prompt-tooltip {
+  border-color: #cbd5e1;
+  background: #ffffff;
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.16);
+  color: #0f172a;
+}
+[data-theme='light'] .task-prompt-tooltip > header > strong {
+  color: #64748b;
+}
+[data-theme='light'] .task-prompt-tooltip > p {
+  color: #1e293b;
+}
+[data-theme='light'] .task-prompt-copy {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+  color: #334155;
+}
+[data-theme='light'] .task-prompt-copy:hover {
+  border-color: #94a3b8;
+  background: #f1f5f9;
+  color: #0f172a;
+}
+[data-theme='light'] .task-summary .task-prompt,
+[data-theme='light'] .task-duration:not(.live),
+[data-theme='light'] .tasks-table .console-row:not(.console-row-head) .task-resolution {
+  color: #1e293b;
+}
+[data-theme='light'] .task-summary .task-id {
+  color: #64748b;
+}
+[data-theme='light'] .task-duration.live {
+  color: #4f46e5;
+}
+[data-theme='light'] .persist-status.pending {
+  color: #92400e;
+}
+[data-theme='light'] .persist-status.done {
+  color: #047857;
+}
+[data-theme='light'] .persist-status.failed {
+  color: #b91c1c;
+}
+[data-theme='light'] .task-thumbnail,
+[data-theme='light'] .task-thumbnail-more {
+  border-color: #f1f5f9;
+}
+.task-resolution {
+  color: var(--yq-text);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  white-space: nowrap;
+}
+.console-row-head .task-resolution {
+  color: inherit;
 }
 .task-duration {
   color: var(--yq-text);
