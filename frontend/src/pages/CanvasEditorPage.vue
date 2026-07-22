@@ -431,6 +431,21 @@ const initialChatConfig = doc.value?.payload?.chatConfig || {}
 const chatModel = ref(initialChatConfig.model || 'banana2')
 const chatRatio = ref(initialChatConfig.ratio || '9:16')
 const chatResolution = ref(initialChatConfig.resolution || '2K')
+const CHAT_GENERATION_COUNT_MIN = 1
+const CHAT_GENERATION_COUNT_MAX = 4
+const CHAT_IMAGE_MI_COST = 15
+
+function normalizeChatGenerationCount(value) {
+  const count = Math.round(Number(value) || CHAT_GENERATION_COUNT_MIN)
+  return Math.max(CHAT_GENERATION_COUNT_MIN, Math.min(CHAT_GENERATION_COUNT_MAX, count))
+}
+
+const chatGenerationCount = ref(normalizeChatGenerationCount(initialChatConfig.count))
+const chatEstimatedMiCost = computed(() => chatGenerationCount.value * CHAT_IMAGE_MI_COST)
+
+function adjustChatGenerationCount(delta) {
+  chatGenerationCount.value = normalizeChatGenerationCount(chatGenerationCount.value + delta)
+}
 // 注意：model 字符串必须和后端 alias 表（ImageGenerationProperties.defaultModelAliases）保持一致
 // 后端会对空格/横线/下划线做归一化容错，但 UI 上用标准写法更专业
 const chatModelOptions = ['banana2', 'banana-pro', 'gpt-image-2', 'agnes-image-2.1-flash']
@@ -439,12 +454,13 @@ const chatResolutionOptions = ['1K', '2K', '4K']
 const TASK_POLL_INTERVAL = 2500
 const TASK_RESULT_SYNC_ATTEMPTS = 180
 // 对话窗口选中的模型参数变化时，落库到按文档隔离的 payload.chatConfig
-watch([chatModel, chatRatio, chatResolution], () => {
+watch([chatModel, chatRatio, chatResolution, chatGenerationCount], () => {
   canvas.updateDocument(props.id, (draft) => {
     draft.payload.chatConfig = {
       model: chatModel.value,
       ratio: chatRatio.value,
       resolution: chatResolution.value,
+      count: chatGenerationCount.value,
     }
     return draft
   })
@@ -462,6 +478,7 @@ watch(
     chatModel.value = cfg.model || 'banana2'
     chatRatio.value = cfg.ratio || '9:16'
     chatResolution.value = cfg.resolution || '2K'
+    chatGenerationCount.value = normalizeChatGenerationCount(cfg.count)
     initDocState()
   },
 )
@@ -2110,11 +2127,11 @@ async function pasteCopiedLayers() {
   return true
 }
 
-function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '') {
-  pushUndo()
-  const referenceImages = chatReferenceImages.value.filter(
-    (image) => !image.uploading && !image.error,
-  )
+function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '', placement = {}) {
+  if (!placement.skipUndo) pushUndo()
+  const referenceImages = (
+    Array.isArray(genMeta.referenceImages) ? genMeta.referenceImages : chatReferenceImages.value
+  ).filter((image) => !image.uploading && !image.error)
   const selected = selectedLayer.value
   const base =
     selected?.type === 'placeholder'
@@ -2140,6 +2157,15 @@ function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '')
     // 视口中心的世界坐标 = (viewportSize/2 - viewOffset) / viewScale
     const cx = (viewportSize.width / 2 - viewOffset.value.x) / viewScale.value
     const cy = (viewportSize.height / 2 - viewOffset.value.y) / viewScale.value
+    const batchCount = normalizeChatGenerationCount(placement.batchCount || genMeta.batchCount)
+    const batchIndex = Math.max(0, Math.min(batchCount - 1, Number(placement.batchIndex) || 0))
+    const batchColumns = Math.min(2, batchCount)
+    const batchRows = Math.ceil(batchCount / batchColumns)
+    const batchGap = 40
+    const batchWidth = batchColumns * PLACEHOLDER_WIDTH + (batchColumns - 1) * batchGap
+    const batchHeight = batchRows * placeholderHeight + (batchRows - 1) * batchGap
+    const batchOriginX = base ? base.x + base.width + batchGap : cx - batchWidth / 2
+    const batchOriginY = base ? base.y : cy - batchHeight / 2
     // 客户端幂等键：同一张生图稳定携带，刷新重提时后端按它命中已有任务、跳过重复扣费+外部调用。
     function genClientTaskId() {
       if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID()
@@ -2161,6 +2187,8 @@ function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '')
         model: genMeta.model || '',
         ratio: genMeta.ratio || '',
         resolution: genMeta.resolution || '',
+        batchIndex: batchIndex + 1,
+        batchCount,
         referenceImageUrls: Array.isArray(genMeta.referenceImageUrls)
           ? genMeta.referenceImageUrls
           : [],
@@ -2178,8 +2206,8 @@ function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '')
       naturalHeight: placeholderHeight,
       width: PLACEHOLDER_WIDTH,
       height: placeholderHeight,
-      x: base ? base.x + base.width + 40 : cx - PLACEHOLDER_WIDTH / 2,
-      y: base ? base.y : cy - placeholderHeight / 2,
+      x: batchOriginX + (batchIndex % batchColumns) * (PLACEHOLDER_WIDTH + batchGap),
+      y: batchOriginY + Math.floor(batchIndex / batchColumns) * (placeholderHeight + batchGap),
       zIndex: maxZ + 1,
       visible: true,
       locked: false,
@@ -2192,7 +2220,7 @@ function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '')
   selectedLayerId.value = layerId
   selectedLayerIds.value = [layerId]
   // 本地已同步落盘；服务器保存放到后台，避免网络延迟阻塞下一次生图提交。
-  void canvas.flushNow?.(props.id)
+  if (!placement.skipFlush) void canvas.flushNow?.(props.id)
   return layerId
 }
 
@@ -5270,9 +5298,11 @@ async function sendChat() {
   if (!userStore.requireLogin()) return
 
   const createdAt = Date.now()
-  const assistantId = `msg-${createdAt}-assistant`
-  const chatImageUrls = chatReferenceImages.value
-    .filter((image) => !image.uploading && !image.error)
+  const generationCount = normalizeChatGenerationCount(chatGenerationCount.value)
+  const chatReferenceSnapshot = chatReferenceImages.value.filter(
+    (image) => !image.uploading && !image.error,
+  )
+  const chatImageUrls = chatReferenceSnapshot
     .map((image) => image.url)
     .filter((url) => url && !String(url).startsWith('blob:'))
   // 从当前选中元素计算参考图（只看当前选中，不看历史累积）
@@ -5299,6 +5329,22 @@ async function sendChat() {
     }
   })
 
+  const assistantMessages = Array.from({ length: generationCount }, (_, index) => ({
+    id: `msg-${createdAt}-assistant-${index + 1}`,
+    role: 'assistant',
+    text:
+      generationCount > 1
+        ? `已提交 ${generationCount} 张图片，第 ${index + 1} 张正在排队生成。`
+        : '已提交对话生图任务，请等待生成结果（生成完成后会显示在画布中）。',
+    model: chatModel.value,
+    ratio: chatRatio.value,
+    resolution: chatResolution.value,
+    batchIndex: index + 1,
+    batchCount: generationCount,
+    createdAt: createdAt + index + 1,
+    generating: true,
+  }))
+
   addChatMessages([
     {
       id: `msg-${createdAt}`,
@@ -5307,20 +5353,12 @@ async function sendChat() {
       targetLayerId: selectedLayerId.value,
       createdAt,
       elements: messageElements,
-      referenceImages: chatReferenceImages.value
-        .filter((img) => !img.uploading && !img.error && img.url)
+      generationCount,
+      referenceImages: chatReferenceSnapshot
+        .filter((img) => img.url)
         .map((img) => ({ url: img.url })),
     },
-    {
-      id: assistantId,
-      role: 'assistant',
-      text: '已提交对话生图任务，请等待生成结果（生成完成后会显示在画布中）。',
-      model: chatModel.value,
-      ratio: chatRatio.value,
-      resolution: chatResolution.value,
-      createdAt: createdAt + 1,
-      generating: true,
-    },
+    ...assistantMessages,
   ])
   // 清空编辑器（pill + 文字）
   const editorEl = document.querySelector('.chat-editor')
@@ -5350,99 +5388,115 @@ async function sendChat() {
     ratio: chatRatio.value,
     resolution: chatResolution.value,
   }
-  const placeholderId = addGeneratingPlaceholderLayer(
-    fullPrompt,
-    {
-      ...taskConfig,
-      referenceImageUrls: imageUrls,
-    },
-    assistantId,
-  )
-  // 标记此占位图正在主提交流程中，防止 watch 触发的 resumeInterruptedPlaceholders
-  // 把它当作"需要恢复"的占位图而重复调 submitImageTask（导致一次提交2个生图请求）
-  _submittingPlaceholderIds.add(placeholderId)
-  activeChatTaskCount.value += 1
+  const batchTasks = assistantMessages.map((message, index) => {
+    const placeholderId = addGeneratingPlaceholderLayer(
+      fullPrompt,
+      {
+        ...taskConfig,
+        referenceImageUrls: imageUrls,
+        referenceImages: chatReferenceSnapshot,
+        batchIndex: index + 1,
+        batchCount: generationCount,
+      },
+      message.id,
+      {
+        batchIndex: index,
+        batchCount: generationCount,
+        skipUndo: index > 0,
+        skipFlush: true,
+      },
+    )
+    return { placeholderId, assistantId: message.id, batchIndex: index + 1 }
+  })
+  void canvas.flushNow?.(props.id)
 
-  void (async () => {
-    let submitted = false
-    try {
-      const ph = layers.value.find((l) => l.id === placeholderId)
-      const taskId = await submitImageTask({
-        prompt: fullPrompt,
-        imageUrls,
-        clientTaskId: ph?.clientTaskId || '',
-        model: taskConfig.model,
-        size: taskConfig.ratio,
-        resolution: taskConfig.resolution,
-      })
-      submitted = true
-      updateChatMessage(assistantId, {
-        taskId,
-        text: `任务已提交，模型 ${taskConfig.model}｜${taskConfig.ratio}｜${taskConfig.resolution}，正在生成...`,
-      })
-      updateGeneratingPlaceholder(placeholderId, { taskId, progress: 8, status: 'processing' })
+  for (const batchTask of batchTasks) {
+    const { placeholderId, assistantId, batchIndex } = batchTask
+    // 每张图拥有独立幂等键、占位图和轮询，刷新后可分别恢复，也不会重复扣费。
+    _submittingPlaceholderIds.add(placeholderId)
+    activeChatTaskCount.value += 1
 
-      // 核心轮询逻辑（与刷新后恢复流程共用，统一走幂等守卫 startImagePoll）
-      const done = await startImagePoll(taskId, placeholderId, assistantId, fullPrompt)
-      if (!done) return
-      // 历史记录已在 pollImageTaskUntilDone 的「图片落地」完成点统一写入
-      // （聊天生图 A / 刷新恢复 B 共用 recordGenerationToHistory），此处不重复 push，避免双写。
-    } catch (error) {
-      const friendly = friendlyImageError(error.message || error)
-      // 判断是否「页面刷新/导航导致的中断」而非真正失败：浏览器卸载会中断进行中的 fetch。
-      // 注意：不再要求 !_mounted —— 卸载时 fetch 的 abort 可能在 onUnmounted 把 _mounted 置 false 之前就 reject，
-      // 若加 !_mounted 守卫会误判为「提交阶段失败」进而误删占位图（即「立即刷新占位图消失」的根因）。
-      // 发送路径里的 AbortError / TypeError / Failed to fetch 只可能来自导航中断（该 fetch 无其他 abort 来源），
-      // 因此放宽判定是安全的，且「保留(标 interrupted)优于误删」。
-      const isInterruption =
-        error?.name === 'AbortError' ||
-        error?.name === 'TypeError' ||
-        error?.message === 'Failed to fetch'
-      if (isInterruption) {
-        // 刷新/导航中断：无论提交阶段还是轮询阶段，一律保留占位图，标记 interrupted 供 onMounted 恢复逻辑接管
-        // （提交阶段中断时还没有 taskId，恢复逻辑会重新提交任务，见 resumeInterruptedNoTaskId）
-        const current = layers.value.find((l) => l.id === placeholderId)
-        updateGeneratingPlaceholder(placeholderId, {
-          progress: current?.progress || 1,
-          status: 'interrupted',
-          statusText: '生成任务恢复中...',
-          taskId: current?.taskId,
+    void (async () => {
+      let submitted = false
+      try {
+        const ph = layers.value.find((l) => l.id === placeholderId)
+        const taskId = await submitImageTask({
+          prompt: fullPrompt,
+          imageUrls,
+          clientTaskId: ph?.clientTaskId || '',
+          model: taskConfig.model,
+          size: taskConfig.ratio,
+          resolution: taskConfig.resolution,
         })
-        updateChatMessage(assistantId, { text: '生成任务已暂停（页面刷新），正在恢复...' })
-      } else if (!submitted) {
-        // 提交阶段失败（服务端报错 / 后端掉线 / 超时等）：保留占位图、标 failed，
-        // 用户可手动重试。不再 removeLayer 静默消失（后端不稳定时会导致占位图突然消失）。
-        const lastError = `[submitFail] ${error?.name || 'Error'}: ${error?.message || error}`
-        updateGeneratingPlaceholder(placeholderId, {
-          progress: 1,
-          status: 'failed',
-          statusText: friendly,
-          lastError,
-        })
+        submitted = true
         updateChatMessage(assistantId, {
-          text: `生成失败：${friendly}`,
-          generating: false,
+          taskId,
+          text: `${generationCount > 1 ? `第 ${batchIndex}/${generationCount} 张｜` : ''}任务已提交，模型 ${taskConfig.model}｜${taskConfig.ratio}｜${taskConfig.resolution}，正在生成...`,
         })
-        showCopyPasteToast(friendly)
-      } else {
-        // 原始提交即失败（服务端明确报错，非刷新中断）：把真实错误存到图层，供后续排查
-        const lastError = `[submitFail] ${error?.name || 'Error'}: ${error?.message || error}`
-        updateGeneratingPlaceholder(placeholderId, {
-          progress: 1,
-          status: 'failed',
-          statusText: friendly,
-          lastError,
-        })
-        updateChatMessage(assistantId, {
-          text: `生成失败：${friendly}`,
-          generating: false,
-        })
+        updateGeneratingPlaceholder(placeholderId, { taskId, progress: 8, status: 'processing' })
+
+        // 核心轮询逻辑（与刷新后恢复流程共用，统一走幂等守卫 startImagePoll）
+        const done = await startImagePoll(taskId, placeholderId, assistantId, fullPrompt)
+        if (!done) return
+        // 历史记录已在 pollImageTaskUntilDone 的「图片落地」完成点统一写入
+        // （聊天生图 A / 刷新恢复 B 共用 recordGenerationToHistory），此处不重复 push，避免双写。
+      } catch (error) {
+        const friendly = friendlyImageError(error.message || error)
+        // 判断是否「页面刷新/导航导致的中断」而非真正失败：浏览器卸载会中断进行中的 fetch。
+        // 注意：不再要求 !_mounted —— 卸载时 fetch 的 abort 可能在 onUnmounted 把 _mounted 置 false 之前就 reject，
+        // 若加 !_mounted 守卫会误判为「提交阶段失败」进而误删占位图（即「立即刷新占位图消失」的根因）。
+        // 发送路径里的 AbortError / TypeError / Failed to fetch 只可能来自导航中断（该 fetch 无其他 abort 来源），
+        // 因此放宽判定是安全的，且「保留(标 interrupted)优于误删」。
+        const isInterruption =
+          error?.name === 'AbortError' ||
+          error?.name === 'TypeError' ||
+          error?.message === 'Failed to fetch'
+        if (isInterruption) {
+          // 刷新/导航中断：无论提交阶段还是轮询阶段，一律保留占位图，标记 interrupted 供 onMounted 恢复逻辑接管
+          // （提交阶段中断时还没有 taskId，恢复逻辑会重新提交任务，见 resumeInterruptedNoTaskId）
+          const current = layers.value.find((l) => l.id === placeholderId)
+          updateGeneratingPlaceholder(placeholderId, {
+            progress: current?.progress || 1,
+            status: 'interrupted',
+            statusText: '生成任务恢复中...',
+            taskId: current?.taskId,
+          })
+          updateChatMessage(assistantId, { text: '生成任务已暂停（页面刷新），正在恢复...' })
+        } else if (!submitted) {
+          // 提交阶段失败（服务端报错 / 后端掉线 / 超时等）：保留占位图、标 failed，
+          // 用户可手动重试。不再 removeLayer 静默消失（后端不稳定时会导致占位图突然消失）。
+          const lastError = `[submitFail] ${error?.name || 'Error'}: ${error?.message || error}`
+          updateGeneratingPlaceholder(placeholderId, {
+            progress: 1,
+            status: 'failed',
+            statusText: friendly,
+            lastError,
+          })
+          updateChatMessage(assistantId, {
+            text: `生成失败：${friendly}`,
+            generating: false,
+          })
+          showCopyPasteToast(friendly)
+        } else {
+          // 原始提交即失败（服务端明确报错，非刷新中断）：把真实错误存到图层，供后续排查
+          const lastError = `[submitFail] ${error?.name || 'Error'}: ${error?.message || error}`
+          updateGeneratingPlaceholder(placeholderId, {
+            progress: 1,
+            status: 'failed',
+            statusText: friendly,
+            lastError,
+          })
+          updateChatMessage(assistantId, {
+            text: `生成失败：${friendly}`,
+            generating: false,
+          })
+        }
+      } finally {
+        _submittingPlaceholderIds.delete(placeholderId)
+        activeChatTaskCount.value = Math.max(0, activeChatTaskCount.value - 1)
       }
-    } finally {
-      _submittingPlaceholderIds.delete(placeholderId)
-      activeChatTaskCount.value = Math.max(0, activeChatTaskCount.value - 1)
-    }
-  })()
+    })()
+  }
 }
 
 function handleChatBoxClick(event) {
@@ -7901,6 +7955,7 @@ async function loadImageForCrop(layer) {
                     <button
                       type="button"
                       class="uc-custom-select-trigger"
+                      :title="chatModel"
                       @click.stop="toggleChatSelect('model')"
                     >
                       {{ chatModel }}
@@ -7985,9 +8040,33 @@ async function loadImageForCrop(layer) {
                     </div>
                   </div>
                 </label>
+                <label class="uc-generation-count-option">
+                  <span>数量</span>
+                  <div class="uc-quantity-stepper" role="group" aria-label="生图数量">
+                    <button
+                      type="button"
+                      title="减少一张"
+                      aria-label="减少一张"
+                      :disabled="chatGenerationCount <= CHAT_GENERATION_COUNT_MIN"
+                      @click="adjustChatGenerationCount(-1)"
+                    >
+                      <i class="ri-subtract-line" aria-hidden="true"></i>
+                    </button>
+                    <output aria-live="polite">{{ chatGenerationCount }}</output>
+                    <button
+                      type="button"
+                      title="增加一张"
+                      aria-label="增加一张"
+                      :disabled="chatGenerationCount >= CHAT_GENERATION_COUNT_MAX"
+                      @click="adjustChatGenerationCount(1)"
+                    >
+                      <i class="ri-add-line" aria-hidden="true"></i>
+                    </button>
+                  </div>
+                </label>
               </div>
               <footer class="uc-bottom-toolbar">
-                <span>Enter 发送 · Ctrl+Enter 换行</span>
+                <span>{{ chatGenerationCount }} 张 · 预计 {{ chatEstimatedMiCost }} 米值</span>
                 <button
                   :disabled="!chatText.trim() && !getSelectedDetectedElements().length"
                   @click="sendChat"

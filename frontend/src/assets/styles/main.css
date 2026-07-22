@@ -12560,13 +12560,27 @@ body {
 
 .uc-chat-generate-options {
   display: grid;
-  grid-template-columns: minmax(106px, 1.35fr) minmax(76px, 0.85fr) minmax(78px, 0.85fr);
+  order: -1;
+  grid-template-columns:
+    minmax(92px, 1.25fr) minmax(54px, 0.75fr) minmax(62px, 0.8fr)
+    minmax(74px, 0.9fr);
   gap: 8px;
-  margin: 10px 0 0;
+  margin: 0 0 10px;
   padding: 8px;
   border: 1px solid var(--color-border);
   border-radius: 12px;
   background: var(--color-bg-0);
+}
+
+.chat-box.uc-ref-panel {
+  container-name: chat-composer;
+  container-type: inline-size;
+}
+
+@container chat-composer (max-width: 360px) {
+  .uc-chat-generate-options {
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 0.9fr);
+  }
 }
 
 .uc-chat-generate-options label {
@@ -12581,6 +12595,52 @@ body {
   font-size: 11px;
   font-weight: 700;
   line-height: 12px;
+}
+
+.uc-quantity-stepper {
+  display: grid;
+  grid-template-columns: 24px minmax(20px, 1fr) 24px;
+  align-items: center;
+  width: 100%;
+  height: 34px;
+  overflow: hidden;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 9px;
+  color: var(--color-text-1);
+  background: var(--color-bg-2);
+}
+
+.uc-quantity-stepper button {
+  display: grid;
+  width: 24px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  place-items: center;
+  color: var(--color-text-2);
+  background: transparent;
+  cursor: pointer;
+}
+
+.uc-quantity-stepper button:hover:not(:disabled) {
+  color: var(--color-text-1);
+  background: var(--color-bg-3);
+}
+
+.uc-quantity-stepper button:disabled {
+  color: var(--color-text-3);
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.uc-quantity-stepper output {
+  min-width: 0;
+  color: var(--color-text-1);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 32px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
 .uc-chat-generate-options select {
@@ -12604,6 +12664,9 @@ body {
   font-size: 13px;
   font-weight: 700;
   text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -12635,7 +12698,8 @@ body {
 }
 .uc-custom-select-menu {
   position: absolute;
-  bottom: calc(100% + 4px);
+  top: calc(100% + 4px);
+  bottom: auto;
   left: 0;
   right: 0;
   z-index: 100;
