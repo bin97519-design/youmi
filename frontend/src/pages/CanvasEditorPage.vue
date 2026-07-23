@@ -10,6 +10,7 @@ import {
   watch,
 } from 'vue'
 import { useRouter } from 'vue-router'
+import CanvasCreationPanel from '../components/canvas/CanvasCreationPanel.vue'
 import { layerName, useCanvasStore } from '../stores/canvas'
 import { useUserStore } from '../stores/user'
 import { apiPath } from '../utils/apiBase'
@@ -120,6 +121,8 @@ const selectedLayerIds = ref([])
 // 图片复制 / 粘贴的内部 buffer（保底，确保应用内 Ctrl+C → Ctrl+V 100% 可用）
 const clipboardImage = ref(null)
 const rightTab = ref('chat')
+const creationPanelOpen = ref(false)
+const creationRunning = ref(false)
 
 // ========== 连接线系统 ==========
 // 连接线归属画布文档：从按文档隔离的 payload 读取（旧文档无该字段则默认 []）
@@ -586,6 +589,11 @@ const toolbar = reactive({ x: null, y: null, dragging: null })
 
 const layers = computed(() => doc.value.payload.layers)
 const selectedLayer = computed(() => layers.value.find((item) => item.id === selectedLayerId.value))
+const selectedCreationLayers = computed(() =>
+  selectedLayerIds.value
+    .map((id) => layers.value.find((item) => item.id === id))
+    .filter((item) => item?.url && item.type !== 'placeholder' && item.type !== 'text'),
+)
 const selectedLayerIndex = computed(() =>
   layers.value.findIndex((item) => item.id === selectedLayerId.value),
 )
@@ -1949,13 +1957,15 @@ async function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId
     selected?.type === 'placeholder'
       ? [...layers.value].reverse().find((l) => l.type !== 'placeholder')
       : selected
-  const previewUrl = referenceImages.at(-1)?.url || base?.url || ''
+  const previewUrl = genMeta.previewUrl || referenceImages.at(-1)?.url || base?.url || ''
   let layerId = ''
 
   // 占位框大小：与参考图/选中图的长宽比一致
   // 优先用参考图的尺寸，其次用选中图的尺寸，最后默认 3:4
   const refImg = referenceImages.at(-1)
-  const aspectSrc = refImg
+  const aspectSrc = genMeta.aspectWidth && genMeta.aspectHeight
+    ? { w: genMeta.aspectWidth, h: genMeta.aspectHeight }
+    : refImg
     ? { w: refImg.naturalWidth || refImg.width || 3, h: refImg.naturalHeight || refImg.height || 4 }
     : base
       ? { w: base.naturalWidth || base.width || 3, h: base.naturalHeight || base.height || 4 }
@@ -1991,6 +2001,7 @@ async function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId
         ratio: genMeta.ratio || '',
         resolution: genMeta.resolution || '',
         referenceImageUrls: Array.isArray(genMeta.referenceImageUrls) ? genMeta.referenceImageUrls : [],
+        creationType: genMeta.creationType || '',
       },
       // 关联的聊天消息 id：刷新后恢复轮询完成时用来更新聊天卡片文案（否则 assistantId 为空，
       // pollImageTaskUntilDone 会跳过所有 chatMessage 更新，卡片永远停在"正在恢复..."）。
@@ -2021,6 +2032,131 @@ async function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId
   // 占位图创建后立即同步服务器（await 确保到达），确保刷新后服务器返回的数据里已有占位图层
   await canvas.flushNow?.()
   return layerId
+}
+
+function connectCreationSources(sourceIds, targetId) {
+  const existing = new Set(connections.value.map((item) => `${item.fromLayerId}:${item.toLayerId}`))
+  for (const sourceId of sourceIds || []) {
+    const key = `${sourceId}:${targetId}`
+    if (!sourceId || existing.has(key)) continue
+    connections.value.push({
+      id: `conn-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      fromLayerId: sourceId,
+      fromPort: 'right',
+      toLayerId: targetId,
+      toPort: 'left',
+    })
+    existing.add(key)
+  }
+  persistConnections()
+}
+
+async function runCanvasCreation({ type, sourceIds, jobs }) {
+  if (creationRunning.value || !Array.isArray(jobs) || !jobs.length) return
+  if (!userStore.requireLogin()) return
+  creationPanelOpen.value = false
+  creationRunning.value = true
+  chatGenerating.value = true
+  rightTab.value = 'chat'
+  const polls = []
+  try {
+    for (let index = 0; index < jobs.length; index += 1) {
+      const job = jobs[index]
+      const sourceId = job.sourceIds?.[0] || sourceIds?.[0] || ''
+      if (sourceId) {
+        selectedLayerId.value = sourceId
+        selectedLayerIds.value = [sourceId]
+      }
+      const messageId = `msg-${Date.now()}-creation-${index}`
+      addChatMessages([
+        {
+          id: messageId,
+          role: 'assistant',
+          text: `${job.name || '图片'}正在生成…`,
+          generating: true,
+          model: job.model || chatModel.value,
+          ratio: job.ratio || 'auto',
+          resolution: job.resolution || chatResolution.value,
+          createdAt: Date.now() + index,
+        },
+      ])
+      const placeholderId = await addGeneratingPlaceholderLayer(
+        job.prompt,
+        {
+          model: job.model || chatModel.value,
+          ratio: job.ratio || 'auto',
+          resolution: job.resolution || chatResolution.value,
+          referenceImageUrls: job.imageUrls || [],
+          previewUrl: job.previewUrl || '',
+          aspectWidth: job.aspectWidth,
+          aspectHeight: job.aspectHeight,
+          creationType: type || '',
+        },
+        messageId,
+      )
+      const source = layers.value.find((item) => item.id === sourceId)
+      const placeholder = layers.value.find((item) => item.id === placeholderId)
+      if (source && placeholder) {
+        const columns = Math.max(1, Math.ceil(Math.sqrt(jobs.length)))
+        const column = index % columns
+        const row = Math.floor(index / columns)
+        updateLayer(placeholderId, {
+          name: job.name || `生成结果 ${index + 1}`,
+          x: source.x + source.width + 48 + column * (placeholder.width + 36),
+          y: source.y + row * (placeholder.height + 36),
+        })
+      }
+      connectCreationSources(job.sourceIds || sourceIds || [], placeholderId)
+      try {
+        const placeholder = layers.value.find((item) => item.id === placeholderId)
+        const taskId = await submitImageTask({
+          prompt: job.prompt,
+          imageUrls: job.imageUrls || [],
+          model: job.model || chatModel.value,
+          size: job.ratio || 'auto',
+          resolution: job.resolution || chatResolution.value,
+          clientTaskId: placeholder?.clientTaskId || '',
+        })
+        updateGeneratingPlaceholder(placeholderId, {
+          taskId,
+          progress: 8,
+          status: 'processing',
+          statusText: `${job.name || '图片'}生成中…`,
+        })
+        polls.push(
+          startImagePoll(taskId, placeholderId, messageId, job.prompt).catch((error) => {
+            const friendly = friendlyImageError(error?.message || error)
+            updateGeneratingPlaceholder(placeholderId, {
+              progress: 1,
+              status: 'failed',
+              statusText: friendly,
+              lastError: String(error?.message || error),
+            })
+            updateChatMessage(messageId, {
+              text: `${job.name || '图片'}生成失败：${friendly}`,
+              generating: false,
+            })
+          }),
+        )
+      } catch (error) {
+        const friendly = friendlyImageError(error?.message || error)
+        updateGeneratingPlaceholder(placeholderId, {
+          progress: 1,
+          status: 'failed',
+          statusText: friendly,
+          lastError: String(error?.message || error),
+        })
+        updateChatMessage(messageId, {
+          text: `${job.name || '图片'}提交失败：${friendly}`,
+          generating: false,
+        })
+      }
+    }
+    await Promise.allSettled(polls)
+  } finally {
+    creationRunning.value = false
+    chatGenerating.value = false
+  }
 }
 
 function updateGeneratingPlaceholder(layerId, patch) {
@@ -7086,6 +7222,13 @@ async function loadImageForCrop(layer) {
         </header>
 
         <section v-if="rightTab === 'chat'" class="chat-panel uc-chat">
+          <div class="uc-creation-toolbar">
+            <button type="button" :disabled="creationRunning" @click="creationPanelOpen = true">
+              <i class="ri-layout-masonry-line"></i>
+              画布创作
+            </button>
+            <span>选中产品图，可生成主图、需求创意或详情页</span>
+          </div>
           <div
             ref="chatHistoryRef"
             class="chat-history uc-chat-history"
@@ -7905,6 +8048,16 @@ async function loadImageForCrop(layer) {
     </div>
   </Teleport>
 
+  <CanvasCreationPanel
+    :open="creationPanelOpen"
+    :selected-layers="selectedCreationLayers"
+    :model="chatModel"
+    :resolution="chatResolution"
+    :busy="creationRunning"
+    @close="creationPanelOpen = false"
+    @run="runCanvasCreation"
+  />
+
   <!-- 右键菜单 -->
   <Teleport to="body">
     <div
@@ -8060,6 +8213,39 @@ async function loadImageForCrop(layer) {
 </template>
 
 <style>
+.uc-creation-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--uc-border, rgba(148, 163, 184, 0.2));
+  background: var(--uc-bg-2, rgba(255, 255, 255, 0.75));
+}
+.uc-creation-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 11px;
+  border: 1px solid rgba(100, 88, 232, 0.28);
+  border-radius: 9px;
+  background: rgba(100, 88, 232, 0.08);
+  color: #5b50d6;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.uc-creation-toolbar button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+.uc-creation-toolbar > span {
+  overflow: hidden;
+  color: var(--uc-fg-3, #8a92a2);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .uc-image-broken {
   display: flex;
   flex-direction: column;
