@@ -22,6 +22,13 @@ const demandStyle = ref('真实、清晰、有品质感')
 const demandCards = ref([])
 const demandPlanning = ref(false)
 const demandError = ref('')
+const detailProductInfo = ref('')
+const detailCount = ref(6)
+const detailStyle = ref('真实、清晰、有品质感')
+const detailStrength = ref('balanced')
+const detailScreens = ref([])
+const detailPlanning = ref(false)
+const detailError = ref('')
 
 const product = computed(() => props.selectedLayers[0] || null)
 const references = computed(() => props.selectedLayers.slice(1))
@@ -35,6 +42,17 @@ const canRunDemands = computed(() =>
     product.value && selectedDemandCards.value.length && !demandPlanning.value && !props.busy,
   ),
 )
+const selectedDetailScreens = computed(() =>
+  detailScreens.value.filter((screen) => screen.selected),
+)
+const canPlanDetail = computed(() =>
+  Boolean(product.value && detailProductInfo.value.trim() && !detailPlanning.value && !props.busy),
+)
+const canRunDetail = computed(() =>
+  Boolean(
+    product.value && selectedDetailScreens.value.length && !detailPlanning.value && !props.busy,
+  ),
+)
 
 watch(
   () => props.open,
@@ -42,6 +60,7 @@ watch(
     if (!open) {
       extra.value = ''
       demandError.value = ''
+      detailError.value = ''
     }
   },
 )
@@ -142,6 +161,75 @@ function runDemands() {
     })),
   })
 }
+
+async function planDetail() {
+  if (!canPlanDetail.value) return
+  detailPlanning.value = true
+  detailError.value = ''
+  try {
+    const response = await fetch(apiPath('/api/canvas-creative/detail-plan'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...userStore.authHeaders(),
+      },
+      body: JSON.stringify({
+        productInfo: detailProductInfo.value.trim(),
+        productImages: [product.value.url],
+        referenceImages: references.value.map((reference) => reference.url),
+        count: Number(detailCount.value) || 6,
+        platform: '淘宝/天猫',
+        style: detailStyle.value.trim(),
+        ratio: '9:16',
+        cloneStrength: detailStrength.value,
+      }),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok || payload.code) {
+      throw new Error(payload.message || '详情页规划失败')
+    }
+    const screens = Array.isArray(payload.data?.screens) ? payload.data.screens : []
+    if (!screens.length) throw new Error('没有生成可用的详情页分屏')
+    detailScreens.value = screens.map((screen) => ({ ...screen, selected: true }))
+  } catch (error) {
+    detailError.value = String(error?.message || error || '详情页规划失败')
+  } finally {
+    detailPlanning.value = false
+  }
+}
+
+function runDetail() {
+  if (!canRunDetail.value) return
+  emit('run', {
+    type: 'detail',
+    sourceIds: [product.value.id],
+    jobs: selectedDetailScreens.value.map((screen) => {
+      const reference =
+        Number.isInteger(screen.referenceIndex) && screen.referenceIndex >= 0
+          ? references.value[screen.referenceIndex]
+          : null
+      return {
+        name: `详情页 ${screen.index} · ${screen.title}`,
+        prompt: [
+          screen.imagePrompt,
+          `最终分屏标题：${screen.title || ''}`,
+          `最终画面文案：${screen.copy || ''}`,
+          `最终视觉方向：${screen.visual || ''}`,
+        ]
+          .filter(Boolean)
+          .join('\n'),
+        imageUrls: [product.value.url, reference?.url].filter(Boolean),
+        sourceIds: [product.value.id, reference?.id].filter(Boolean),
+        previewUrl: product.value.url,
+        aspectWidth: 9,
+        aspectHeight: 16,
+        ratio: '9:16',
+        model: props.model,
+        resolution: props.resolution,
+      }
+    }),
+  })
+}
 </script>
 
 <template>
@@ -162,6 +250,9 @@ function runDemands() {
           </button>
           <button type="button" :class="{ active: tab === 'demand' }" @click="tab = 'demand'">
             需求生成
+          </button>
+          <button type="button" :class="{ active: tab === 'detail' }" @click="tab = 'detail'">
+            详情页生成
           </button>
         </nav>
 
@@ -213,7 +304,7 @@ function runDemands() {
           </label>
         </template>
 
-        <template v-else>
+        <template v-else-if="tab === 'demand'">
           <div class="ccp-demand-input">
             <div class="ccp-product-thumb">
               <span>产品图</span>
@@ -282,12 +373,105 @@ function runDemands() {
           </div>
         </template>
 
+        <template v-else>
+          <div class="ccp-demand-input">
+            <div class="ccp-product-thumb">
+              <span>产品图</span>
+              <figure v-if="product">
+                <img :src="product.url" alt="" />
+                <figcaption>{{ product.name || '产品图' }}</figcaption>
+              </figure>
+              <p v-else>请先在画布选中一张产品图。</p>
+              <span class="ccp-reference-summary">参考图 · {{ references.length }}</span>
+              <div v-if="references.length" class="ccp-mini-references">
+                <img
+                  v-for="reference in references"
+                  :key="reference.id"
+                  :src="reference.url"
+                  alt=""
+                />
+              </div>
+            </div>
+            <div class="ccp-demand-fields">
+              <label>
+                <span>产品信息</span>
+                <textarea
+                  v-model="detailProductInfo"
+                  rows="4"
+                  placeholder="填写产品的品类、材质、功能、卖点、规格、适用人群和使用场景。"
+                />
+              </label>
+              <div class="ccp-detail-options">
+                <label>
+                  <span>分屏数量</span>
+                  <select v-model="detailCount">
+                    <option :value="3">3 屏</option>
+                    <option :value="6">6 屏</option>
+                    <option :value="8">8 屏</option>
+                    <option :value="10">10 屏</option>
+                    <option :value="12">12 屏</option>
+                  </select>
+                </label>
+                <label>
+                  <span>参考强度</span>
+                  <select v-model="detailStrength">
+                    <option value="light">轻度</option>
+                    <option value="balanced">均衡</option>
+                    <option value="strong">强化</option>
+                  </select>
+                </label>
+                <label>
+                  <span>整体风格</span>
+                  <input v-model="detailStyle" type="text" />
+                </label>
+                <button type="button" :disabled="!canPlanDetail" @click="planDetail">
+                  {{
+                    detailPlanning
+                      ? '正在规划分屏…'
+                      : detailScreens.length
+                        ? '重新规划'
+                        : '规划详情页'
+                  }}
+                </button>
+              </div>
+              <p class="ccp-detail-help">
+                不选参考图时按产品信息原生规划；选择参考图时逐屏借鉴版式、构图和视觉节奏。
+              </p>
+              <p v-if="detailError" class="ccp-error">{{ detailError }}</p>
+            </div>
+          </div>
+
+          <div v-if="detailScreens.length" class="ccp-detail-screens">
+            <label
+              v-for="screen in detailScreens"
+              :key="screen.id"
+              class="ccp-detail-screen"
+              :class="{ selected: screen.selected }"
+            >
+              <input v-model="screen.selected" type="checkbox" />
+              <span class="ccp-screen-index">第 {{ screen.index }} 屏</span>
+              <input v-model="screen.title" class="ccp-card-title" type="text" />
+              <textarea v-model="screen.copy" rows="2" aria-label="分屏文案" />
+              <textarea v-model="screen.visual" rows="3" aria-label="分屏视觉方向" />
+              <small>{{ screen.goal }}</small>
+            </label>
+          </div>
+          <div v-else class="ccp-demand-empty">
+            <i class="ri-pages-line"></i>
+            <b>先规划，再一次生成整套详情页</b>
+            <span>每一屏都有独立职责、文案、视觉方向和产品一致性约束。</span>
+          </div>
+        </template>
+
         <footer>
           <span v-if="tab === 'main'">
             {{ model }} · {{ resolution }} · {{ references.length || 0 }} 张结果
           </span>
-          <span v-else>
+          <span v-else-if="tab === 'demand'">
             {{ model }} · {{ resolution }} · 已选择 {{ selectedDemandCards.length }} 个方向
+          </span>
+          <span v-else>
+            {{ model }} · {{ resolution }} · 已选择 {{ selectedDetailScreens.length }} 屏
           </span>
           <button type="button" class="secondary" @click="emit('close')">取消</button>
           <button
@@ -300,13 +484,16 @@ function runDemands() {
             {{ busy ? '正在提交…' : '开始生成' }}
           </button>
           <button
-            v-else
+            v-else-if="tab === 'demand'"
             type="button"
             class="primary"
             :disabled="!canRunDemands"
             @click="runDemands"
           >
             {{ busy ? '正在提交…' : `生成 ${selectedDemandCards.length} 张创意` }}
+          </button>
+          <button v-else type="button" class="primary" :disabled="!canRunDetail" @click="runDetail">
+            {{ busy ? '正在提交…' : `生成 ${selectedDetailScreens.length} 屏详情页` }}
           </button>
         </footer>
       </section>
@@ -531,6 +718,27 @@ function runDemands() {
   font-size: 12px;
   line-height: 1.5;
 }
+.ccp-reference-summary {
+  display: block;
+  margin-top: 14px;
+  color: #4f5665;
+  font-size: 11px;
+  font-weight: 700;
+}
+.ccp-mini-references {
+  display: flex;
+  gap: 5px;
+  margin-top: 7px;
+  overflow-x: auto;
+}
+.ccp-mini-references img {
+  width: 34px;
+  height: 46px;
+  flex: 0 0 34px;
+  border-radius: 6px;
+  background: #eef1f5;
+  object-fit: cover;
+}
 .ccp-demand-fields textarea,
 .ccp-demand-fields input,
 .ccp-demand-fields select,
@@ -558,6 +766,9 @@ function runDemands() {
   align-items: end;
   margin-top: 9px;
 }
+.ccp-demand-fields > .ccp-detail-options {
+  grid-template-columns: 88px 92px minmax(150px, 1fr) auto;
+}
 .ccp-demand-fields input,
 .ccp-demand-fields select {
   height: 36px;
@@ -580,6 +791,12 @@ function runDemands() {
 }
 .ccp-error {
   margin-top: 8px;
+}
+.ccp-detail-help {
+  margin: 8px 0 0;
+  color: #8a92a2;
+  font-size: 10.5px;
+  line-height: 1.5;
 }
 .ccp-demand-cards {
   display: grid;
@@ -630,6 +847,64 @@ function runDemands() {
   line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.ccp-detail-screens {
+  display: flex;
+  gap: 10px;
+  max-height: 390px;
+  overflow: auto;
+  padding: 8px 20px 18px;
+}
+.ccp-detail-screen {
+  position: relative;
+  display: flex;
+  width: 190px;
+  flex: 0 0 190px;
+  flex-direction: column;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid #dfe3ea;
+  border-radius: 12px;
+  background: #fafbfc;
+}
+.ccp-detail-screen.selected {
+  border-color: rgba(100, 88, 232, 0.65);
+  background: #f8f7ff;
+}
+.ccp-detail-screen > input[type='checkbox'] {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+}
+.ccp-detail-screen textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 9px 10px;
+  border: 1px solid #dfe3ea;
+  border-radius: 9px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.ccp-detail-screen small {
+  overflow: hidden;
+  color: #8a92a2;
+  font-size: 10px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ccp-screen-index {
+  align-self: flex-start;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #e9f6f0;
+  color: #27815f;
+  font-size: 10px;
+  font-weight: 700;
 }
 .ccp-demand-empty {
   display: flex;
@@ -689,6 +964,7 @@ function runDemands() {
   .ccp-selection,
   .ccp-demand-input,
   .ccp-demand-cards,
+  .ccp-detail-screens,
   .ccp-demand-fields > div {
     grid-template-columns: 1fr;
   }

@@ -7227,7 +7227,7 @@ async function loadImageForCrop(layer) {
               <i class="ri-layout-masonry-line"></i>
               画布创作
             </button>
-            <span>选中产品图，可生成主图或拆分需求方向</span>
+            <span>选中产品图，可生成主图、需求创意或详情页</span>
           </div>
           <div
             ref="chatHistoryRef"
