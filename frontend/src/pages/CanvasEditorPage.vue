@@ -452,7 +452,8 @@ const chatModelOptions = ['banana2', 'banana-pro', 'gpt-image-2', 'agnes-image-2
 const chatRatioOptions = ['auto', '1:1', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
 const chatResolutionOptions = ['1K', '2K', '4K']
 const TASK_POLL_INTERVAL = 2500
-const TASK_RESULT_SYNC_ATTEMPTS = 180
+const TASK_RESULT_SYNC_ATTEMPTS = 60
+const TASK_RESULT_STALE_AFTER_MS = 24 * 60 * 60 * 1000
 // 对话窗口选中的模型参数变化时，落库到按文档隔离的 payload.chatConfig
 watch([chatModel, chatRatio, chatResolution, chatGenerationCount], () => {
   canvas.updateDocument(props.id, (draft) => {
@@ -1268,7 +1269,11 @@ async function readApiResponse(response) {
       message: errMsg,
       url: response.url,
     })
-    throw new Error(errMsg)
+    const error = new Error(errMsg)
+    error.status = response.status
+    error.code = result?.code
+    error.url = response.url
+    throw error
   }
   return result.data
 }
@@ -1448,9 +1453,119 @@ async function pollImageTaskUntilDone(taskId, placeholderId, assistantId, prompt
 const _persistSyncTasks = new Set()
 
 function persistSyncDelay(attempt) {
-  if (attempt < 20) return 2000
-  if (attempt < 60) return 5000
+  if (attempt < 12) return 2500
+  if (attempt < 30) return 5000
   return 10000
+}
+
+function isPermanentOwnOssUrl(value) {
+  if (!value || !String(value).startsWith('http')) return false
+  try {
+    const url = new URL(value)
+    return url.hostname.includes('huami-canvas') && !url.search
+  } catch {
+    return false
+  }
+}
+
+function persistenceTaskCreatedAt(taskId, layerId) {
+  const match = `${taskId || ''} ${layerId || ''}`.match(/(?:wudi-channel-|placeholder-|layer-)(\d{13})/)
+  const timestamp = Number(match?.[1])
+  return Number.isFinite(timestamp) ? timestamp : 0
+}
+
+function isStalePersistenceTask(taskId, layerId) {
+  const createdAt = persistenceTaskCreatedAt(taskId, layerId)
+  return createdAt > 0 && Date.now() - createdAt > TASK_RESULT_STALE_AFTER_MS
+}
+
+function isTerminalPersistenceError(error) {
+  const status = Number(error?.status || 0)
+  const message = String(error?.message || '').toLowerCase()
+  if ([404, 410].includes(status)) return true
+  return /任务(?:结果)?已过期|任务不存在|找不到任务|重新提交任务|已被清理|task[^\n]*(?:expired|not found|does not exist)|invalid task(?: id)?/.test(
+    message,
+  )
+}
+
+function applyImagePersistenceState({
+  taskId,
+  layerId,
+  historyId,
+  assistantId,
+  temporaryUrl,
+  finalUrl = temporaryUrl,
+  persistStatus,
+  persistError = '',
+  documentId,
+}) {
+  const normalizedStatus = String(persistStatus || 'FAILED').toUpperCase()
+  generationHistory.value = generationHistory.value.map((record) => {
+    const matched =
+      (historyId && record.id === historyId) ||
+      record.taskId === taskId ||
+      record.imageUrl === temporaryUrl
+    return matched
+      ? {
+          ...record,
+          imageUrl:
+            normalizedStatus === 'DONE'
+              ? finalUrl || record.imageUrl
+              : record.imageUrl || finalUrl,
+          persistStatus: normalizedStatus,
+          persistError: persistError || undefined,
+        }
+      : record
+  })
+  canvas.updateDocument(documentId, (draft) => {
+    draft.payload.layers = draft.payload.layers.map((layer) => {
+      if (layer.id !== layerId && layer.taskId !== taskId) return layer
+      const canReplaceUrl =
+        normalizedStatus === 'DONE' &&
+        (layer.url === temporaryUrl || layer.temporaryUrl === temporaryUrl || !layer.url)
+      return {
+        ...layer,
+        ...(canReplaceUrl ? { url: finalUrl, thumbnailUrl: finalUrl } : {}),
+        persistStatus: normalizedStatus,
+        persistError: persistError || undefined,
+        temporaryUrl: undefined,
+        persistedAt: normalizedStatus === 'DONE' ? Date.now() : undefined,
+      }
+    })
+    draft.payload.generationHistory = generationHistory.value.slice(-200)
+    draft.payload.chat = (draft.payload.chat || []).map((message) => {
+      const matched = (assistantId && message.id === assistantId) || message.taskId === taskId
+      return matched
+        ? {
+            ...message,
+            imageUrl:
+              normalizedStatus === 'DONE'
+                ? finalUrl || message.imageUrl
+                : message.imageUrl || finalUrl,
+            persistStatus: normalizedStatus,
+            persistError: persistError || undefined,
+          }
+        : message
+    })
+    return draft
+  })
+  return {
+    taskId,
+    documentId,
+    layerId,
+    imageUrl: finalUrl || temporaryUrl,
+    persistStatus: normalizedStatus,
+    persistError: persistError || undefined,
+  }
+}
+
+async function finishImagePersistence(options) {
+  const detail = applyImagePersistenceState(options)
+  const canvasSaved = await canvas.flushNow?.(detail.documentId)
+  publishImageTaskPersistence({
+    ...detail,
+    canvasSaved: canvasSaved !== false,
+  })
 }
 
 async function syncPersistedImageOnce({
@@ -1477,59 +1592,99 @@ async function syncPersistedImageOnce({
         if (persistStatus === 'PENDING') continue
 
         const finalUrl = persistStatus === 'DONE' ? returnedUrl || temporaryUrl : temporaryUrl
-        generationHistory.value = generationHistory.value.map((record) => {
-          const matched =
-            (historyId && record.id === historyId) ||
-            record.taskId === taskId ||
-            record.imageUrl === temporaryUrl
-          return matched ? { ...record, imageUrl: finalUrl, persistStatus } : record
-        })
-        canvas.updateDocument(documentId, (draft) => {
-          draft.payload.layers = draft.payload.layers.map((layer) => {
-            if (layer.id !== layerId && layer.taskId !== taskId) return layer
-            const canReplaceUrl =
-              layer.url === temporaryUrl || layer.temporaryUrl === temporaryUrl || !layer.url
-            return {
-              ...layer,
-              ...(canReplaceUrl ? { url: finalUrl, thumbnailUrl: finalUrl } : {}),
-              persistStatus,
-              temporaryUrl: undefined,
-              persistedAt: persistStatus === 'DONE' ? Date.now() : undefined,
-            }
-          })
-          draft.payload.generationHistory = generationHistory.value.slice(-200)
-          draft.payload.chat = (draft.payload.chat || []).map((message) => {
-            const matched =
-              (assistantId && message.id === assistantId) || message.taskId === taskId
-            return matched ? { ...message, imageUrl: finalUrl, persistStatus } : message
-          })
-          return draft
-        })
-        const canvasSaved = await canvas.flushNow?.(documentId)
-        publishImageTaskPersistence({
+        await finishImagePersistence({
           taskId,
-          documentId,
           layerId,
-          imageUrl: finalUrl,
+          historyId,
+          assistantId,
+          temporaryUrl,
+          finalUrl,
           persistStatus,
-          canvasSaved: canvasSaved !== false,
+          documentId,
         })
         return
       } catch (error) {
+        if (isTerminalPersistenceError(error)) {
+          await finishImagePersistence({
+            taskId,
+            layerId,
+            historyId,
+            assistantId,
+            temporaryUrl,
+            persistStatus: 'FAILED',
+            persistError: '中转站任务结果已过期，已停止查询',
+            documentId,
+          })
+          console.warn('[syncPersistedImageOnce] 任务结果已过期，停止永久地址查询:', taskId)
+          return
+        }
         if (attempt === TASK_RESULT_SYNC_ATTEMPTS - 1) {
+          await finishImagePersistence({
+            taskId,
+            layerId,
+            historyId,
+            assistantId,
+            temporaryUrl,
+            persistStatus: 'FAILED',
+            persistError: '永久地址同步超时，已停止查询',
+            documentId,
+          })
           console.warn('[syncPersistedImageOnce] 永久地址同步失败，保留临时地址:', error.message)
+          return
         }
       }
     }
+    await finishImagePersistence({
+      taskId,
+      layerId,
+      historyId,
+      assistantId,
+      temporaryUrl,
+      persistStatus: 'FAILED',
+      persistError: '永久地址同步超时，已停止查询',
+      documentId,
+    })
   } finally {
     _persistSyncTasks.delete(taskId)
   }
 }
 
 function resumePersistingImageLayers() {
+  const recovered = []
   for (const layer of doc.value?.payload?.layers || []) {
     const persistStatus = String(layer.persistStatus || '').toUpperCase()
     if (layer.type !== 'image' || !layer.taskId || ['DONE', 'FAILED'].includes(persistStatus)) {
+      continue
+    }
+    const temporaryUrl = layer.temporaryUrl || layer.url
+    if (isPermanentOwnOssUrl(layer.url)) {
+      recovered.push(
+        applyImagePersistenceState({
+          taskId: layer.taskId,
+          layerId: layer.id,
+          historyId: '',
+          assistantId: layer.chatMessageId || '',
+          temporaryUrl,
+          finalUrl: layer.url,
+          persistStatus: 'DONE',
+          documentId: props.id,
+        }),
+      )
+      continue
+    }
+    if (isStalePersistenceTask(layer.taskId, layer.id)) {
+      recovered.push(
+        applyImagePersistenceState({
+          taskId: layer.taskId,
+          layerId: layer.id,
+          historyId: '',
+          assistantId: layer.chatMessageId || '',
+          temporaryUrl,
+          persistStatus: 'FAILED',
+          persistError: '转存任务已超过24小时，已停止查询',
+          documentId: props.id,
+        }),
+      )
       continue
     }
     void syncPersistedImageOnce({
@@ -1537,8 +1692,15 @@ function resumePersistingImageLayers() {
       layerId: layer.id,
       historyId: '',
       assistantId: layer.chatMessageId || '',
-      temporaryUrl: layer.temporaryUrl || layer.url,
+      temporaryUrl,
       documentId: props.id,
+    })
+  }
+  if (recovered.length) {
+    void Promise.resolve(canvas.flushNow?.(props.id)).then((canvasSaved) => {
+      recovered.forEach((detail) => {
+        publishImageTaskPersistence({ ...detail, canvasSaved: canvasSaved !== false })
+      })
     })
   }
 }

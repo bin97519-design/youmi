@@ -12698,11 +12698,14 @@ body {
 }
 .uc-custom-select-menu {
   position: absolute;
-  top: calc(100% + 4px);
-  bottom: auto;
+  top: auto;
+  bottom: calc(100% + 4px);
   left: 0;
   right: 0;
   z-index: 100;
+  max-height: min(320px, calc(100vh - 32px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--color-bg-1);
   border: 1px solid var(--color-border);
   border-radius: 10px;
