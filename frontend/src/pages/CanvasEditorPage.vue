@@ -7225,9 +7225,9 @@ async function loadImageForCrop(layer) {
           <div class="uc-creation-toolbar">
             <button type="button" :disabled="creationRunning" @click="creationPanelOpen = true">
               <i class="ri-layout-masonry-line"></i>
-              主图生成
+              画布创作
             </button>
-            <span>先选产品图，再按住 Command/Control 选择参考图</span>
+            <span>选中产品图，可生成主图或拆分需求方向</span>
           </div>
           <div
             ref="chatHistoryRef"
