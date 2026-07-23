@@ -118,6 +118,7 @@ public class ImageGenerationClient {
     if (request == null || request.prompt() == null || request.prompt().isBlank()) {
       throw new ApiException(400, "prompt is required");
     }
+    request = ImagePromptPresets.expand(request);
 
     if (!properties.isConfigured()
         && !properties.isApimartDirectConfigured()
