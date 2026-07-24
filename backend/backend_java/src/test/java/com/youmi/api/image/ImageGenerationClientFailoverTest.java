@@ -120,7 +120,7 @@ class ImageGenerationClientFailoverTest {
       String taskId = "apimart-direct:done-task";
       ImageGenerationDtos.CreateTaskRequest request = gptImageRequest();
       getFailoverStates(client).put(taskId,
-          newFailoverState(request, "apimart-direct", System.currentTimeMillis() - 121_000L));
+          newFailoverState(request, "apimart-direct", System.currentTimeMillis() - 181_000L));
 
       ImageGenerationDtos.TaskStatusResponse response = client.getTask(taskId);
 
@@ -128,6 +128,27 @@ class ImageGenerationClientFailoverTest {
       assertEquals("persisting", response.status());
       assertEquals(1, response.imageUrls().size());
       assertFalse(getFailoverStates(client).containsKey(taskId));
+      verify(mockHttpClient, never()).send(
+          argThat(req -> req.uri().toString().contains("47.90.226.52")), any());
+    } finally {
+      server.stop(0);
+    }
+  }
+
+  @Test
+  void apimartProcessingBeforeThreeMinutes_doesNotTriggerProxyFailover() throws Exception {
+    HttpServer server = jsonServer(
+        "{\"data\":{\"status\":\"processing\",\"progress\":50}}", null);
+    try {
+      ImageGenerationClient client = newApimartDirectClient(serverBaseUrl(server));
+      String taskId = "apimart-direct:not-yet-timed-out";
+      getFailoverStates(client).put(taskId,
+          newFailoverState(gptImageRequest(), "apimart-direct", System.currentTimeMillis() - 121_000L));
+
+      ImageGenerationDtos.TaskStatusResponse response = client.getTask(taskId);
+
+      assertEquals("apimart-direct", response.provider());
+      assertEquals("processing", response.status());
       verify(mockHttpClient, never()).send(
           argThat(req -> req.uri().toString().contains("47.90.226.52")), any());
     } finally {
@@ -157,7 +178,7 @@ class ImageGenerationClientFailoverTest {
 
       String taskId = "apimart-direct:slow-task";
       getFailoverStates(client).put(taskId,
-          newFailoverState(gptImageRequest(), "apimart-direct", System.currentTimeMillis() - 121_000L));
+          newFailoverState(gptImageRequest(), "apimart-direct", System.currentTimeMillis() - 181_000L));
 
       ImageGenerationDtos.TaskStatusResponse response = client.getTask(taskId);
 
@@ -202,7 +223,7 @@ class ImageGenerationClientFailoverTest {
       ImageGenerationClient client = newApimartDirectClient(serverBaseUrl(server));
       String taskId = "apimart-direct:concurrent-task";
       getFailoverStates(client).put(taskId,
-          newFailoverState(gptImageRequest(), "apimart-direct", System.currentTimeMillis() - 121_000L));
+          newFailoverState(gptImageRequest(), "apimart-direct", System.currentTimeMillis() - 181_000L));
 
       AtomicReference<ImageGenerationDtos.TaskStatusResponse> slowResponse = new AtomicReference<>();
       AtomicReference<Throwable> slowError = new AtomicReference<>();

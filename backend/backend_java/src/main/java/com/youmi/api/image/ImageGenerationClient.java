@@ -40,7 +40,7 @@ public class ImageGenerationClient {
   private static final String PROXY_TASK_PREFIX = PROVIDER_PROXY + ":";
   private static final String AGNES_TASK_PREFIX = PROVIDER_ANNES + ":";
   private static final String APIMART_DIRECT_TASK_PREFIX = "apimart-direct:";
-  private static final long PROVIDER_TIMEOUT_MS = 120_000L; // 2 分钟超时阈值（自任务创建起算）
+  private static final long PROVIDER_TIMEOUT_MS = 180_000L; // 3 分钟超时阈值（自任务创建起算）
   private static final String BROWSER_USER_AGENT =
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
           + "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36";
@@ -715,7 +715,7 @@ public class ImageGenerationClient {
     }
 
     // 只有查询确认主任务仍未完成后，才允许按创建时间触发超时兜底。
-    // 旧逻辑在查询前先判断 120 秒，导致 APIMart 已 completed 仍会误建 Proxy 任务。
+    // 必须先查询主任务；否则刚过 3 分钟但已 completed 的任务会被误建 Proxy 任务。
     if (state != null && failoverStates.get(cleanTaskId) == state
         && !PROVIDER_ANNES.equals(state.primaryProvider) && !state.failoverTriggered) {
       long elapsed = System.currentTimeMillis() - state.createdAt;
