@@ -312,7 +312,40 @@ function openCloneModalFromShortcut() {
   openCloneModal()
 }
 
-defineExpose({ openCloneModalFromShortcut })
+function addReferenceImage(reference) {
+  const payload = typeof reference === 'string' ? { url: reference } : reference || {}
+  const url = String(payload.url || '').trim()
+  if (!url) return false
+
+  const existing = images.value.find((image) => image.url === url)
+  if (existing) {
+    activeImageId.value = existing.id
+    return existing.id
+  }
+
+  const image = {
+    id: `reverse-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    name: String(payload.name || '反推参考图'),
+    localUrl: url,
+    url,
+    uploading: false,
+    source: 'reverse-prompt',
+  }
+  images.value.push(image)
+  activeImageId.value = image.id
+  return image.id
+}
+
+function replaceReferenceImageUrl(imageId, url) {
+  const image = images.value.find((item) => item.id === imageId)
+  const nextUrl = String(url || '').trim()
+  if (!image || !nextUrl) return false
+  image.url = nextUrl
+  image.localUrl = nextUrl
+  return true
+}
+
+defineExpose({ openCloneModalFromShortcut, addReferenceImage, replaceReferenceImageUrl })
 
 function submitDetailGenerate() {
   if (!userStore.requireLogin()) return

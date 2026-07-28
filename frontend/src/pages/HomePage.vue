@@ -5,11 +5,11 @@ import CaseGallery from '../components/home/CaseGallery.vue'
 import HomeComposer from '../components/home/HomeComposer.vue'
 import HomeShortcuts from '../components/home/HomeShortcuts.vue'
 import HomeSidebar from '../components/home/HomeSidebar.vue'
-import ReversePromptPanel from '../components/prompt/ReversePromptPanel.vue'
 import { useUserStore } from '../stores/user'
 import { useCanvasStore } from '../stores/canvas'
 import { useTheme } from '../composables/useTheme'
 import { apiPath } from '../utils/apiBase'
+import { uploadBase64ImageDirect } from '../utils/ossUpload'
 
 const railExpanded = ref(false)
 const prompt = ref('')
@@ -38,16 +38,6 @@ function toggleTheme() {
   cycleTheme()
   userMenuOpen.value = false
 }
-const reversePromptOpen = ref(false)
-const reversePromptPending = ref(false)
-const reversePromptError = ref('')
-const reversePromptResult = ref(null)
-const reversePromptCategories = ref([
-  { value: 'general', label: '通用', groups: [], fieldLabels: {} },
-  { value: 'mattress', label: '床垫', groups: [], fieldLabels: {} },
-  { value: 'curtain', label: '窗帘', groups: [], fieldLabels: {} },
-  { value: 'solid_wood_bed', label: '实木床', groups: [], fieldLabels: {} },
-])
 let generationTimer = null
 const TASK_POLL_INTERVAL = 2500
 const TASK_MAX_POLLS = 120
@@ -460,7 +450,7 @@ async function startDetailImages() {
 
 function handleShortcut(item) {
   if (item?.icon === 'reverse-prompt') {
-    reversePromptOpen.value = true
+    router.push('/reverse-prompt')
     return
   }
   if (item?.icon === 'copy') {
@@ -468,78 +458,44 @@ function handleShortcut(item) {
   }
 }
 
-async function loadReversePromptCategories() {
-  try {
-    const data = await readApiResponse(await fetch(apiPath('/api/prompt/categories')))
-    if (Array.isArray(data) && data.length) reversePromptCategories.value = data
-  } catch (error) {
-    reversePromptError.value =
-      error instanceof Error ? error.message : String(error || '反推品类加载失败')
-  }
-}
-
-async function analyzeReversePrompt(payload) {
-  reversePromptPending.value = true
-  reversePromptError.value = ''
-  try {
-    const data = await readApiResponse(
-      await fetch(apiPath('/api/prompt/analyze-image'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...userStore.authHeaders(),
-        },
-        body: JSON.stringify(payload),
-      }),
-    )
-    reversePromptResult.value = {
-      ...data,
-      imageUrl: payload.imageUrl || payload.imageBase64 || '',
-      source: 'system',
-      createdAt: new Date().toISOString(),
-    }
-  } catch (error) {
-    reversePromptError.value =
-      error instanceof Error ? error.message : String(error || '图片反推失败')
-  } finally {
-    reversePromptPending.value = false
-  }
-}
-
-function handleReversePromptBridgeMessage(event) {
+async function handleReversePromptBridgeMessage(event) {
   const message = event?.data
   if (!message || message.type !== 'youmi:reverse-prompt-result') return
   const payload = message.payload || {}
-  reversePromptResult.value = {
-    ...payload,
-    source: payload.source || 'bridge',
-    category: payload.category || 'general',
-    categoryLabel: payload.categoryLabel || '通用',
-    promptJson: payload.promptJson || {},
-    promptText: payload.promptText || '',
-    createdAt: payload.createdAt || new Date().toISOString(),
-  }
-  sessionStorage.setItem('youmi:reverse-prompt-result', JSON.stringify(reversePromptResult.value))
-  router.push('/reverse-prompt')
-  reversePromptError.value = ''
-}
-
-async function copyReversePrompt(payload) {
-  await navigator.clipboard?.writeText(
-    payload.promptText || JSON.stringify(payload.promptJson || {}, null, 2),
-  )
-}
-
-function applyReversePrompt(payload) {
-  const text = payload.promptText || JSON.stringify(payload.promptJson || {}, null, 2)
-  prompt.value = text
-  if (generation.value) {
-    generation.value.prompt = text
+  try {
+    const sourceBase64 =
+      typeof payload.imageBase64 === 'string'
+        ? payload.imageBase64.trim()
+        : [payload.imageUrl, payload.thumbnailUrl, payload.previewUrl, payload.url].find(
+            (value) => typeof value === 'string' && value.startsWith('data:image/'),
+          ) || ''
+    const imageUrl = sourceBase64
+      ? await uploadBase64ImageDirect(sourceBase64, {
+          dir: 'youmi/reverse-prompt',
+          fileName: `reverse-prompt-${Date.now()}`,
+        })
+      : payload.imageUrl || payload.thumbnailUrl || payload.previewUrl || payload.url || ''
+    const { imageBase64: _discardedImageBase64, ...safePayload } = payload
+    void _discardedImageBase64
+    const transferResult = {
+      ...safePayload,
+      imageUrl,
+      source: payload.source || 'bridge',
+      category: payload.category || 'general',
+      categoryLabel: payload.categoryLabel || '通用',
+      promptJson: payload.promptJson || {},
+      promptText: payload.promptText || '',
+      createdAt: payload.createdAt || new Date().toISOString(),
+    }
+    sessionStorage.setItem('youmi:reverse-prompt-result', JSON.stringify(transferResult))
+    router.push('/reverse-prompt')
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error || '框选图片转存失败')
+    window.alert(`框选图片转存失败：${message}`)
   }
 }
 
 onMounted(() => {
-  loadReversePromptCategories()
   window.addEventListener('message', handleReversePromptBridgeMessage)
 
   // 登录后从服务器同步画布数据
@@ -755,7 +711,11 @@ onBeforeUnmount(() => {
             <h3>产品信息</h3>
             <div class="yh-config-info-field">
               <textarea :value="generation.prompt" readonly></textarea>
-              <button class="yh-config-optimize" type="button" @click="reversePromptOpen = true">
+              <button
+                class="yh-config-optimize"
+                type="button"
+                @click="router.push('/reverse-prompt')"
+              >
                 反推提示词
               </button>
             </div>
@@ -1204,21 +1164,10 @@ onBeforeUnmount(() => {
       </aside>
 
       <div class="yh-floating-composer">
-        <HomeComposer v-model="prompt" @generate="startGeneration" />
+        <HomeComposer ref="composerRef" v-model="prompt" @generate="startGeneration" />
       </div>
     </section>
 
     <button class="yh-help-float" type="button">?</button>
-    <ReversePromptPanel
-      :visible="reversePromptOpen"
-      :categories="reversePromptCategories"
-      :result="reversePromptResult"
-      :pending="reversePromptPending"
-      :error="reversePromptError"
-      @close="reversePromptOpen = false"
-      @analyze="analyzeReversePrompt"
-      @copy="copyReversePrompt"
-      @apply="applyReversePrompt"
-    />
   </main>
 </template>

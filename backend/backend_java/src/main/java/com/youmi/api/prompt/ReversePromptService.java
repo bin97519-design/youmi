@@ -4,22 +4,28 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.youmi.api.ai.AiChatDtos;
 import com.youmi.api.ai.DashScopeClient;
+import com.youmi.api.ai.XfyunVisionClient;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import org.springframework.stereotype.Service;
 
 @Service
 public class ReversePromptService {
   private final ObjectMapper objectMapper;
   private final DashScopeClient dashScopeClient;
+  private final XfyunVisionClient xfyunVisionClient;
   private final ReversePromptTemplateService templateService;
 
   public ReversePromptService(
       ObjectMapper objectMapper,
       DashScopeClient dashScopeClient,
+      XfyunVisionClient xfyunVisionClient,
       ReversePromptTemplateService templateService) {
     this.objectMapper = objectMapper;
     this.dashScopeClient = dashScopeClient;
+    this.xfyunVisionClient = xfyunVisionClient;
     this.templateService = templateService;
   }
 
@@ -40,18 +46,35 @@ public class ReversePromptService {
       throw new IllegalArgumentException("请提供图片 URL 或图片 base64");
     }
 
-    AiChatDtos.CompletionResult result = dashScopeClient.completeVision(
-        "你是电商图片结构化视觉解析助手。必须严格输出 JSON，不输出 Markdown，不解释过程。",
-        template.systemPrompt(),
-        images.stream().limit(1).toList(),
-        0.15,
-        4096);
-    String raw = result.content() == null ? "" : result.content().trim();
+    String systemPrompt =
+        "你是电商图片视觉解析与生图提示词专家。必须严格输出合法 JSON，不输出 Markdown，不解释过程。";
+    String provider;
+    String model;
+    String raw;
+    if (xfyunVisionClient.isConfigured()) {
+      provider = "xfyun";
+      model = xfyunVisionClient.model();
+      raw = xfyunVisionClient.analyzeImage(
+          systemPrompt,
+          template.systemPrompt(),
+          images.get(0));
+    } else {
+      AiChatDtos.CompletionResult result = dashScopeClient.completeVision(
+          systemPrompt,
+          template.systemPrompt(),
+          images.stream().limit(1).toList(),
+          0.15,
+          4096);
+      provider = result.provider();
+      model = result.model();
+      raw = result.content();
+    }
+    raw = raw == null ? "" : raw.trim();
     JsonNode promptJson = parseJson(raw);
-    String promptText = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(promptJson);
+    String promptText = buildPromptText(promptJson, template.fieldLabels());
     return new ReversePromptDtos.AnalyzeImageResponse(
-        result.provider(),
-        result.model(),
+        provider,
+        model,
         request == null || request.category() == null || request.category().isBlank() ? "general" : request.category(),
         template.label(),
         promptJson,
@@ -59,6 +82,96 @@ public class ReversePromptService {
         template.groups(),
         template.fieldLabels(),
         raw);
+  }
+
+  private String buildPromptText(JsonNode promptJson, Map<String, String> fieldLabels) {
+    String structuredPrompt = buildStructuredPromptText(promptJson, fieldLabels);
+    String generationPrompt = promptFieldText(promptJson, "generation_prompt");
+    if (structuredPrompt.isBlank()) structuredPrompt = generationPrompt;
+    String negativePrompt = promptFieldText(promptJson, "negative_prompt");
+    if (negativePrompt.isBlank()) return structuredPrompt;
+    return structuredPrompt + "\n避免出现：" + negativePrompt;
+  }
+
+  private String buildStructuredPromptText(JsonNode promptJson, Map<String, String> fieldLabels) {
+    if (promptJson == null || !promptJson.isObject()) return "";
+    List<String> fieldOrder = List.of(
+        "subject_and_elements",
+        "mattress_surface",
+        "mattress_structure",
+        "curtain_detail",
+        "curtain_drape",
+        "curtain_scene",
+        "bed_wood",
+        "bed_structure",
+        "composition_and_camera",
+        "lighting_and_color",
+        "visual_style",
+        "typography_layout");
+    List<String> lines = new ArrayList<>();
+    for (String fieldName : fieldOrder) {
+      appendStructuredLine(lines, fieldName, promptJson.get(fieldName), fieldLabels);
+    }
+    Iterator<Map.Entry<String, JsonNode>> fields = promptJson.fields();
+    while (fields.hasNext()) {
+      Map.Entry<String, JsonNode> field = fields.next();
+      if (fieldOrder.contains(field.getKey())
+          || "generation_prompt".equals(field.getKey())
+          || "negative_prompt".equals(field.getKey())) {
+        continue;
+      }
+      appendStructuredLine(lines, field.getKey(), field.getValue(), fieldLabels);
+    }
+    if (lines.isEmpty()) return "";
+    lines.set(0, "提示词：" + lines.get(0));
+    return String.join("\n", lines);
+  }
+
+  private void appendStructuredLine(
+      List<String> lines,
+      String fieldName,
+      JsonNode value,
+      Map<String, String> fieldLabels) {
+    String text = readableValue(value, fieldLabels);
+    if (!text.isBlank()) {
+      lines.add(fieldLabels.getOrDefault(fieldName, fieldName) + "：" + text);
+    }
+  }
+
+  private String readableValue(JsonNode value, Map<String, String> fieldLabels) {
+    if (value == null || value.isNull()) return "";
+    if (value.isValueNode()) return value.asText().trim();
+    List<String> parts = new ArrayList<>();
+    if (value.isArray()) {
+      value.forEach(item -> {
+        String text = readableValue(item, fieldLabels);
+        if (!text.isBlank()) parts.add(text);
+      });
+      return String.join("；", parts);
+    }
+    value.fields().forEachRemaining(field -> {
+      String text = readableValue(field.getValue(), fieldLabels);
+      if (!text.isBlank()) {
+        parts.add(fieldLabels.getOrDefault(field.getKey(), field.getKey()) + "：" + text);
+      }
+    });
+    return String.join("，", parts);
+  }
+
+  private String promptFieldText(JsonNode promptJson, String fieldName) {
+    if (promptJson == null) return "";
+    JsonNode value = promptJson.get(fieldName);
+    if (value == null || value.isNull()) return "";
+    if (value.isTextual()) return value.asText().trim();
+    if (value.isArray()) {
+      List<String> parts = new ArrayList<>();
+      value.forEach(item -> {
+        String text = item.isTextual() ? item.asText().trim() : item.toString();
+        if (!text.isBlank()) parts.add(text);
+      });
+      return String.join("、", parts);
+    }
+    return value.toString();
   }
 
   private JsonNode parseJson(String raw) throws Exception {

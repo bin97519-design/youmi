@@ -576,7 +576,11 @@ export const useCanvasStore = defineStore('canvas', {
     },
 
     createDocument() {
-      const doc = makeCanvasDocument();
+      let id = `canvas-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      while (this.documents.some((item) => item.id === id)) {
+        id = `canvas-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      }
+      const doc = makeCanvasDocument(id);
       restoreDocumentId(doc.id);
       this.documents.unshift(doc);
       this.persist(doc.id);

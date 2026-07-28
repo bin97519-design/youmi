@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>有米画布使用教程</title>
+  <style>
+    :root {
+      --ink: #172033;
+      --muted: #667085;
+      --line: #dbe2ea;
+      --paper: #ffffff;
+      --wash: #f3f6f9;
+      --brand: #0a7f86;
+      --brand-soft: #e5f6f5;
+      --gold: #a77900;
+      --gold-soft: #fff7d6;
+      --danger: #b42318;
+      --shadow: 0 14px 40px rgba(23, 32, 51, 0.09);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--wash);
+      font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+      font-size: 16px;
+      line-height: 1.72;
+    }
+    button, input { font: inherit; }
+    a { color: inherit; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      min-height: 58px;
+      padding: 10px max(20px, calc((100vw - 1180px) / 2));
+      color: #fff;
+      background: #172033;
+      box-shadow: 0 4px 18px rgba(0, 0, 0, 0.16);
+    }
+    .brand { display: flex; align-items: baseline; gap: 12px; white-space: nowrap; }
+    .brand strong { color: #fff0a6; font-size: 20px; }
+    .brand span { color: #c8d0dc; font-size: 13px; }
+    .topnav { display: flex; gap: 4px; overflow-x: auto; }
+    .topnav a {
+      padding: 7px 10px;
+      border-radius: 6px;
+      color: #dce3ec;
+      font-size: 13px;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .topnav a:hover { color: #fff; background: rgba(255,255,255,.1); }
+
+    main { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 42px 0 72px; }
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(310px, .85fr);
+      gap: 34px;
+      align-items: center;
+      padding: 42px;
+      border: 1px solid var(--line);
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+    .eyebrow { margin: 0 0 8px; color: var(--brand); font-weight: 700; }
+    h1, h2, h3 { margin: 0; letter-spacing: 0; }
+    h1 { max-width: 720px; font-size: clamp(34px, 5vw, 58px); line-height: 1.12; }
+    .hero-copy { max-width: 720px; margin: 18px 0 0; color: var(--muted); font-size: 18px; }
+    .hero-route { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 24px; }
+    .route-step { padding: 7px 10px; border: 1px solid #bcd9d8; border-radius: 5px; background: var(--brand-soft); font-weight: 700; font-size: 13px; }
+    .route-arrow { color: #98a2b3; }
+
+    .first-card { padding: 22px; border: 1px solid #c5d9d8; border-radius: 8px; background: #f5fbfb; }
+    .first-card h2 { font-size: 19px; }
+    .first-card ol { margin: 14px 0 0; padding-left: 22px; }
+    .first-card li + li { margin-top: 8px; }
+
+    section { scroll-margin-top: 76px; margin-top: 54px; }
+    .section-head { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+    .section-head h2 { font-size: 30px; line-height: 1.25; }
+    .section-head p { max-width: 620px; margin: 0; color: var(--muted); }
+
+    .canvas-map {
+      display: grid;
+      grid-template-columns: 78px minmax(0, 1fr) 300px;
+      grid-template-rows: 56px 430px;
+      overflow: hidden;
+      border: 1px solid #485267;
+      border-radius: 8px;
+      background: #1d2129;
+      color: #eef2f7;
+      box-shadow: var(--shadow);
+    }
+    .mock-top {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      border-bottom: 1px solid #414959;
+      background: #242830;
+    }
+    .mock-top b { color: #fff0a6; }
+    .mock-top span { color: #aeb7c6; font-size: 13px; }
+    .mock-tools { display: flex; flex-direction: column; align-items: center; gap: 10px; padding-top: 18px; border-right: 1px solid #414959; }
+    .tool {
+      display: grid;
+      place-items: center;
+      width: 42px;
+      min-height: 38px;
+      border: 1px solid #586174;
+      border-radius: 6px;
+      color: #d9e1eb;
+      background: #2b303a;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .tool.active { color: #93f2ed; border-color: #21a6ac; background: #16464a; }
+    .mock-stage {
+      position: relative;
+      min-width: 0;
+      background-color: #20242b;
+      background-image: linear-gradient(#343a45 1px, transparent 1px), linear-gradient(90deg, #343a45 1px, transparent 1px);
+      background-size: 28px 28px;
+    }
+    .mock-stage::before, .mock-stage::after {
+      content: "生成图片";
+      position: absolute;
+      top: 120px;
+      width: 116px;
+      aspect-ratio: 3 / 4;
+      display: grid;
+      place-items: end center;
+      padding: 10px;
+      border: 2px solid #45b6ba;
+      background: linear-gradient(155deg, #eff6f1 0 28%, #c8d9cd 28% 55%, #748b75 55%);
+      color: #172033;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .mock-stage::before { left: 24%; transform: rotate(-2deg); }
+    .mock-stage::after { left: 50%; top: 150px; transform: rotate(2deg); }
+    .stage-tip { position: absolute; left: 18px; bottom: 16px; padding: 7px 10px; border-radius: 5px; background: rgba(17, 24, 39, .86); font-size: 12px; }
+    .mock-chat { display: flex; flex-direction: column; gap: 12px; padding: 14px; border-left: 1px solid #414959; background: #16191f; }
+    .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .tabs span { padding: 7px; border-radius: 5px; background: #292e38; text-align: center; font-size: 12px; }
+    .tabs .active { color: #a8fbf6; background: #155059; }
+    .message { padding: 10px; border-radius: 6px; color: #d2d9e4; background: #2a2e36; font-size: 12px; }
+    .chat-compose { margin-top: auto; padding: 12px; border: 1px solid #414959; border-radius: 7px; background: #22262e; }
+    .reference { width: 48px; height: 58px; border-radius: 5px; background: #d7ded7; color: #586174; display: grid; place-items: center; font-size: 11px; }
+    .option-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 12px; }
+    .option-grid span { padding: 6px 8px; border: 1px solid #434b5c; border-radius: 5px; color: #c6cfdb; font-size: 11px; }
+    .send { margin-top: 10px; padding: 8px; border-radius: 5px; color: #2c2507; background: #ffe98d; text-align: center; font-size: 12px; font-weight: 700; }
+    .map-notes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 14px; }
+    .map-note { padding: 15px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); }
+    .map-note b { display: block; color: var(--brand); }
+    .map-note span { color: var(--muted); font-size: 13px; }
+
+    .steps { display: grid; gap: 14px; }
+    .step {
+      display: grid;
+      grid-template-columns: 52px minmax(0, 1fr) auto;
+      gap: 18px;
+      align-items: start;
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+    }
+    .step-num { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; color: #fff; background: var(--brand); font-weight: 800; }
+    .step h3 { margin-top: 2px; font-size: 20px; }
+    .step p { margin: 6px 0 0; color: var(--muted); }
+    .step-detail { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+    .chip { padding: 5px 8px; border-radius: 4px; color: #344054; background: #edf1f5; font-size: 12px; font-weight: 700; }
+    .done { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px; white-space: nowrap; cursor: pointer; }
+    .done input { width: 18px; height: 18px; accent-color: var(--brand); }
+
+    .callout { margin-top: 16px; padding: 16px 18px; border-left: 4px solid var(--gold); background: var(--gold-soft); }
+    .callout strong { color: #664d00; }
+
+    .feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+    .feature { padding: 20px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+    .feature h3 { font-size: 18px; }
+    .feature p { margin: 6px 0 0; color: var(--muted); font-size: 14px; }
+    .feature .how { display: block; margin-top: 13px; color: var(--brand); font-weight: 700; font-size: 13px; }
+
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+    table { width: 100%; border-collapse: collapse; min-width: 700px; }
+    th, td { padding: 13px 16px; border-bottom: 1px solid var(--line); text-align: left; }
+    th { color: #475467; background: #edf1f5; font-size: 13px; }
+    tbody tr:last-child td { border-bottom: 0; }
+    kbd { display: inline-block; min-width: 30px; padding: 2px 7px; border: 1px solid #b7c0cc; border-bottom-width: 2px; border-radius: 4px; background: #fff; text-align: center; font-family: inherit; font-size: 13px; font-weight: 700; }
+
+    .faq { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    details { padding: 16px 18px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); }
+    summary { cursor: pointer; font-weight: 700; }
+    details p { margin: 10px 0 0; color: var(--muted); }
+
+    .finish { padding: 30px; border-radius: 8px; color: #eefaf9; background: #163e42; }
+    .finish h2 { font-size: 28px; }
+    .finish p { margin: 8px 0 0; color: #c7e5e3; }
+    .finish button { margin-top: 18px; padding: 9px 14px; border: 1px solid #b6e5e2; border-radius: 5px; color: #12383b; background: #dff7f5; cursor: pointer; font-weight: 700; }
+
+    footer.page-footer { padding: 26px 16px 40px; color: #667085; text-align: center; font-size: 13px; }
+
+    @media (max-width: 880px) {
+      .hero { grid-template-columns: 1fr; padding: 28px; }
+      .canvas-map { grid-template-columns: 64px minmax(340px, 1fr); grid-template-rows: 52px 380px 360px; overflow-x: auto; }
+      .mock-chat { grid-column: 1 / -1; border-top: 1px solid #414959; border-left: 0; }
+      .map-notes, .feature-grid { grid-template-columns: 1fr 1fr; }
+      .faq { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 620px) {
+      .topbar { align-items: flex-start; flex-direction: column; gap: 6px; }
+      main { width: min(100% - 20px, 1180px); padding-top: 20px; }
+      .hero { padding: 22px; }
+      h1 { font-size: 34px; }
+      .section-head { align-items: flex-start; flex-direction: column; }
+      .section-head h2 { font-size: 26px; }
+      .map-notes, .feature-grid { grid-template-columns: 1fr; }
+      .step { grid-template-columns: 42px 1fr; gap: 12px; padding: 17px; }
+      .step-num { width: 38px; height: 38px; }
+      .done { grid-column: 2; }
+    }
+    @media print {
+      body { background: #fff; }
+      .topbar, .done, .finish button { display: none; }
+      main { width: 100%; padding: 0; }
+      .hero, .canvas-map, .step, .feature, .table-wrap, details { box-shadow: none; break-inside: avoid; }
+      section { margin-top: 28px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><strong>YOUMI</strong><span>画布入门教程</span></div>
+    <nav class="topnav" aria-label="教程目录">
+      <a href="#map">认识界面</a>
+      <a href="#start">快速上手</a>
+      <a href="#edit">编辑图片</a>
+      <a href="#shortcuts">快捷键</a>
+      <a href="#faq">常见问题</a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="hero">
+      <div>
+        <p class="eyebrow">第一次使用，从这里开始</p>
+        <h1>5 分钟学会有米画布</h1>
+        <p class="hero-copy">不需要懂设计软件。把图片放进画布，写清楚想要什么，选择模型参数，发送生成，再移动、整理和下载结果即可。</p>
+        <div class="hero-route" aria-label="使用流程">
+          <span class="route-step">放入素材</span><span class="route-arrow">→</span>
+          <span class="route-step">写提示词</span><span class="route-arrow">→</span>
+          <span class="route-step">选择参数</span><span class="route-arrow">→</span>
+          <span class="route-step">发送生成</span><span class="route-arrow">→</span>
+          <span class="route-step">整理下载</span>
+        </div>
+      </div>
+      <aside class="first-card">
+        <h2>最快完成一张图</h2>
+        <ol>
+          <li>把参考图片拖进右侧输入框的“+”区域。</li>
+          <li>输入你希望如何修改或生成。</li>
+          <li>选择模型、比例、分辨率和数量。</li>
+          <li>点击“发送”，结果会自动加入画布。</li>
+        </ol>
+      </aside>
+    </div>
+
+    <section id="map">
+      <div class="section-head">
+        <h2>30 秒认识界面</h2>
+        <p>画布可以分成四块：顶部状态栏、左侧工具栏、中间工作区、右侧对话与图层窗口。</p>
+      </div>
+      <div class="canvas-map" role="img" aria-label="有米画布界面结构示意图">
+        <div class="mock-top"><b>YOUMI · 万能画布</b><span>保存状态　主题　自动智能分层　关闭</span></div>
+        <div class="mock-tools">
+          <span class="tool">+</span><span class="tool active">选择 V</span><span class="tool">抓手 H</span><span class="tool">聚焦 F</span><span class="tool">标记 M</span><span class="tool">历史</span>
+        </div>
+        <div class="mock-stage"><span class="stage-tip">中间区域：摆放、移动、框选图片</span></div>
+        <div class="mock-chat">
+          <div class="tabs"><span class="active">对话窗口</span><span>图层窗口</span></div>
+          <div class="message">描述想要生成的画面，或者说明参考图需要如何修改。</div>
+          <div class="chat-compose">
+            <div class="reference">+ 素材</div>
+            <div class="option-grid"><span>模型</span><span>比例</span><span>分辨率</span><span>数量</span></div>
+            <div class="send">发送</div>
+          </div>
+        </div>
+      </div>
+      <div class="map-notes">
+        <div class="map-note"><b>顶部</b><span>查看保存状态，切换明暗主题和自动智能分层。</span></div>
+        <div class="map-note"><b>左侧</b><span>添加文件、选择、移动画布、聚焦和标记元素。</span></div>
+        <div class="map-note"><b>中间</b><span>图片真正工作的地方，可以移动、框选和整理。</span></div>
+        <div class="map-note"><b>右侧</b><span>发送生图任务，或查看、选择和管理图层。</span></div>
+      </div>
+    </section>
+
+    <section id="start">
+      <div class="section-head">
+        <h2>完成第一次生图</h2>
+        <p>按下面 6 步操作。右侧勾选框只用于练习记录，关闭教程后仍会保留。</p>
+      </div>
+      <div class="steps">
+        <article class="step">
+          <span class="step-num">1</span>
+          <div><h3>放入参考图片</h3><p>将单张或多张图片直接拖到画布，或者拖到右侧输入框的“+”素材区。也可以复制图片后按 Ctrl+V 粘贴。</p><div class="step-detail"><span class="chip">支持多图</span><span class="chip">支持拖拽</span><span class="chip">支持粘贴</span><span class="chip">单图不超过 20MB</span></div></div>
+          <label class="done"><input type="checkbox" data-check="1" />我完成了</label>
+        </article>
+        <article class="step">
+          <span class="step-num">2</span>
+          <div><h3>选中要使用的参考图</h3><p>图片在输入框素材区出现后，确认它处于选中状态。发送成功后，素材区会自动清空，避免下次误用旧图。</p></div>
+          <label class="done"><input type="checkbox" data-check="2" />我完成了</label>
+        </article>
+        <article class="step">
+          <span class="step-num">3</span>
+          <div><h3>写清楚提示词</h3><p>推荐按“保留什么 + 修改什么 + 画面用途 + 风格与细节”来写。例如：保留床和窗帘角度，把床品换成浅米色，生成淘宝主图，法式复古风，文字清晰。</p><div class="step-detail"><span class="chip">对象</span><span class="chip">修改动作</span><span class="chip">用途</span><span class="chip">风格</span></div></div>
+          <label class="done"><input type="checkbox" data-check="3" />我完成了</label>
+        </article>
+        <article class="step">
+          <span class="step-num">4</span>
+          <div><h3>选择生成参数</h3><p>模型决定能力与成本；比例决定横竖构图；分辨率决定清晰度；数量决定一次生成几张。第一次建议数量选 1，确认方向后再批量生成。</p><div class="step-detail"><span class="chip">模型</span><span class="chip">比例</span><span class="chip">分辨率</span><span class="chip">数量</span></div></div>
+          <label class="done"><input type="checkbox" data-check="4" />我完成了</label>
+        </article>
+        <article class="step">
+          <span class="step-num">5</span>
+          <div><h3>发送并继续工作</h3><p>点击“发送”后，画布会先出现生成中的占位图。你不必一直等待，可以继续发送下一条生图任务；每个任务完成后都会自动落到画布中。</p></div>
+          <label class="done"><input type="checkbox" data-check="5" />我完成了</label>
+        </article>
+        <article class="step">
+          <span class="step-num">6</span>
+          <div><h3>查看、整理和下载</h3><p>双击图片可放大查看。拖动图片整理位置，右键图片可下载、加入参考图、加入我的素材、智能分层或删除。多选图片后右键下载，会自动打成 ZIP 包。</p></div>
+          <label class="done"><input type="checkbox" data-check="6" />我完成了</label>
+        </article>
+      </div>
+      <div class="callout"><strong>记住一件事：</strong>画布会自动保存。顶部显示“已保存”后即可放心离开；重要结果仍建议及时下载到本地。</div>
+    </section>
+
+    <section id="edit">
+      <div class="section-head">
+        <h2>常用编辑功能</h2>
+        <p>先用选择工具选中图片，再执行移动、整理、分层、下载等操作。</p>
+      </div>
+      <div class="feature-grid">
+        <article class="feature"><h3>选择与多选</h3><p>单击选择一张图片；按住 Ctrl 点击可追加选择；在空白区域拖出选框，可以一次框选多张。</p><span class="how">适合批量移动、删除和下载</span></article>
+        <article class="feature"><h3>移动画布</h3><p>切换到抓手工具后拖动画布，也可以按住空格拖动。滚轮用于平移，Ctrl+滚轮用于缩放。</p><span class="how">找不到图片时按 F 聚焦</span></article>
+        <article class="feature"><h3>移动图片</h3><p>使用选择工具拖动已选图片。多选后拖动其中一张，整组会保持相对位置一起移动。</p><span class="how">适合套图排版和分组整理</span></article>
+        <article class="feature"><h3>智能分层</h3><p>顶部自动智能分层默认关闭。需要时可开启自动分层，也可以右键单张图片手动执行智能分层。</p><span class="how">自动开关会跟随画布保存</span></article>
+        <article class="feature"><h3>我的素材</h3><p>右键画布图片并选择“添加到我的素材”。以后打开素材面板，点击即可重新加入当前画布。</p><span class="how">适合保存常用产品图和参考图</span></article>
+        <article class="feature"><h3>历史记录</h3><p>对话窗口生成成功的图片会自动记录。历史图片可以重新加到画布、作为参考图，或复用原提示词。</p><span class="how">适合找回旧结果和继续迭代</span></article>
+        <article class="feature"><h3>图层窗口</h3><p>右侧切换到“图层窗口”，可以按图层快速定位图片，并查看图层名称和尺寸。</p><span class="how">画布图片多时优先使用</span></article>
+        <article class="feature"><h3>放大查看</h3><p>双击画布图片进入查看器。查看器内可以拖动、滚轮缩放、旋转、翻转和下载。</p><span class="how">按 Esc 关闭查看器</span></article>
+        <article class="feature"><h3>单图与多图下载</h3><p>右键单图可直接下载；同时选中多张图片后右键下载，系统会把所有选中图片打成 ZIP。</p><span class="how">下载前确认选中范围</span></article>
+      </div>
+    </section>
+
+    <section id="shortcuts">
+      <div class="section-head"><h2>最常用快捷键</h2><p>画布右下角“?”中也可以随时打开快捷键速查。</p></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>快捷键</th><th>作用</th><th>什么时候用</th></tr></thead>
+          <tbody>
+            <tr><td><kbd>V</kbd></td><td>选择工具</td><td>选图、移动图片、框选多图</td></tr>
+            <tr><td><kbd>H</kbd></td><td>抓手工具</td><td>拖动画布寻找内容</td></tr>
+            <tr><td><kbd>F</kbd></td><td>聚焦选中图层 / 适应画面</td><td>图片跑出视野或需要快速定位</td></tr>
+            <tr><td><kbd>M</kbd></td><td>标记元素</td><td>指定图片中的局部对象作为编辑目标</td></tr>
+            <tr><td><kbd>Ctrl</kbd> + <kbd>C</kbd></td><td>复制选中的图片</td><td>复制单图或多图，并保留相对位置</td></tr>
+            <tr><td><kbd>Ctrl</kbd> + <kbd>V</kbd></td><td>粘贴图片</td><td>粘贴画布内容、截图或外部图片</td></tr>
+            <tr><td><kbd>Ctrl</kbd> + <kbd>Z</kbd></td><td>撤销</td><td>恢复上一步画布操作</td></tr>
+            <tr><td><kbd>Delete</kbd></td><td>删除选中图层</td><td>支持多选后批量删除</td></tr>
+            <tr><td><kbd>空格</kbd> + 拖动</td><td>临时移动画布</td><td>不切换工具也能快速平移</td></tr>
+            <tr><td><kbd>Ctrl</kbd> + 滚轮</td><td>缩放画布</td><td>放大细节或缩小查看全局</td></tr>
+            <tr><td><kbd>Enter</kbd></td><td>发送提示词</td><td>在右侧输入框快速发起生成</td></tr>
+            <tr><td><kbd>Ctrl</kbd> + <kbd>Enter</kbd></td><td>提示词换行</td><td>输入较长、多段提示词</td></tr>
+            <tr><td><kbd>Esc</kbd></td><td>关闭当前面板</td><td>退出查看器、菜单或弹窗</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="faq">
+      <div class="section-head"><h2>遇到问题先看这里</h2><p>大多数情况不需要重复提交，先根据页面状态判断。</p></div>
+      <div class="faq">
+        <details><summary>图片为什么上传不了？</summary><p>先确认文件是常见图片格式，并且单张不超过 20MB。超过限制时请先压缩图片，再重新上传。</p></details>
+        <details><summary>为什么一直显示生成中？</summary><p>生成需要一定时间，画布中的占位图会自动更新。不要连续刷新页面；可以继续提交其他任务，系统会分别处理。</p></details>
+        <details><summary>图片生成了，但我找不到？</summary><p>先看右侧图层窗口或历史记录，再按 F 聚焦。如果仍未看到，可从历史记录重新添加到画布。</p></details>
+        <details><summary>如何把画布图片再次用于生图？</summary><p>右键图片，选择“添加到参考图”；多选图片后右键，可以一次把多张图都加入参考图。</p></details>
+        <details><summary>如何一次下载多张图片？</summary><p>按住 Ctrl 逐张选择，或拖框多选，然后在其中一张已选图片上右键，选择下载多张图片，系统会生成 ZIP。</p></details>
+        <details><summary>删除后还能恢复吗？</summary><p>刚删除时可按 Ctrl+Z 撤销。生成图片通常还能在历史记录中找到，但重要图片最好及时下载。</p></details>
+        <details><summary>提示词怎么写效果更稳定？</summary><p>明确说明哪些内容必须保留、哪些内容需要变化，再补充用途、构图、风格、文字和禁止项，避免只写“好看一点”。</p></details>
+        <details><summary>自动智能分层要不要开启？</summary><p>只是生图和排版时建议保持默认关闭；需要识别图片内部元素并进行局部标记时，再开启或手动分层。</p></details>
+      </div>
+    </section>
+
+    <section class="finish">
+      <h2>现在你已经会用了</h2>
+      <p>最常用的路径只有一句话：放入参考图，写清修改要求，选择参数发送，最后整理并下载。</p>
+      <button type="button" onclick="window.print()">打印或保存为 PDF</button>
+    </section>
+  </main>
+
+  <footer class="page-footer">有米 AI 画布使用教程 · 适用于当前本地版本</footer>
+  <script>
+    const checks = [...document.querySelectorAll('[data-check]')]
+    checks.forEach((item) => {
+      const key = `youmi-canvas-tutorial-${item.dataset.check}`
+      item.checked = localStorage.getItem(key) === '1'
+      item.addEventListener('change', () => localStorage.setItem(key, item.checked ? '1' : '0'))
+    })
+  </script>
+</body>
+</html>

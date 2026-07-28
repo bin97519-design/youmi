@@ -20,6 +20,7 @@ import { createStoredZip } from '../utils/storedZip'
 import {
   MAX_IMAGE_UPLOAD_BYTES,
   uploadFileDirect,
+  uploadBase64ImageDirect,
   persistToOss,
 } from '../utils/ossUpload'
 
@@ -39,6 +40,16 @@ const minimapVisible = ref(true)
 const myMaterialsOpen = ref(false)
 const historyPanelOpen = ref(false)
 const myMaterials = ref(JSON.parse(localStorage.getItem('youmi_my_materials') || '[]'))
+const copyToCanvasDialog = reactive({
+  visible: false,
+  layerIds: [],
+  selectedTargetId: '',
+  targetQuery: '',
+  newTitle: '',
+  copying: false,
+  error: '',
+  result: null,
+})
 
 // 视频播放状态
 const playingVideoLayerId = ref(null)
@@ -120,6 +131,17 @@ const _undoRestoring = ref(false) // 撤销恢复期间跳过自动检测
 const _mounted = ref(false) // 组件是否已挂载（用于防止 polling 越界）
 const rightPanelVisible = ref(true)
 const isReversePromptCanvas = computed(() => props.id === 'reverse-prompt')
+const reversePromptPending = ref(false)
+const reversePromptError = ref('')
+const reversePromptResult = ref(null)
+const expandedReversePromptSections = ref(new Set())
+const reversePromptCategories = ref([
+  { value: 'general', label: '通用', groups: [], fieldLabels: {} },
+  { value: 'mattress', label: '床垫', groups: [], fieldLabels: {} },
+  { value: 'curtain', label: '窗帘', groups: [], fieldLabels: {} },
+  { value: 'solid_wood_bed', label: '实木床', groups: [], fieldLabels: {} },
+])
+const REVERSE_PROMPT_TRANSFER_KEY = 'youmi:reverse-prompt-result'
 const reversePromptCard = reactive({ x: null, y: null, width: 380, height: 240, dragging: null })
 const reversePromptConnectors = ref([])
 const selectedLayerId = ref('')
@@ -295,6 +317,14 @@ function deleteSelectedConnection() {
 function selectSingleLayer(layer) {
   selectedLayerId.value = layer.id
   selectedLayerIds.value = [layer.id]
+}
+
+const CANVAS_TUTORIAL_URL =
+  'http://101.133.149.214/report/%E6%9C%89%E7%B1%B3%E7%94%BB%E5%B8%83%E4%BD%BF%E7%94%A8%E6%95%99%E7%A8%8B.html'
+
+function openCanvasTutorial() {
+  helpMenuOpen.value = false
+  window.open(CANVAS_TUTORIAL_URL, '_blank', 'noopener,noreferrer')
 }
 
 // 帮助菜单 → 快捷键
@@ -536,6 +566,7 @@ const visibleReferenceImages = computed(() => {
   )
 })
 const activeTool = ref('select')
+const spacePanHeld = ref(false)
 const canvasTools = [
   { key: 'select', label: '选择', shortcut: 'V', icon: 'ri-cursor-line' },
   { key: 'hand', label: '抓手（拖动画布）', shortcut: 'H', icon: 'ri-hand' },
@@ -600,6 +631,7 @@ const cropPickerOpen = ref(false) // 宫格选择器弹窗
 const cropPickerX = ref(0)
 const cropPickerY = ref(0)
 const cropQuickOpen = ref(false) // 快捷裁图子菜单
+const promptCategoryOpen = ref(false) // 获取提示词品类子菜单
 
 // 重叠元素候选列表：key = "layerId::elementId" → [{layerId, el, id, name, box_2d, area}]
 const elementOverlapCandidates = ref({})
@@ -623,6 +655,167 @@ const selectedLayerIndex = computed(() =>
   layers.value.findIndex((item) => item.id === selectedLayerId.value),
 )
 const viewScale = computed(() => doc.value.payload.view.scale || 1)
+
+async function loadCanvasReversePromptCategories() {
+  try {
+    const data = await readApiResponse(await fetch(apiPath('/api/prompt/categories')))
+    if (Array.isArray(data) && data.length) reversePromptCategories.value = data
+  } catch (error) {
+    reversePromptError.value =
+      error instanceof Error ? error.message : String(error || '反推品类加载失败')
+  }
+}
+
+async function analyzeCanvasReversePrompt(payload) {
+  reversePromptPending.value = true
+  reversePromptError.value = ''
+  try {
+    const data = await readApiResponse(
+      await fetch(apiPath('/api/prompt/analyze-image'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...userStore.authHeaders(),
+        },
+        body: JSON.stringify(payload),
+      }),
+    )
+    const result = {
+      ...data,
+      imageUrl: payload.imageUrl || payload.imageBase64 || '',
+      source: 'selection',
+      createdAt: new Date().toISOString(),
+    }
+    reversePromptResult.value = result
+    return result
+  } catch (error) {
+    reversePromptError.value =
+      error instanceof Error ? error.message : String(error || '图片反推失败')
+    throw error
+  } finally {
+    reversePromptPending.value = false
+  }
+}
+
+async function reversePromptTransferImageUrl(payload) {
+  const imageBase64 =
+    typeof payload?.imageBase64 === 'string' ? payload.imageBase64.trim() : ''
+  const directValue = [
+    payload?.imageUrl,
+    payload?.thumbnailUrl,
+    payload?.previewUrl,
+    payload?.url,
+  ].find((value) => typeof value === 'string' && value.trim())
+  const source = imageBase64 || String(directValue || '').trim()
+  if (!source) return ''
+
+  const looksLikeRawBase64 =
+    source.length > 256 && /^[a-zA-Z0-9+/=\s]+$/.test(source)
+  if (source.startsWith('data:') || imageBase64 || looksLikeRawBase64) {
+    return uploadBase64ImageDirect(source, {
+      dir: 'youmi/reverse-prompt',
+      fileName: `reverse-prompt-${Date.now()}`,
+    })
+  }
+  return source
+}
+
+async function importReversePromptTransfer(payload) {
+  if (!isReversePromptCanvas.value || !payload || typeof payload !== 'object') return
+
+  const imageUrl = await reversePromptTransferImageUrl(payload)
+  const { imageBase64: _discardedImageBase64, ...safePayload } = payload
+  void _discardedImageBase64
+  reversePromptResult.value = {
+    ...safePayload,
+    imageUrl,
+    source: payload.source || 'selection',
+    category: payload.category || 'general',
+    categoryLabel: payload.categoryLabel || '通用',
+    promptJson: payload.promptJson || {},
+    promptText: payload.promptText || '',
+    createdAt: payload.createdAt || new Date().toISOString(),
+  }
+  reversePromptError.value = ''
+  if (!imageUrl) return
+
+  const existingLayer = layers.value.find(
+    (layer) =>
+      layer?.type !== 'video' &&
+      ((payload.transferId && layer.reverseInboxTransferId === payload.transferId) ||
+        layer.url === imageUrl ||
+        layer.thumbnailUrl === imageUrl),
+  )
+  const layerId =
+    existingLayer?.id ||
+    (await addImageLayerFromUrl(
+      imageUrl,
+      payload.source === 'selection' ? '框选图片' : '反推来源图片',
+      '',
+      { placement: 'canvas-smart' },
+    ))
+
+  if (!layerId) return
+  canvas.updateDocument(props.id, (draft) => {
+    const layer = draft.payload.layers.find((item) => item.id === layerId)
+    if (layer) {
+      layer.sourceType = 'reverse-prompt'
+      if (payload.transferId) layer.reverseInboxTransferId = payload.transferId
+    }
+    return draft
+  })
+  selectedLayerId.value = layerId
+  selectedLayerIds.value = [layerId]
+  addReversePromptReference(imageUrl, layerId)
+  if (reversePromptResult.value.promptText) {
+    applyReversePromptResultToLayer(layerId, reversePromptResult.value)
+  }
+  return layerId
+}
+
+async function hydrateReversePromptTransfer() {
+  if (!isReversePromptCanvas.value) return
+  const raw = sessionStorage.getItem(REVERSE_PROMPT_TRANSFER_KEY)
+  if (!raw) return
+  try {
+    await importReversePromptTransfer(JSON.parse(raw))
+    sessionStorage.removeItem(REVERSE_PROMPT_TRANSFER_KEY)
+  } catch (error) {
+    reversePromptError.value =
+      error instanceof Error ? error.message : String(error || '框选图片转存失败')
+    showCopyPasteToast(`框选图片转存失败：${reversePromptError.value}`)
+  }
+}
+
+function sendReversePromptBridgeAck(payload, ok, error = '') {
+  if (!payload?.transferId) return
+  window.postMessage(
+    {
+      type: 'youmi:reverse-prompt-ack',
+      transferId: payload.transferId,
+      ok,
+      error,
+    },
+    window.location.origin,
+  )
+}
+
+async function handleCanvasReversePromptBridgeMessage(event) {
+  const message = event?.data
+  if (!isReversePromptCanvas.value || message?.type !== 'youmi:reverse-prompt-result') return
+  const payload = message.payload || {}
+  try {
+    const layerId = await importReversePromptTransfer(payload)
+    if (!layerId) throw new Error('未能把图片加入反推画布')
+    sendReversePromptBridgeAck(payload, true)
+  } catch (error) {
+    reversePromptError.value =
+      error instanceof Error ? error.message : String(error || '框选图片转存失败')
+    showCopyPasteToast(`框选图片转存失败：${reversePromptError.value}`)
+    sendReversePromptBridgeAck(payload, false, reversePromptError.value)
+  }
+}
+
 // 手形工具拖动 — 轻量 reactive，避免每帧 Immer + persist
 const panOffset = reactive({ x: 0, y: 0 })
 let panCommitTimer = null
@@ -2083,7 +2276,82 @@ function scrollChatToBottom() {
   })
 }
 
-async function addImageLayerFromUrl(url, name = 'AI生成图片', detectPrompt = '') {
+function findAvailableCanvasLayerPosition(width, height) {
+  const gap = 48
+  const selected = selectedLayer.value
+  const viewportCenter = viewportCenterWorld()
+  const origin =
+    selected && selected.visible !== false
+      ? {
+          x: Number(selected.x || 0) + Math.max(1, Number(selected.width || 0)) + gap,
+          y: Number(selected.y || 0),
+        }
+      : {
+          x: viewportCenter.x - width / 2,
+          y: viewportCenter.y - height / 2,
+        }
+  const occupied = layers.value
+    .filter((layer) => layer?.visible !== false)
+    .map((layer) => ({
+      x: Number(layer.x),
+      y: Number(layer.y),
+      width: Math.max(1, Number(layer.width) || 0),
+      height: Math.max(1, Number(layer.height) || 0),
+    }))
+    .filter(
+      (rect) =>
+        Number.isFinite(rect.x) &&
+        Number.isFinite(rect.y) &&
+        Number.isFinite(rect.width) &&
+        Number.isFinite(rect.height),
+    )
+
+  const isFree = (candidate) =>
+    occupied.every(
+      (rect) =>
+        candidate.x + width + gap <= rect.x ||
+        candidate.x >= rect.x + rect.width + gap ||
+        candidate.y + height + gap <= rect.y ||
+        candidate.y >= rect.y + rect.height + gap,
+    )
+
+  const first = { x: Math.round(origin.x), y: Math.round(origin.y) }
+  if (isFree(first)) return first
+
+  const stepX = width + gap
+  const stepY = height + gap
+  for (let ring = 1; ring <= 12; ring += 1) {
+    for (let column = -ring; column <= ring; column += 1) {
+      for (const row of [-ring, ring]) {
+        const candidate = {
+          x: Math.round(origin.x + column * stepX),
+          y: Math.round(origin.y + row * stepY),
+        }
+        if (isFree(candidate)) return candidate
+      }
+    }
+    for (let row = -ring + 1; row < ring; row += 1) {
+      for (const column of [-ring, ring]) {
+        const candidate = {
+          x: Math.round(origin.x + column * stepX),
+          y: Math.round(origin.y + row * stepY),
+        }
+        if (isFree(candidate)) return candidate
+      }
+    }
+  }
+
+  const rightEdge = occupied.reduce(
+    (max, rect) => Math.max(max, rect.x + rect.width),
+    viewportCenter.x,
+  )
+  return {
+    x: Math.round(rightEdge + gap),
+    y: Math.round(viewportCenter.y - height / 2),
+  }
+}
+
+async function addImageLayerFromUrl(url, name = 'AI生成图片', detectPrompt = '', options = {}) {
   try {
     // 后端已在异步持久化完成后返回永久 OSS URL，此处不再二次转存（去掉 30s 自杀式 abort）
     const size = await imageSize(url)
@@ -2093,8 +2361,13 @@ async function addImageLayerFromUrl(url, name = 'AI生成图片', detectPrompt =
       const maxZ = draft.payload.layers.reduce((max, layer) => Math.max(max, layer.zIndex || 0), 0)
       const base = selectedLayer.value
       const width = size.width > size.height ? CANVAS_IMAGE_WIDTH : CANVAS_IMAGE_WIDTH
+      const height = Math.round((width * size.height) / size.width)
       const fallbackX = Math.round(((panel.x ?? 0) + 180 - viewOffset.value.x) / viewScale.value)
       const fallbackY = Math.round((170 - viewOffset.value.y) / viewScale.value)
+      const smartPosition =
+        options.placement === 'canvas-smart'
+          ? findAvailableCanvasLayerPosition(width, height)
+          : null
       const layer = {
         id: `layer-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         name: layerName(index),
@@ -2103,9 +2376,9 @@ async function addImageLayerFromUrl(url, name = 'AI生成图片', detectPrompt =
         naturalWidth: size.width,
         naturalHeight: size.height,
         width,
-        height: Math.round((width * size.height) / size.width),
-        x: base ? base.x + Math.min(420, base.width + 60) : fallbackX,
-        y: base ? base.y + 30 : fallbackY,
+        height,
+        x: smartPosition?.x ?? (base ? base.x + Math.min(420, base.width + 60) : fallbackX),
+        y: smartPosition?.y ?? (base ? base.y + 30 : fallbackY),
         zIndex: maxZ + 1,
         visible: true,
         locked: false,
@@ -2215,6 +2488,7 @@ async function copySelectedImages() {
     naturalWidth: layer.naturalWidth,
     naturalHeight: layer.naturalHeight,
     thumbnailUrl: layer.thumbnailUrl,
+    sourceType: layer.sourceType,
     zIndex: layer.zIndex,
     x: layer.x,
     y: layer.y,
@@ -2273,6 +2547,7 @@ async function pasteCopiedLayers() {
         visible: true,
         locked: false,
         source: '复制图层',
+        sourceType: buffer.sourceType,
       })
       newIds.push(newId)
       if (elements.length) {
@@ -2609,6 +2884,7 @@ function uploadNodeMedia(layer) {
           updateLayer(layer.id, {
             url: dataUrl,
             type: 'image',
+            sourceType: 'upload',
             naturalWidth: size.width,
             naturalHeight: size.height,
             width,
@@ -2618,6 +2894,7 @@ function uploadNodeMedia(layer) {
           updateLayer(layer.id, {
             url: dataUrl,
             type: 'image',
+            sourceType: 'upload',
             width: CANVAS_IMAGE_WIDTH,
             height: CANVAS_IMAGE_WIDTH,
           })
@@ -3486,6 +3763,7 @@ async function addFiles(fileList, options = {}) {
             zIndex: maxZ + 1,
             visible: true,
             locked: false,
+            sourceType: 'upload',
           }
           layerId = layer.id
           draft.payload.layers.push(layer)
@@ -3536,6 +3814,7 @@ async function addFiles(fileList, options = {}) {
             zIndex: maxZ + 1,
             visible: true,
             locked: false,
+            sourceType: 'upload',
           }
           layerId = layer.id
           draft.payload.layers.push(layer)
@@ -3846,6 +4125,9 @@ function findOverlappingPlaceholder(event, clickedLayer) {
 }
 
 function startLayerDrag(event, layer) {
+  // 按住空格时，图层不响应自身拖拽，让事件冒泡给 stage 临时平移画布。
+  if (spacePanHeld.value) return
+
   // 【Bug修复】占位图优先选中：当点击的图层不是占位图时，检查该位置是否有占位图重叠，
   // 如果有，将选中目标切换为占位图（确保占位图在重叠时始终被优先选中）。
   if (layer.type !== 'placeholder') {
@@ -4678,55 +4960,60 @@ function handleDetectedOverlayClick(event) {
   chatSkipPillSync.value = false
 }
 
+const chatEditorBlockTags = new Set(['DIV', 'P', 'LI', 'UL', 'OL', 'BLOCKQUOTE', 'PRE'])
+
+function extractChatEditorText({ includePills = false } = {}) {
+  const editor = document.querySelector('.chat-editor')
+  if (!editor) return chatText.value
+
+  let text = ''
+  const appendNewline = () => {
+    if (text && !text.endsWith('\n')) text += '\n'
+  }
+  const visitNode = (node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      text += String(node.textContent || '')
+        .replace(/\u00a0/g, ' ')
+        .replace(/\u200B/g, '')
+      return
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return
+
+    if (node.classList.contains('chat-pill')) {
+      if (includePills) {
+        const name = node.dataset.elName || node.dataset.elId || ''
+        if (name) text += `[${name}]`
+      }
+      return
+    }
+    if (node.tagName === 'BR') {
+      text += '\n'
+      return
+    }
+
+    const isBlock = chatEditorBlockTags.has(node.tagName)
+    if (isBlock) appendNewline()
+    for (const child of node.childNodes) visitNode(child)
+    if (isBlock) appendNewline()
+  }
+
+  for (const node of editor.childNodes) visitNode(node)
+  return text
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 // 从编辑器 DOM 提取纯文本（用于空判断和发送）
 function updateChatTextFromEditor() {
-  const editor = document.querySelector('.chat-editor')
-  if (!editor) return
-  const textParts = []
-  for (const node of editor.childNodes) {
-    if (node.nodeType === Node.TEXT_NODE) {
-      const t = node.textContent
-      if (t && t !== '\u00a0') textParts.push(t)
-    } else if (node.nodeType === Node.ELEMENT_NODE) {
-      if (node.classList.contains('chat-pill')) continue
-      if (node.tagName === 'BR') {
-        textParts.push('\n')
-      } else {
-        textParts.push(node.textContent || '')
-      }
-    }
-  }
-  chatText.value = textParts.join('').replace(/\u200B/g, '')
+  chatText.value = extractChatEditorText()
 }
 
 // 构建含元素名称的结构化提示词: [元素1] 修改文字1 [元素2] 修改文字2
 function getEditorPrompt() {
-  const editor = document.querySelector('.chat-editor')
-  if (!editor) return chatText.value.trim()
-  const parts = []
-  for (const node of editor.childNodes) {
-    if (node.nodeType === Node.TEXT_NODE) {
-      const t = (node.textContent || '').replace(/\u00a0/g, ' ').trim()
-      if (t) parts.push(t)
-    } else if (node.nodeType === Node.ELEMENT_NODE) {
-      if (node.classList.contains('chat-pill')) {
-        const name = node.dataset.elName || node.dataset.elId || ''
-        if (name) parts.push(`[${name}]`)
-      } else if (node.tagName === 'BR') {
-        parts.push('\n')
-      } else {
-        const t = (node.textContent || '')
-          .replace(/\u00a0/g, ' ')
-          .replace(/\u200B/g, '')
-          .trim()
-        if (t) parts.push(t)
-      }
-    }
-  }
-  return parts
-    .join('')
-    .replace(/[^\S\n]+/g, ' ')
-    .trim()
+  return extractChatEditorText({ includePills: true })
 }
 
 // 同步：editor 里被 Backspace 删除的 pill → 取消画布选中
@@ -5932,7 +6219,8 @@ function wheelZoom(event) {
   event.preventDefault()
   // Ctrl/Cmd + 滚轮 → 缩放画布
   if (event.ctrlKey || event.metaKey) {
-    const rect = event.currentTarget.getBoundingClientRect()
+    const stage = event.currentTarget.closest?.('.stage') || event.currentTarget
+    const rect = stage.getBoundingClientRect()
     const delta = event.deltaY > 0 ? -0.05 : 0.05
     zoom(delta, {
       x: event.clientX - rect.left,
@@ -5955,8 +6243,33 @@ function wheelZoom(event) {
   nextTick(() => refreshConnections())
 }
 
+function handleCanvasScrollableWheel(event) {
+  event.stopPropagation()
+  if (!(event.ctrlKey || event.metaKey)) return
+  wheelZoom(event)
+}
+
 function startMarquee(event) {
   if (event.button !== 0) return
+
+  // 抓手工具或按住空格时，左键临时平移画布。
+  if (activeTool.value === 'hand' || spacePanHeld.value) {
+    if (
+      event.target.closest?.('.layer-toolbar, .resize-dot, .bottom-tools, .top-tools, .right-panel')
+    )
+      return
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    const offset = doc.value.payload.view.offset || { x: 0, y: 0 }
+    panOffset.x = offset.x
+    panOffset.y = offset.y
+    panState.value = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+    }
+    return
+  }
 
   // 点击空白区域取消连接线选中
   if (
@@ -6023,25 +6336,6 @@ function startMarquee(event) {
       })
       .map((node) => node.dataset.layerId)
     manualBoxDraft.layerId = picked[0] || selectedLayerId.value || layers.value[0]?.id || ''
-    return
-  }
-
-  // 手形工具：拖动画布 — 用轻量 reactive 更新，节流提交 store
-  if (activeTool.value === 'hand') {
-    if (
-      event.target.closest?.('.layer-toolbar, .resize-dot, .bottom-tools, .top-tools, .right-panel')
-    )
-      return
-    event.preventDefault()
-    event.currentTarget.setPointerCapture(event.pointerId)
-    const offset = doc.value.payload.view.offset || { x: 0, y: 0 }
-    panOffset.x = offset.x
-    panOffset.y = offset.y
-    panState.value = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-    }
     return
   }
 
@@ -6193,6 +6487,16 @@ function onGlobalKeydown(event) {
   const tag = String(event.target?.tagName || '').toLowerCase()
   const inInput =
     tag === 'input' || tag === 'textarea' || tag === 'select' || event.target?.isContentEditable
+  if (event.key === 'Escape' && copyToCanvasDialog.visible) {
+    event.preventDefault()
+    closeCopyToCanvasDialog()
+    return
+  }
+  if ((event.code === 'Space' || event.key === ' ') && !inInput) {
+    event.preventDefault()
+    spacePanHeld.value = true
+    return
+  }
   // Esc 退出连接模式
   if (event.key === 'Escape' && connecting.active) {
     connecting.active = false
@@ -6211,7 +6515,7 @@ function onGlobalKeydown(event) {
   if (event.key === 'Delete') {
     if (inInput) return
     // 优先删除选中的元素框（含手动元素）
-    if (selectedDetectedElements.value.size > 0) {
+    if (selectedDetectedElements.value.size > 0 && selectedLayerIds.value.length <= 1) {
       event.preventDefault()
       pushUndo() // 删除元素框也入栈，支持撤销
       const nextLayers = { ...layerDetectedElements.value }
@@ -6241,24 +6545,50 @@ function onGlobalKeydown(event) {
         : selectedLayerId.value
           ? [selectedLayerId.value]
           : []
-    if (idsToDelete.length > 0 && idsToDelete.length < layers.value.length) {
+    if (idsToDelete.length > 0) {
       event.preventDefault()
       if (!userStore.requireLogin()) return
       pushUndo()
-      for (const id of idsToDelete) {
-        if (playingVideoLayerId.value === id) playingVideoLayerId.value = null
-        connections.value = connections.value.filter(
-          (c) => c.fromLayerId !== id && c.toLayerId !== id,
-        )
+
+      const deleteSet = new Set(idsToDelete)
+      const nextSelectedLayerId =
+        layers.value.find((layer) => !deleteSet.has(layer.id))?.id || ''
+      if (playingVideoLayerId.value && deleteSet.has(playingVideoLayerId.value)) {
+        playingVideoLayerId.value = null
       }
+      connections.value = connections.value.filter(
+        (connection) =>
+          !deleteSet.has(connection.fromLayerId) && !deleteSet.has(connection.toLayerId),
+      )
+
+      const nextDetectedElements = { ...layerDetectedElements.value }
+      for (const id of deleteSet) delete nextDetectedElements[id]
+      layerDetectedElements.value = nextDetectedElements
+      selectedDetectedElements.value = new Set(
+        [...selectedDetectedElements.value].filter(
+          (key) => !deleteSet.has(String(key).split('::')[0]),
+        ),
+      )
+      elementClickPositions.value = Object.fromEntries(
+        Object.entries(elementClickPositions.value).filter(
+          ([key]) => !deleteSet.has(String(key).split('::')[0]),
+        ),
+      )
+
       canvas.updateDocument(props.id, (draft) => {
-        const deleteSet = new Set(idsToDelete)
         draft.payload.layers = draft.payload.layers.filter((layer) => !deleteSet.has(layer.id))
         draft.payload.connections = connections.value
+        draft.payload.detectedElements = JSON.parse(JSON.stringify(nextDetectedElements))
+        if (Array.isArray(draft.payload.reversePrompt?.referenceImages)) {
+          draft.payload.reversePrompt.referenceImages =
+            draft.payload.reversePrompt.referenceImages.filter(
+              (reference) => !deleteSet.has(reference.layerId),
+            )
+        }
         return draft
       })
-      selectedLayerId.value = layers.value[0]?.id || ''
-      selectedLayerIds.value = selectedLayerId.value ? [selectedLayerId.value] : []
+      selectedLayerId.value = nextSelectedLayerId
+      selectedLayerIds.value = nextSelectedLayerId ? [nextSelectedLayerId] : []
     }
   }
   // 图片复制 / 粘贴（Ctrl+C / Ctrl+V），不干扰 Delete / Ctrl+Z / 工具快捷键
@@ -6363,6 +6693,16 @@ function onGlobalKeydown(event) {
   }
 }
 
+function onGlobalKeyup(event) {
+  if (event.code === 'Space' || event.key === ' ') {
+    spacePanHeld.value = false
+  }
+}
+
+function resetTemporaryPanShortcut() {
+  spacePanHeld.value = false
+}
+
 // Undo stack（同时保存图层和元素检测数据，撤销时一起恢复）
 const undoStack = ref([])
 function pushUndo() {
@@ -6421,10 +6761,16 @@ onMounted(() => {
   updateViewportSize()
   window.addEventListener('resize', updateViewportSize)
   window.addEventListener('keydown', onGlobalKeydown)
+  window.addEventListener('keyup', onGlobalKeyup)
   window.addEventListener('paste', handleGlobalPaste)
   window.addEventListener('blur', disarmInternalClipboard)
+  window.addEventListener('blur', resetTemporaryPanShortcut)
   window.addEventListener('copy', handleNativeCopy, true)
   loadUILayout()
+  if (isReversePromptCanvas.value) loadCanvasReversePromptCategories()
+  if (isReversePromptCanvas.value) {
+    window.addEventListener('message', handleCanvasReversePromptBridgeMessage)
+  }
   // 连接线/历史/模型参数已从 payload 初始化，这里仅做孤儿连接线清洗
   initDocState()
   // 建立 pill 删除监听 — MutationObserver 比 @input 更可靠
@@ -6474,6 +6820,7 @@ onMounted(() => {
   }
   // 聊天记录滚动到底部（最后一条消息）
   scrollChatToBottom()
+  hydrateReversePromptTransfer()
   // 恢复被页面刷新/导航中断的生图任务：扫描所有「非终态 + 带 taskId」的占位图层并继续轮询。
   // 与具体状态词解耦（经 normalizeStatus 归一），覆盖「纯生成中刷新」(APIMart 的 IN_PROGRESS/PENDING/GENERATING、
   // 中转站代理自有词等) 这种原本白名单匹配不上的 case；时机 B(persisting)/C(completed) 仍按原逻辑正常完成。
@@ -6524,12 +6871,15 @@ onMounted(() => {
     window.removeEventListener('resize', updateViewportSize)
     window.removeEventListener('paste', handleGlobalPaste)
     window.removeEventListener('blur', disarmInternalClipboard)
+    window.removeEventListener('blur', resetTemporaryPanShortcut)
     window.removeEventListener('copy', handleNativeCopy, true)
+    window.removeEventListener('message', handleCanvasReversePromptBridgeMessage)
     if (_pillObserver) {
       _pillObserver.disconnect()
       _pillObserver = null
     }
     window.removeEventListener('keydown', onGlobalKeydown)
+    window.removeEventListener('keyup', onGlobalKeyup)
     // 清理所有定时器
     clearTimeout(_manualBlurTimer)
     // 卸载前确保全局 UI 布局已落库（避免 300ms 防抖未触发导致丢失）
@@ -6600,6 +6950,7 @@ function addLayerToMaterials(layer) {
     width: layer.width,
     height: layer.height,
     source: layer.source,
+    sourceType: layer.sourceType,
     detectPrompt: layer.detectPrompt,
     addedAt: Date.now(),
   })
@@ -6625,11 +6976,247 @@ function addMaterialToCanvas(mat) {
       naturalHeight: mat.height || 400,
       zIndex: maxZ + 1,
       source: mat.source,
+      sourceType: mat.sourceType,
       detectPrompt: mat.detectPrompt,
     })
     return draft
   })
 }
+
+const copyTargetDocuments = computed(() =>
+  canvas.documents
+    .filter((item) => item.id !== props.id)
+    .slice()
+    .sort(
+      (left, right) =>
+        Number(right.lastOpenedAt || right.updatedAt || 0) -
+        Number(left.lastOpenedAt || left.updatedAt || 0),
+    ),
+)
+const filteredCopyTargetDocuments = computed(() => {
+  const query = copyToCanvasDialog.targetQuery.trim().toLowerCase()
+  if (!query) return copyTargetDocuments.value
+  return copyTargetDocuments.value.filter((item) =>
+    String(item.title || '').toLowerCase().includes(query),
+  )
+})
+
+function canvasImageCount(canvasDocument) {
+  return (canvasDocument?.payload?.layers || []).filter(isRealImageLayer).length
+}
+
+function contextMenuImageLayers() {
+  const targetId = contextMenu.layerId
+  const ids =
+    selectedLayerIds.value.length > 1 && selectedLayerIds.value.includes(targetId)
+      ? [...selectedLayerIds.value]
+      : [targetId]
+  return ids
+    .map((id) => layers.value.find((layer) => layer.id === id))
+    .filter(isRealImageLayer)
+}
+
+function defaultCopiedCanvasTitle() {
+  const now = new Date()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  const hour = String(now.getHours()).padStart(2, '0')
+  const minute = String(now.getMinutes()).padStart(2, '0')
+  return `图片整理 ${month}-${day} ${hour}:${minute}`
+}
+
+function openCopyToCanvasDialog() {
+  const imageLayers = contextMenuImageLayers()
+  closeContextMenu()
+  if (!imageLayers.length) return
+  copyToCanvasDialog.layerIds = imageLayers.map((layer) => layer.id)
+  copyToCanvasDialog.selectedTargetId = ''
+  copyToCanvasDialog.targetQuery = ''
+  copyToCanvasDialog.newTitle = defaultCopiedCanvasTitle()
+  copyToCanvasDialog.copying = false
+  copyToCanvasDialog.error = ''
+  copyToCanvasDialog.result = null
+  copyToCanvasDialog.visible = true
+}
+
+function closeCopyToCanvasDialog() {
+  if (copyToCanvasDialog.copying) return
+  copyToCanvasDialog.visible = false
+}
+
+function transferableImageKey(layer) {
+  const url = String(layer?.url || '').trim()
+  if (!url) return ''
+  if (url.startsWith('data:')) {
+    return `${url.slice(0, 80)}|${url.length}|${url.slice(-80)}`
+  }
+  try {
+    const parsed = new URL(url, window.location.href)
+    return `${parsed.origin}${parsed.pathname}`.toLowerCase()
+  } catch {
+    return url.split('?')[0].toLowerCase()
+  }
+}
+
+function copiedLayerSize(layer) {
+  const rawWidth = Math.max(1, Number(layer.width || layer.naturalWidth || 320))
+  const rawHeight = Math.max(1, Number(layer.height || layer.naturalHeight || 320))
+  const ratio = rawWidth / rawHeight
+  let width = Math.min(360, Math.max(240, rawWidth))
+  let height = width / ratio
+  if (height > 440) {
+    height = 440
+    width = height * ratio
+  }
+  return {
+    width: Math.max(120, Math.round(width)),
+    height: Math.max(120, Math.round(height)),
+  }
+}
+
+function makeCopiedLayer(layer, index, startY, maxZ) {
+  const { width, height } = copiedLayerSize(layer)
+  const columns = 4
+  const column = index % columns
+  const row = Math.floor(index / columns)
+  const copied = JSON.parse(JSON.stringify(layer))
+  copied.id = `copy-${Date.now().toString(36)}-${index}-${Math.random().toString(36).slice(2, 7)}`
+  copied.x = 140 + column * 400 + Math.round((360 - width) / 2)
+  copied.y = startY + row * 500
+  copied.width = width
+  copied.height = height
+  copied.zIndex = maxZ + index + 1
+  copied.visible = true
+  copied.locked = false
+  copied.reversePromptPending = false
+  copied.reversePromptError = ''
+  copied.copiedFromCanvasId = props.id
+  copied.copiedFromLayerId = layer.id
+  copied.copiedAt = Date.now()
+  delete copied.selected
+  delete copied.dragging
+  return copied
+}
+
+async function copyImagesToCanvas(targetId) {
+  const target = canvas.documents.find((item) => item.id === targetId)
+  if (!target) throw new Error('目标画布不存在，请重新选择')
+
+  const sourceLayers = copyToCanvasDialog.layerIds
+    .map((id) => layers.value.find((layer) => layer.id === id))
+    .filter(isRealImageLayer)
+  if (!sourceLayers.length) throw new Error('原画布中的图片已不存在')
+
+  const existingLayers = target.payload?.layers || []
+  const existingKeys = new Set(existingLayers.map(transferableImageKey).filter(Boolean))
+  const existingSourceIds = new Set(
+    existingLayers
+      .filter((layer) => layer.copiedFromCanvasId === props.id)
+      .map((layer) => layer.copiedFromLayerId)
+      .filter(Boolean),
+  )
+  const uniqueSourceLayers = sourceLayers.filter((layer) => {
+    const key = transferableImageKey(layer)
+    if (existingSourceIds.has(layer.id) || (key && existingKeys.has(key))) return false
+    if (key) existingKeys.add(key)
+    return true
+  })
+
+  const existingBottom = existingLayers.reduce((bottom, layer) => {
+    const y = Number(layer.y)
+    const height = Number(layer.height || layer.naturalHeight)
+    if (!Number.isFinite(y) || !Number.isFinite(height)) return bottom
+    return Math.max(bottom, y + height)
+  }, 0)
+  const startY = existingLayers.length ? Math.max(140, existingBottom + 140) : 140
+  const maxZ = existingLayers.reduce(
+    (maximum, layer) => Math.max(maximum, Number(layer.zIndex || 0)),
+    0,
+  )
+  const copiedLayers = uniqueSourceLayers.map((layer, index) =>
+    makeCopiedLayer(layer, index, startY, maxZ),
+  )
+  const copiedDetectedElements = new Map()
+  for (let index = 0; index < uniqueSourceLayers.length; index += 1) {
+    const sourceLayer = uniqueSourceLayers[index]
+    const detected = doc.value.payload?.detectedElements?.[sourceLayer.id]
+    if (detected) {
+      copiedDetectedElements.set(
+        copiedLayers[index].id,
+        JSON.parse(JSON.stringify(detected)),
+      )
+    }
+  }
+
+  if (copiedLayers.length) {
+    canvas.updateDocument(targetId, (draft) => {
+      draft.payload.layers.push(...copiedLayers)
+      if (copiedDetectedElements.size) {
+        draft.payload.detectedElements = draft.payload.detectedElements || {}
+        for (const [layerId, detected] of copiedDetectedElements) {
+          draft.payload.detectedElements[layerId] = detected
+        }
+      }
+      return draft
+    })
+    const saved = await canvas.flushNow(targetId)
+    if (!saved) throw new Error('图片已复制到本地，但云端保存失败，请稍后重试')
+  }
+
+  return {
+    targetId,
+    targetTitle: target.title,
+    copiedCount: copiedLayers.length,
+    skippedCount: sourceLayers.length - copiedLayers.length,
+  }
+}
+
+async function copyToSelectedCanvas() {
+  if (!copyToCanvasDialog.selectedTargetId || copyToCanvasDialog.copying) return
+  copyToCanvasDialog.copying = true
+  copyToCanvasDialog.error = ''
+  try {
+    copyToCanvasDialog.result = await copyImagesToCanvas(
+      copyToCanvasDialog.selectedTargetId,
+    )
+  } catch (error) {
+    copyToCanvasDialog.error =
+      error instanceof Error ? error.message : String(error || '复制失败')
+  } finally {
+    copyToCanvasDialog.copying = false
+  }
+}
+
+async function createCanvasAndCopy() {
+  if (copyToCanvasDialog.copying) return
+  copyToCanvasDialog.copying = true
+  copyToCanvasDialog.error = ''
+  try {
+    const created = canvas.createDocument()
+    const title = copyToCanvasDialog.newTitle.trim() || defaultCopiedCanvasTitle()
+    canvas.updateDocument(created.id, (draft) => {
+      draft.title = title
+      return draft
+    })
+    copyToCanvasDialog.result = await copyImagesToCanvas(created.id)
+    copyToCanvasDialog.result.targetTitle = title
+    copyToCanvasDialog.selectedTargetId = created.id
+  } catch (error) {
+    copyToCanvasDialog.error =
+      error instanceof Error ? error.message : String(error || '新建画布失败')
+  } finally {
+    copyToCanvasDialog.copying = false
+  }
+}
+
+function visitCopiedCanvas() {
+  const targetId = copyToCanvasDialog.result?.targetId
+  if (!targetId) return
+  copyToCanvasDialog.visible = false
+  if (targetId === 'reverse-prompt') router.push('/reverse-prompt')
+  else router.push(`/canvas/${targetId}`)
+}
+
 // 右键菜单
 const contextMenu = reactive({ visible: false, x: 0, y: 0, layerId: null, layer: null })
 function onCanvasContextMenu(event) {
@@ -6653,6 +7240,411 @@ function onCanvasContextMenu(event) {
 }
 function closeContextMenu() {
   contextMenu.visible = false
+  promptCategoryOpen.value = false
+  cropQuickOpen.value = false
+}
+function promptSourceTypeForLayer(layer) {
+  if (!isRealImageLayer(layer)) return ''
+  if (layer.sourceType === 'upload' || layer.sourceType === 'reverse-prompt') {
+    return layer.sourceType
+  }
+
+  const source = String(layer.source || '').toLowerCase()
+  if (
+    source === 'reverse-prompt' ||
+    source === '框选图片' ||
+    source === '反推来源图片'
+  ) {
+    return 'reverse-prompt'
+  }
+
+  const url = String(layer.url || '')
+  if (url.includes('/youmi/reverse-prompt/')) return 'reverse-prompt'
+  if (url.includes('/youmi-canvas/uploads/')) return 'upload'
+  return ''
+}
+
+function canGetPromptFromLayer(layer) {
+  return Boolean(promptSourceTypeForLayer(layer))
+}
+
+function reversePromptCategoryLabel(category) {
+  return (
+    reversePromptCategories.value.find((item) => item.value === category)?.label ||
+    reversePromptCategories.value[0]?.label ||
+    '通用'
+  )
+}
+
+const reversePromptFieldOrder = [
+  'subject_and_elements',
+  'mattress_surface',
+  'mattress_structure',
+  'curtain_detail',
+  'curtain_drape',
+  'curtain_scene',
+  'bed_wood',
+  'bed_structure',
+  'composition_and_camera',
+  'lighting_and_color',
+  'visual_style',
+  'typography_layout',
+]
+
+const reversePromptDefaultLabels = {
+  subject_and_elements: '主体与元素',
+  core_subject: '核心主体',
+  auxiliary_props: '辅助元素',
+  mattress_surface: '床垫面层细节',
+  mattress_structure: '床垫结构',
+  curtain_detail: '窗帘面料与细节',
+  curtain_drape: '窗帘褶皱与开合',
+  curtain_scene: '窗帘场景',
+  bed_wood: '木材与工艺',
+  bed_structure: '床架结构',
+  composition_and_camera: '构图与镜头',
+  lighting_and_color: '光线与色彩',
+  visual_style: '视觉风格',
+  typography_layout: '文字排版',
+  overall_tone: '整体调性',
+  texture_medium: '媒介质感',
+  display_type: '展示类型',
+  product_angle: '产品角度',
+  aspect_ratio: '画幅比例',
+  spatial_layout: '空间布局',
+  camera_angle: '镜头角度',
+  shadow_style: '阴影样式',
+  text_space: '留白方向',
+  background_material: '背景材质',
+  lighting_logic: '光照逻辑',
+  color_palette: '色彩方案',
+  fabric_type: '面料材质',
+  pattern: '图案花纹',
+  color_main: '主色',
+  color_secondary: '辅色',
+  quilt_style: '绗缝工艺',
+  border_detail: '边缘处理',
+  thickness: '厚度体感',
+  layer_structure: '分层结构',
+  side_surface: '侧面外观',
+  edge_detail: '帘边处理',
+  header_style: '帘头款式',
+  fold_type: '褶皱类型',
+  opening_state: '开合状态',
+  drape_direction: '垂坠方向',
+  room_style: '空间风格',
+  wall_color: '墙面颜色',
+  floor_material: '地面材质',
+  furniture_visible: '可见家具',
+  lighting_source: '场景光源',
+  wood_species: '木材品种',
+  wood_color: '木色',
+  wood_grain: '木纹特征',
+  surface_finish: '表面工艺',
+  carving_detail: '雕花装饰',
+  headboard_shape: '床头造型',
+  headboard_height: '床头高度',
+  frame_style: '床架款式',
+  leg_design: '床腿设计',
+  footboard: '床尾设计',
+  side_rail: '床侧/床帮',
+  slat_type: '床板类型',
+  mattress_visible: '可见床垫',
+  position: '文字位置',
+  font_style: '字体风格',
+  alignment: '对齐方式',
+  text_content: '文字内容',
+}
+
+function reversePromptReadableValue(value, labels) {
+  if (value == null) return ''
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => reversePromptReadableValue(item, labels))
+      .filter(Boolean)
+      .join('；')
+  }
+  if (typeof value === 'object') {
+    return Object.entries(value)
+      .map(([key, childValue]) => {
+        const text = reversePromptReadableValue(childValue, labels)
+        return text ? `${labels[key] || key}：${text}` : ''
+      })
+      .filter(Boolean)
+      .join('，')
+  }
+  return String(value).trim()
+}
+
+function buildReversePromptDisplayText(promptJson, fieldLabels, fallbackText = '') {
+  if (!promptJson || typeof promptJson !== 'object' || Array.isArray(promptJson)) {
+    return String(fallbackText || '').trim()
+  }
+
+  const labels = { ...reversePromptDefaultLabels, ...(fieldLabels || {}) }
+  const remainingFields = Object.keys(promptJson).filter(
+    (key) =>
+      !reversePromptFieldOrder.includes(key) &&
+      key !== 'generation_prompt' &&
+      key !== 'negative_prompt',
+  )
+  const lines = [...reversePromptFieldOrder, ...remainingFields]
+    .map((key) => {
+      const value = reversePromptReadableValue(promptJson[key], labels)
+      return value ? `${labels[key] || key}：${value}` : ''
+    })
+    .filter(Boolean)
+
+  if (!lines.length) return String(fallbackText || promptJson.generation_prompt || '').trim()
+  lines[0] = `提示词：${lines[0]}`
+
+  const negativePrompt = reversePromptReadableValue(promptJson.negative_prompt, labels)
+  if (negativePrompt) lines.push(`避免出现：${negativePrompt}`)
+  return lines.join('\n')
+}
+
+function displayLayerReversePrompt(layer) {
+  return buildReversePromptDisplayText(
+    layer?.reversePromptJson,
+    layer?.reversePromptFieldLabels,
+    layer?.reversePromptText,
+  )
+}
+
+function displayLayerReversePromptBody(layer) {
+  return displayLayerReversePrompt(layer).replace(/^\s*提示词\s*[：:]?\s*/, '')
+}
+
+function reversePromptDisplayItems(fieldKey, fieldValue, labels) {
+  if (Array.isArray(fieldValue)) {
+    if (!fieldValue.some((item) => item && typeof item === 'object')) return []
+    return fieldValue
+      .map((item, index) => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) {
+          return {
+            label: `${fieldKey === 'typography_layout' ? '文案' : '项目'} ${index + 1}`,
+            value: reversePromptReadableValue(item, labels),
+            details: [],
+          }
+        }
+        const details = Object.entries(item)
+          .map(([childKey, childValue]) => ({
+            label: labels[childKey] || childKey,
+            value: reversePromptReadableValue(childValue, labels),
+          }))
+          .filter((detail) => detail.value)
+        return {
+          label: `${fieldKey === 'typography_layout' ? '文案' : '项目'} ${index + 1}`,
+          value: '',
+          details,
+        }
+      })
+      .filter((item) => item.value || item.details.length)
+  }
+
+  if (!fieldValue || typeof fieldValue !== 'object') return []
+  return Object.entries(fieldValue)
+    .map(([childKey, childValue]) => {
+      const nestedDetails =
+        childValue && typeof childValue === 'object' && !Array.isArray(childValue)
+          ? Object.entries(childValue)
+              .map(([nestedKey, nestedValue]) => ({
+                label: labels[nestedKey] || nestedKey,
+                value: reversePromptReadableValue(nestedValue, labels),
+              }))
+              .filter((detail) => detail.value)
+          : []
+      return {
+        label: labels[childKey] || childKey,
+        value: nestedDetails.length ? '' : reversePromptReadableValue(childValue, labels),
+        details: nestedDetails,
+      }
+    })
+    .filter((item) => item.value || item.details.length)
+}
+
+function reversePromptSectionKey(layerId, line) {
+  return `${layerId}::${line.key || line.label}`
+}
+
+function isReversePromptSectionExpanded(layerId, line) {
+  return expandedReversePromptSections.value.has(reversePromptSectionKey(layerId, line))
+}
+
+function toggleReversePromptSection(layerId, line) {
+  const key = reversePromptSectionKey(layerId, line)
+  const next = new Set(expandedReversePromptSections.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  expandedReversePromptSections.value = next
+}
+
+function displayLayerReversePromptLines(layer) {
+  const promptJson = layer?.reversePromptJson
+  if (promptJson && typeof promptJson === 'object' && !Array.isArray(promptJson)) {
+    const labels = {
+      ...reversePromptDefaultLabels,
+      ...(layer?.reversePromptFieldLabels || {}),
+    }
+    const remainingFields = Object.keys(promptJson).filter(
+      (key) =>
+        !reversePromptFieldOrder.includes(key) &&
+        key !== 'generation_prompt' &&
+        key !== 'negative_prompt',
+    )
+    const lines = [...reversePromptFieldOrder, ...remainingFields]
+      .map((key) => {
+        const fieldValue = promptJson[key]
+        const items = reversePromptDisplayItems(key, fieldValue, labels)
+        return {
+          key,
+          label: labels[key] || key,
+          value: items.length ? '' : reversePromptReadableValue(fieldValue, labels),
+          items,
+          collapsible: key === 'typography_layout',
+        }
+      })
+      .filter((line) => line.value || line.items.length)
+
+    const negativePrompt = reversePromptReadableValue(promptJson.negative_prompt, labels)
+    if (negativePrompt) {
+      lines.push({
+        key: 'negative_prompt',
+        label: '避免出现',
+        value: negativePrompt,
+        items: [],
+        collapsible: false,
+      })
+    }
+    if (lines.length) return lines
+  }
+
+  return displayLayerReversePromptBody(layer)
+    .split(/\r?\n/)
+    .map((text) => text.trim())
+    .filter(Boolean)
+    .map((text) => {
+      const separatorIndex = text.indexOf('：')
+      if (separatorIndex <= 0) {
+        return { key: text, label: '', value: text, items: [], collapsible: false }
+      }
+      return {
+        key: text.slice(0, separatorIndex).trim(),
+        label: text.slice(0, separatorIndex).trim(),
+        value: text.slice(separatorIndex + 1).trim(),
+        items: [],
+        collapsible: false,
+      }
+    })
+}
+
+function applyReversePromptResultToLayer(layerId, result) {
+  const generationPrompt = String(
+    result?.promptText || result?.promptJson?.generation_prompt || '',
+  ).trim()
+  const promptText = buildReversePromptDisplayText(
+    result?.promptJson,
+    result?.fieldLabels,
+    generationPrompt,
+  )
+  if (!layerId || !promptText) return false
+
+  updateLayer(layerId, {
+    detectPrompt: String(result?.promptJson?.generation_prompt || generationPrompt).trim(),
+    reversePromptText: promptText,
+    reversePromptJson: result?.promptJson || {},
+    reversePromptFieldLabels: result?.fieldLabels || {},
+    reversePromptCategory: result?.category || 'general',
+    reversePromptCategoryLabel:
+      result?.categoryLabel || reversePromptCategoryLabel(result?.category || 'general'),
+    reversePromptCreatedAt: result?.createdAt || new Date().toISOString(),
+    reversePromptPending: false,
+    reversePromptError: '',
+  })
+  return true
+}
+
+function buildLayerReversePromptCopyText(layer) {
+  const blocks = displayLayerReversePromptLines(layer)
+    .map((line) => {
+      if (!line.items?.length) {
+        return line.label ? `${line.label}：${line.value}` : line.value
+      }
+
+      const rows = line.label ? [`${line.label}：`] : []
+      for (const item of line.items) {
+        if (item.details?.length) {
+          rows.push(`  ${item.label}：`)
+          for (const detail of item.details) {
+            rows.push(`    ${detail.label}：${detail.value}`)
+          }
+        } else {
+          rows.push(`  ${item.label}：${item.value}`)
+        }
+      }
+      return rows.join('\n')
+    })
+    .filter(Boolean)
+  return blocks.join('\n\n')
+}
+
+async function copyLayerReversePrompt(layer) {
+  const text = buildLayerReversePromptCopyText(layer) || displayLayerReversePromptBody(layer)
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    showCopyPasteToast('提示词已复制')
+  } catch {
+    showCopyPasteToast('复制失败，请手动选择文字复制')
+  }
+}
+
+async function contextMenuGetPrompt(category = 'general') {
+  const layer = contextMenu.layer
+  closeContextMenu()
+  if (!canGetPromptFromLayer(layer)) return
+
+  selectedLayerId.value = layer.id
+  selectedLayerIds.value = [layer.id]
+  reversePromptResult.value = null
+  reversePromptError.value = ''
+  const categoryLabel = reversePromptCategoryLabel(category)
+  updateLayer(layer.id, {
+    reversePromptPending: true,
+    reversePromptError: '',
+    reversePromptCategory: category,
+    reversePromptCategoryLabel: categoryLabel,
+  })
+  showCopyPasteToast(`正在获取${categoryLabel}提示词...`)
+
+  let imageUrl = layer.url
+  try {
+    if (String(imageUrl).startsWith('data:image/')) {
+      imageUrl = await uploadBase64ImageDirect(imageUrl, {
+        dir: 'youmi/reverse-prompt',
+        fileName: `reverse-prompt-${Date.now()}`,
+      })
+      updateLayer(layer.id, {
+        url: imageUrl,
+        thumbnailUrl: imageUrl,
+        sourceType: promptSourceTypeForLayer(layer) || 'upload',
+      })
+    }
+    const result = await analyzeCanvasReversePrompt({ category, imageUrl })
+    if (!applyReversePromptResultToLayer(layer.id, result)) {
+      throw new Error('模型没有返回可用提示词')
+    }
+    showCopyPasteToast(`${categoryLabel}提示词已生成到图片下方`)
+  } catch (error) {
+    reversePromptPending.value = false
+    reversePromptError.value =
+      error instanceof Error ? error.message : String(error || '获取提示词失败')
+    updateLayer(layer.id, {
+      reversePromptPending: false,
+      reversePromptError: reversePromptError.value,
+    })
+    showCopyPasteToast(`获取提示词失败：${reversePromptError.value}`)
+  }
 }
 function contextMenuAddToMaterials() {
   if (contextMenu.layer) addLayerToMaterials(contextMenu.layer)
@@ -6663,14 +7655,7 @@ function contextMenuDeleteLayer() {
   closeContextMenu()
 }
 function contextMenuDownloadLayers() {
-  const targetId = contextMenu.layerId
-  const ids =
-    selectedLayerIds.value.length > 1 && selectedLayerIds.value.includes(targetId)
-      ? [...selectedLayerIds.value]
-      : [targetId]
-  const imageLayers = ids
-    .map((id) => layers.value.find((layer) => layer.id === id))
-    .filter(isRealImageLayer)
+  const imageLayers = contextMenuImageLayers()
   closeContextMenu()
   if (!imageLayers.length) return
   if (imageLayers.length === 1) {
@@ -6682,11 +7667,7 @@ function contextMenuDownloadLayers() {
 }
 
 function contextMenuDownloadCount() {
-  const targetId = contextMenu.layerId
-  if (selectedLayerIds.value.length <= 1 || !selectedLayerIds.value.includes(targetId)) return 1
-  return selectedLayerIds.value
-    .map((id) => layers.value.find((layer) => layer.id === id))
-    .filter(isRealImageLayer).length
+  return contextMenuImageLayers().length
 }
 function contextMenuAddToReference() {
   // 支持多选：如果右键的图层在已选中列表中，把所有选中的图片图层都加为参考图
@@ -6889,6 +7870,7 @@ async function executeCrop() {
       y: offsetY,
       zIndex: baseZ + cellIdx,
       source: '宫格裁图',
+      sourceType: promptSourceTypeForLayer(layer) || undefined,
     })
   }
 
@@ -6939,7 +7921,7 @@ async function loadImageForCrop(layer) {
       <div class="head-left">
         <button class="logo logo-link" type="button" @click="router.push('/')">YOUMI</button>
         <span>·</span>
-        <b>万能画布</b>
+        <b>{{ isReversePromptCanvas ? '反推提示词' : '万能画布' }}</b>
         <span>/</span>
         <button>✎ {{ doc.title }}</button>
         <em>已保存 · 刚刚</em>
@@ -7023,7 +8005,7 @@ async function loadImageForCrop(layer) {
         :class="[
           'stage',
           {
-            'hand-tool': activeTool === 'hand',
+            'hand-tool': activeTool === 'hand' || spacePanHeld,
             'annotate-tool': activeTool === 'annotate',
             'is-panning': panState,
             'is-connecting': connecting.active,
@@ -7270,7 +8252,7 @@ async function loadImageForCrop(layer) {
                   {{ layer.name }}
                   <small>{{ formatLayerTime(layer) }}</small>
                 </div>
-                <div class="uc-text-node-area">
+                <div class="uc-text-node-area" @wheel="handleCanvasScrollableWheel">
                   <span
                     v-if="editingTextLayerId !== layer.id"
                     class="uc-text-node-span"
@@ -7473,7 +8455,139 @@ async function loadImageForCrop(layer) {
                     </button>
                   </div>
                 </div>
-                <div class="uc-text-node-hint" @pointerdown.stop @click.stop.exact>
+                <div
+                  v-if="
+                    layer.reversePromptPending ||
+                    layer.reversePromptText ||
+                    layer.reversePromptError
+                  "
+                  class="uc-inline-prompt-result"
+                  :class="{
+                    'is-loading': layer.reversePromptPending,
+                    'is-error': layer.reversePromptError && !layer.reversePromptPending,
+                  }"
+                  @pointerdown.stop
+                  @dblclick.stop
+                >
+                  <div class="uc-inline-prompt-head">
+                    <span>
+                      <i
+                        :class="layer.reversePromptPending ? 'ri-loader-4-line' : 'ri-magic-line'"
+                        aria-hidden="true"
+                      ></i>
+                      {{
+                        layer.reversePromptPending
+                          ? `正在获取${layer.reversePromptCategoryLabel || '通用'}提示词`
+                          : `${layer.reversePromptCategoryLabel || '通用'}提示词`
+                      }}
+                    </span>
+                    <button
+                      v-if="layer.reversePromptText && !layer.reversePromptPending"
+                      type="button"
+                      title="复制提示词"
+                      aria-label="复制提示词"
+                      @click.stop="copyLayerReversePrompt(layer)"
+                    >
+                      <i class="ri-file-copy-line" aria-hidden="true"></i>
+                    </button>
+                  </div>
+                  <p v-if="layer.reversePromptPending">正在识别图片内容，请稍候...</p>
+                  <p v-else-if="layer.reversePromptError">
+                    获取失败：{{ layer.reversePromptError }}
+                  </p>
+                  <p v-else>
+                    {{ displayLayerReversePromptBody(layer) }}
+                  </p>
+                  <div
+                    v-if="
+                      layer.reversePromptText &&
+                      !layer.reversePromptPending &&
+                      !layer.reversePromptError
+                    "
+                    class="uc-inline-prompt-expanded"
+                    @wheel="handleCanvasScrollableWheel"
+                  >
+                    <div
+                      v-for="(line, lineIndex) in displayLayerReversePromptLines(layer)"
+                      :key="`${layer.id}-prompt-line-${lineIndex}`"
+                      class="uc-inline-prompt-row"
+                      :class="{ 'has-label': line.label }"
+                    >
+                      <div v-if="line.label" class="uc-inline-prompt-section-heading">
+                        <strong>{{ line.label }}</strong>
+                        <button
+                          v-if="line.collapsible"
+                          type="button"
+                          :title="
+                            isReversePromptSectionExpanded(layer.id, line)
+                              ? '收起文字排版'
+                              : '展开文字排版'
+                          "
+                          :aria-label="
+                            isReversePromptSectionExpanded(layer.id, line)
+                              ? '收起文字排版'
+                              : '展开文字排版'
+                          "
+                          :aria-expanded="isReversePromptSectionExpanded(layer.id, line)"
+                          @click.stop="toggleReversePromptSection(layer.id, line)"
+                        >
+                          <i
+                            :class="
+                              isReversePromptSectionExpanded(layer.id, line)
+                                ? 'ri-arrow-down-s-line'
+                                : 'ri-arrow-right-s-line'
+                            "
+                            aria-hidden="true"
+                          ></i>
+                        </button>
+                      </div>
+                      <div class="uc-inline-prompt-value">
+                        <span
+                          v-if="
+                            line.collapsible &&
+                            !isReversePromptSectionExpanded(layer.id, line)
+                          "
+                          class="uc-inline-prompt-collapsed-summary"
+                        >
+                          {{ line.items.length }} 条文案
+                        </span>
+                        <template v-else-if="line.items?.length">
+                          <div
+                            v-for="(item, itemIndex) in line.items"
+                            :key="`${layer.id}-prompt-line-${lineIndex}-item-${itemIndex}`"
+                            class="uc-inline-prompt-subrow"
+                            :class="{ 'is-group': item.details?.length }"
+                          >
+                            <template v-if="item.details?.length">
+                              <div class="uc-inline-prompt-group-title">{{ item.label }}</div>
+                              <div class="uc-inline-prompt-subfields">
+                                <div
+                                  v-for="(detail, detailIndex) in item.details"
+                                  :key="`${layer.id}-prompt-line-${lineIndex}-item-${itemIndex}-detail-${detailIndex}`"
+                                  class="uc-inline-prompt-subfield"
+                                >
+                                  <b>{{ detail.label }}：</b>
+                                  <span>{{ detail.value }}</span>
+                                </div>
+                              </div>
+                            </template>
+                            <template v-else>
+                              <b>{{ item.label }}：</b>
+                              <span>{{ item.value }}</span>
+                            </template>
+                          </div>
+                        </template>
+                        <span v-else>{{ line.value }}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div
+                  v-else
+                  class="uc-text-node-hint"
+                  @pointerdown.stop
+                  @click.stop.exact
+                >
                   <i class="ri-edit-line"></i>
                   提示词
                 </div>
@@ -8305,7 +9419,7 @@ async function loadImageForCrop(layer) {
     <!-- 帮助菜单 -->
     <Teleport to="body">
       <div v-if="helpMenuOpen" class="zoom-bar-help-menu" :style="helpMenuStyle" @click.stop>
-        <button class="help-menu-item" @click="helpMenuOpen = false">
+        <button class="help-menu-item" @click.stop="openCanvasTutorial">
           <i class="ri-guide-line"></i>
           <span>帮助</span>
         </button>
@@ -8362,7 +9476,7 @@ async function loadImageForCrop(layer) {
                 <dd>缩放画布</dd>
               </div>
               <div>
-                <dt>空格 + 拖拽</dt>
+                <dt>空格 + 左键拖拽</dt>
                 <dd>平移画布</dd>
               </div>
               <div>
@@ -8416,6 +9530,7 @@ async function loadImageForCrop(layer) {
         </div>
       </div>
     </div>
+
   </main>
 
   <!-- + 号菜单：Teleport 到 body，脱离 transform 父级 -->
@@ -8724,6 +9839,37 @@ async function loadImageForCrop(layer) {
       :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
       @click.stop
     >
+      <div
+        v-if="canGetPromptFromLayer(contextMenu.layer)"
+        class="uc-context-menu-item uc-context-menu-sub"
+        @mouseenter="promptCategoryOpen = true"
+        @mouseleave="promptCategoryOpen = false"
+        @click.stop="promptCategoryOpen = !promptCategoryOpen"
+      >
+        <i class="ri-magic-line"></i>
+        获取提示词
+        <span class="uc-context-menu-arrow">›</span>
+        <div
+          v-show="promptCategoryOpen"
+          class="uc-context-submenu uc-prompt-category-submenu"
+          @mouseenter="promptCategoryOpen = true"
+          @mouseleave="promptCategoryOpen = false"
+        >
+          <button
+            v-for="category in reversePromptCategories"
+            :key="category.value"
+            class="uc-context-menu-item"
+            type="button"
+            @click.stop="contextMenuGetPrompt(category.value)"
+          >
+            {{ category.label }}
+          </button>
+        </div>
+      </div>
+      <div
+        v-if="canGetPromptFromLayer(contextMenu.layer)"
+        class="uc-context-menu-divider"
+      ></div>
       <button class="uc-context-menu-item" @click="contextMenuAddToReference">
         <i class="ri-image-add-line"></i>
         添加到参考图
@@ -8731,6 +9877,14 @@ async function loadImageForCrop(layer) {
       <button class="uc-context-menu-item" @click="contextMenuAddToMaterials">
         <i class="ri-folder-image-line"></i>
         添加到我的素材
+      </button>
+      <button class="uc-context-menu-item" @click="openCopyToCanvasDialog">
+        <i class="ri-file-copy-2-line"></i>
+        {{
+          contextMenuDownloadCount() > 1
+            ? `复制 ${contextMenuDownloadCount()} 张图片到其他画布`
+            : '复制到其他画布'
+        }}
       </button>
       <button class="uc-context-menu-item" @click="contextMenuDownloadLayers">
         <i class="ri-download-2-line"></i>
@@ -8768,6 +9922,191 @@ async function loadImageForCrop(layer) {
         <i class="ri-delete-bin-line"></i>
         删除图片
       </button>
+    </div>
+  </Teleport>
+
+  <!-- 复制图片到其他画布 -->
+  <Teleport to="body">
+    <div
+      v-if="copyToCanvasDialog.visible"
+      class="uc-copy-canvas-backdrop"
+      @click.self="closeCopyToCanvasDialog"
+    >
+      <section
+        class="uc-copy-canvas-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="copy-canvas-title"
+      >
+        <header class="uc-copy-canvas-head">
+          <div>
+            <h2 id="copy-canvas-title">
+              <i class="ri-file-copy-2-line"></i>
+              复制到其他画布
+            </h2>
+            <p>复制 {{ copyToCanvasDialog.layerIds.length }} 张图片，原画布内容保持不变</p>
+          </div>
+          <button
+            type="button"
+            aria-label="关闭"
+            :disabled="copyToCanvasDialog.copying"
+            @click="closeCopyToCanvasDialog"
+          >
+            <i class="ri-close-line"></i>
+          </button>
+        </header>
+
+        <div v-if="!copyToCanvasDialog.result" class="uc-copy-canvas-body">
+          <div class="uc-copy-canvas-section-head">
+            <strong>选择已有画布</strong>
+            <span>{{ copyTargetDocuments.length }} 个可选</span>
+          </div>
+          <label v-if="copyTargetDocuments.length" class="uc-copy-canvas-search">
+            <i class="ri-search-line"></i>
+            <input
+              v-model="copyToCanvasDialog.targetQuery"
+              type="search"
+              placeholder="搜索画布名称"
+            />
+          </label>
+          <div v-if="filteredCopyTargetDocuments.length" class="uc-copy-canvas-list">
+            <button
+              v-for="target in filteredCopyTargetDocuments"
+              :key="target.id"
+              type="button"
+              class="uc-copy-canvas-target"
+              :class="{
+                selected: copyToCanvasDialog.selectedTargetId === target.id,
+                crowded: canvasImageCount(target) >= 30,
+              }"
+              @click="copyToCanvasDialog.selectedTargetId = target.id"
+            >
+              <span class="uc-copy-canvas-thumb">
+                <img
+                  v-if="target.thumbnailUrl"
+                  :src="target.thumbnailUrl"
+                  alt=""
+                  loading="lazy"
+                  decoding="async"
+                />
+                <i v-else class="ri-layout-grid-line"></i>
+              </span>
+              <span class="uc-copy-canvas-target-info">
+                <strong>{{ target.title }}</strong>
+                <small>
+                  {{ canvasImageCount(target) }} 张图片
+                  <em v-if="canvasImageCount(target) >= 30">· 建议新建</em>
+                </small>
+              </span>
+              <i
+                class="uc-copy-canvas-check"
+                :class="
+                  copyToCanvasDialog.selectedTargetId === target.id
+                    ? 'ri-checkbox-circle-fill'
+                    : 'ri-checkbox-blank-circle-line'
+                "
+              ></i>
+            </button>
+          </div>
+          <div v-else class="uc-copy-canvas-empty">
+            <i :class="copyTargetDocuments.length ? 'ri-search-line' : 'ri-layout-grid-line'"></i>
+            <span>
+              {{
+                copyTargetDocuments.length
+                  ? '没有找到匹配的画布'
+                  : '还没有其他画布，可以在下方新建'
+              }}
+            </span>
+          </div>
+
+          <div class="uc-copy-canvas-create">
+            <div class="uc-copy-canvas-section-head">
+              <strong>新建画布并复制</strong>
+              <span>适合图片较多时分组整理</span>
+            </div>
+            <div class="uc-copy-canvas-create-row">
+              <input
+                v-model="copyToCanvasDialog.newTitle"
+                type="text"
+                maxlength="60"
+                placeholder="输入新画布名称"
+                @keydown.enter.prevent="createCanvasAndCopy"
+              />
+              <button
+                type="button"
+                class="uc-copy-canvas-create-btn"
+                :disabled="copyToCanvasDialog.copying"
+                @click="createCanvasAndCopy"
+              >
+                <i class="ri-add-line"></i>
+                新建并复制
+              </button>
+            </div>
+          </div>
+
+          <p v-if="copyToCanvasDialog.error" class="uc-copy-canvas-error">
+            <i class="ri-error-warning-line"></i>
+            {{ copyToCanvasDialog.error }}
+          </p>
+        </div>
+
+        <div v-else class="uc-copy-canvas-result">
+          <span class="uc-copy-canvas-result-icon">
+            <i class="ri-check-line"></i>
+          </span>
+          <h3>图片已整理到目标画布</h3>
+          <p>
+            已复制 {{ copyToCanvasDialog.result.copiedCount }} 张到
+            “{{ copyToCanvasDialog.result.targetTitle }}”
+          </p>
+          <small v-if="copyToCanvasDialog.result.skippedCount">
+            {{ copyToCanvasDialog.result.skippedCount }} 张重复图片已自动跳过
+          </small>
+        </div>
+
+        <footer class="uc-copy-canvas-actions">
+          <template v-if="!copyToCanvasDialog.result">
+            <button
+              type="button"
+              class="uc-copy-canvas-btn"
+              :disabled="copyToCanvasDialog.copying"
+              @click="closeCopyToCanvasDialog"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              class="uc-copy-canvas-btn primary"
+              :disabled="
+                !copyToCanvasDialog.selectedTargetId || copyToCanvasDialog.copying
+              "
+              @click="copyToSelectedCanvas"
+            >
+              <i
+                :class="
+                  copyToCanvasDialog.copying
+                    ? 'ri-loader-4-line uc-spin'
+                    : 'ri-file-copy-2-line'
+                "
+              ></i>
+              {{ copyToCanvasDialog.copying ? '正在复制' : '复制到所选画布' }}
+            </button>
+          </template>
+          <template v-else>
+            <button type="button" class="uc-copy-canvas-btn" @click="closeCopyToCanvasDialog">
+              留在当前画布
+            </button>
+            <button
+              type="button"
+              class="uc-copy-canvas-btn primary"
+              @click="visitCopiedCanvas"
+            >
+              前往目标画布
+              <i class="ri-arrow-right-line"></i>
+            </button>
+          </template>
+        </footer>
+      </section>
     </div>
   </Teleport>
 

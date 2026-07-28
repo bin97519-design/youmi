@@ -48,11 +48,17 @@ public class ReversePromptTemplateService {
           "subject_and_elements": {"core_subject": "", "auxiliary_props": ""},
           "composition_and_camera": {"aspect_ratio": "", "spatial_layout": "", "camera_angle": ""},
           "lighting_and_color": {"background_material": "", "lighting_logic": "", "color_palette": ""},
-          "typography_layout": [{"position": "", "font_style": "", "alignment": "", "text_content": ""}]
+          "typography_layout": [{"position": "", "font_style": "", "alignment": "", "text_content": ""}],
+          "generation_prompt": "",
+          "negative_prompt": ""
         }
 
+        【生图提示词要求】
+        generation_prompt 必须是一段可直接提交给图像生成模型的完整中文提示词，长度 200-500 字。按主体、场景、构图、镜头、光线、色彩、材质和文字排版组织，准确描述需要保持的主体结构、比例、材质、视角及画面文字。不得出现 JSON 字段名、分析过程或“高级感”“好看”等空泛词。
+        negative_prompt 必须用中文列出需要避免的主体变形、比例错误、材质错误、透视错误、乱码、水印、Logo 和多余元素。
+
         【严格输出要求】
-        仅输出 JSON，不要解释，不要 Markdown 代码块。所有值使用中文。没有文字时 typography_layout 返回 []。
+        仅输出 JSON，不要解释，不要 Markdown 代码块。所有值使用中文。没有文字时 typography_layout 返回 []。generation_prompt 和 negative_prompt 必须是字符串。
         """;
   }
 
@@ -70,13 +76,19 @@ public class ReversePromptTemplateService {
           "lighting_and_color": {"background_material": "", "lighting_logic": "", "color_palette": ""},
           "mattress_surface": {"fabric_type": "", "pattern": "", "color_main": "", "color_secondary": "", "quilt_style": "", "border_detail": "", "thickness": ""},
           "mattress_structure": {"layer_structure": "", "side_surface": ""},
-          "typography_layout": [{"position": "", "font_style": "", "alignment": "", "text_content": ""}]
+          "typography_layout": [{"position": "", "font_style": "", "alignment": "", "text_content": ""}],
+          "generation_prompt": "",
+          "negative_prompt": ""
         }
 
         【专业要求】
         床垫面料、图案花纹、主辅色需尽量给出准确描述，颜色给色名和 HEX 近似值；绗缝、包边、厚度、分层、侧面外观要用指令性中文描述。
+        【生图提示词要求】
+        generation_prompt 必须是一段可直接提交给图像生成模型的完整中文提示词，长度 200-500 字。按床垫主体、面料与纹理、床垫结构、场景、构图、镜头、光线、色彩和文字排版组织，明确需要保持的产品结构、比例、材质、视角及画面文字。不得出现 JSON 字段名、分析过程或空泛形容词。
+        negative_prompt 必须用中文列出需要避免的床垫结构变形、绗缝错乱、材质失真、比例错误、透视错误、乱码、水印、Logo 和多余元素。
+
         【严格输出要求】
-        仅输出 JSON，不要解释，不要 Markdown 代码块。没有文字时 typography_layout 返回 []。
+        仅输出 JSON，不要解释，不要 Markdown 代码块。没有文字时 typography_layout 返回 []。generation_prompt 和 negative_prompt 必须是字符串。
         """;
   }
 
@@ -95,13 +107,19 @@ public class ReversePromptTemplateService {
           "curtain_detail": {"fabric_type": "", "pattern": "", "color_main": "", "color_secondary": "", "edge_detail": "", "header_style": "", "thickness": ""},
           "curtain_drape": {"fold_type": "", "opening_state": "", "drape_direction": ""},
           "curtain_scene": {"room_style": "", "wall_color": "", "floor_material": "", "furniture_visible": "", "lighting_source": ""},
-          "typography_layout": [{"position": "", "font_style": "", "alignment": "", "text_content": ""}]
+          "typography_layout": [{"position": "", "font_style": "", "alignment": "", "text_content": ""}],
+          "generation_prompt": "",
+          "negative_prompt": ""
         }
 
         【专业要求】
         窗帘面料、花纹、主辅色、帘边、帘头、厚度、褶皱、开合状态、垂坠方向和空间搭配要具体可执行，颜色给色名和 HEX 近似值。
+        【生图提示词要求】
+        generation_prompt 必须是一段可直接提交给图像生成模型的完整中文提示词，长度 200-500 字。按窗帘主体、面料与褶皱、开合状态、室内场景、构图、镜头、光线、色彩和文字排版组织，明确需要保持的产品结构、比例、材质、视角及画面文字。不得出现 JSON 字段名、分析过程或空泛形容词。
+        negative_prompt 必须用中文列出需要避免的窗帘结构变形、褶皱错乱、材质失真、比例错误、透视错误、乱码、水印、Logo 和多余元素。
+
         【严格输出要求】
-        仅输出 JSON，不要解释，不要 Markdown 代码块。没有文字时 typography_layout 返回 []。
+        仅输出 JSON，不要解释，不要 Markdown 代码块。没有文字时 typography_layout 返回 []。generation_prompt 和 negative_prompt 必须是字符串。
         """;
   }
 
@@ -119,13 +137,19 @@ public class ReversePromptTemplateService {
           "lighting_and_color": {"background_material": "", "lighting_logic": "", "color_palette": ""},
           "bed_wood": {"wood_species": "", "wood_color": "", "wood_grain": "", "surface_finish": "", "carving_detail": "", "headboard_shape": "", "headboard_height": ""},
           "bed_structure": {"frame_style": "", "leg_design": "", "footboard": "", "side_rail": "", "slat_type": "", "mattress_visible": ""},
-          "typography_layout": [{"position": "", "font_style": "", "alignment": "", "text_content": ""}]
+          "typography_layout": [{"position": "", "font_style": "", "alignment": "", "text_content": ""}],
+          "generation_prompt": "",
+          "negative_prompt": ""
         }
 
         【专业要求】
         木材品种、木色、木纹、表面工艺、床头造型、床架结构、床腿、床尾、床板和可见床垫要具体可执行，颜色给色名和 HEX 近似值。
+        【生图提示词要求】
+        generation_prompt 必须是一段可直接提交给图像生成模型的完整中文提示词，长度 200-500 字。按实木床主体、木材与工艺、床架结构、场景、构图、镜头、光线、色彩和文字排版组织，明确需要保持的产品结构、比例、材质、视角及画面文字。不得出现 JSON 字段名、分析过程或空泛形容词。
+        negative_prompt 必须用中文列出需要避免的床架结构变形、木纹失真、材质错误、比例错误、透视错误、乱码、水印、Logo 和多余元素。
+
         【严格输出要求】
-        仅输出 JSON，不要解释，不要 Markdown 代码块。没有文字时 typography_layout 返回 []。
+        仅输出 JSON，不要解释，不要 Markdown 代码块。没有文字时 typography_layout 返回 []。generation_prompt 和 negative_prompt 必须是字符串。
         """;
   }
 
@@ -240,6 +264,8 @@ public class ReversePromptTemplateService {
 
   private Map<String, String> baseLabels() {
     Map<String, String> labels = new LinkedHashMap<>();
+    labels.put("generation_prompt", "可直接生图提示词");
+    labels.put("negative_prompt", "禁止项");
     labels.put("position", "文字位置");
     labels.put("font_style", "字体风格");
     labels.put("alignment", "对齐方式");

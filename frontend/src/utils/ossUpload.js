@@ -12,6 +12,39 @@ export function validateImageUploadSize(file) {
   }
 }
 
+export function base64ImageToFile(value, fileName = `image-${Date.now()}`) {
+  const source = String(value || '').trim()
+  const dataUrl = source.startsWith('data:') ? source : `data:image/png;base64,${source}`
+  const match = dataUrl.match(
+    /^data:(image\/[a-zA-Z0-9.+-]+)(?:;[^,]*)?;base64,([\s\S]+)$/,
+  )
+  if (!match) throw new Error('图片 Base64 格式不正确')
+
+  const mimeType = match[1].toLowerCase()
+  const binary = atob(match[2].replace(/\s/g, ''))
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+
+  const extension =
+    {
+      'image/jpeg': 'jpg',
+      'image/png': 'png',
+      'image/webp': 'webp',
+      'image/gif': 'gif',
+      'image/avif': 'avif',
+    }[mimeType] || 'png'
+  return new File([bytes], `${fileName}.${extension}`, { type: mimeType })
+}
+
+export function uploadBase64ImageDirect(value, options = {}) {
+  return uploadFileDirect(
+    base64ImageToFile(value, options.fileName || `image-${Date.now()}`),
+    options,
+  )
+}
+
 function authHeaders() {
   return useUserStore().authHeaders()
 }
