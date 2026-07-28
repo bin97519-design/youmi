@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -103,9 +104,15 @@ class MiValueControllerTest {
         CREATE TABLE IF NOT EXISTS ym_sys_user_role (user_id BIGINT, role_id BIGINT)
         """);
     jdbcTemplate.execute("""
+        CREATE TABLE IF NOT EXISTS ym_platform (
+          id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(64), code VARCHAR(32),
+          status VARCHAR(20), sort_order INT, created_at TIMESTAMP, updated_at TIMESTAMP)
+        """);
+    jdbcTemplate.execute("""
         CREATE TABLE IF NOT EXISTS ym_shop (
           id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(128), code VARCHAR(64),
-          platform VARCHAR(32), status VARCHAR(20), created_at TIMESTAMP, updated_at TIMESTAMP)
+          platform_id BIGINT, platform VARCHAR(32), status VARCHAR(20),
+          created_at TIMESTAMP, updated_at TIMESTAMP)
         """);
     jdbcTemplate.execute("""
         CREATE TABLE IF NOT EXISTS ym_mi_value_log (
@@ -198,7 +205,7 @@ class MiValueControllerTest {
     JsonNode body = objectMapper.readTree(new String(result.getResponse().getContentAsByteArray(), StandardCharsets.UTF_8));
     assertTrue(body.get("message").asText().contains("米值不足"), "文案应含「米值不足」");
     // 资损防护核心：不足时绝不可发起外部生成调用
-    verify(imageGenerationClient, never()).createTask(any());
+    verify(imageGenerationClient, never()).createTask(any(), anyLong());
     assertEquals(5, getBalance(IMAGE_USER), "余额不应变化");
     assertEquals(0, logCount(IMAGE_USER), "不应写入任何流水");
   }
@@ -210,7 +217,7 @@ class MiValueControllerTest {
     // tasks=null 避免触发 ym_image_task 写入（与闸门验证无关），专注米值闭环
     ImageGenerationDtos.CreateTaskResponse resp =
         new ImageGenerationDtos.CreateTaskResponse("agnes", "", "model", "9:16", "2K", 1, null, null);
-    when(imageGenerationClient.createTask(any())).thenReturn(resp);
+    when(imageGenerationClient.createTask(any(), anyLong())).thenReturn(resp);
 
     MvcResult result = postImage(imageToken, "{\"prompt\":\"a cat\"}");
 
@@ -228,7 +235,8 @@ class MiValueControllerTest {
   @DisplayName("生图-外部生成失败：HTTP 502 且文案含「生成服务异常，米值已退回」，余额恢复，流水 ROLLBACK")
   void image_failure_rollsBack() throws Exception {
     setBalance(IMAGE_USER, 100);
-    when(imageGenerationClient.createTask(any())).thenThrow(new RuntimeException("upstream down"));
+    when(imageGenerationClient.createTask(any(), anyLong()))
+        .thenThrow(new RuntimeException("upstream down"));
 
     MvcResult result = postImage(imageToken, "{\"prompt\":\"a cat\"}");
 

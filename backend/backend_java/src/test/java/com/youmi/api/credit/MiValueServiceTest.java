@@ -157,6 +157,22 @@ class MiValueServiceTest {
     verify(repository, times(1)).refund(USER, 10);
   }
 
+  @Test
+  @DisplayName("按实际通道结算时退回预扣差额")
+  void settle_refundsReservedDifference() {
+    MiValueRepository.LogRow row =
+        new MiValueRepository.LogRow(11L, USER, 8, "PENDING", "IMAGE");
+    when(repository.findLogById(11L)).thenReturn(Optional.of(row));
+    when(repository.settle(11L, 6, 2)).thenReturn(1);
+    when(repository.getBalance(USER)).thenReturn(94);
+
+    MiValueDtos.DeductResult result = service.settle(11L, 6);
+
+    assertEquals(6, result.price());
+    assertEquals(94, result.afterBalance());
+    verify(repository).refund(USER, 2);
+  }
+
   // ============ 管理后台调账 ============
   @Test
   @DisplayName("管理调账：正 delta 正确调用 adminAdjust 并写 ADMIN_ADJUST 流水")

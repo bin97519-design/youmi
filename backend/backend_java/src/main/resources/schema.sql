@@ -142,31 +142,99 @@ CREATE TABLE IF NOT EXISTS ym_mi_value_log (
   INDEX idx_log_task (task_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- ── 店铺归属（账号系统新增店铺归属功能） ──
+-- ── 电商平台与店铺归属 ──
+CREATE TABLE IF NOT EXISTS ym_platform (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  name VARCHAR(64) NOT NULL UNIQUE,
+  code VARCHAR(32) NOT NULL UNIQUE,
+  status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+  sort_order INT NOT NULL DEFAULT 100,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_platform_status_sort (status, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT INTO ym_platform (name, code, status, sort_order) VALUES
+  ('淘宝', 'TAOBAO', 'ACTIVE', 10),
+  ('天猫', 'TMALL', 'ACTIVE', 20),
+  ('抖音', 'DOUYIN', 'ACTIVE', 30),
+  ('京东', 'JD', 'ACTIVE', 40),
+  ('拼多多', 'PINDUODUO', 'ACTIVE', 50),
+  ('其他', 'OTHER', 'ACTIVE', 999)
+ON DUPLICATE KEY UPDATE
+  name = VALUES(name),
+  status = VALUES(status),
+  sort_order = VALUES(sort_order);
+
 CREATE TABLE IF NOT EXISTS ym_shop (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   name VARCHAR(128) NOT NULL,
   code VARCHAR(64) NOT NULL UNIQUE,
+  platform_id BIGINT NOT NULL,
   platform VARCHAR(32) NULL,
   status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX idx_shop_status (status)
+  INDEX idx_shop_status (status),
+  INDEX idx_shop_platform (platform_id),
+  CONSTRAINT fk_shop_platform FOREIGN KEY (platform_id) REFERENCES ym_platform (id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+SET @db = DATABASE();
+SET @has_shop_platform_col = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@db AND table_name='ym_shop' AND column_name='platform_id');
+SET @sql = IF(@has_shop_platform_col=0, 'ALTER TABLE ym_shop ADD COLUMN platform_id BIGINT NULL AFTER code', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- 保留历史自由文本平台：自动转成独立平台记录，再回填外键。
+INSERT INTO ym_platform (name, code, status, sort_order)
+SELECT DISTINCT
+  TRIM(s.platform),
+  CONCAT('LEGACY_', UPPER(SUBSTRING(MD5(TRIM(s.platform)), 1, 12))),
+  'ACTIVE',
+  900
+FROM ym_shop s
+LEFT JOIN ym_platform p ON p.name = TRIM(s.platform)
+WHERE s.platform IS NOT NULL AND TRIM(s.platform) <> '' AND p.id IS NULL
+ON DUPLICATE KEY UPDATE name = VALUES(name);
+
+UPDATE ym_shop s
+INNER JOIN ym_platform p ON p.name = TRIM(s.platform)
+SET s.platform_id = p.id
+WHERE s.platform_id IS NULL AND s.platform IS NOT NULL AND TRIM(s.platform) <> '';
+
+UPDATE ym_shop
+SET platform_id = (SELECT id FROM ym_platform WHERE code = 'OTHER' LIMIT 1)
+WHERE platform_id IS NULL;
+
+UPDATE ym_shop s
+INNER JOIN ym_platform p ON p.id = s.platform_id
+SET s.platform = p.name
+WHERE s.platform IS NULL OR s.platform <> p.name;
+
 -- 预埋默认店铺（幂等，ON DUPLICATE KEY UPDATE 避免重复插入报错）
-INSERT INTO ym_shop (name, code, platform, status) VALUES
-  ('爱洁猫', 'aijiemao', '淘宝', 'ACTIVE'),
-  ('能见度', 'nengjiandu', '淘宝', 'ACTIVE'),
-  ('宜爵', 'yijue', '淘宝', 'ACTIVE'),
-  ('卡寐森', 'kameisen', '淘宝', 'ACTIVE'),
-  ('猫人', 'maoren', '淘宝', 'ACTIVE'),
-  ('诺沐', 'nuomu', '淘宝', 'ACTIVE'),
-  ('奇思妙想', 'qisimiaoxiang', '淘宝', 'ACTIVE')
+INSERT INTO ym_shop (name, code, platform_id, platform, status) VALUES
+  ('爱洁猫', 'aijiemao', (SELECT id FROM ym_platform WHERE code = 'TAOBAO'), '淘宝', 'ACTIVE'),
+  ('能见度', 'nengjiandu', (SELECT id FROM ym_platform WHERE code = 'TAOBAO'), '淘宝', 'ACTIVE'),
+  ('宜爵', 'yijue', (SELECT id FROM ym_platform WHERE code = 'TAOBAO'), '淘宝', 'ACTIVE'),
+  ('卡寐森', 'kameisen', (SELECT id FROM ym_platform WHERE code = 'TAOBAO'), '淘宝', 'ACTIVE'),
+  ('猫人', 'maoren', (SELECT id FROM ym_platform WHERE code = 'TAOBAO'), '淘宝', 'ACTIVE'),
+  ('诺沐', 'nuomu', (SELECT id FROM ym_platform WHERE code = 'TAOBAO'), '淘宝', 'ACTIVE'),
+  ('奇思妙想', 'qisimiaoxiang', (SELECT id FROM ym_platform WHERE code = 'TAOBAO'), '淘宝', 'ACTIVE')
 ON DUPLICATE KEY UPDATE name = name;
 
+SET @shop_platform_nullable = (SELECT IS_NULLABLE FROM information_schema.columns WHERE table_schema=@db AND table_name='ym_shop' AND column_name='platform_id' LIMIT 1);
+SET @sql = IF(@shop_platform_nullable='YES', 'ALTER TABLE ym_shop MODIFY COLUMN platform_id BIGINT NOT NULL', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @has_shop_platform_idx = (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@db AND table_name='ym_shop' AND index_name='idx_shop_platform');
+SET @sql = IF(@has_shop_platform_idx=0, 'ALTER TABLE ym_shop ADD INDEX idx_shop_platform (platform_id)', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @has_shop_platform_fk = (SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=@db AND table_name='ym_shop' AND constraint_name='fk_shop_platform' AND constraint_type='FOREIGN KEY');
+SET @sql = IF(@has_shop_platform_fk=0, 'ALTER TABLE ym_shop ADD CONSTRAINT fk_shop_platform FOREIGN KEY (platform_id) REFERENCES ym_platform (id) ON DELETE RESTRICT', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 -- 给 ym_sys_user 增加 shop_id 列（幂等，避免重启重复 ALTER 报错）
-SET @db = DATABASE();
 SET @has_shop_col = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@db AND table_name='ym_sys_user' AND column_name='shop_id');
 SET @sql = IF(@has_shop_col=0, 'ALTER TABLE ym_sys_user ADD COLUMN shop_id BIGINT NULL', 'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;

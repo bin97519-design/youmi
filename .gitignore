@@ -24,9 +24,11 @@ temp_jar/
 jar-patch/
 **/*.class
 **/*.jar
+*.rar
 
 # Maven wrapper 自动下载的发行版
 **/apache-maven-/
+.m2/
 
 # 含密钥 / 本地配置（绝不入库，防止泄露）
 config/

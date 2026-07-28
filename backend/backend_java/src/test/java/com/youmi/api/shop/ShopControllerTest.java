@@ -73,10 +73,21 @@ class ShopControllerTest {
 
   private void initSchema() {
     jdbcTemplate.execute("""
+        CREATE TABLE IF NOT EXISTS ym_platform (
+          id BIGINT PRIMARY KEY AUTO_INCREMENT,
+          name VARCHAR(64) NOT NULL,
+          code VARCHAR(32) NOT NULL UNIQUE,
+          status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+          sort_order INT NOT NULL DEFAULT 0,
+          created_at DATETIME,
+          updated_at DATETIME)
+        """);
+    jdbcTemplate.execute("""
         CREATE TABLE IF NOT EXISTS ym_shop (
           id BIGINT PRIMARY KEY AUTO_INCREMENT,
           name VARCHAR(128) NOT NULL,
           code VARCHAR(64) NOT NULL UNIQUE,
+          platform_id BIGINT NOT NULL,
           platform VARCHAR(32) NULL,
           status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
           created_at DATETIME,
@@ -117,6 +128,13 @@ class ShopControllerTest {
     jdbcTemplate.update("DELETE FROM ym_sys_user");
     jdbcTemplate.update("DELETE FROM ym_sys_role");
     jdbcTemplate.update("DELETE FROM ym_shop");
+    jdbcTemplate.update("DELETE FROM ym_platform");
+    jdbcTemplate.update("""
+        INSERT INTO ym_platform (id, name, code, status, sort_order, created_at, updated_at)
+        VALUES
+          (1, '淘宝', 'TAOBAO', 'ACTIVE', 10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+          (6, '其他', 'OTHER', 'ACTIVE', 999, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """);
   }
 
   private void insertRole(Long id, String code) {
@@ -263,7 +281,7 @@ class ShopControllerTest {
   // ===================== 公开列表 =====================
 
   @Test
-  @DisplayName("公开列表：无需登录，仅返 ACTIVE 的 id/name/code")
+  @DisplayName("公开列表：无需登录，仅返 ACTIVE 店铺及其平台")
   void public_list_onlyActive() throws Exception {
     Long activeId = createShopAndGetId("A店", "A1");
     Long disabledId = createShopAndGetId("B店", "B1");
@@ -279,7 +297,8 @@ class ShopControllerTest {
     assertEquals(activeId.longValue(), data.get(0).get("id").asLong());
     assertEquals("A店", data.get(0).get("name").asText());
     assertEquals("A1", data.get(0).get("code").asText());
-    assertTrue(data.get(0).get("platform") == null || data.get(0).get("platform").isNull(),
-        "公开视图不应暴露 platform 等内部字段");
+    assertEquals(6L, data.get(0).get("platformId").asLong());
+    assertEquals("OTHER", data.get(0).get("platformCode").asText());
+    assertEquals("其他", data.get(0).get("platformName").asText());
   }
 }

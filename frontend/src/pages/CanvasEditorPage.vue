@@ -11,9 +11,18 @@ import {
 } from 'vue'
 import { useRouter } from 'vue-router'
 import ImageViewer from '../components/ImageViewer.vue'
+import CameraAnglePanel from '../components/canvas/CameraAnglePanel.vue'
+import CanvasCreationPanel from '../components/canvas/CanvasCreationPanel.vue'
 import { layerName, useCanvasStore } from '../stores/canvas'
 import { useUserStore } from '../stores/user'
 import { apiPath } from '../utils/apiBase'
+import { buildCanvasAutoLayout } from '../utils/canvasAutoLayout'
+import { writeTextToClipboard } from '../utils/clipboard'
+import {
+  buildElementEditPrompt,
+  buildGenerationReplay,
+  normalizeRectToBox,
+} from '../utils/elementEditPrompt'
 import { cachedImgHtml } from '../utils/imageCache'
 import { publishImageTaskPersistence } from '../utils/imageTaskSync'
 import { createStoredZip } from '../utils/storedZip'
@@ -78,8 +87,7 @@ function toggleToolbarAdd() {
 }
 
 // 归一化 box_2d 到 0-1，格式统一为 [x1, y1, x2, y2] = [left, top, right, bottom]
-// 数据来源（canvas.js runDetection）已在存储时做 [top,left,bottom,right] → [left,top,right,bottom] 的 swap
-// 此处只需做归一化和 clamp
+// detect-elements 接口已统一返回该顺序；前端只做数值归一化和 clamp，不再交换横纵坐标。
 function normalizeBoxVal(raw) {
   if (!Array.isArray(raw) || raw.length !== 4) return [0, 0, 1, 1]
   // 确保所有值都是数字
@@ -151,6 +159,9 @@ const clipboardLayers = ref([])
 const internalClipboardArmed = ref(false)
 let clipboardPasteCount = 0
 const rightTab = ref('chat')
+const creationPanelOpen = ref(false)
+const creationRunning = ref(false)
+const cameraAnglePanelOpen = ref(false)
 
 // ========== 连接线系统 ==========
 // 连接线归属画布文档：从按文档隔离的 payload 读取（旧文档无该字段则默认 []）
@@ -439,6 +450,93 @@ const chatSelectOpen = ref(null) // 'model' | 'ratio' | 'resolution' | null
 function toggleChatSelect(name) {
   chatSelectOpen.value = chatSelectOpen.value === name ? null : name
 }
+
+function closeChatSelect() {
+  chatSelectOpen.value = null
+}
+
+function selectChatOption(name, value) {
+  if (name === 'model') chatModel.value = value
+  if (name === 'ratio') chatRatio.value = value
+  if (name === 'resolution') chatResolution.value = value
+  closeChatSelect()
+}
+
+function openCameraAnglePanel(layer = selectedLayer.value) {
+  if (!isRealImageLayer(layer)) {
+    showCopyPasteToast('请选择一张图片后再调整视角')
+    return
+  }
+  selectedLayerId.value = layer.id
+  selectedLayerIds.value = [layer.id]
+  cameraAnglePanelOpen.value = true
+}
+
+async function insertCameraAnglePrompt({ prompt }) {
+  const source = selectedLayer.value
+  if (!source?.url) {
+    showCopyPasteToast('参考图不存在，请重新选择图片')
+    return
+  }
+
+  rightPanelVisible.value = true
+  rightTab.value = 'chat'
+  const existing = chatReferenceImages.value.find((image) => image.url === source.url)
+  if (!existing) {
+    chatReferenceImages.value.push({
+      id: `angle-ref-${Date.now()}`,
+      url: source.url,
+      name: source.name || '角度参考图',
+      layerId: source.id,
+      uploading: false,
+    })
+  }
+  activeChatReferenceId.value =
+    chatReferenceImages.value.find((image) => image.url === source.url)?.id || ''
+
+  await nextTick()
+  const editor = document.querySelector('.chat-editor')
+  if (editor) {
+    editor.textContent = prompt
+    updateChatTextFromEditor()
+    editor.focus()
+  } else {
+    chatText.value = prompt
+  }
+  cameraAnglePanelOpen.value = false
+  showCopyPasteToast('角度提示词和参考图已填入对话框')
+}
+
+async function generateFromCameraAngle(payload) {
+  const source = selectedLayer.value
+  if (!source?.url) {
+    showCopyPasteToast('参考图不存在，请重新选择图片')
+    return
+  }
+  const sourceId = source.id
+  cameraAnglePanelOpen.value = false
+  rightPanelVisible.value = true
+  rightTab.value = 'chat'
+
+  const submitted = await sendChat({
+    fullPrompt: payload.prompt,
+    displayText: payload.displayText,
+    selectedElements: [],
+    referenceImageUrls: [source.url],
+    messageReferenceImages: [{ url: source.url }],
+    targetLayerId: sourceId,
+    generationCount: 1,
+    taskConfig: {
+      model: chatModel.value,
+      ratio: chatRatio.value,
+      resolution: chatResolution.value,
+    },
+  })
+
+  for (const placeholderId of submitted?.placeholderIds || []) {
+    connectCreationSources([sourceId], placeholderId)
+  }
+}
 // 生成历史归属画布文档：从 payload 读取（旧文档无该字段则默认 []）
 const generationHistory = ref([...(doc.value?.payload?.generationHistory || [])])
 
@@ -651,6 +749,11 @@ const toolbar = reactive({ x: null, y: null, dragging: null })
 
 const layers = computed(() => doc.value.payload.layers)
 const selectedLayer = computed(() => layers.value.find((item) => item.id === selectedLayerId.value))
+const selectedCreationLayers = computed(() =>
+  selectedLayerIds.value
+    .map((id) => layers.value.find((item) => item.id === id))
+    .filter((item) => item?.url && item.type !== 'placeholder' && item.type !== 'text'),
+)
 const selectedLayerIndex = computed(() =>
   layers.value.findIndex((item) => item.id === selectedLayerId.value),
 )
@@ -1433,6 +1536,8 @@ function isTaskDone(status) {
 
 function isTaskImageReady(task) {
   const status = String(task?.status || '').toLowerCase()
+  // persisting 表示模型已经出图、后端正在转存 OSS。此时先把临时图放上画布，
+  // 再由独立的限时后台同步替换为永久 URL，不能继续占用主生图轮询。
   return (isTaskDone(status) || status === 'persisting') && Boolean(extractTaskImageUrl(task))
 }
 
@@ -1846,7 +1951,11 @@ function resumePersistingImageLayers() {
   const recovered = []
   for (const layer of doc.value?.payload?.layers || []) {
     const persistStatus = String(layer.persistStatus || '').toUpperCase()
-    if (layer.type !== 'image' || !layer.taskId || ['DONE', 'FAILED'].includes(persistStatus)) {
+    if (
+      layer.type !== 'image' ||
+      !layer.taskId ||
+      ['DONE', 'FAILED'].includes(persistStatus)
+    ) {
       continue
     }
     const temporaryUrl = layer.temporaryUrl || layer.url
@@ -1897,7 +2006,6 @@ function resumePersistingImageLayers() {
     })
   }
 }
-
 // 刷新/导航后恢复被中断（processing/interrupted）的生图任务轮询。
 // 无聊天消息上下文（assistantId 为空），仅更新占位图层状态，成功则替换图片。
 // 防止同一个 taskId 被并发重复轮询（恢复扫描可能被 onMounted / 图层监听多次触发，
@@ -2574,17 +2682,23 @@ function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '',
     selected?.type === 'placeholder'
       ? [...layers.value].reverse().find((l) => l.type !== 'placeholder')
       : selected
-  const previewUrl = referenceImages.at(-1)?.url || base?.url || ''
+  const previewUrl = genMeta.previewUrl || referenceImages.at(-1)?.url || base?.url || ''
   let layerId = ''
 
   // 占位框大小：与参考图/选中图的长宽比一致
   // 优先用参考图的尺寸，其次用选中图的尺寸，最后默认 3:4
   const refImg = referenceImages.at(-1)
-  const aspectSrc = refImg
-    ? { w: refImg.naturalWidth || refImg.width || 3, h: refImg.naturalHeight || refImg.height || 4 }
-    : base
-      ? { w: base.naturalWidth || base.width || 3, h: base.naturalHeight || base.height || 4 }
-      : { w: 3, h: 4 }
+  const aspectSrc =
+    genMeta.aspectWidth && genMeta.aspectHeight
+      ? { w: genMeta.aspectWidth, h: genMeta.aspectHeight }
+      : refImg
+        ? {
+            w: refImg.naturalWidth || refImg.width || 3,
+            h: refImg.naturalHeight || refImg.height || 4,
+          }
+        : base
+          ? { w: base.naturalWidth || base.width || 3, h: base.naturalHeight || base.height || 4 }
+          : { w: 3, h: 4 }
   const aspectRatio = aspectSrc.w / aspectSrc.h
   const placeholderHeight = Math.round(PLACEHOLDER_WIDTH / aspectRatio)
 
@@ -2629,6 +2743,7 @@ function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '',
         referenceImageUrls: Array.isArray(genMeta.referenceImageUrls)
           ? genMeta.referenceImageUrls
           : [],
+        creationType: genMeta.creationType || '',
       },
       // 关联的聊天消息 id：刷新后恢复轮询完成时用来更新聊天卡片文案（否则 assistantId 为空，
       // pollImageTaskUntilDone 会跳过所有 chatMessage 更新，卡片永远停在"正在恢复..."）。
@@ -2661,6 +2776,145 @@ function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '',
   return layerId
 }
 
+function connectCreationSources(sourceIds, targetId) {
+  const existing = new Set(connections.value.map((item) => `${item.fromLayerId}:${item.toLayerId}`))
+  for (const sourceId of sourceIds || []) {
+    const key = `${sourceId}:${targetId}`
+    if (!sourceId || existing.has(key)) continue
+    connections.value.push({
+      id: `conn-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      fromLayerId: sourceId,
+      fromPort: 'right',
+      toLayerId: targetId,
+      toPort: 'left',
+    })
+    existing.add(key)
+  }
+  persistConnections()
+}
+
+async function runCanvasCreation({ type, sourceIds, jobs }) {
+  if (creationRunning.value || !Array.isArray(jobs) || !jobs.length) return
+  if (!userStore.requireLogin()) return
+
+  creationPanelOpen.value = false
+  creationRunning.value = true
+  chatGenerating.value = true
+  rightTab.value = 'chat'
+  const polls = []
+
+  try {
+    for (let index = 0; index < jobs.length; index += 1) {
+      const job = jobs[index]
+      const sourceId = job.sourceIds?.[0] || sourceIds?.[0] || ''
+      if (sourceId) {
+        selectedLayerId.value = sourceId
+        selectedLayerIds.value = [sourceId]
+      }
+
+      const messageId = `msg-${Date.now()}-creation-${index}`
+      addChatMessages([
+        {
+          id: messageId,
+          role: 'assistant',
+          text: `${job.name || '图片'}正在生成…`,
+          generating: true,
+          model: job.model || chatModel.value,
+          ratio: job.ratio || 'auto',
+          resolution: job.resolution || chatResolution.value,
+          createdAt: Date.now() + index,
+        },
+      ])
+
+      const placeholderId = addGeneratingPlaceholderLayer(
+        job.prompt,
+        {
+          model: job.model || chatModel.value,
+          ratio: job.ratio || 'auto',
+          resolution: job.resolution || chatResolution.value,
+          referenceImageUrls: job.imageUrls || [],
+          previewUrl: job.previewUrl || '',
+          aspectWidth: job.aspectWidth,
+          aspectHeight: job.aspectHeight,
+          creationType: type || '',
+        },
+        messageId,
+        {
+          batchCount: jobs.length,
+          batchIndex: index,
+          skipUndo: index > 0,
+          skipFlush: true,
+        },
+      )
+
+      const source = layers.value.find((item) => item.id === sourceId)
+      const placeholder = layers.value.find((item) => item.id === placeholderId)
+      if (source && placeholder) {
+        const columns = Math.max(1, Math.ceil(Math.sqrt(jobs.length)))
+        const column = index % columns
+        const row = Math.floor(index / columns)
+        updateLayer(placeholderId, {
+          name: job.name || `生成结果 ${index + 1}`,
+          x: source.x + source.width + 48 + column * (placeholder.width + 36),
+          y: source.y + row * (placeholder.height + 36),
+        })
+      }
+      connectCreationSources(job.sourceIds || sourceIds || [], placeholderId)
+
+      try {
+        const pendingLayer = layers.value.find((item) => item.id === placeholderId)
+        const taskId = await submitImageTask({
+          prompt: job.prompt,
+          imageUrls: job.imageUrls || [],
+          model: job.model || chatModel.value,
+          size: job.ratio || 'auto',
+          resolution: job.resolution || chatResolution.value,
+          clientTaskId: pendingLayer?.clientTaskId || '',
+        })
+        updateGeneratingPlaceholder(placeholderId, {
+          taskId,
+          progress: 8,
+          status: 'processing',
+          statusText: `${job.name || '图片'}生成中…`,
+        })
+        polls.push(
+          startImagePoll(taskId, placeholderId, messageId, job.prompt).catch((error) => {
+            const friendly = friendlyImageError(error?.message || error)
+            updateGeneratingPlaceholder(placeholderId, {
+              progress: 1,
+              status: 'failed',
+              statusText: friendly,
+              lastError: String(error?.message || error),
+            })
+            updateChatMessage(messageId, {
+              text: `${job.name || '图片'}生成失败：${friendly}`,
+              generating: false,
+            })
+          }),
+        )
+      } catch (error) {
+        const friendly = friendlyImageError(error?.message || error)
+        updateGeneratingPlaceholder(placeholderId, {
+          progress: 1,
+          status: 'failed',
+          statusText: friendly,
+          lastError: String(error?.message || error),
+        })
+        updateChatMessage(messageId, {
+          text: `${job.name || '图片'}提交失败：${friendly}`,
+          generating: false,
+        })
+      }
+    }
+
+    await canvas.flushNow?.(props.id)
+    await Promise.allSettled(polls)
+  } finally {
+    creationRunning.value = false
+    chatGenerating.value = false
+  }
+}
+
 function updateGeneratingPlaceholder(layerId, patch) {
   const nextPatch = { ...patch }
   if (patch.progress !== undefined) {
@@ -2671,7 +2925,12 @@ function updateGeneratingPlaceholder(layerId, patch) {
   updateLayer(layerId, nextPatch)
 }
 
-async function replaceGeneratingPlaceholder(layerId, url, skipAutoDetect = false, persistence = {}) {
+async function replaceGeneratingPlaceholder(
+  layerId,
+  url,
+  skipAutoDetect = false,
+  persistence = {},
+) {
   pushUndo()
   try {
     const size = await imageSize(url)
@@ -3321,7 +3580,9 @@ function imageExtension(url, contentType) {
   if (type.includes('webp')) return '.webp'
   if (type.includes('gif')) return '.gif'
   if (type.includes('avif')) return '.avif'
-  const match = String(url || '').split('?')[0].match(/\.(png|jpe?g|webp|gif|avif)$/i)
+  const match = String(url || '')
+    .split('?')[0]
+    .match(/\.(png|jpe?g|webp|gif|avif)$/i)
   return match ? `.${match[1].toLowerCase().replace('jpeg', 'jpg')}` : '.png'
 }
 
@@ -3592,7 +3853,7 @@ const IMAGE_FILE_NAME_RE = /\.(avif|bmp|gif|heic|heif|jpe?g|png|webp)$/i
 function isImageFile(file) {
   return Boolean(
     file &&
-      (String(file.type || '').startsWith('image/') || IMAGE_FILE_NAME_RE.test(file.name || '')),
+    (String(file.type || '').startsWith('image/') || IMAGE_FILE_NAME_RE.test(file.name || '')),
   )
 }
 
@@ -3701,7 +3962,8 @@ async function addFiles(fileList, options = {}) {
     }
 
     try {
-      const progressName = files.length > 1 ? `${fileIndex + 1}/${files.length} ${file.name}` : file.name
+      const progressName =
+        files.length > 1 ? `${fileIndex + 1}/${files.length} ${file.name}` : file.name
       uploadProgress.value = { fileName: progressName, loaded: 0, total: file.size, percent: 0 }
       const url = await uploadFile(file, (p) => {
         uploadProgress.value = {
@@ -3733,13 +3995,7 @@ async function addFiles(fileList, options = {}) {
             0,
           )
           const base = selectedLayer.value
-          const gridPosition = gridImportPosition(
-            fileIndex,
-            files.length,
-            layerW,
-            layerH,
-            anchor,
-          )
+          const gridPosition = gridImportPosition(fileIndex, files.length, layerW, layerH, anchor)
           const layer = {
             id: `layer-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
             type: 'video',
@@ -3755,11 +4011,7 @@ async function addFiles(fileList, options = {}) {
               : base
                 ? base.x + Math.min(40, base.width / 2)
                 : anchor.x - layerW / 2 + index * 30,
-            y: useGrid
-              ? gridPosition.y
-              : base
-                ? base.y + 30
-                : anchor.y - layerH / 2 + index * 25,
+            y: useGrid ? gridPosition.y : base ? base.y + 30 : anchor.y - layerH / 2 + index * 25,
             zIndex: maxZ + 1,
             visible: true,
             locked: false,
@@ -3842,7 +4094,8 @@ async function addFiles(fileList, options = {}) {
   }
   if (failedFiles.length) {
     const firstError = failedFiles[0].error?.message || '上传失败'
-    const prefix = failedFiles.length === 1 ? failedFiles[0].file.name : `${failedFiles.length} 个文件`
+    const prefix =
+      failedFiles.length === 1 ? failedFiles[0].file.name : `${failedFiles.length} 个文件`
     showCopyPasteToast(`${prefix} 上传失败：${firstError}`)
   }
   if (uploadedCount && options.addChatNotice) {
@@ -4141,6 +4394,24 @@ function startLayerDrag(event, layer) {
   if (!userStore.requireLogin()) return
   if (activeTool.value === 'hand') return
   if (activeTool.value === 'annotate') return
+  if (event.shiftKey) {
+    if (
+      event.button !== 0 ||
+      event.target.closest('.layer-toolbar') ||
+      event.target.closest('.resize-dot')
+    )
+      return
+    event.preventDefault()
+    event.stopPropagation()
+    const nextIds = new Set(selectedLayerIds.value)
+    if (nextIds.has(layer.id)) nextIds.delete(layer.id)
+    else nextIds.add(layer.id)
+    selectedLayerIds.value = [...nextIds]
+    selectedLayerId.value = nextIds.has(layer.id)
+      ? layer.id
+      : selectedLayerIds.value.at(-1) || ''
+    return
+  }
   if (event.ctrlKey || event.metaKey) return // Ctrl+拖拽由 stage 的 startMarquee 处理
   if (
     event.button !== 0 ||
@@ -4672,12 +4943,135 @@ function renderMessageContent(message) {
       `</div>`
   } else if (message.generating && !/^(生成|生图)失败/.test(String(message.text || '').trim())) {
     html += `<div class="chat-gen-preview chat-gen-preview--loading"><div class="chat-gen-skeleton"></div></div>`
+  } else if (
+    message.role === 'assistant' &&
+    (message.failed || /(?:生成|生图)失败/.test(String(message.text || '')))
+  ) {
+    const mid = escHtml(message.id || '')
+    const retrying = Boolean(message.retrying)
+    const retried = Boolean(message.retried)
+    const label = retrying ? '重试中' : retried ? '已重试' : '重试'
+    html +=
+      `<div class="chat-gen-failure-actions">` +
+      `<button type="button" class="chat-gen-action-btn chat-gen-retry-btn chat-gen-action--retry" data-msg-id="${mid}" title="使用原提示词、参数和参考图重试" ${retrying || retried ? 'disabled' : ''}>` +
+      `<i class="ri-refresh-line" aria-hidden="true"></i><span>${label}</span>` +
+      `</button>` +
+      `</div>`
   }
   return html
 }
 
+function getChatGenerationReplay(messageId) {
+  const chat = doc.value?.payload?.chat || []
+  const messageIndex = chat.findIndex((message) => message.id === messageId)
+  const assistantMessage = messageIndex >= 0 ? chat[messageIndex] : null
+  if (!assistantMessage) return null
+
+  const userMessage =
+    messageIndex > 0 && chat[messageIndex - 1]?.role === 'user' ? chat[messageIndex - 1] : {}
+  const history = doc.value?.payload?.generationHistory || []
+  const record =
+    (assistantMessage.taskId
+      ? history.find((item) => item.taskId === assistantMessage.taskId)
+      : null) ||
+    (assistantMessage.imageUrl
+      ? history.find((item) => item.imageUrl === assistantMessage.imageUrl)
+      : null)
+  const elementLayerUrls = (userMessage.elements || [])
+    .map((element) => layers.value.find((layer) => layer.id === element.layerId)?.url)
+    .filter(Boolean)
+  const replay = buildGenerationReplay({
+    record: record || {},
+    userMessage,
+    assistantMessage,
+    fallbackReferenceImageUrls: elementLayerUrls,
+    defaults: {
+      model: chatModel.value,
+      ratio: chatRatio.value,
+      resolution: chatResolution.value,
+    },
+  })
+
+  const hasStoredPrompt = Boolean(
+    record?.prompt ||
+    assistantMessage.generationRequest?.prompt ||
+    userMessage.generationRequest?.prompt ||
+    userMessage.fullPrompt,
+  )
+  if (!hasStoredPrompt && userMessage.elements?.length) {
+    const targets = userMessage.elements.map((element) => {
+      const layerUrl = layers.value.find((layer) => layer.id === element.layerId)?.url
+      const referenceImageIndex = replay.referenceImageUrls.indexOf(layerUrl)
+      return {
+        name: element.name || element.id || '元素',
+        box: element.box,
+        referenceImageIndex: referenceImageIndex >= 0 ? referenceImageIndex + 1 : 1,
+      }
+    })
+    replay.prompt = buildElementEditPrompt({ instruction: userMessage.text, targets })
+    replay.requiresReferenceImage = true
+    replay.missingRequiredReference = !replay.referenceImageUrls.length
+  }
+
+  return replay
+}
+
+async function replayChatGeneration(messageId, { retryFailure = false, button } = {}) {
+  const replay = getChatGenerationReplay(messageId)
+  if (!replay?.prompt) {
+    showCopyPasteToast('未找到这次生图的原始提示词')
+    return
+  }
+  if (replay.missingRequiredReference) {
+    showCopyPasteToast('该生图记录缺少原参考图，已阻止错误重试')
+    return
+  }
+
+  if (button) button.disabled = true
+  if (retryFailure) updateChatMessage(messageId, { retrying: true })
+  try {
+    selectedDetectedElements.value = new Set()
+    elementClickPositions.value = {}
+    chatReferenceImages.value = replay.referenceImageUrls.map((url, index) => ({
+      id: `regen-ref-${Date.now()}-${index}`,
+      url,
+      name: `参考图 ${index + 1}`,
+    }))
+    activeChatReferenceId.value = chatReferenceImages.value.at(-1)?.id || ''
+    chatModel.value = replay.model || chatModel.value
+    chatRatio.value = replay.ratio || chatRatio.value
+    chatResolution.value = replay.resolution || chatResolution.value
+    await nextTick()
+    const submitted = await sendChat({
+      fullPrompt: replay.prompt,
+      displayText: replay.displayText,
+      selectedElements: [],
+      referenceImageUrls: replay.referenceImageUrls,
+      messageElements: replay.messageElements,
+      messageReferenceImages: replay.messageReferenceImages,
+      targetLayerId: replay.targetLayerId,
+      taskConfig: {
+        model: replay.model || chatModel.value,
+        ratio: replay.ratio || chatRatio.value,
+        resolution: replay.resolution || chatResolution.value,
+      },
+    })
+    if (retryFailure) {
+      updateChatMessage(messageId, {
+        retrying: false,
+        retried: Boolean(submitted),
+      })
+    }
+  } catch (error) {
+    if (retryFailure) updateChatMessage(messageId, { retrying: false })
+    showCopyPasteToast(error?.message || '重试提交失败')
+  } finally {
+    if (button && !retryFailure) button.disabled = false
+  }
+}
+
 // 生图预览卡片：单击定位画布图层 + 操作按钮；双击打开查看器
-function handleGenPreviewClick(e) {
+async function handleGenPreviewClick(e) {
   const previewImg = e.target.closest('.chat-gen-preview-img')
   if (previewImg && !e.target.closest('.chat-gen-action-btn')) {
     const url = previewImg.getAttribute('src')
@@ -4722,15 +5116,9 @@ function handleGenPreviewClick(e) {
       }
     }
   } else if (btn.classList.contains('chat-gen-action--regen')) {
-    const msg = chat.find((m) => m.id === msgId)
-    if (msg?.imageUrl) {
-      const history = doc.value?.payload?.generationHistory || []
-      const rec = history.find((r) => r.imageUrl === msg.imageUrl)
-      if (rec?.prompt) {
-        writeEditorText(rec.prompt)
-        sendChat()
-      }
-    }
+    await replayChatGeneration(msgId, { button: btn })
+  } else if (btn.classList.contains('chat-gen-action--retry')) {
+    await replayChatGeneration(msgId, { retryFailure: true, button: btn })
   } else if (btn.classList.contains('chat-gen-action--like')) {
     btn.classList.toggle('chat-gen-action--active')
     const sib = btn.parentElement?.querySelector('.chat-gen-action--dislike')
@@ -5331,12 +5719,16 @@ function createManualElement() {
   const wTop = (minY - vo.y) / vs
   const wBottom = (maxY - vo.y) / vs
 
-  // 图层相对归一化 0-1 — box_2d = [x1, y1, x2, y2] = [left, top, right, bottom]
-  const x1 = (wLeft - layer.x) / layer.width
-  const y1 = (wTop - layer.y) / layer.height
-  const x2 = (wRight - layer.x) / layer.width
-  const y2 = (wBottom - layer.y) / layer.height
-  const box_2d = [x1, y1, x2, y2].map((v) => Math.max(0, Math.min(1, v)))
+  // 手绘矩形统一转为相对于原图的 [left, top, right, bottom] 0-1 坐标。
+  // 与多模态识别框共用同一坐标协议和局部编辑提示词。
+  const box_2d = normalizeRectToBox(
+    { left: wLeft, top: wTop, right: wRight, bottom: wBottom },
+    { left: layer.x, top: layer.y, width: layer.width, height: layer.height },
+  )
+  if (!box_2d) {
+    console.warn('[manual] createManualElement: 手绘框未与目标图片相交')
+    return
+  }
 
   // 弹出命名输入框（屏幕坐标，置于框上方）
   manualNameInput.visible = true
@@ -5534,35 +5926,18 @@ function getSelectedDetectedElements() {
     .filter(Boolean)
 }
 
-// 构建元素定位提示：每个元素一行，含检测框坐标
-function buildElementLocationHint() {
-  const selected = getSelectedDetectedElements()
-  if (!selected.length) return ''
+// 构建局部编辑目标：坐标始终相对于目标元素所在的原始参考图。
+function buildElementLocationHint(selected, imageUrls) {
+  if (!selected.length) return []
   const lines = []
-  for (let i = 0; i < selected.length; i++) {
-    const el = selected[i]
+  for (const el of selected) {
     const layer = layers.value.find((l) => l.id === el.layerId)
     if (!layer) continue
     const box = normalizeBoxVal(el.box_2d || el.box2d || [0, 0, 1, 1])
-    // 转换为像素坐标 — box = [x1, y1, x2, y2]
-    const pxLeft = Math.round(box[0] * layer.width)
-    const pxTop = Math.round(box[1] * layer.height)
-    const pxRight = Math.round(box[2] * layer.width)
-    const pxBottom = Math.round(box[3] * layer.height)
-    const width = pxRight - pxLeft
-    const height = pxBottom - pxTop
-
-    // 计算相对位置（百分比，保留1位小数）— box = [x1, y1, x2, y2]
-    const relLeft = (box[0] * 100).toFixed(1)
-    const relTop = (box[1] * 100).toFixed(1)
-    const relRight = (box[2] * 100).toFixed(1)
-    const relBottom = (box[3] * 100).toFixed(1)
-
     lines.push({
       name: el.name || '元素',
-      box: `[${pxLeft},${pxTop},${pxRight},${pxBottom}]`,
-      relBox: `[${relLeft}%,${relTop}%,${relRight}%,${relBottom}%]`,
-      size: `${width}×${height}`,
+      box,
+      referenceImageIndex: Math.max(1, imageUrls.indexOf(layer.url) + 1),
     })
   }
   return lines
@@ -5728,26 +6103,21 @@ function getElementClickStyle(key) {
   }
 }
 
-async function sendChat() {
-  const text = getEditorPrompt()
-  const elementHint = buildElementLocationHint()
-  // 优化后的提示词格式 - 坐标清晰明确
-  let fullPrompt
-  if (elementHint && elementHint.length > 0) {
-    // GPT image 模型能直接"看到"参考图中的元素，不需要像素坐标
-    // 只需用元素名称做定位指引，坐标信息对 GPT image 是噪声
-    const elementNames = elementHint.map((el) => el.name).join('、')
-    const userInstruction = text || '请根据元素类型进行适当修改'
-    fullPrompt = `Edit the image: modify ${elementNames} — ${userInstruction}. Keep everything else unchanged.`
-  } else {
-    fullPrompt = text
-  }
-  const hasContent = text || getSelectedDetectedElements().length
+async function sendChat(options = {}) {
+  const sendOptions = options?.currentTarget ? {} : options || {}
+  const editorText = getEditorPrompt()
+  const text = String(sendOptions.displayText ?? editorText).trim()
+  const selectedElements = Array.isArray(sendOptions.selectedElements)
+    ? sendOptions.selectedElements
+    : getSelectedDetectedElements()
+  const hasContent = sendOptions.fullPrompt || text || selectedElements.length
   if (!hasContent) return
   if (!userStore.requireLogin()) return
 
   const createdAt = Date.now()
-  const generationCount = normalizeChatGenerationCount(chatGenerationCount.value)
+  const generationCount = normalizeChatGenerationCount(
+    sendOptions.generationCount ?? (sendOptions.fullPrompt ? 1 : chatGenerationCount.value),
+  )
   const chatReferenceSnapshot = chatReferenceImages.value.filter(
     (image) => !image.uploading && !image.error,
   )
@@ -5756,27 +6126,69 @@ async function sendChat() {
     .filter((url) => url && !String(url).startsWith('blob:'))
   // 从当前选中元素计算参考图（只看当前选中，不看历史累积）
   const selectedRefLayers = new Set()
-  for (const d of getSelectedDetectedElements()) {
+  for (const d of selectedElements) {
     const layer = layers.value.find((l) => l.id === d.layerId)
     if (layer?.url && !String(layer.url).startsWith('blob:')) {
       selectedRefLayers.add(layer.url)
     }
   }
   const refImageUrls = [...selectedRefLayers]
-  const imageUrls = [...new Set([...chatImageUrls, ...refImageUrls])]
+  const hasReferenceOverride = Object.prototype.hasOwnProperty.call(
+    sendOptions,
+    'referenceImageUrls',
+  )
+  const imageUrls = hasReferenceOverride
+    ? [
+        ...new Set(
+          (Array.isArray(sendOptions.referenceImageUrls) ? sendOptions.referenceImageUrls : [])
+            .map((url) => String(url || '').trim())
+            .filter((url) => url && !url.startsWith('blob:')),
+        ),
+      ]
+    : [...new Set([...chatImageUrls, ...refImageUrls])]
+  const elementTargets = buildElementLocationHint(selectedElements, imageUrls)
+  const fullPrompt =
+    String(sendOptions.fullPrompt || '').trim() ||
+    buildElementEditPrompt({ instruction: text, targets: elementTargets })
 
   // 收集当前选中元素的详细信息（用于对话气泡渲染）
-  const messageElements = getSelectedDetectedElements().map((el, idx) => {
-    const layer = layers.value.find((l) => l.id === el.layerId)
-    return {
-      id: el.object_name || el.name || el.id,
-      name: el.object_name || el.name || '',
-      layerId: el.layerId,
-      thumb: layer?.thumbnailUrl || '',
-      box: el.box_2d || [],
-      order: idx + 1,
-    }
-  })
+  const messageElements = Array.isArray(sendOptions.messageElements)
+    ? sendOptions.messageElements.map((element, index) => ({
+        ...element,
+        order: element.order || index + 1,
+      }))
+    : selectedElements.map((el, idx) => {
+        const layer = layers.value.find((l) => l.id === el.layerId)
+        return {
+          id: el.object_name || el.name || el.id,
+          name: el.object_name || el.name || '',
+          layerId: el.layerId,
+          thumb: layer?.thumbnailUrl || '',
+          box: el.box_2d || [],
+          order: idx + 1,
+        }
+      })
+  const messageReferenceImages = Array.isArray(sendOptions.messageReferenceImages)
+    ? sendOptions.messageReferenceImages
+        .map((image) => ({ url: typeof image === 'string' ? image : image?.url }))
+        .filter((image) => image.url)
+    : chatReferenceImages.value
+        .filter((img) => !img.uploading && !img.error && img.url)
+        .map((img) => ({ url: img.url }))
+  const taskConfig = {
+    model: sendOptions.taskConfig?.model || chatModel.value,
+    ratio: sendOptions.taskConfig?.ratio || chatRatio.value,
+    resolution: sendOptions.taskConfig?.resolution || chatResolution.value,
+  }
+  const generationRequest = {
+    prompt: fullPrompt,
+    displayText: text,
+    referenceImageUrls: [...imageUrls],
+    model: taskConfig.model,
+    ratio: taskConfig.ratio,
+    resolution: taskConfig.resolution,
+    targetLayerId: sendOptions.targetLayerId || selectedLayerId.value,
+  }
 
   const assistantMessages = Array.from({ length: generationCount }, (_, index) => ({
     id: `msg-${createdAt}-assistant-${index + 1}`,
@@ -5785,13 +6197,15 @@ async function sendChat() {
       generationCount > 1
         ? `已提交 ${generationCount} 张图片，第 ${index + 1} 张正在排队生成。`
         : '已提交对话生图任务，请等待生成结果（生成完成后会显示在画布中）。',
-    model: chatModel.value,
-    ratio: chatRatio.value,
-    resolution: chatResolution.value,
+    model: taskConfig.model,
+    ratio: taskConfig.ratio,
+    resolution: taskConfig.resolution,
     batchIndex: index + 1,
     batchCount: generationCount,
     createdAt: createdAt + index + 1,
     generating: true,
+    failed: false,
+    generationRequest,
   }))
 
   addChatMessages([
@@ -5799,13 +6213,11 @@ async function sendChat() {
       id: `msg-${createdAt}`,
       role: 'user',
       text,
-      targetLayerId: selectedLayerId.value,
+      targetLayerId: sendOptions.targetLayerId || selectedLayerId.value,
       createdAt,
       elements: messageElements,
       generationCount,
-      referenceImages: chatReferenceSnapshot
-        .filter((img) => img.url)
-        .map((img) => ({ url: img.url })),
+      referenceImages: messageReferenceImages,
     },
     ...assistantMessages,
   ])
@@ -5832,11 +6244,6 @@ async function sendChat() {
   activeChatReferenceId.value = ''
   selectedDetectedElements.value = new Set()
   elementClickPositions.value = {}
-  const taskConfig = {
-    model: chatModel.value,
-    ratio: chatRatio.value,
-    resolution: chatResolution.value,
-  }
   const batchTasks = assistantMessages.map((message, index) => {
     const placeholderId = addGeneratingPlaceholderLayer(
       fullPrompt,
@@ -5924,6 +6331,7 @@ async function sendChat() {
           updateChatMessage(assistantId, {
             text: `生成失败：${friendly}`,
             generating: false,
+            failed: true,
           })
           showCopyPasteToast(friendly)
         } else {
@@ -5938,6 +6346,7 @@ async function sendChat() {
           updateChatMessage(assistantId, {
             text: `生成失败：${friendly}`,
             generating: false,
+            failed: true,
           })
         }
       } finally {
@@ -5945,6 +6354,13 @@ async function sendChat() {
         activeChatTaskCount.value = Math.max(0, activeChatTaskCount.value - 1)
       }
     })()
+  }
+  const firstTask = batchTasks[0]
+  return {
+    assistantId: firstTask?.assistantId,
+    placeholderId: firstTask?.placeholderId,
+    assistantIds: batchTasks.map((task) => task.assistantId),
+    placeholderIds: batchTasks.map((task) => task.placeholderId),
   }
 }
 
@@ -5956,6 +6372,73 @@ function handleChatBoxClick(event) {
 function selectCanvasTool(tool) {
   if (!userStore.requireLogin()) return
   activeTool.value = tool.key
+}
+
+function isAutoArrangeImageLayer(layer) {
+  if (!layer || layer.type === 'text' || layer.type === 'video') return false
+  return (
+    isRealImageLayer(layer) ||
+    layer.type === 'placeholder' ||
+    layer.type === 'image-placeholder'
+  )
+}
+
+function autoArrangeLayerGeometry(layer) {
+  const layerNode = [...document.querySelectorAll('.canvas-layer')].find(
+    (node) => node.dataset.layerId === layer.id,
+  )
+  const renderedRect = layerNode?.getBoundingClientRect()
+  const scale = Math.max(0.01, viewScale.value || 1)
+  const renderedWidth = renderedRect?.width ? renderedRect.width / scale : 0
+  const renderedHeight = renderedRect?.height ? renderedRect.height / scale : 0
+
+  return {
+    ...layer,
+    width: Math.ceil(Math.max(Number(layer.width) || 1, renderedWidth)),
+    height: Math.ceil(Math.max(Number(layer.height) || 1, renderedHeight)),
+  }
+}
+
+function autoArrangeImages() {
+  if (!userStore.requireLogin()) return
+  const selectedIds = new Set(selectedLayerIds.value)
+  const selectedImages = layers.value.filter(
+    (layer) => selectedIds.has(layer.id) && isAutoArrangeImageLayer(layer),
+  )
+  const arrangeSelected = selectedImages.length >= 2
+  const candidates = arrangeSelected
+    ? selectedImages
+    : layers.value.filter((layer) => isAutoArrangeImageLayer(layer))
+
+  if (candidates.length < 2) {
+    showCopyPasteToast('画布中至少需要两张图片')
+    return
+  }
+
+  // 普通图片节点会按图片比例撑开，实际 DOM 高度可能大于历史数据中的
+  // layer.height。排版必须使用真实可见尺寸，才能保证图片之间不遮挡。
+  const layoutCandidates = candidates.map(autoArrangeLayerGeometry)
+  const positions = buildCanvasAutoLayout(layoutCandidates, connections.value)
+  if (!positions.size) return
+
+  pushUndo()
+  canvas.updateDocument(props.id, (draft) => {
+    draft.payload.layers = draft.payload.layers.map((layer) => {
+      const position = positions.get(layer.id)
+      return position ? { ...layer, ...position } : layer
+    })
+    return draft
+  })
+  void canvas.flushNow?.(props.id)
+  nextTick(() => {
+    refreshConnections()
+    fitCanvasView()
+  })
+  showCopyPasteToast(
+    arrangeSelected
+      ? `已自动排列选中的 ${candidates.length} 张图片`
+      : `已按连接关系排列 ${candidates.length} 张图片`,
+  )
 }
 
 function startToolbarDrag(event) {
@@ -6503,6 +6986,10 @@ function onGlobalKeydown(event) {
     return
   }
   if (event.key === 'Escape') {
+    if (chatSelectOpen.value) {
+      closeChatSelect()
+      return
+    }
     if (helpMenuOpen.value) {
       helpMenuOpen.value = false
       return
@@ -6740,7 +7227,7 @@ function reuseGenerationRecordPrompt(record) {
   chatText.value = record.prompt || ''
   // 同时复制到剪贴板
   if (record.prompt) {
-    navigator.clipboard.writeText(record.prompt).catch(() => {})
+    writeTextToClipboard(record.prompt).catch(() => {})
   }
 }
 
@@ -7592,7 +8079,7 @@ async function copyLayerReversePrompt(layer) {
   const text = buildLayerReversePromptCopyText(layer) || displayLayerReversePromptBody(layer)
   if (!text) return
   try {
-    await navigator.clipboard.writeText(text)
+    await writeTextToClipboard(text)
     showCopyPasteToast('提示词已复制')
   } catch {
     showCopyPasteToast('复制失败，请手动选择文字复制')
@@ -7936,7 +8423,10 @@ async function loadImageForCrop(layer) {
           :aria-pressed="autoDetectionEnabled"
           @click="setAutoDetectionEnabled(!autoDetectionEnabled)"
         >
-          <i :class="autoDetectionEnabled ? 'ri-stack-fill' : 'ri-stack-line'" aria-hidden="true"></i>
+          <i
+            :class="autoDetectionEnabled ? 'ri-stack-fill' : 'ri-stack-line'"
+            aria-hidden="true"
+          ></i>
         </button>
         <button
           class="theme-toggle"
@@ -8133,6 +8623,10 @@ async function loadImageForCrop(layer) {
                     ⏳ 检测中...
                   </template>
                   <template v-else>◈ 智能分层</template>
+                </button>
+                <button title="调整相机视角" @click.stop="openCameraAnglePanel(layer)">
+                  <i class="ri-camera-lens-line" aria-hidden="true"></i>
+                  多角度
                 </button>
                 <button>T 编辑文字</button>
                 <button>↔ 扩图</button>
@@ -9003,6 +9497,15 @@ async function loadImageForCrop(layer) {
           <i :class="tool.icon" aria-hidden="true"></i>
           <span v-if="tool.shortcut" class="uc-sidebar-tool-key">{{ tool.shortcut }}</span>
         </button>
+        <button
+          type="button"
+          class="uc-sidebar-tool-btn"
+          title="自动排列图片（选中多张时仅排列选中项）"
+          aria-label="自动排列图片"
+          @click="autoArrangeImages"
+        >
+          <i class="ri-layout-grid-line" aria-hidden="true"></i>
+        </button>
         <div class="uc-sidebar-tool-sep"></div>
         <button
           type="button"
@@ -9070,6 +9573,13 @@ async function loadImageForCrop(layer) {
         </header>
 
         <section v-if="rightTab === 'chat'" class="chat-panel uc-chat">
+          <div class="uc-creation-toolbar">
+            <button type="button" :disabled="creationRunning" @click="creationPanelOpen = true">
+              <i class="ri-layout-masonry-line"></i>
+              画布创作
+            </button>
+            <span>选中产品图，可生成主图、需求创意或详情页</span>
+          </div>
           <div
             ref="chatHistoryRef"
             class="chat-history uc-chat-history"
@@ -9224,7 +9734,7 @@ async function loadImageForCrop(layer) {
                   @keydown.backspace="handleEditorBackspace"
                 />
               </div>
-              <div class="uc-chat-generate-options" @click.stop>
+              <div class="uc-chat-generate-options" @click.stop="closeChatSelect">
                 <label>
                   <span>模型</span>
                   <div class="uc-custom-select" :class="{ open: chatSelectOpen === 'model' }">
@@ -9244,12 +9754,7 @@ async function loadImageForCrop(layer) {
                         type="button"
                         class="uc-custom-select-item"
                         :class="{ active: chatModel === model }"
-                        @click.stop="
-                          () => {
-                            chatModel = model
-                            chatSelectOpen = null
-                          }
-                        "
+                        @click.stop="selectChatOption('model', model)"
                       >
                         {{ model }}
                       </button>
@@ -9274,12 +9779,7 @@ async function loadImageForCrop(layer) {
                         type="button"
                         class="uc-custom-select-item"
                         :class="{ active: chatRatio === ratio }"
-                        @click.stop="
-                          () => {
-                            chatRatio = ratio
-                            chatSelectOpen = null
-                          }
-                        "
+                        @click.stop="selectChatOption('ratio', ratio)"
                       >
                         {{ ratio }}
                       </button>
@@ -9304,12 +9804,7 @@ async function loadImageForCrop(layer) {
                         type="button"
                         class="uc-custom-select-item"
                         :class="{ active: chatResolution === resolution }"
-                        @click.stop="
-                          () => {
-                            chatResolution = resolution
-                            chatSelectOpen = null
-                          }
-                        "
+                        @click.stop="selectChatOption('resolution', resolution)"
                       >
                         {{ resolution }}
                       </button>
@@ -9831,6 +10326,28 @@ async function loadImageForCrop(layer) {
     </div>
   </Teleport>
 
+  <CanvasCreationPanel
+    :open="creationPanelOpen"
+    :selected-layers="selectedCreationLayers"
+    :model="chatModel"
+    :resolution="chatResolution"
+    :busy="creationRunning"
+    @close="creationPanelOpen = false"
+    @run="runCanvasCreation"
+  />
+
+  <CameraAnglePanel
+    :open="cameraAnglePanelOpen"
+    :source-layer="selectedLayer"
+    :model="chatModel"
+    :ratio="chatRatio"
+    :resolution="chatResolution"
+    :busy="chatGenerating"
+    @close="cameraAnglePanelOpen = false"
+    @insert="insertCameraAnglePrompt"
+    @generate="generateFromCameraAngle"
+  />
+
   <!-- 右键菜单 -->
   <Teleport to="body">
     <div
@@ -9888,7 +10405,11 @@ async function loadImageForCrop(layer) {
       </button>
       <button class="uc-context-menu-item" @click="contextMenuDownloadLayers">
         <i class="ri-download-2-line"></i>
-        {{ contextMenuDownloadCount() > 1 ? `下载 ${contextMenuDownloadCount()} 张图片（ZIP）` : '下载图片' }}
+        {{
+          contextMenuDownloadCount() > 1
+            ? `下载 ${contextMenuDownloadCount()} 张图片（ZIP）`
+            : '下载图片'
+        }}
       </button>
       <div class="uc-context-menu-divider"></div>
       <button class="uc-context-menu-item" @click="openCropPicker(contextMenu.x, contextMenu.y)">
@@ -10210,6 +10731,43 @@ async function loadImageForCrop(layer) {
 </template>
 
 <style>
+.uc-creation-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--uc-border, rgba(148, 163, 184, 0.2));
+  background: var(--uc-bg-2, rgba(255, 255, 255, 0.75));
+}
+
+.uc-creation-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 11px;
+  border: 1px solid rgba(100, 88, 232, 0.28);
+  border-radius: 8px;
+  background: rgba(100, 88, 232, 0.08);
+  color: #5b50d6;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.uc-creation-toolbar button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.uc-creation-toolbar > span {
+  overflow: hidden;
+  color: var(--uc-fg-3, #8a92a2);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .uc-image-broken {
   display: flex;
   flex-direction: column;

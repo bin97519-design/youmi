@@ -2,6 +2,7 @@ package com.youmi.api.ai;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -128,7 +129,7 @@ public class XfyunVisionClient {
     log.info("[detect] Xfyun raw response (first 500 chars): {}",
         text.length() > 500 ? text.substring(0, 500) + "..." : text);
 
-    String json = extractJsonArray(text);
+    String json = VisionJsonSupport.extractNormalizedJsonArray(text);
     if (json == null || json.isBlank()) {
       return List.of();
     }
@@ -158,6 +159,24 @@ public class XfyunVisionClient {
   }
 
   private String sendChat(Map<String, Object> body) throws Exception {
+    IOException lastError = null;
+    for (int attempt = 1; attempt <= 2; attempt++) {
+      try {
+        return sendChatOnce(body);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw e;
+      } catch (IOException e) {
+        lastError = e;
+        if (attempt >= 2) throw e;
+        log.warn("Xfyun vision transient failure, retrying once: {}", e.getMessage());
+        Thread.sleep(500L);
+      }
+    }
+    throw lastError == null ? new IOException("Xfyun vision request failed") : lastError;
+  }
+
+  private String sendChatOnce(Map<String, Object> body) throws Exception {
     String endpoint = properties.normalizedBaseUrl() + properties.normalizedChatPath();
     HttpRequest request = HttpRequest.newBuilder()
         .uri(URI.create(endpoint))
@@ -173,6 +192,10 @@ public class XfyunVisionClient {
       log.error("Xfyun vision error body: {}", compact(response.body()));
     } else {
       log.debug("Xfyun vision response body: {}", compact(response.body()));
+    }
+    if (response.statusCode() == 429 || response.statusCode() >= 500) {
+      throw new IOException(
+          "Xfyun vision transient response: " + response.statusCode() + " " + compact(response.body()));
     }
     if (response.statusCode() < 200 || response.statusCode() >= 300) {
       throw new IllegalStateException(
@@ -197,16 +220,6 @@ public class XfyunVisionClient {
       }
     }
     return root.path("content").asText("").trim();
-  }
-
-  private String extractJsonArray(String text) {
-    if (text == null || text.isBlank()) return null;
-    int start = text.indexOf('[');
-    int end = text.lastIndexOf(']');
-    if (start >= 0 && end > start) {
-      return text.substring(start, end + 1);
-    }
-    return null;
   }
 
   private JsonNode firstArray(JsonNode node, List<String> keys) {

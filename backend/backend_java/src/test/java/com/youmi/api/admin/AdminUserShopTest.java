@@ -73,10 +73,21 @@ class AdminUserShopTest {
 
   private void initSchema() {
     jdbcTemplate.execute("""
+        CREATE TABLE IF NOT EXISTS ym_platform (
+          id BIGINT PRIMARY KEY AUTO_INCREMENT,
+          name VARCHAR(64) NOT NULL,
+          code VARCHAR(32) NOT NULL UNIQUE,
+          status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+          sort_order INT NOT NULL DEFAULT 0,
+          created_at DATETIME,
+          updated_at DATETIME)
+        """);
+    jdbcTemplate.execute("""
         CREATE TABLE IF NOT EXISTS ym_shop (
           id BIGINT PRIMARY KEY AUTO_INCREMENT,
           name VARCHAR(128) NOT NULL,
           code VARCHAR(64) NOT NULL UNIQUE,
+          platform_id BIGINT NOT NULL,
           platform VARCHAR(32) NULL,
           status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
           created_at DATETIME,
@@ -117,7 +128,11 @@ class AdminUserShopTest {
     jdbcTemplate.update("DELETE FROM ym_sys_user");
     jdbcTemplate.update("DELETE FROM ym_sys_role");
     jdbcTemplate.update("DELETE FROM ym_shop");
-    jdbcTemplate.update("INSERT INTO ym_sys_role (id, code, name) VALUES (1, 'USER', '用户'), (2, 'ADMIN', '管理员')");
+    jdbcTemplate.update("DELETE FROM ym_platform");
+    jdbcTemplate.update("""
+        INSERT INTO ym_platform (id, name, code, status, sort_order, created_at, updated_at)
+        VALUES (1, '淘宝', 'TAOBAO', 'ACTIVE', 10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """);
   }
 
   private void insertRole(Long id, String code) {
@@ -136,7 +151,8 @@ class AdminUserShopTest {
 
   private Long insertShop(String name, String code, String status) {
     jdbcTemplate.update(
-        "INSERT INTO ym_shop (name, code, platform, status) VALUES (?, ?, NULL, ?)", name, code, status);
+        "INSERT INTO ym_shop (name, code, platform_id, platform, status) VALUES (?, ?, 1, '淘宝', ?)",
+        name, code, status);
     return jdbcTemplate.queryForObject("SELECT id FROM ym_shop WHERE code = ?", Long.class, code);
   }
 

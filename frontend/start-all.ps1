@@ -124,6 +124,7 @@ Set-EnvFromScopes 'YOUMI_IMAGE_API_KEY'
 if (-not `$env:YOUMI_IMAGE_API_KEY) { Set-EnvFromScopes 'APIMART_API_KEY'; `$env:YOUMI_IMAGE_API_KEY = `$env:APIMART_API_KEY }
 if (-not `$env:YOUMI_IMAGE_API_KEY) { Set-EnvFromScopes 'APIMART_IMAGE_API_KEY'; `$env:YOUMI_IMAGE_API_KEY = `$env:APIMART_IMAGE_API_KEY }
 Set-EnvFromScopes 'GETTOKEN_API_KEY'
+Set-EnvFromScopes 'LK888_API_KEY'
 Set-EnvFromScopes 'XFYUN_VISION_API_KEY'
 Set-EnvFromScopes 'AGNES_API_KEY'
 Set-EnvFromScopes 'APIMART_API_KEY'
@@ -161,6 +162,7 @@ Set-EnvFromScopes 'YOUMI_IMAGE_API_KEY'
 if (-not `$env:YOUMI_IMAGE_API_KEY) { Set-EnvFromScopes 'APIMART_API_KEY'; `$env:YOUMI_IMAGE_API_KEY = `$env:APIMART_API_KEY }
 if (-not `$env:YOUMI_IMAGE_API_KEY) { Set-EnvFromScopes 'APIMART_IMAGE_API_KEY'; `$env:YOUMI_IMAGE_API_KEY = `$env:APIMART_IMAGE_API_KEY }
 Set-EnvFromScopes 'GETTOKEN_API_KEY'
+Set-EnvFromScopes 'LK888_API_KEY'
 Set-EnvFromScopes 'XFYUN_VISION_API_KEY'
 Set-EnvFromScopes 'AGNES_API_KEY'
 Set-EnvFromScopes 'APIMART_API_KEY'

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Youmi 网页快照</title>
+    <link rel="stylesheet" href="./popup.css" />
+  </head>
+  <body>
+    <main>
+      <header class="app-head">
+        <div>
+          <strong>Youmi 网页快照</strong>
+          <span id="version" class="version"></span>
+        </div>
+        <label class="switch-label">
+          <input id="enabled" type="checkbox" />
+          记录操作
+        </label>
+      </header>
+
+      <section class="capture-panel">
+        <div class="capture-options">
+          <label><input id="includeScreenshot" type="checkbox" checked /> 全页截图</label>
+          <label><input id="includeEvents" type="checkbox" checked /> 操作记录</label>
+        </div>
+        <button id="capture" class="primary" type="button">保存当前网页快照</button>
+        <p id="snapshotStatus" class="snapshot-status" aria-live="polite">尚未保存快照</p>
+      </section>
+
+      <details>
+        <summary>反推提示词</summary>
+        <section class="reverse-settings">
+          <label>
+            <span>反推品类</span>
+            <select id="reverseCategory">
+              <option value="general">通用</option>
+              <option value="mattress">床垫</option>
+              <option value="curtain">窗帘</option>
+              <option value="solid_wood_bed">实木床</option>
+            </select>
+          </label>
+        </section>
+      </details>
+
+      <details>
+        <summary>采集日志</summary>
+        <section class="stats">
+          <span id="count">0 条</span>
+          <span id="last">暂无事件</span>
+        </section>
+        <section id="kinds" class="kinds"></section>
+        <div class="actions">
+          <button id="download" type="button">导出日志</button>
+          <button id="clear" class="danger" type="button">清空日志</button>
+        </div>
+        <pre id="preview"></pre>
+      </details>
+    </main>
+    <script src="./popup.js"></script>
+  </body>
+</html>

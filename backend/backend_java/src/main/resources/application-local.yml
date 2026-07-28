@@ -33,6 +33,8 @@ spring:
       matching-strategy: ant_path_matcher
 
 youmi:
+  verification:
+    public-base-url: ${YOUMI_VERIFICATION_PUBLIC_BASE_URL:http://127.0.0.1:8083}
   auth:
     token-ttl-seconds: 604800
   image:
@@ -48,6 +50,10 @@ youmi:
     get-token-base-url: https://nb.gettoken.cn/openapi/v1
     get-token-api-key: ${GETTOKEN_API_KEY:}
     get-token-query-path: /query
+    lk888-base-url: ${LK888_BASE_URL:https://api.lk888.ai}
+    lk888-api-key: ${LK888_API_KEY:${AIGC_AGGREGATOR_API_KEY:}}
+    lk888-generation-path: ${LK888_GENERATION_PATH:/v1/media/generate}
+    lk888-task-path: ${LK888_TASK_PATH:/v1/media/status}
     model: gpt-image-2
     default-size: "9:16"
     default-resolution: 2K

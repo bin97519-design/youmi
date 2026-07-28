@@ -17,6 +17,11 @@ public class ImageGenerationProperties {
   private String getTokenBaseUrl = "https://nb.gettoken.cn/openapi/v1";
   private String getTokenApiKey = "";
   private String getTokenQueryPath = "/query";
+  // LK888 Banana fallback provider.
+  private String lk888BaseUrl = "https://api.lk888.ai";
+  private String lk888ApiKey = "";
+  private String lk888GenerationPath = "/v1/media/generate";
+  private String lk888TaskPath = "/v1/media/status";
   private String model = "gpt-image-2";
   private String defaultSize = "9:16";
   private String defaultResolution = "2K";
@@ -107,6 +112,38 @@ public class ImageGenerationProperties {
     this.getTokenQueryPath = getTokenQueryPath;
   }
 
+  public String getLk888BaseUrl() {
+    return lk888BaseUrl;
+  }
+
+  public void setLk888BaseUrl(String lk888BaseUrl) {
+    this.lk888BaseUrl = lk888BaseUrl;
+  }
+
+  public String getLk888ApiKey() {
+    return lk888ApiKey;
+  }
+
+  public void setLk888ApiKey(String lk888ApiKey) {
+    this.lk888ApiKey = lk888ApiKey;
+  }
+
+  public String getLk888GenerationPath() {
+    return lk888GenerationPath;
+  }
+
+  public void setLk888GenerationPath(String lk888GenerationPath) {
+    this.lk888GenerationPath = lk888GenerationPath;
+  }
+
+  public String getLk888TaskPath() {
+    return lk888TaskPath;
+  }
+
+  public void setLk888TaskPath(String lk888TaskPath) {
+    this.lk888TaskPath = lk888TaskPath;
+  }
+
   public String getModel() {
     return model;
   }
@@ -195,6 +232,11 @@ public class ImageGenerationProperties {
     return getTokenApiKey != null && !getTokenApiKey.isBlank();
   }
 
+  public boolean isLk888Configured() {
+    return lk888ApiKey != null && !lk888ApiKey.isBlank()
+        && lk888BaseUrl != null && !lk888BaseUrl.isBlank();
+  }
+
   public String resolveModel(String requestedModel) {
     String value = requestedModel == null || requestedModel.isBlank() ? model : requestedModel.trim();
     String direct = modelAliases.get(value);
@@ -261,6 +303,21 @@ public class ImageGenerationProperties {
   public String normalizedGetTokenQueryPath() {
     if (getTokenQueryPath == null || getTokenQueryPath.isBlank()) return "/query";
     return getTokenQueryPath.startsWith("/") ? getTokenQueryPath : "/" + getTokenQueryPath;
+  }
+
+  public String normalizedLk888BaseUrl() {
+    if (lk888BaseUrl == null || lk888BaseUrl.isBlank()) return "https://api.lk888.ai";
+    return lk888BaseUrl.endsWith("/") ? lk888BaseUrl.substring(0, lk888BaseUrl.length() - 1) : lk888BaseUrl;
+  }
+
+  public String normalizedLk888GenerationPath() {
+    if (lk888GenerationPath == null || lk888GenerationPath.isBlank()) return "/v1/media/generate";
+    return lk888GenerationPath.startsWith("/") ? lk888GenerationPath : "/" + lk888GenerationPath;
+  }
+
+  public String normalizedLk888TaskPath() {
+    if (lk888TaskPath == null || lk888TaskPath.isBlank()) return "/v1/media/status";
+    return lk888TaskPath.startsWith("/") ? lk888TaskPath : "/" + lk888TaskPath;
   }
 
   public String getOssSignPath() {
@@ -430,6 +487,11 @@ public class ImageGenerationProperties {
     if (resolvedModel == null) return false;
     String m = resolvedModel.trim().toLowerCase();
     return m.startsWith("gemini-3.") || m.startsWith("gemini-3-pro");
+  }
+
+  /** LK888 can preserve Banana requests and downgrade GPT Image requests to Banana2. */
+  public boolean isLk888FallbackModel(String resolvedModel) {
+    return isGetTokenModel(resolvedModel) || isProxyModel(resolvedModel);
   }
 
   /** 判断请求的模型是否应走 Proxy 中转站（47.90.226.52）— 仅 gpt-image / dall-e 系列 */

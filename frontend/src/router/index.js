@@ -1,16 +1,17 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import HomePage from '../pages/HomePage.vue'
-import CanvasListPage from '../pages/CanvasListPage.vue'
-import CanvasEditorPage from '../pages/CanvasEditorPage.vue'
-import CanvasSharePage from '../pages/CanvasSharePage.vue'
-import EcommerceSetPage from '../pages/EcommerceSetPage.vue'
-import HistoryPage from '../pages/HistoryPage.vue'
-import ConsolePage from '../pages/ConsolePage.vue'
-import PointsPage from '../pages/PointsPage.vue'
-import PaymentResultPage from '../pages/PaymentResultPage.vue'
-import MockPayPage from '../pages/MockPayPage.vue'
-import DesignSystemPage from '../pages/DesignSystemPage.vue'
 import { useUserStore } from '../stores/user'
+
+const HomePage = () => import('../pages/HomePage.vue')
+const CanvasListPage = () => import('../pages/CanvasListPage.vue')
+const CanvasEditorPage = () => import('../pages/CanvasEditorPage.vue')
+const CanvasSharePage = () => import('../pages/CanvasSharePage.vue')
+const EcommerceSetPage = () => import('../pages/EcommerceSetPage.vue')
+const HistoryPage = () => import('../pages/HistoryPage.vue')
+const ConsolePage = () => import('../pages/ConsolePage.vue')
+const PointsPage = () => import('../pages/PointsPage.vue')
+const PaymentResultPage = () => import('../pages/PaymentResultPage.vue')
+const MockPayPage = () => import('../pages/MockPayPage.vue')
+const DesignSystemPage = () => import('../pages/DesignSystemPage.vue')
 
 const routes = [
   { path: '/', name: 'home', component: HomePage, meta: { public: true } },

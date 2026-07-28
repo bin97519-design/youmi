@@ -15,7 +15,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * 视频生成入口。米值闸门逻辑完全镜像 {@code ImageTaskController}：
+ * GetToken Veo3.1 Fast 图生视频入口。米值闸门逻辑完全镜像 {@code ImageTaskController}：
  * 先扣后生成、失败回滚、异步终态回滚/确认，单价取 {@code MiValueProperties} 的 VIDEO(50)。
  */
 @RestController

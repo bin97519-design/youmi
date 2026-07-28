@@ -34,9 +34,11 @@ import org.springframework.stereotype.Service;
 public class ImageGenerationClient {
   private static final String PROVIDER_APIMART = "apimart";
   private static final String PROVIDER_GETTOKEN = "gettoken";
+  private static final String PROVIDER_LK888 = "lk888";
   private static final String PROVIDER_PROXY = "proxy";
   private static final String PROVIDER_ANNES = "agnes";
   private static final String GETTOKEN_TASK_PREFIX = PROVIDER_GETTOKEN + ":";
+  private static final String LK888_TASK_PREFIX = PROVIDER_LK888 + ":";
   private static final String PROXY_TASK_PREFIX = PROVIDER_PROXY + ":";
   private static final String AGNES_TASK_PREFIX = PROVIDER_ANNES + ":";
   private static final String APIMART_DIRECT_TASK_PREFIX = "apimart-direct:";
@@ -111,7 +113,7 @@ public class ImageGenerationClient {
 
   public ImageGenerationDtos.StatusResponse status() {
     boolean configured = properties.isConfigured() || properties.isGetTokenConfigured()
-        || isProxyConfigured() || properties.isAgnesConfigured();
+        || properties.isLk888Configured() || isProxyConfigured() || properties.isAgnesConfigured();
     return new ImageGenerationDtos.StatusResponse(
         configured,
         properties.normalizedBaseUrl(),
@@ -143,10 +145,12 @@ public class ImageGenerationClient {
     if (request == null || request.prompt() == null || request.prompt().isBlank()) {
       throw new ApiException(400, "prompt is required");
     }
+    request = ImagePromptPresets.expand(request);
 
     if (!properties.isConfigured()
         && !properties.isApimartDirectConfigured()
         && !properties.isGetTokenConfigured()
+        && !properties.isLk888Configured()
         && !properties.isAgnesConfigured()
         && !isProxyConfigured()) {
       throw new ApiException(400, "Image generation api key is not configured");
@@ -158,17 +162,27 @@ public class ImageGenerationClient {
       return createAgnesTask(request);
     }
 
-    // banana2 / bananapro（gemini-3 系列）走 GetToken 中转站，失败兜底 Proxy
+    // banana2 / bananapro（gemini-3 系列）走 GetToken，失败后优先降级到 LK888。
     if (properties.isGetTokenConfigured() && properties.isGetTokenModel(resolvedModel)) {
       try {
         return createGetTokenTask(request);
       } catch (Exception getTokenError) {
-        // GetToken 失败，兜底到 Proxy 中转站的 Gemini
+        if (properties.isLk888Configured()) {
+          try {
+            return createLk888Task(request);
+          } catch (Exception lk888Error) {
+            lk888Error.addSuppressed(getTokenError);
+            if (!isProxyConfigured()) throw lk888Error;
+          }
+        }
         if (isProxyConfigured()) {
           return createProxyTask(request);
         }
         throw getTokenError;
       }
+    }
+    if (properties.isLk888Configured() && properties.isGetTokenModel(resolvedModel)) {
+      return createLk888Task(request);
     }
 
     // gpt-image-2：APIMart（apib.ai）失败后直接兜底 Proxy。
@@ -210,6 +224,18 @@ public class ImageGenerationClient {
 
   private ImageGenerationDtos.CreateTaskResponse createFallbackTask(
       ImageGenerationDtos.CreateTaskRequest request, Exception primaryError) throws Exception {
+    String resolvedModel = properties.resolveModel(request.model());
+    if (properties.isLk888Configured() && properties.isLk888FallbackModel(resolvedModel)) {
+      try {
+        System.out.println("[image] trying LK888 Banana fallback");
+        return createLk888Task(request);
+      } catch (Exception lk888Error) {
+        if (primaryError != null) {
+          lk888Error.addSuppressed(primaryError);
+        }
+        primaryError = lk888Error;
+      }
+    }
     if (isProxyConfigured()) {
       try {
         System.out.println("[image] trying Proxy fallback");
@@ -635,11 +661,71 @@ public class ImageGenerationClient {
         root);
   }
 
+  private ImageGenerationDtos.CreateTaskResponse createLk888Task(ImageGenerationDtos.CreateTaskRequest request)
+      throws Exception {
+    if (!properties.isLk888Configured()) {
+      throw new ApiException(400, "LK888 image api key is not configured");
+    }
+
+    String resolvedModel = properties.resolveModel(request.model());
+    String lk888Model = resolvedModel != null && resolvedModel.toLowerCase().contains("pro")
+        ? "gemini-3-pro-image-preview"
+        : "gemini-3.1-flash-image-preview";
+    String size = properties.normalizeSize(request.size(), request.ratio());
+    String resolution = properties.normalizeResolution(lk888Model, request.resolution());
+    int count = request.requestedCount();
+
+    Map<String, Object> params = new LinkedHashMap<>();
+    params.put("aspectRatio", size);
+    params.put("imageSize", resolution);
+    List<String> imageUrls = request.normalizedImageUrls();
+    if (imageUrls != null && !imageUrls.isEmpty()) {
+      params.put("images", imageUrls.size() > 14 ? imageUrls.subList(0, 14) : imageUrls);
+    }
+    if ("gemini-3.1-flash-image-preview".equals(lk888Model)) {
+      params.put("thinkingLevel", "minimal");
+    }
+
+    Map<String, Object> body = new LinkedHashMap<>();
+    body.put("model", lk888Model);
+    body.put("prompt", request.prompt().trim());
+    body.put("params", params);
+    putIfPresent(body, "notify_url", request.webhookUrl());
+
+    JsonNode root = sendLk888Post(
+        properties.normalizedLk888BaseUrl() + properties.normalizedLk888GenerationPath(), body);
+    List<ImageGenerationDtos.TaskRef> tasks = extractTasks(root).stream()
+        .map(task -> new ImageGenerationDtos.TaskRef(LK888_TASK_PREFIX + task.taskId(), task.status()))
+        .toList();
+    if (tasks.isEmpty()) {
+      throw new ApiException(502, "LK888 did not return task_id");
+    }
+
+    return new ImageGenerationDtos.CreateTaskResponse(
+        PROVIDER_LK888,
+        request.model(),
+        lk888Model,
+        size,
+        resolution,
+        count,
+        tasks,
+        root);
+  }
+
   public ImageGenerationDtos.TaskStatusResponse getTask(String taskId) throws Exception {
     if (taskId == null || taskId.isBlank()) {
       throw new ApiException(400, "taskId is required");
     }
     String cleanTaskId = taskId.trim();
+
+    // Once a generated image has been persisted, our database is the source of
+    // truth. Provider tasks and signed result URLs may expire within minutes, so
+    // never query the upstream again when a permanent OSS result already exists.
+    ImageGenerationDtos.TaskStatusResponse persistedResponse = persistedTaskResponse(cleanTaskId);
+    if (persistedResponse != null) {
+      failoverStates.remove(cleanTaskId);
+      return persistedResponse;
+    }
 
     // ===== 故障转移检测（透明切换，对调用方完全无感）=====
     FailoverState state = failoverStates.get(cleanTaskId);
@@ -809,6 +895,9 @@ public class ImageGenerationClient {
     if (cleanTaskId.startsWith(GETTOKEN_TASK_PREFIX)) {
       return getGetTokenTask(cleanTaskId.substring(GETTOKEN_TASK_PREFIX.length()));
     }
+    if (cleanTaskId.startsWith(LK888_TASK_PREFIX)) {
+      return getLk888Task(cleanTaskId.substring(LK888_TASK_PREFIX.length()));
+    }
     // APIMart 直连任务
     if (cleanTaskId.startsWith(APIMART_DIRECT_TASK_PREFIX)) {
       return getApimartDirectTask(cleanTaskId.substring(APIMART_DIRECT_TASK_PREFIX.length()));
@@ -946,6 +1035,45 @@ public class ImageGenerationClient {
         root);
   }
 
+  private ImageGenerationDtos.TaskStatusResponse getLk888Task(String taskId) throws Exception {
+    if (!properties.isLk888Configured()) {
+      throw new ApiException(400, "LK888 image api key is not configured");
+    }
+    String cleanTaskId = taskId == null ? "" : taskId.trim();
+    if (cleanTaskId.isBlank()) throw new ApiException(400, "taskId is required");
+
+    String endpoint = properties.normalizedLk888BaseUrl()
+        + properties.normalizedLk888TaskPath()
+        + "?task_id=" + encode(cleanTaskId);
+    JsonNode root = sendLk888Get(endpoint);
+    String state = firstNonBlank(text(root, "state"), "unknown").toLowerCase();
+    boolean isFinal = root.path("is_final").asBoolean(false);
+    Integer progress = intValue(root, "progress");
+    String error = firstNonBlank(text(root, "error"), text(root, "message"));
+    List<String> imageUrls = new ArrayList<>();
+    String persistStatus = null;
+    collectImageUrls(root.path("result_url"), imageUrls);
+
+    if (isFinal && "success".equals(state) && !imageUrls.isEmpty()) {
+      PollResult pollResult = decidePollResponse(LK888_TASK_PREFIX + cleanTaskId, imageUrls);
+      imageUrls = pollResult.imageUrls();
+      state = pollResult.status();
+      persistStatus = pollResult.persistStatus();
+    } else if (isFinal && !"success".equals(state) && error.isBlank()) {
+      error = firstNonBlank(text(root, "status"), "LK888 image generation failed");
+    }
+
+    return new ImageGenerationDtos.TaskStatusResponse(
+        PROVIDER_LK888,
+        LK888_TASK_PREFIX + cleanTaskId,
+        state,
+        progress,
+        imageUrls,
+        persistStatus,
+        error.isBlank() ? null : error,
+        root);
+  }
+
   /** GetToken 会同时返回 previewUrl 与 results；previewUrl 只是预览图，不能计入生成结果。 */
   private void collectGetTokenResultUrls(JsonNode root, List<String> imageUrls) {
     JsonNode results = root.path("results");
@@ -1065,6 +1193,27 @@ public class ImageGenerationClient {
         .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
         .build();
     return send(request, "GetToken");
+  }
+
+  private JsonNode sendLk888Post(String endpoint, Map<String, Object> body) throws Exception {
+    HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create(endpoint))
+        .timeout(Duration.ofSeconds(Math.max(5, properties.getTimeoutSeconds())))
+        .header("Authorization", "Bearer " + properties.getLk888ApiKey())
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
+        .build();
+    return send(request, "LK888");
+  }
+
+  private JsonNode sendLk888Get(String endpoint) throws Exception {
+    HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create(endpoint))
+        .timeout(Duration.ofSeconds(Math.max(5, properties.getTimeoutSeconds())))
+        .header("Authorization", "Bearer " + properties.getLk888ApiKey())
+        .GET()
+        .build();
+    return send(request, "LK888");
   }
 
   private JsonNode sendProxyPost(String endpoint, Map<String, Object> body) throws Exception {
@@ -1315,9 +1464,9 @@ public class ImageGenerationClient {
     try {
       String resultJson = objectMapper.writeValueAsString(urls);
       jdbcTemplate.update(
-          "UPDATE ym_image_task SET result_urls = ?, persist_status = 'DONE', "
+          "UPDATE ym_image_task SET result_urls = ?, image_urls = ?, persist_status = 'DONE', "
               + "status = 'completed', progress = 100 WHERE task_id = ?",
-          resultJson, taskId);
+          resultJson, resultJson, taskId);
       persistedImageCache.put(taskId, new ArrayList<>(urls));
       return true;
     } catch (Exception e) {
@@ -1389,10 +1538,10 @@ public class ImageGenerationClient {
           SELECT task_id, provider, image_urls
           FROM ym_image_task
           WHERE persist_status = 'PENDING'
-            AND status = 'completed'
+            AND LOWER(status) IN ('completed', 'success', 'succeeded', 'persisting')
             AND image_urls IS NOT NULL
-            AND image_urls <> ''
-          ORDER BY created_at ASC
+            AND TRIM(image_urls) NOT IN ('', '[]', 'null')
+          ORDER BY updated_at DESC
           LIMIT 50
           """, (rs, rowNum) -> new PendingPersistTask(
               rs.getString("task_id"),
@@ -1412,6 +1561,26 @@ public class ImageGenerationClient {
     } catch (Exception e) {
       System.out.println("[image-persist-recovery] scan failed: " + e.getMessage());
     }
+  }
+
+  /** Build a terminal response directly from the permanent result stored in DB. */
+  private ImageGenerationDtos.TaskStatusResponse persistedTaskResponse(String taskId) {
+    PersistState state = getPersistState(taskId);
+    if (!"DONE".equalsIgnoreCase(state.status())) return null;
+    List<String> urls = parseResultUrls(state.resultUrls());
+    if (urls == null || urls.isEmpty()) return null;
+
+    String provider = PROVIDER_APIMART;
+    if (taskId.startsWith(GETTOKEN_TASK_PREFIX)) provider = PROVIDER_GETTOKEN;
+    else if (taskId.startsWith(LK888_TASK_PREFIX)) provider = PROVIDER_LK888;
+    else if (taskId.startsWith(PROXY_TASK_PREFIX)) provider = PROVIDER_PROXY;
+    else if (taskId.startsWith(AGNES_TASK_PREFIX)) provider = PROVIDER_ANNES;
+
+    JsonNode raw = objectMapper.createObjectNode()
+        .put("source", "persisted_oss")
+        .put("persisted", true);
+    return new ImageGenerationDtos.TaskStatusResponse(
+        provider, taskId, "completed", 100, urls, "DONE", null, raw);
   }
 
   /**
@@ -1487,17 +1656,14 @@ public class ImageGenerationClient {
     List<String> cached = persistedImageCache.get(taskId);
     if (cached != null && !cached.isEmpty()) return cached;
 
-    synchronized (persistedImageCache) {
-      cached = persistedImageCache.get(taskId);
-      if (cached != null && !cached.isEmpty()) return cached;
-
-      List<String> persisted = new ArrayList<>();
-      for (int index = 0; index < imageUrls.size(); index += 1) {
-        persisted.add(persistImageUrl(taskId, index, imageUrls.get(index)));
-      }
-      persistedImageCache.put(taskId, persisted);
-      return persisted;
+    // Do not hold a global cache lock while downloading and uploading images. Async persistence
+    // already claims taskId in persistingTaskIds, so unrelated tasks must be allowed to proceed.
+    List<String> persisted = new ArrayList<>();
+    for (int index = 0; index < imageUrls.size(); index += 1) {
+      persisted.add(persistImageUrl(taskId, index, imageUrls.get(index)));
     }
+    persistedImageCache.put(taskId, persisted);
+    return persisted;
   }
 
   private String persistImageUrl(String taskId, int index, String imageUrl) throws Exception {
@@ -1882,9 +2048,19 @@ public class ImageGenerationClient {
       return List.of();
     }
     if ("apimart-direct".equals(primaryProvider) || PROVIDER_APIMART.equals(primaryProvider)) {
+      if (properties.isLk888Configured() && properties.isLk888FallbackModel(resolvedModel)) {
+        return isProxyConfigured()
+            ? List.of(PROVIDER_LK888, PROVIDER_PROXY)
+            : List.of(PROVIDER_LK888);
+      }
       return isProxyConfigured() ? List.of(PROVIDER_PROXY) : List.of();
     }
     if (PROVIDER_GETTOKEN.equals(primaryProvider)) {
+      if (properties.isLk888Configured()) {
+        return isProxyConfigured()
+            ? List.of(PROVIDER_LK888, PROVIDER_PROXY)
+            : List.of(PROVIDER_LK888);
+      }
       return isProxyConfigured() ? List.of(PROVIDER_PROXY) : List.of();
     }
     return List.of(); // agnes / proxy have no backup provider.
@@ -1897,6 +2073,8 @@ public class ImageGenerationClient {
       response = createProxyTask(state.originalRequest);
     } else if (PROVIDER_GETTOKEN.equals(state.backupProvider)) {
       response = createGetTokenTask(state.originalRequest);
+    } else if (PROVIDER_LK888.equals(state.backupProvider)) {
+      response = createLk888Task(state.originalRequest);
     } else {
       throw new IllegalStateException("未知的备用中转站: " + state.backupProvider);
     }
@@ -1942,19 +2120,20 @@ public class ImageGenerationClient {
     }
   }
 
-  /** Proxy 备份任务创建成功后立即落库，控制台无需等到下一次成功轮询才显示兜底。 */
+  /** 备份任务创建成功后立即落库，控制台无需等到下一次成功轮询才显示兜底。 */
   private void markFallbackProvider(String originalTaskId, FailoverState state) {
     if (jdbcTemplate == null || state == null || !state.failoverTriggered
-        || !PROVIDER_PROXY.equals(state.backupProvider)) {
+        || state.backupProvider == null || state.backupProvider.isBlank()) {
       return;
     }
     try {
       jdbcTemplate.update(
           "UPDATE ym_image_task SET provider = ? WHERE task_id = ?",
-          PROVIDER_PROXY,
+          state.backupProvider,
           originalTaskId);
     } catch (RuntimeException error) {
-      System.err.println("[image-failover] failed to persist provider=proxy for task="
+      System.err.println("[image-failover] failed to persist provider="
+          + state.backupProvider + " for task="
           + originalTaskId + ": " + error.getMessage());
     }
   }
@@ -1966,7 +2145,8 @@ public class ImageGenerationClient {
   private void registerFailoverState(
       String taskId, ImageGenerationDtos.CreateTaskRequest request, String provider) {
     if (taskId == null || taskId.isBlank()) return;
-    if (PROVIDER_PROXY.equals(provider) || PROVIDER_ANNES.equals(provider)) return;
+    if (PROVIDER_PROXY.equals(provider) || PROVIDER_LK888.equals(provider)
+        || PROVIDER_ANNES.equals(provider)) return;
     String backup = determineBackupProvider(provider, properties.resolveModel(request.model()));
     if (backup == null) return; // 无可用备用链，无需追踪
     failoverStates.put(taskId, new FailoverState(System.currentTimeMillis(), request, provider));

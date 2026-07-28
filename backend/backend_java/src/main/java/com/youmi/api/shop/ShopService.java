@@ -1,6 +1,8 @@
 package com.youmi.api.shop;
 
 import com.youmi.api.common.ApiException;
+import com.youmi.api.platform.Platform;
+import com.youmi.api.platform.PlatformRepository;
 import java.util.List;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -14,9 +16,11 @@ import org.springframework.util.StringUtils;
 @Service
 public class ShopService {
   private final ShopRepository shopRepository;
+  private final PlatformRepository platformRepository;
 
-  public ShopService(ShopRepository shopRepository) {
+  public ShopService(ShopRepository shopRepository, PlatformRepository platformRepository) {
     this.shopRepository = shopRepository;
+    this.platformRepository = platformRepository;
   }
 
   @Transactional
@@ -27,8 +31,8 @@ public class ShopService {
     if (shopRepository.findByCode(code).isPresent()) {
       throw new ApiException(400, "店铺编码已存在");
     }
-    String platform = StringUtils.hasText(request.platform()) ? request.platform().trim() : null;
-    Long id = shopRepository.insert(name, code, platform, "ACTIVE");
+    Platform platform = resolvePlatform(request.platformId(), request.platform());
+    Long id = shopRepository.insert(name, code, platform.id(), platform.name(), "ACTIVE");
     return getShop(id);
   }
 
@@ -37,7 +41,11 @@ public class ShopService {
     Shop shop = shopRepository.findById(id).orElseThrow(() -> new ApiException(404, "店铺不存在"));
     String name = StringUtils.hasText(request.name()) ? request.name().trim() : shop.name();
     String status = normalizeStatus(request.status(), shop.status());
-    shopRepository.update(id, name, status);
+    Platform platform = request.platformId() == null
+        ? platformRepository.findById(shop.platformId())
+            .orElseThrow(() -> new ApiException(400, "店铺所属平台不存在"))
+        : resolvePlatform(request.platformId(), null);
+    shopRepository.update(id, name, platform.id(), platform.name(), status);
     return getShop(id);
   }
 
@@ -61,7 +69,13 @@ public class ShopService {
   /** 公开列表：仅返回 ACTIVE 店铺的 id/name/code，供注册页下拉取数。 */
   public List<ShopDtos.ShopPublicView> listActiveShops() {
     return shopRepository.findActive().stream()
-        .map(shop -> new ShopDtos.ShopPublicView(shop.id(), shop.name(), shop.code()))
+        .map(shop -> new ShopDtos.ShopPublicView(
+            shop.id(),
+            shop.name(),
+            shop.code(),
+            shop.platformId(),
+            shop.platformCode(),
+            shop.platformName()))
         .toList();
   }
 
@@ -75,7 +89,10 @@ public class ShopService {
         shop.id(),
         shop.name(),
         shop.code(),
-        shop.platform(),
+        shop.platformId(),
+        shop.platformCode(),
+        shop.platformName(),
+        shop.platformName(),
         shop.status(),
         shop.createdAt(),
         shop.updatedAt());
@@ -90,5 +107,23 @@ public class ShopService {
     if (!StringUtils.hasText(value)) return fallback;
     String normalized = value.trim().toUpperCase(java.util.Locale.ROOT);
     return List.of("ACTIVE", "DISABLED").contains(normalized) ? normalized : fallback;
+  }
+
+  private Platform resolvePlatform(Long platformId, String legacyPlatform) {
+    Platform platform;
+    if (platformId != null) {
+      platform = platformRepository.findById(platformId)
+          .orElseThrow(() -> new ApiException(400, "请选择有效的平台"));
+    } else if (StringUtils.hasText(legacyPlatform)) {
+      platform = platformRepository.findByNameOrCode(legacyPlatform.trim())
+          .orElseThrow(() -> new ApiException(400, "请选择有效的平台"));
+    } else {
+      platform = platformRepository.findByCode("OTHER")
+          .orElseThrow(() -> new ApiException(500, "默认平台未初始化"));
+    }
+    if (!"ACTIVE".equals(platform.status())) {
+      throw new ApiException(400, "请选择已启用的平台");
+    }
+    return platform;
   }
 }

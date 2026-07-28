@@ -15,6 +15,7 @@ import org.springframework.stereotype.Component;
 public class MiValueProperties {
   /** 各业务类型的固定单价（米值/次）。例：IMAGE=10，VIDEO=50 */
   private Map<String, Integer> prices = new HashMap<>();
+  private Map<String, Map<String, Integer>> imagePrices = new HashMap<>();
 
   public Map<String, Integer> getPrices() {
     return prices;
@@ -22,6 +23,52 @@ public class MiValueProperties {
 
   public void setPrices(Map<String, Integer> prices) {
     this.prices = prices == null ? new HashMap<>() : prices;
+  }
+
+  public Map<String, Map<String, Integer>> getImagePrices() {
+    return imagePrices;
+  }
+
+  public void setImagePrices(Map<String, Map<String, Integer>> imagePrices) {
+    this.imagePrices = imagePrices == null ? new HashMap<>() : imagePrices;
+  }
+
+  public int getImagePrice(String model, String resolution) {
+    String modelKey = normalizeModel(model);
+    String resolutionKey = normalizeResolution(resolution);
+    Map<String, Integer> modelPrices = imagePrices.get(modelKey);
+    if (modelPrices == null) {
+      throw new IllegalArgumentException("Unsupported image model: " + model);
+    }
+    Integer price = modelPrices.entrySet().stream()
+        .filter(entry -> entry.getKey().equalsIgnoreCase(resolutionKey))
+        .map(Map.Entry::getValue)
+        .findFirst()
+        .orElse(null);
+    if (price == null || price < 0) {
+      throw new IllegalArgumentException(
+          "Unsupported image resolution " + resolution + " for model " + modelKey);
+    }
+    return price;
+  }
+
+  public static String normalizeModel(String model) {
+    String value = model == null ? "" : model.trim().toLowerCase();
+    String compact = value.replaceAll("[\\s_\\-]+", "");
+    if (compact.equals("banana2") || value.startsWith("gemini-3.1-flash")) return "banana2";
+    if (compact.equals("bananapro") || value.startsWith("gemini-3-pro")) return "banana-pro";
+    if (compact.equals("gptimage2") || compact.equals("gptimag2") || value.startsWith("gpt-image-2")) {
+      return "gpt-image-2";
+    }
+    return value;
+  }
+
+  public static String normalizeResolution(String resolution) {
+    String value = resolution == null ? "" : resolution.trim().toUpperCase();
+    if (!value.equals("1K") && !value.equals("2K") && !value.equals("4K")) {
+      throw new IllegalArgumentException("Unsupported image resolution: " + resolution);
+    }
+    return value;
   }
 
   /**

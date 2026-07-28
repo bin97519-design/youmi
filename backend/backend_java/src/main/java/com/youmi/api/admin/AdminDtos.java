@@ -18,6 +18,8 @@ public final class AdminDtos {
       String planName,
       Long shopId,
       String shopName,
+      Long shopPlatformId,
+      String shopPlatformCode,
       String shopPlatform,
       List<String> roles,
       String createdAt,
@@ -34,6 +36,7 @@ public final class AdminDtos {
       String planName,
       Long shopId,
       String shopName,
+      Long shopPlatformId,
       String shopPlatform,
       List<String> roles) {
   }
@@ -46,8 +49,12 @@ public final class AdminDtos {
       Integer miValue,
       String planName,
       Long shopId,
+      Long shopPlatformId,
       String shopPlatform,
       List<String> roles) {
+  }
+
+  public record UserPasswordResetRequest(String password) {
   }
 
   public record RoleRow(
