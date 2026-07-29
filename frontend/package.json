@@ -1,13 +1,16 @@
 {
   "name": "youmi",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "private": true,
   "type": "module",
   "description": "有米电商 AI 系统 - youqianai.com clone implementation",
   "scripts": {
     "api": "powershell -NoProfile -ExecutionPolicy Bypass -File ../backend/backend_java/start-dev.ps1",
     "dev": "vite --host 127.0.0.1",
+    "prebuild": "node scripts/check-version-history.mjs && node scripts/generate-version-history.mjs",
     "build": "vite build",
+    "version:check": "node scripts/check-version-history.mjs",
+    "version:generate": "node scripts/generate-version-history.mjs",
     "preview": "vite preview --host 127.0.0.1",
     "lint": "eslint . --ext .js,.vue,.ts --max-warnings 0",
     "lint:fix": "eslint . --ext .js,.vue,.ts --fix",

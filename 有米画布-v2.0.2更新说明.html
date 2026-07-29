@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light" />
+  <title>有米 AI v2.0.2 更新说明</title>
+  <style>
+    :root {
+      --ink: #172033;
+      --muted: #667085;
+      --line: #d8e0e8;
+      --paper: #ffffff;
+      --wash: #f3f6f8;
+      --nav: #172033;
+      --teal: #087f83;
+      --teal-soft: #e6f5f4;
+      --blue: #285ea8;
+      --blue-soft: #edf4ff;
+      --gold: #8b6900;
+      --gold-soft: #fff7d6;
+      --green: #19724b;
+      --green-soft: #eaf7f0;
+      --shadow: 0 12px 34px rgba(23, 32, 51, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--wash);
+      font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+      font-size: 16px;
+      line-height: 1.72;
+    }
+    button, a { font: inherit; }
+    a { color: inherit; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      min-height: 58px;
+      padding: 10px max(18px, calc((100vw - 1120px) / 2));
+      color: #fff;
+      background: var(--nav);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+    }
+    .brand {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      white-space: nowrap;
+    }
+    .brand strong { color: #fff1a8; font-size: 19px; }
+    .brand span { color: #c9d2df; font-size: 13px; }
+    .top-actions { display: flex; align-items: center; gap: 8px; }
+    .top-actions a,
+    .top-actions button {
+      min-height: 34px;
+      padding: 6px 11px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 5px;
+      color: #edf2f7;
+      background: transparent;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .top-actions a:hover,
+    .top-actions button:hover { background: rgba(255, 255, 255, 0.1); }
+
+    main {
+      width: min(1120px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 42px 0 72px;
+    }
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+      gap: 34px;
+      align-items: center;
+      padding: 42px;
+      border: 1px solid var(--line);
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+    .version {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 3px 10px;
+      border: 1px solid #a8cfcd;
+      border-radius: 4px;
+      color: var(--teal);
+      background: var(--teal-soft);
+      font-weight: 800;
+      font-size: 14px;
+    }
+    h1, h2, h3, p { letter-spacing: 0; }
+    h1 {
+      max-width: 700px;
+      margin: 14px 0 0;
+      font-size: 46px;
+      line-height: 1.16;
+    }
+    .hero-copy {
+      max-width: 700px;
+      margin: 16px 0 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+    .release-meta {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      background: var(--line);
+    }
+    .release-meta div {
+      min-height: 88px;
+      padding: 16px;
+      background: #f9fbfc;
+    }
+    .release-meta span {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .release-meta strong {
+      display: block;
+      margin-top: 4px;
+      font-size: 18px;
+    }
+
+    .summary-band {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1px;
+      margin-top: 18px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      background: var(--line);
+    }
+    .summary-item {
+      min-height: 104px;
+      padding: 18px;
+      background: var(--paper);
+    }
+    .summary-item strong {
+      display: block;
+      color: var(--teal);
+      font-size: 25px;
+      line-height: 1.2;
+    }
+    .summary-item span {
+      display: block;
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    section { scroll-margin-top: 78px; margin-top: 52px; }
+    .section-head {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 22px;
+      margin-bottom: 18px;
+    }
+    .section-head h2 {
+      margin: 0;
+      font-size: 30px;
+      line-height: 1.25;
+    }
+    .section-head p {
+      max-width: 620px;
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .feature-list {
+      border-top: 1px solid var(--line);
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+    .feature {
+      display: grid;
+      grid-template-columns: 68px minmax(0, 1fr) minmax(260px, 0.58fr);
+      gap: 22px;
+      align-items: start;
+      padding: 26px;
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      border-left: 1px solid var(--line);
+    }
+    .feature-index {
+      display: grid;
+      width: 48px;
+      height: 48px;
+      place-items: center;
+      border-radius: 6px;
+      color: #fff;
+      background: var(--teal);
+      font-weight: 800;
+    }
+    .feature h3 { margin: 0; font-size: 21px; }
+    .feature p { margin: 7px 0 0; color: var(--muted); }
+    .feature ul { margin: 12px 0 0; padding-left: 20px; }
+    .feature li + li { margin-top: 6px; }
+    .feature-note {
+      padding: 16px;
+      border-left: 3px solid var(--blue);
+      background: var(--blue-soft);
+      color: #284463;
+    }
+    .feature-note strong { display: block; color: var(--blue); }
+
+    .flows {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+    }
+    .flow {
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+    .flow-tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      color: var(--gold);
+      background: var(--gold-soft);
+      font-size: 13px;
+      font-weight: 800;
+    }
+    .flow h3 { margin: 11px 0 0; font-size: 19px; }
+    .flow ol { margin: 12px 0 0; padding-left: 21px; }
+    .flow li + li { margin-top: 8px; }
+
+    .comparison {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1px solid var(--line);
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+    .comparison th,
+    .comparison td {
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    .comparison th { color: #fff; background: var(--nav); }
+    .comparison th:first-child { width: 22%; }
+    .comparison th:nth-child(2),
+    .comparison th:nth-child(3) { width: 39%; }
+    .old { color: #7a3440; }
+    .new { color: var(--green); font-weight: 700; }
+
+    .notice {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    .notice-block {
+      padding: 21px;
+      border: 1px solid var(--line);
+      background: var(--paper);
+    }
+    .notice-block h3 { margin: 0; font-size: 19px; }
+    .notice-block ul { margin: 12px 0 0; padding-left: 20px; }
+    .notice-block li + li { margin-top: 7px; }
+    .notice-block.is-important {
+      border-color: #dbc674;
+      background: #fffdf3;
+    }
+
+    .verification {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px;
+      padding: 20px;
+      border: 1px solid #b7d9c7;
+      background: var(--green-soft);
+    }
+    .verification span {
+      padding: 5px 9px;
+      border: 1px solid #a6ceb9;
+      border-radius: 4px;
+      color: var(--green);
+      background: #fff;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    footer {
+      margin-top: 56px;
+      padding-top: 20px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    @media (max-width: 820px) {
+      .topbar { align-items: flex-start; }
+      .top-actions a { display: none; }
+      main { width: min(100% - 22px, 680px); padding-top: 22px; }
+      .hero { grid-template-columns: 1fr; padding: 26px 22px; }
+      h1 { font-size: 36px; }
+      .summary-band { grid-template-columns: 1fr 1fr; }
+      .feature { grid-template-columns: 48px minmax(0, 1fr); gap: 14px; padding: 22px 18px; }
+      .feature-note { grid-column: 2; }
+      .flows { grid-template-columns: 1fr; }
+      .notice { grid-template-columns: 1fr; }
+      .section-head { display: block; }
+      .section-head p { margin-top: 8px; }
+      .comparison { display: block; overflow-x: auto; white-space: normal; }
+      .comparison table { min-width: 680px; }
+    }
+
+    @media (max-width: 520px) {
+      body { font-size: 15px; }
+      .brand span { display: none; }
+      .hero { padding: 22px 18px; }
+      h1 { font-size: 31px; }
+      .hero-copy { font-size: 16px; }
+      .release-meta { grid-template-columns: 1fr; }
+      .summary-band { grid-template-columns: 1fr; }
+      .feature { grid-template-columns: 1fr; }
+      .feature-note { grid-column: 1; }
+      .feature-index { width: 40px; height: 40px; }
+    }
+
+    @media print {
+      body { background: #fff; font-size: 12px; }
+      .topbar { position: static; box-shadow: none; }
+      .top-actions { display: none; }
+      main { width: 100%; padding: 18px 0; }
+      .hero, .feature-list, .flow, .comparison { box-shadow: none; }
+      section { break-inside: avoid; margin-top: 30px; }
+      .feature { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <strong>YOUMI 有米 AI</strong>
+      <span>用户更新说明</span>
+    </div>
+    <div class="top-actions">
+      <a href="有米AI更新历程.html">更新历程</a>
+      <a href="#features">查看更新</a>
+      <a href="#guide">快速上手</a>
+      <button type="button" onclick="window.print()">打印 / 保存 PDF</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero" aria-labelledby="page-title">
+      <div>
+        <span class="version">版本 v2.0.2</span>
+        <h1 id="page-title">反推提示词与画布收图体验全面升级</h1>
+        <p class="hero-copy">
+          本次更新把图片反推、外部图片接收、提示词阅读和跨画布整理连成一套更顺手的流程，
+          同时修复多项画布拖动、滚动和删除体验问题。
+        </p>
+      </div>
+      <div class="release-meta" aria-label="版本信息">
+        <div><span>发布日期</span><strong>2026-07-28</strong></div>
+        <div><span>适用版本</span><strong>有米 AI v2.0.2</strong></div>
+        <div><span>主要模块</span><strong>万能画布</strong></div>
+        <div><span>更新类型</span><strong>功能与体验</strong></div>
+      </div>
+    </section>
+
+    <div class="summary-band" aria-label="本次更新概览">
+      <div class="summary-item"><strong>4 类</strong><span>通用、床垫、窗帘、实木床反推模板</span></div>
+      <div class="summary-item"><strong>右键直达</strong><span>在图片上直接获取提示词</span></div>
+      <div class="summary-item"><strong>自动转存</strong><span>外部图片转为有米永久地址</span></div>
+      <div class="summary-item"><strong>跨画布</strong><span>批量复制到已有或新画布</span></div>
+    </div>
+
+    <section id="features">
+      <div class="section-head">
+        <h2>本次更新内容</h2>
+        <p>以下内容均以用户实际操作为准，按使用频率从高到低排列。</p>
+      </div>
+
+      <div class="feature-list">
+        <article class="feature">
+          <div class="feature-index">01</div>
+          <div>
+            <h3>图片右键即可获取提示词</h3>
+            <p>不再需要单独打开反推面板。选中图片后点击鼠标右键，直接使用“获取提示词”。</p>
+            <ul>
+              <li>支持通用、床垫、窗帘、实木床四种分析方式。</li>
+              <li>根据商品品类输出更有针对性的材质、结构、构图和光线信息。</li>
+              <li>分析结果直接显示在图片下方，图片与提示词保持在一起。</li>
+            </ul>
+          </div>
+          <aside class="feature-note">
+            <strong>操作路径</strong>
+            选中图片 → 鼠标右键 → 获取提示词 → 选择品类
+          </aside>
+        </article>
+
+        <article class="feature">
+          <div class="feature-index">02</div>
+          <div>
+            <h3>提示词更容易阅读和复制</h3>
+            <p>默认保持紧凑展示，需要查看时再展开完整内容，减少长提示词遮挡画布。</p>
+            <ul>
+              <li>默认展示标题和两行摘要，完整内容在下方展开。</li>
+              <li>主体、构图、光线、视觉风格、文字排版等信息分段呈现。</li>
+              <li>较长的文字排版内容支持折叠，默认不占用过多空间。</li>
+              <li>复制时仅复制实际提示内容，不带多余的“提示词”字样。</li>
+            </ul>
+          </div>
+          <aside class="feature-note">
+            <strong>阅读建议</strong>
+            先看两行摘要判断方向，确认符合需求后再展开细节。
+          </aside>
+        </article>
+
+        <article class="feature">
+          <div class="feature-index">03</div>
+          <div>
+            <h3>外部图片可直接进入反推画布</h3>
+            <p>配套插件发送的自动选择图片或框选区域，会进入反推提示词画布并按画布位置规则摆放。</p>
+            <ul>
+              <li>支持普通图片地址和 Base64 图片。</li>
+              <li>Base64 图片会自动转存到有米 OSS，避免临时图片后续失效。</li>
+              <li>新图片优先出现在当前视野中心或已选图片旁边。</li>
+              <li>已存在的同一张图片不会重复导入。</li>
+            </ul>
+          </div>
+          <aside class="feature-note">
+            <strong>适用场景</strong>
+            从商品详情页、素材网站或截图区域快速收集参考图。
+          </aside>
+        </article>
+
+        <article class="feature">
+          <div class="feature-index">04</div>
+          <div>
+            <h3>图片可以批量整理到其他画布</h3>
+            <p>反推画布图片过多时，可把选中的一张或多张图片转移到新的工作画布。</p>
+            <ul>
+              <li>支持复制到已有画布。</li>
+              <li>支持直接创建新画布并复制。</li>
+              <li>保留图片相对位置、尺寸和反推提示词。</li>
+              <li>复制完成后可直接进入目标画布继续工作。</li>
+            </ul>
+          </div>
+          <aside class="feature-note">
+            <strong>整理建议</strong>
+            可按商品、品类或项目建立独立画布，反推画布作为临时收图入口。
+          </aside>
+        </article>
+
+        <article class="feature">
+          <div class="feature-index">05</div>
+          <div>
+            <h3>画布操作更跟手</h3>
+            <p>修复文字区域、提示词区域和批量选择时的多项操作问题。</p>
+            <ul>
+              <li>按住空格键并拖动鼠标左键，可临时移动整个画布。</li>
+              <li>鼠标停在长提示词或文本框中时，滚轮优先滚动当前内容。</li>
+              <li>批量选中图片后可正常删除，并同步清理相关参考图信息。</li>
+              <li>新建画布使用唯一编号，降低画布数据互相覆盖的风险。</li>
+            </ul>
+          </div>
+          <aside class="feature-note">
+            <strong>快捷操作</strong>
+            空格键 + 鼠标左键拖动：移动画布
+          </aside>
+        </article>
+
+        <article class="feature">
+          <div class="feature-index">06</div>
+          <div>
+            <h3>界面与帮助内容同步优化</h3>
+            <p>提示词卡片、对话区域和开灯主题的文字与底色进行了统一调整。</p>
+            <ul>
+              <li>长提示词展开层使用更轻的透明底色。</li>
+              <li>复制按钮、折叠按钮和分类菜单更容易识别。</li>
+              <li>对话气泡保留输入时的换行和段落格式。</li>
+              <li>画布帮助入口已接入《有米画布使用教程》。</li>
+            </ul>
+          </div>
+          <aside class="feature-note">
+            <strong>帮助入口</strong>
+            画布左下角“？” → 帮助
+          </aside>
+        </article>
+      </div>
+    </section>
+
+    <section id="guide">
+      <div class="section-head">
+        <h2>三种常用操作</h2>
+        <p>第一次使用时，照着下面三条流程操作即可。</p>
+      </div>
+      <div class="flows">
+        <article class="flow">
+          <span class="flow-tag">流程一</span>
+          <h3>从图片获取提示词</h3>
+          <ol>
+            <li>上传图片或打开反推画布中的图片。</li>
+            <li>选中图片并点击鼠标右键。</li>
+            <li>选择“获取提示词”和对应品类。</li>
+            <li>等待结果显示在图片下方。</li>
+          </ol>
+        </article>
+        <article class="flow">
+          <span class="flow-tag">流程二</span>
+          <h3>从网页收集图片</h3>
+          <ol>
+            <li>在网页图片上使用配套插件。</li>
+            <li>选择自动图片或手动框选区域。</li>
+            <li>发送到反推画布。</li>
+            <li>回到有米继续反推和整理。</li>
+          </ol>
+        </article>
+        <article class="flow">
+          <span class="flow-tag">流程三</span>
+          <h3>把图片整理到新画布</h3>
+          <ol>
+            <li>框选一张或多张图片。</li>
+            <li>打开复制到画布功能。</li>
+            <li>选择已有画布或创建新画布。</li>
+            <li>进入目标画布继续生图。</li>
+          </ol>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>更新前后对比</h2>
+        <p>本次调整的目标是减少来回切换，让图片、提示词和画布整理形成连续流程。</p>
+      </div>
+      <table class="comparison">
+        <thead>
+          <tr>
+            <th>操作</th>
+            <th>更新前</th>
+            <th>更新后</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>反推提示词</td>
+            <td class="old">需要进入独立面板，再选择图片进行分析。</td>
+            <td class="new">直接在图片右键菜单中选择品类并分析。</td>
+          </tr>
+          <tr>
+            <td>查看长提示词</td>
+            <td class="old">长内容容易占满图片下方区域，阅读较乱。</td>
+            <td class="new">默认两行摘要，完整内容按段落展开和折叠。</td>
+          </tr>
+          <tr>
+            <td>接收网页图片</td>
+            <td class="old">临时地址可能过期，位置也不稳定。</td>
+            <td class="new">自动转存有米 OSS，并按画布规则智能摆放。</td>
+          </tr>
+          <tr>
+            <td>图片过多</td>
+            <td class="old">需要手动下载、再到另一个画布上传。</td>
+            <td class="new">直接批量复制到已有画布或新建画布。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>使用注意事项</h2>
+        <p>遇到操作结果与预期不一致时，优先检查以下内容。</p>
+      </div>
+      <div class="notice">
+        <div class="notice-block is-important">
+          <h3>哪些图片可以获取提示词</h3>
+          <ul>
+            <li>支持用户上传的图片。</li>
+            <li>支持从反推流程或配套插件进入画布的图片。</li>
+            <li>普通 AI 生图结果默认不显示“获取提示词”，避免重复分析和误操作。</li>
+          </ul>
+        </div>
+        <div class="notice-block">
+          <h3>外部图片发送失败怎么办</h3>
+          <ul>
+            <li>确认有米页面已登录，并打开反推提示词画布。</li>
+            <li>刷新来源网页和有米画布后重新发送。</li>
+            <li>更新插件后，需要在浏览器扩展管理页重新加载插件。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>版本验证</h2>
+        <p>本次版本已完成基础构建与核心流程检查。</p>
+      </div>
+      <div class="verification">
+        <span>前端生产构建通过</span>
+        <span>后端构建通过</span>
+        <span>反推接口结构校验</span>
+        <span>Base64 图片转存校验</span>
+        <span>跨画布复制流程校验</span>
+        <span>桌面与移动宽度适配</span>
+      </div>
+    </section>
+
+    <footer>
+      有米 AI v2.0.2 用户更新说明 · 本文档用于帮助用户快速了解本次功能变化
+    </footer>
+  </main>
+</body>
+</html>

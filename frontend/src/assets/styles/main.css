@@ -4723,13 +4723,27 @@ body {
 }
 
 .yh-logo-version {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   margin-top: 1px;
+  padding: 1px 3px;
+  border: 0;
+  border-radius: 4px;
   color: rgba(255, 255, 255, 0.48);
   font-size: 8px;
   font-weight: 600;
   line-height: 1;
   letter-spacing: 0;
   font-variant-numeric: tabular-nums;
+  background: transparent;
+  cursor: pointer;
+}
+
+.yh-logo-version:hover {
+  color: rgba(255, 255, 255, 0.86);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .yh-rail.is-expanded .yh-logo-version {
@@ -9771,6 +9785,43 @@ body {
   font-size: 15px;
 }
 
+.head-left .canvas-version-trigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  padding: 0 7px;
+  border: 1px solid var(--canvas-border-strong);
+  border-radius: 5px;
+  color: var(--canvas-text-subtle);
+  background: var(--canvas-surface);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.head-left .canvas-version-trigger:hover {
+  color: var(--canvas-accent);
+  border-color: var(--canvas-accent-border);
+  background: var(--canvas-accent-soft);
+}
+
+.version-unread-dot,
+.help-menu-unread-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  background: #ffb020;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px rgba(255, 176, 32, 0.14);
+}
+
+.help-menu-unread-dot {
+  margin-left: auto;
+}
+
 .head-left em {
   min-height: 26px;
   padding: 4px 12px;
@@ -12817,6 +12868,51 @@ body {
   background: rgba(120, 20, 20, 0.72);
 }
 
+.uc-chat-reference-source-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  z-index: 160;
+  width: 152px;
+  display: grid;
+  gap: 3px;
+  padding: 6px;
+  color: var(--canvas-text);
+  background: color-mix(in srgb, var(--canvas-panel) 96%, transparent);
+  border: 1px solid var(--canvas-border);
+  border-radius: 7px;
+  box-shadow: var(--canvas-panel-shadow);
+  backdrop-filter: blur(14px);
+}
+
+.uc-chat-reference-source-menu button {
+  min-width: 0;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 10px;
+  color: var(--canvas-text-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+}
+
+.uc-chat-reference-source-menu button:hover,
+.uc-chat-reference-source-menu button:focus-visible {
+  color: var(--canvas-text);
+  background: var(--canvas-surface-hover);
+  outline: 0;
+}
+
+.uc-chat-reference-source-menu button i {
+  color: var(--canvas-accent);
+  font-size: 17px;
+}
+
 .chat-box.uc-ref-panel textarea {
   align-self: stretch;
   flex: 1 1 auto;
@@ -15373,6 +15469,7 @@ body {
   gap: 12px;
 }
 .uc-materials-card {
+  position: relative;
   background: var(--canvas-surface);
   border: 1px solid var(--canvas-border);
   border-radius: 10px;
@@ -15389,11 +15486,30 @@ body {
   transform: translateY(-2px);
   box-shadow: var(--canvas-panel-shadow);
 }
+.uc-materials-card.is-selected {
+  border-color: var(--canvas-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--canvas-accent) 24%, transparent);
+}
 .uc-materials-card img {
   width: 100%;
   aspect-ratio: 3 / 4;
   object-fit: cover;
   display: block;
+}
+.uc-materials-selected {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  color: #07191b;
+  background: var(--canvas-accent);
+  border: 2px solid var(--canvas-panel);
+  border-radius: 50%;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.28);
+  font-size: 15px;
 }
 .uc-materials-card-footer {
   display: flex;
@@ -15432,6 +15548,36 @@ body {
 .uc-materials-del:hover {
   color: #ff6b6b;
   background: rgba(255, 107, 107, 0.12);
+}
+
+.uc-materials-picker-footer {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+  color: var(--canvas-text-muted);
+  background: var(--canvas-panel);
+  border-top: 1px solid var(--canvas-border);
+  font-size: 13px;
+}
+
+.uc-materials-picker-footer button {
+  min-width: 84px;
+  height: 36px;
+  padding: 0 16px;
+  color: #07191b;
+  background: var(--canvas-accent);
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.uc-materials-picker-footer button:hover {
+  filter: brightness(1.06);
 }
 
 /* ========== 历史记录面板 ========== */

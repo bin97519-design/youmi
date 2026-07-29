@@ -11,6 +11,8 @@ import {
 } from 'vue'
 import { useRouter } from 'vue-router'
 import ImageViewer from '../components/ImageViewer.vue'
+import VersionHistoryDialog from '../components/common/VersionHistoryDialog.vue'
+import { useVersionHistory } from '../composables/useVersionHistory'
 import { layerName, useCanvasStore } from '../stores/canvas'
 import { useUserStore } from '../stores/user'
 import { apiPath } from '../utils/apiBase'
@@ -29,6 +31,15 @@ const router = useRouter()
 const canvas = useCanvasStore()
 const userStore = useUserStore()
 const doc = computed(() => canvas.ensureDocument(props.id))
+const {
+  currentAppVersion,
+  versionHistoryOpen,
+  hasUnreadVersion,
+  shouldNotifyVersion,
+  openVersionHistory,
+  closeVersionHistory,
+  markVersionNotified,
+} = useVersionHistory()
 
 const fileInput = ref(null)
 const fileInputMode = ref('canvas')
@@ -38,6 +49,8 @@ const helpMenuOpen = ref(false)
 const toolbarAddOpen = ref(false)
 const minimapVisible = ref(true)
 const myMaterialsOpen = ref(false)
+const materialPickerMode = ref('canvas')
+const chatReferenceSourceOpen = ref(false)
 const historyPanelOpen = ref(false)
 const myMaterials = ref(JSON.parse(localStorage.getItem('youmi_my_materials') || '[]'))
 const copyToCanvasDialog = reactive({
@@ -325,6 +338,11 @@ const CANVAS_TUTORIAL_URL =
 function openCanvasTutorial() {
   helpMenuOpen.value = false
   window.open(CANVAS_TUTORIAL_URL, '_blank', 'noopener,noreferrer')
+}
+
+function openVersionHistoryFromHelp() {
+  helpMenuOpen.value = false
+  openVersionHistory()
 }
 
 // 帮助菜单 → 快捷键
@@ -2730,6 +2748,7 @@ function openImageUpload(mode = 'canvas') {
   if (!userStore.requireLogin()) return
   fileInputMode.value = mode
   addOpen.value = false
+  chatReferenceSourceOpen.value = false
   fileInput.value?.click()
 }
 
@@ -3585,6 +3604,25 @@ function removeChatReferenceImage(imageId) {
   if (image?.localUrl?.startsWith('blob:')) URL.revokeObjectURL(image.localUrl)
   chatReferenceImages.value = chatReferenceImages.value.filter((item) => item.id !== imageId)
   activeChatReferenceId.value = chatReferenceImages.value.at(-1)?.id || ''
+}
+
+function toggleChatReferenceSource() {
+  if (!userStore.requireLogin()) return
+  chatReferenceSourceOpen.value = !chatReferenceSourceOpen.value
+  chatSelectOpen.value = null
+}
+
+function openChatMaterialPicker() {
+  if (!userStore.requireLogin()) return
+  chatReferenceSourceOpen.value = false
+  materialPickerMode.value = 'chat'
+  myMaterialsOpen.value = true
+  toolbarAddOpen.value = false
+  historyPanelOpen.value = false
+}
+
+function closeMyMaterials() {
+  myMaterialsOpen.value = false
 }
 
 const IMAGE_FILE_NAME_RE = /\.(avif|bmp|gif|heic|heif|jpe?g|png|webp)$/i
@@ -6249,6 +6287,12 @@ function handleCanvasScrollableWheel(event) {
   wheelZoom(event)
 }
 
+function handleInlinePromptPointerDown(event) {
+  // 提示词默认保留文本操作；抓手模式或按住空格时，把事件交给 stage 平移画布。
+  if (activeTool.value === 'hand' || spacePanHeld.value) return
+  event.stopPropagation()
+}
+
 function startMarquee(event) {
   if (event.button !== 0) return
 
@@ -6767,6 +6811,13 @@ onMounted(() => {
   window.addEventListener('blur', resetTemporaryPanShortcut)
   window.addEventListener('copy', handleNativeCopy, true)
   loadUILayout()
+  if (shouldNotifyVersion.value) {
+    const versionNoticeTimer = window.setTimeout(() => {
+      showCopyPasteToast(`已更新至 v${currentAppVersion}，点击顶部版本号查看更新内容`)
+      markVersionNotified()
+    }, 900)
+    onBeforeUnmount(() => window.clearTimeout(versionNoticeTimer))
+  }
   if (isReversePromptCanvas.value) loadCanvasReversePromptCategories()
   if (isReversePromptCanvas.value) {
     window.addEventListener('message', handleCanvasReversePromptBridgeMessage)
@@ -6858,6 +6909,7 @@ onMounted(() => {
     toolbarAddOpen.value = false
     helpMenuOpen.value = false
     chatSelectOpen.value = null
+    chatReferenceSourceOpen.value = false
     // 关闭右键菜单
     if (contextMenu.visible) contextMenu.visible = false
     // 点击历史面板外部关闭（面板内 click.stop 已阻止冒泡，这里捕获不到）
@@ -6926,6 +6978,7 @@ function themeLabel() {
 
 // ========== 我的素材库 ==========
 function toggleMyMaterials() {
+  materialPickerMode.value = 'canvas'
   myMaterialsOpen.value = !myMaterialsOpen.value
   if (myMaterialsOpen.value) {
     toolbarAddOpen.value = false
@@ -6960,6 +7013,29 @@ function removeMaterial(matId) {
   myMaterials.value = myMaterials.value.filter((m) => m.id !== matId)
   localStorage.setItem('youmi_my_materials', JSON.stringify(myMaterials.value))
 }
+function isMaterialSelectedForChat(mat) {
+  return chatReferenceImages.value.some((image) => image.url === mat?.url)
+}
+function toggleMaterialChatReference(mat) {
+  if (!mat?.url) return
+  const existing = chatReferenceImages.value.find((image) => image.url === mat.url)
+  if (existing) {
+    removeChatReferenceImage(existing.id)
+    return
+  }
+  const referenceImage = {
+    id: `ref-material-${Date.now()}-${mat.id || Math.random().toString(16).slice(2)}`,
+    url: mat.url,
+    name: mat.name || '我的素材',
+    uploading: false,
+    materialId: mat.id || '',
+  }
+  chatReferenceImages.value.push(referenceImage)
+  activeChatReferenceId.value = referenceImage.id
+}
+const selectedMaterialReferenceCount = computed(
+  () => myMaterials.value.filter((material) => isMaterialSelectedForChat(material)).length,
+)
 function addMaterialToCanvas(mat) {
   const maxZ = layers.value.reduce((max, l) => Math.max(max, l.zIndex || 0), 0)
   canvas.updateDocument(props.id, (draft) => {
@@ -7920,6 +7996,15 @@ async function loadImageForCrop(layer) {
     <header class="editor-head glass-header">
       <div class="head-left">
         <button class="logo logo-link" type="button" @click="router.push('/')">YOUMI</button>
+        <button
+          class="canvas-version-trigger"
+          type="button"
+          title="查看更新历程"
+          @click="openVersionHistory"
+        >
+          v{{ currentAppVersion }}
+          <span v-if="hasUnreadVersion" class="version-unread-dot" aria-label="有新版本说明"></span>
+        </button>
         <span>·</span>
         <b>{{ isReversePromptCanvas ? '反推提示词' : '万能画布' }}</b>
         <span>/</span>
@@ -8466,7 +8551,7 @@ async function loadImageForCrop(layer) {
                     'is-loading': layer.reversePromptPending,
                     'is-error': layer.reversePromptError && !layer.reversePromptPending,
                   }"
-                  @pointerdown.stop
+                  @pointerdown="handleInlinePromptPointerDown"
                   @dblclick.stop
                 >
                   <div class="uc-inline-prompt-head">
@@ -9200,13 +9285,31 @@ async function loadImageForCrop(layer) {
                     type="button"
                     :class="{ compact: chatReferenceImages.length }"
                     title="添加参考图"
-                    @click.stop="openImageUpload('chat')"
+                    aria-label="添加参考图"
+                    :aria-expanded="chatReferenceSourceOpen"
+                    aria-haspopup="menu"
+                    @click.stop="toggleChatReferenceSource"
                   >
                     <span v-if="chatUploading && !chatReferenceImages.length" class="yh-uploading">
                       上传中
                     </span>
                     <span v-else>{{ chatReferenceImages.length ? '+' : '＋' }}</span>
                   </button>
+                  <div
+                    v-if="chatReferenceSourceOpen"
+                    class="uc-chat-reference-source-menu"
+                    role="menu"
+                    @click.stop
+                  >
+                    <button type="button" role="menuitem" @click="openImageUpload('chat')">
+                      <i class="ri-upload-2-line" aria-hidden="true"></i>
+                      <span>本地上传</span>
+                    </button>
+                    <button type="button" role="menuitem" @click="openChatMaterialPicker">
+                      <i class="ri-folder-image-line" aria-hidden="true"></i>
+                      <span>我的素材</span>
+                    </button>
+                  </div>
                 </div>
                 <div
                   ref="chatEditorRef"
@@ -9427,8 +9530,19 @@ async function loadImageForCrop(layer) {
           <i class="ri-keyboard-line"></i>
           <span>快捷键</span>
         </button>
+        <button class="help-menu-item" @click.stop="openVersionHistoryFromHelp">
+          <i class="ri-history-line"></i>
+          <span>更新日志</span>
+          <span v-if="hasUnreadVersion" class="help-menu-unread-dot" aria-hidden="true"></span>
+        </button>
       </div>
     </Teleport>
+
+    <VersionHistoryDialog
+      :open="versionHistoryOpen"
+      :current-version="currentAppVersion"
+      @close="closeVersionHistory"
+    />
 
     <!-- 快捷键面板 -->
     <div
@@ -10112,14 +10226,16 @@ async function loadImageForCrop(layer) {
 
   <!-- 我的素材面板 -->
   <Teleport to="body">
-    <div v-if="myMaterialsOpen" class="uc-materials-backdrop" @click.self="myMaterialsOpen = false">
-      <div class="uc-materials-panel">
+    <div v-if="myMaterialsOpen" class="uc-materials-backdrop" @click.self="closeMyMaterials">
+      <div class="uc-materials-panel" :class="{ 'is-chat-picker': materialPickerMode === 'chat' }">
         <header class="uc-materials-head">
           <h2>
             <i class="ri-folder-image-line"></i>
-            我的素材
+            {{ materialPickerMode === 'chat' ? '选择参考图' : '我的素材' }}
           </h2>
-          <button @click="myMaterialsOpen = false"><i class="ri-close-line"></i></button>
+          <button title="关闭" aria-label="关闭素材面板" @click="closeMyMaterials">
+            <i class="ri-close-line"></i>
+          </button>
         </header>
         <div class="uc-materials-body">
           <div v-if="!myMaterials.length" class="uc-materials-empty">
@@ -10132,9 +10248,24 @@ async function loadImageForCrop(layer) {
               v-for="mat in myMaterials"
               :key="mat.id"
               class="uc-materials-card"
-              @click="addMaterialToCanvas(mat)"
+              :class="{
+                'is-selected':
+                  materialPickerMode === 'chat' && isMaterialSelectedForChat(mat),
+              }"
+              @click="
+                materialPickerMode === 'chat'
+                  ? toggleMaterialChatReference(mat)
+                  : addMaterialToCanvas(mat)
+              "
             >
               <img :src="mat.url" :alt="mat.name" loading="lazy" decoding="async" />
+              <span
+                v-if="materialPickerMode === 'chat' && isMaterialSelectedForChat(mat)"
+                class="uc-materials-selected"
+                aria-label="已选"
+              >
+                <i class="ri-check-line" aria-hidden="true"></i>
+              </span>
               <div class="uc-materials-card-footer">
                 <div class="uc-materials-card-info">
                   <span class="uc-materials-card-name">{{ mat.name }}</span>
@@ -10142,13 +10273,22 @@ async function loadImageForCrop(layer) {
                     {{ mat.addedAt ? new Date(mat.addedAt).toLocaleString() : '' }}
                   </span>
                 </div>
-                <button class="uc-materials-del" title="删除" @click.stop="removeMaterial(mat.id)">
+                <button
+                  v-if="materialPickerMode !== 'chat'"
+                  class="uc-materials-del"
+                  title="删除"
+                  @click.stop="removeMaterial(mat.id)"
+                >
                   <i class="ri-delete-bin-line"></i>
                 </button>
               </div>
             </div>
           </div>
         </div>
+        <footer v-if="materialPickerMode === 'chat'" class="uc-materials-picker-footer">
+          <span>已选 {{ selectedMaterialReferenceCount }} 张</span>
+          <button type="button" @click="closeMyMaterials">完成</button>
+        </footer>
       </div>
     </div>
   </Teleport>

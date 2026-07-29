@@ -1,9 +1,16 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import packageInfo from '../../../package.json'
+import VersionHistoryDialog from '../common/VersionHistoryDialog.vue'
+import { useVersionHistory } from '../../composables/useVersionHistory'
 
-const appVersion = `v${packageInfo.version}`
+const {
+  currentAppVersion,
+  versionHistoryOpen,
+  hasUnreadVersion,
+  openVersionHistory,
+  closeVersionHistory,
+} = useVersionHistory()
 
 const props = defineProps({
   expanded: {
@@ -209,7 +216,15 @@ function openConsole() {
         <path class="logo-stroke" d="M99.1 28.1h8.1" />
       </svg>
       <div class="yh-logo-sub">有米AI</div>
-      <div class="yh-logo-version">{{ appVersion }}</div>
+      <button
+        class="yh-logo-version"
+        type="button"
+        title="查看更新历程"
+        @click.stop="openVersionHistory"
+      >
+        v{{ currentAppVersion }}
+        <span v-if="hasUnreadVersion" class="version-unread-dot" aria-label="有新版本说明"></span>
+      </button>
     </div>
 
     <nav class="yh-rail-nav" aria-label="主菜单">
@@ -412,4 +427,9 @@ function openConsole() {
       </template>
     </div>
   </aside>
+  <VersionHistoryDialog
+    :open="versionHistoryOpen"
+    :current-version="currentAppVersion"
+    @close="closeVersionHistory"
+  />
 </template>
