@@ -200,6 +200,8 @@ const roleSearch = ref('')
 const taskStatusFilter = ref('')
 const taskModelFilter = ref('')
 const taskUserFilter = ref('')
+const taskUserSearch = ref('')
+const taskUserSearchInput = ref(null)
 // 日期范围筛选（最近生图任务）：格式 YYYY-MM-DD，空 = 不限
 const taskDateFrom = ref('')
 const taskDateTo = ref('')
@@ -427,6 +429,18 @@ const taskModelOptions = computed(() => {
 const taskUserOptions = computed(() => {
   const userIds = new Set((stats.value?.tasks || []).map((t) => String(t.userId)).filter(Boolean))
   return users.value.filter((u) => userIds.has(String(u.id)))
+})
+
+const searchedTaskUserOptions = computed(() => {
+  const keyword = taskUserSearch.value.trim().toLowerCase()
+  if (!keyword) return taskUserOptions.value
+  return taskUserOptions.value.filter((user) =>
+    [user.nickname, user.account, user.phone, user.id].some((value) =>
+      String(value || '')
+        .toLowerCase()
+        .includes(keyword),
+    ),
+  )
 })
 
 const tabs = computed(() => {
@@ -1034,6 +1048,19 @@ function toggleDropdown(key) {
 
 function closeDropdown(key) {
   dropdownOpen[key] = false
+}
+
+function toggleTaskUserDropdown() {
+  toggleDropdown('filterTaskUser')
+  if (!dropdownOpen.filterTaskUser) return
+  taskUserSearch.value = ''
+  nextTick(() => taskUserSearchInput.value?.focus())
+}
+
+function selectTaskUser(userId = '') {
+  taskUserFilter.value = String(userId)
+  taskUserSearch.value = ''
+  closeDropdown('filterTaskUser')
 }
 
 function onDocClick() {
@@ -1927,16 +1954,60 @@ onUnmounted(() => {
                 </div>
               </div>
             </div>
-            <div class="custom-select console-filter-select" @click.stop="toggleDropdown('filterTaskUser')">
+            <div class="custom-select console-filter-select task-user-filter" @click.stop="toggleTaskUserDropdown">
               <div class="custom-select-trigger" :class="{ open: dropdownOpen.filterTaskUser }">
-                {{ taskUserFilter ? taskUserLabel(taskUserFilter) : '全部用户' }}
-                <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                <span class="task-user-trigger-label">
+                  {{ taskUserFilter ? taskUserLabel(taskUserFilter) : '全部用户' }}
+                </span>
+                <span class="task-user-trigger-actions">
+                  <button
+                    v-if="taskUserFilter"
+                    type="button"
+                    class="task-user-filter-clear"
+                    title="清除用户筛选"
+                    aria-label="清除用户筛选"
+                    @click.stop="selectTaskUser()"
+                  >
+                    <i class="ri-close-line" aria-hidden="true"></i>
+                  </button>
+                  <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                </span>
               </div>
-              <div v-show="dropdownOpen.filterTaskUser" class="custom-select-dropdown">
-                <div @click.stop="taskUserFilter = ''; closeDropdown('filterTaskUser')" :class="{ active: taskUserFilter === '' }">全部用户</div>
-                <div v-for="u in taskUserOptions" :key="u.id" @click.stop="taskUserFilter = String(u.id); closeDropdown('filterTaskUser')" :class="{ active: taskUserFilter === String(u.id) }">
-                  {{ u.nickname || u.account || u.id }}
+              <div v-show="dropdownOpen.filterTaskUser" class="custom-select-dropdown task-user-dropdown" @click.stop>
+                <div class="task-user-search" @click.stop>
+                  <i class="ri-search-line" aria-hidden="true"></i>
+                  <input
+                    ref="taskUserSearchInput"
+                    v-model="taskUserSearch"
+                    type="text"
+                    placeholder="搜索用户"
+                    autocomplete="off"
+                    @click.stop
+                    @keydown.esc.stop="closeDropdown('filterTaskUser')"
+                  />
+                  <button
+                    v-if="taskUserSearch"
+                    type="button"
+                    class="task-user-search-clear"
+                    title="清空搜索"
+                    aria-label="清空搜索"
+                    @click.stop="taskUserSearch = ''"
+                  >
+                    <i class="ri-close-line" aria-hidden="true"></i>
+                  </button>
                 </div>
+                <div @click.stop="selectTaskUser()" :class="{ active: taskUserFilter === '' }">全部用户</div>
+                <div
+                  v-for="u in searchedTaskUserOptions"
+                  :key="u.id"
+                  class="task-user-option"
+                  @click.stop="selectTaskUser(u.id)"
+                  :class="{ active: taskUserFilter === String(u.id) }"
+                >
+                  <span>{{ u.nickname || u.account || u.id }}</span>
+                  <small v-if="u.account && u.account !== u.nickname">{{ u.account }} · ID {{ u.id }}</small>
+                </div>
+                <div v-if="!searchedTaskUserOptions.length" class="task-user-empty">无匹配用户</div>
               </div>
             </div>
             <!-- 日期范围筛选 -->
@@ -2732,6 +2803,117 @@ onUnmounted(() => {
 .custom-select.console-filter-select .custom-select-dropdown > div {
   padding: 8px 10px;
   font-size: 13px;
+}
+.task-user-filter {
+  width: 180px !important;
+}
+.task-user-trigger-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-user-trigger-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+}
+.task-user-filter-clear {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  place-items: center;
+  color: #94a3b8;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  font-size: 15px;
+  line-height: 1;
+}
+.task-user-filter-clear:hover {
+  color: #f8fafc;
+  background: rgba(148, 163, 184, 0.16);
+}
+.task-user-dropdown {
+  max-height: 300px;
+  overflow-y: auto;
+}
+.custom-select.console-filter-select .task-user-search {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+  cursor: default;
+  background: #1f2937;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+}
+.task-user-search input {
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  color: #e2e8f0;
+  background: transparent;
+  font-size: 13px;
+}
+.task-user-search input::placeholder {
+  color: #94a3b8;
+}
+.task-user-search-clear {
+  display: grid;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  place-items: center;
+  color: #94a3b8;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+}
+.task-user-search-clear:hover {
+  color: #f8fafc;
+  background: rgba(148, 163, 184, 0.14);
+}
+.task-user-option span,
+.task-user-option small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-user-option small {
+  margin-top: 2px;
+  color: #94a3b8;
+  font-size: 11px;
+}
+.custom-select.console-filter-select .task-user-empty {
+  color: #94a3b8;
+  cursor: default;
+  text-align: center;
+}
+[data-theme='light'] .custom-select.console-filter-select .task-user-search {
+  background: #fff;
+  border-bottom-color: #e2e8f0;
+}
+[data-theme='light'] .task-user-search input {
+  color: #1e293b;
+}
+[data-theme='light'] .task-user-search-clear:hover {
+  color: #0f172a;
+  background: #f1f5f9;
+}
+[data-theme='light'] .task-user-filter-clear:hover {
+  color: #0f172a;
+  background: #e2e8f0;
 }
 
 /* 开灯模式 */
