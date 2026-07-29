@@ -65,6 +65,15 @@ public class MiValueRepository {
         status, logId);
   }
 
+  public int settle(long logId, int settledPrice, int refundAmount) {
+    return jdbcTemplate.update(
+        "UPDATE ym_mi_value_log"
+            + " SET price = ?, after_balance = after_balance + ?, status = 'SUCCESS',"
+            + " updated_at = CURRENT_TIMESTAMP"
+            + " WHERE id = ? AND status = 'PENDING'",
+        settledPrice, refundAmount, logId);
+  }
+
   /**
    * 回滚守卫：仅当流水处于 PENDING 或 SUCCESS 时才置为 ROLLBACK。
    *

@@ -9,7 +9,9 @@ public record Shop(
     Long id,
     String name,
     String code,
-    String platform,
+    Long platformId,
+    String platformCode,
+    String platformName,
     String status,
     String createdAt,
     String updatedAt) {

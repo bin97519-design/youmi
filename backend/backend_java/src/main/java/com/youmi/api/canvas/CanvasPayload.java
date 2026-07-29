@@ -62,7 +62,7 @@ public class CanvasPayload {
   @JsonIgnoreProperties(ignoreUnknown = true)
   public static class CanvasDetectedBox {
     public String name;              // 元素名（来自后端 object_name）
-    public List<Double> box2d = new ArrayList<>();  // [top, left, bottom, right] 0~1000 归一化
+    public List<Double> box2d = new ArrayList<>();  // [left, top, right, bottom] 0~1000 归一化
   }
 
   @JsonIgnoreProperties(ignoreUnknown = true)

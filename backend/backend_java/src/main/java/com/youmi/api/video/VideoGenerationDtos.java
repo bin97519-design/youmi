@@ -1,5 +1,6 @@
 package com.youmi.api.video;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.util.ArrayList;
@@ -14,8 +15,27 @@ public class VideoGenerationDtos {
   public record CreateTaskRequest(
       @JsonProperty("prompt") String prompt,
       @JsonProperty("model") String model,
-      @JsonProperty("ratio") String ratio,
-      @JsonProperty("durationSeconds") Integer durationSeconds) {
+      @JsonProperty("ratio") @JsonAlias("aspectRatio") String ratio,
+      @JsonProperty("durationSeconds") @JsonAlias("duration") Integer durationSeconds,
+      @JsonProperty("resolution") String resolution,
+      @JsonProperty("image_urls") @JsonAlias({"imageUrls", "images"}) List<String> imageUrls,
+      @JsonProperty("webhook_url") @JsonAlias("webhookUrl") String webhookUrl,
+      @JsonProperty("client_task_id") @JsonAlias("clientTaskId") String clientTaskId) {
+
+    public CreateTaskRequest(String prompt, String model, String ratio, Integer durationSeconds) {
+      this(prompt, model, ratio, durationSeconds, null, List.of(), null, null);
+    }
+
+    public List<String> normalizedImageUrls() {
+      if (imageUrls == null) {
+        return List.of();
+      }
+      return imageUrls.stream()
+          .filter(value -> value != null && !value.isBlank())
+          .map(String::trim)
+          .distinct()
+          .toList();
+    }
   }
 
   /** 视频创建响应（含米值回填字段） */

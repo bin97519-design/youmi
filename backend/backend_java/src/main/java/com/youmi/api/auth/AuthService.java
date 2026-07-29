@@ -65,7 +65,7 @@ public class AuthService {
       throw new ApiException(400, "账号已存在");
     }
     Long shopId = request.shopId();
-    // 注册时店铺为可选：不传则由后台管理员后续分配
+    // 注册时店铺可选；未选择时由后台管理员后续分配。
     if (shopId != null && !shopRepository.existsActiveById(shopId)) {
       throw new ApiException(400, "请选择有效的店铺");
     }

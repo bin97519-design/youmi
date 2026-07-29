@@ -45,10 +45,21 @@ class ShopServiceTest {
 
   private void initSchema() {
     jdbcTemplate.execute("""
+        CREATE TABLE IF NOT EXISTS ym_platform (
+          id BIGINT PRIMARY KEY AUTO_INCREMENT,
+          name VARCHAR(64) NOT NULL UNIQUE,
+          code VARCHAR(32) NOT NULL UNIQUE,
+          status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+          sort_order INT NOT NULL DEFAULT 100,
+          created_at DATETIME,
+          updated_at DATETIME)
+        """);
+    jdbcTemplate.execute("""
         CREATE TABLE IF NOT EXISTS ym_shop (
           id BIGINT PRIMARY KEY AUTO_INCREMENT,
           name VARCHAR(128) NOT NULL,
           code VARCHAR(64) NOT NULL UNIQUE,
+          platform_id BIGINT NOT NULL,
           platform VARCHAR(32) NULL,
           status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
           created_at DATETIME,
@@ -74,8 +85,18 @@ class ShopServiceTest {
   }
 
   private void resetData() {
-    jdbcTemplate.update("DELETE FROM ym_shop");
     jdbcTemplate.update("DELETE FROM ym_sys_user");
+    jdbcTemplate.update("DELETE FROM ym_shop");
+    jdbcTemplate.update("DELETE FROM ym_platform");
+    jdbcTemplate.update("""
+        INSERT INTO ym_platform (name, code, status, sort_order) VALUES
+          ('淘宝', 'TAOBAO', 'ACTIVE', 10),
+          ('天猫', 'TMALL', 'ACTIVE', 20),
+          ('抖音', 'DOUYIN', 'ACTIVE', 30),
+          ('京东', 'JD', 'ACTIVE', 40),
+          ('拼多多', 'PINDUODUO', 'ACTIVE', 50),
+          ('其他', 'OTHER', 'ACTIVE', 999)
+        """);
   }
 
   /** 直接挂一个账号到指定店铺，用于验证「删除前仍有账号」拦截。 */
@@ -118,7 +139,9 @@ class ShopServiceTest {
     assertEquals("店铺A", v.name());
     assertEquals("CODE-A", v.code(), "code 应自动转大写");
     assertEquals("ACTIVE", v.status(), "新建店铺默认 ACTIVE");
-    assertEquals("taobao", v.platform());
+    assertNotNull(v.platformId());
+    assertEquals("TAOBAO", v.platformCode());
+    assertEquals("淘宝", v.platform());
   }
 
   @Test

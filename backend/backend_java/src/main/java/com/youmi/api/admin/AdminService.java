@@ -3,6 +3,8 @@ package com.youmi.api.admin;
 import com.youmi.api.auth.PasswordHasher;
 import com.youmi.api.common.ApiException;
 import com.youmi.api.image.ImageGenerationProperties;
+import com.youmi.api.platform.Platform;
+import com.youmi.api.platform.PlatformRepository;
 import com.youmi.api.shop.ShopRepository;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -34,13 +36,16 @@ public class AdminService {
   private final JdbcTemplate jdbcTemplate;
   private final PasswordHasher passwordHasher;
   private final ShopRepository shopRepository;
+  private final PlatformRepository platformRepository;
   private final ImageGenerationProperties imageProps;
 
   public AdminService(JdbcTemplate jdbcTemplate, PasswordHasher passwordHasher,
-      ShopRepository shopRepository, ImageGenerationProperties imageProps) {
+      ShopRepository shopRepository, PlatformRepository platformRepository,
+      ImageGenerationProperties imageProps) {
     this.jdbcTemplate = jdbcTemplate;
     this.passwordHasher = passwordHasher;
     this.shopRepository = shopRepository;
+    this.platformRepository = platformRepository;
     this.imageProps = imageProps;
   }
 
@@ -76,9 +81,13 @@ public class AdminService {
   public List<AdminDtos.UserRow> listUsers(Long shopId) {
     StringBuilder sql = new StringBuilder("""
         SELECT u.id, u.account, u.phone, u.nickname, u.status, u.mi_value, u.plan_name,
-               u.shop_id, s.`name` AS shop_name, s.platform AS shop_platform, u.created_at, u.updated_at
+               u.shop_id, s.`name` AS shop_name,
+               p.id AS shop_platform_id, p.code AS shop_platform_code,
+               COALESCE(p.name, s.platform) AS shop_platform,
+               u.created_at, u.updated_at
         FROM ym_sys_user u
         LEFT JOIN ym_shop s ON s.id = u.shop_id
+        LEFT JOIN ym_platform p ON p.id = s.platform_id
         """);
     List<Object> args = new ArrayList<>();
     if (shopId != null) {
@@ -102,13 +111,25 @@ public class AdminService {
 
     /* 优先用已传的 shopId；若未传但给了 shopName，则按名称查找或自动创建 */
     if (shopId == null && StringUtils.hasText(shopName)) {
-      Optional<Long> existing = shopRepository.findIdByName(shopName.trim());
+      String normalizedShopName = shopName.trim();
+      boolean platformSpecified =
+          request.shopPlatformId() != null || StringUtils.hasText(request.shopPlatform());
+      Optional<Long> existing = platformSpecified
+          ? shopRepository.findIdByNameAndPlatformId(
+              normalizedShopName,
+              resolvePlatform(request.shopPlatformId(), request.shopPlatform()).id())
+          : shopRepository.findIdByName(normalizedShopName);
       if (existing.isPresent()) {
         shopId = existing.get();
       } else {
+        Platform platform = resolvePlatform(request.shopPlatformId(), request.shopPlatform());
         String code = "SHOP-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase(Locale.ROOT);
-        String platform = StringUtils.hasText(request.shopPlatform()) ? request.shopPlatform().trim() : "manual";
-        shopId = shopRepository.insert(shopName.trim(), code, platform, "ACTIVE");
+        shopId = shopRepository.insert(
+            normalizedShopName,
+            code,
+            platform.id(),
+            platform.name(),
+            "ACTIVE");
       }
     }
     if (shopId != null && !shopRepository.existsActiveById(shopId)) {
@@ -169,10 +190,6 @@ public class AdminService {
       }
       sql.append(", shop_id = ?");
       args.add(request.shopId());
-      /* 同步更新店铺平台 */
-      if (StringUtils.hasText(request.shopPlatform())) {
-        jdbcTemplate.update("UPDATE ym_shop SET platform = ? WHERE id = ?", request.shopPlatform().trim(), request.shopId());
-      }
     } else {
       sql.append(", shop_id = NULL");
     }
@@ -190,6 +207,24 @@ public class AdminService {
   }
 
   @Transactional
+  public void resetUserPassword(Long id, AdminDtos.UserPasswordResetRequest request) {
+    ensureUserExists(id);
+    String password = normalizeRequired(
+        request == null ? null : request.password(), "新密码不能为空");
+    if (password.length() < 6) {
+      throw new ApiException(400, "新密码不能少于6位");
+    }
+    if (password.length() > 64) {
+      throw new ApiException(400, "新密码不能超过64位");
+    }
+
+    String salt = "youmi-" + UUID.randomUUID().toString().replace("-", "");
+    jdbcTemplate.update(
+        "UPDATE ym_sys_user SET password_hash = ?, password_salt = ? WHERE id = ?",
+        passwordHasher.sha256(password, salt), salt, id);
+  }
+
+  @Transactional
   public void deleteUser(Long id) {
     ensureUserExists(id);
     jdbcTemplate.update("DELETE FROM ym_sys_user_role WHERE user_id = ?", id);
@@ -199,9 +234,13 @@ public class AdminService {
   public AdminDtos.UserRow getUser(Long id) {
     String sql = """
         SELECT u.id, u.account, u.phone, u.nickname, u.status, u.mi_value, u.plan_name,
-               u.shop_id, s.`name` AS shop_name, s.platform AS shop_platform, u.created_at, u.updated_at
+               u.shop_id, s.`name` AS shop_name,
+               p.id AS shop_platform_id, p.code AS shop_platform_code,
+               COALESCE(p.name, s.platform) AS shop_platform,
+               u.created_at, u.updated_at
         FROM ym_sys_user u
         LEFT JOIN ym_shop s ON s.id = u.shop_id
+        LEFT JOIN ym_platform p ON p.id = s.platform_id
         WHERE u.id = ?
         """;
     List<AdminDtos.UserRow> rows = jdbcTemplate.query(sql, (rs, rowNum) -> mapUser(rs), id);
@@ -484,6 +523,7 @@ public class AdminService {
     String value = provider.trim().toLowerCase(Locale.ROOT);
     if (value.startsWith("apimart")) return "apimart";
     if (value.startsWith("gettoken")) return "gettoken";
+    if (value.startsWith("lk888")) return "lk888";
     if (value.startsWith("proxy")) return "proxy";
     if (value.startsWith("agnes")) return "agnes";
     return value;
@@ -493,8 +533,9 @@ public class AdminService {
     return switch (provider) {
       case "apimart" -> 0;
       case "gettoken" -> 1;
-      case "proxy" -> 2;
-      case "agnes" -> 3;
+      case "lk888" -> 2;
+      case "proxy" -> 3;
+      case "agnes" -> 4;
       default -> 10;
     };
   }
@@ -511,6 +552,8 @@ public class AdminService {
         rs.getString("plan_name"),
         nullableLong(rs, "shop_id"),
         rs.getString("shop_name"),
+        nullableLong(rs, "shop_platform_id"),
+        rs.getString("shop_platform_code"),
         rs.getString("shop_platform"),
         findUserRoleCodes(id),
         time(rs, "created_at"),
@@ -642,6 +685,24 @@ public class AdminService {
 
   private String blankToNull(String value) {
     return StringUtils.hasText(value) ? value.trim() : null;
+  }
+
+  private Platform resolvePlatform(Long platformId, String legacyPlatform) {
+    Platform platform;
+    if (platformId != null) {
+      platform = platformRepository.findById(platformId)
+          .orElseThrow(() -> new ApiException(400, "请选择有效的平台"));
+    } else if (StringUtils.hasText(legacyPlatform)) {
+      platform = platformRepository.findByNameOrCode(legacyPlatform.trim())
+          .orElseThrow(() -> new ApiException(400, "请选择有效的平台"));
+    } else {
+      platform = platformRepository.findByCode("OTHER")
+          .orElseThrow(() -> new ApiException(500, "默认平台未初始化"));
+    }
+    if (!"ACTIVE".equals(platform.status())) {
+      throw new ApiException(400, "请选择已启用的平台");
+    }
+    return platform;
   }
 
   private Long nullableLong(ResultSet rs, String field) throws SQLException {

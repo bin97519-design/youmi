@@ -3,6 +3,7 @@ package com.youmi.api.credit;
 import com.youmi.api.auth.UserRepository;
 import java.util.Optional;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * 米值计费服务层。承载「先扣后生成、失败回滚、可审计」的核心闭环逻辑。
@@ -37,7 +38,12 @@ public class MiValueService {
    * @throws MiValueInsufficientException 余额不足或并发竞争失败（HTTP 402）
    */
   public MiValueDtos.DeductResult checkAndDeduct(Long userId, MiBizType bizType) {
-    int price = properties.getPrice(bizType);
+    return checkAndDeduct(userId, bizType, properties.getPrice(bizType));
+  }
+
+  @Transactional
+  public MiValueDtos.DeductResult checkAndDeduct(Long userId, MiBizType bizType, int price) {
+    if (price < 0) throw new IllegalArgumentException("Mi value price must not be negative");
     int balance = repository.getBalance(userId);
     if (balance < price) {
       throw new MiValueInsufficientException(balance);
@@ -50,6 +56,22 @@ public class MiValueService {
     long logId = repository.insertLog(
         userId, bizType, null, price, balance, balance - price, "PENDING", null);
     return new MiValueDtos.DeductResult(logId, balance, balance - price, price, bizType);
+  }
+
+  @Transactional
+  public MiValueDtos.DeductResult settle(Long logId, int settledPrice) {
+    MiValueRepository.LogRow row = repository.findLogById(logId)
+        .orElseThrow(() -> new IllegalArgumentException("Mi value log not found: " + logId));
+    if (settledPrice < 0 || settledPrice > row.price()) {
+      throw new IllegalArgumentException("Settled price exceeds reserved price");
+    }
+    int refundAmount = row.price() - settledPrice;
+    if (repository.settle(logId, settledPrice, refundAmount) > 0 && refundAmount > 0) {
+      repository.refund(row.userId(), refundAmount);
+    }
+    int balance = repository.getBalance(row.userId());
+    return new MiValueDtos.DeductResult(
+        logId, balance - refundAmount, balance, settledPrice, MiBizType.valueOf(row.bizType()));
   }
 
   /** 生成成功：将 PENDING 流水置为 SUCCESS（不动余额） */

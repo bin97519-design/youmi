@@ -36,16 +36,19 @@ public class ImageTaskController {
   private final ImageTaskLogService imageTaskLogService;
   private final AdminAuthService adminAuthService;
   private final MiValueService miValueService;
+  private final ImageMiValuePricingService pricingService;
 
   public ImageTaskController(
       ImageGenerationClient imageGenerationClient,
       ImageTaskLogService imageTaskLogService,
       AdminAuthService adminAuthService,
-      MiValueService miValueService) {
+      MiValueService miValueService,
+      ImageMiValuePricingService pricingService) {
     this.imageGenerationClient = imageGenerationClient;
     this.imageTaskLogService = imageTaskLogService;
     this.adminAuthService = adminAuthService;
     this.miValueService = miValueService;
+    this.pricingService = pricingService;
   }
 
   @GetMapping("/status")
@@ -70,22 +73,34 @@ public class ImageTaskController {
       }
     }
     // 先扣后生成：原子扣减成功才发起外部调用；不足则抛 402，绝不发起外部调用
-    MiValueDtos.DeductResult deduct = miValueService.checkAndDeduct(userId, MiBizType.IMAGE);
+    ImageMiValuePricingService.PriceQuote quote;
+    try {
+      quote = pricingService.quote(request.model(), request.resolution(), request.requestedCount());
+    } catch (IllegalArgumentException e) {
+      throw new ApiException(400, e.getMessage());
+    }
+    MiValueDtos.DeductResult deduct =
+        miValueService.checkAndDeduct(userId, MiBizType.IMAGE, quote.reservedPrice());
     try {
       ImageGenerationDtos.CreateTaskResponse response = imageGenerationClient.createTask(request, userId);
+      if (response == null) {
+        throw new IllegalStateException("Image provider returned an empty response");
+      }
       // 关联外部任务 id 到流水，供异步失败回滚
       if (response.tasks() != null && !response.tasks().isEmpty()
           && response.tasks().get(0).taskId() != null) {
         miValueService.linkTask(deduct.logId(), response.tasks().get(0).taskId());
       }
       // 外部调用成功 → 确认流水 SUCCESS（余额已在扣减时减少，此处只改状态）
-      miValueService.commit(deduct.logId());
+      int settledPrice = pricingService.settlementPrice(quote, response.provider());
+      MiValueDtos.DeductResult settlement = miValueService.settle(deduct.logId(), settledPrice);
       // 回填本次消耗与最新余额
-      response.setConsumedMi(deduct.price());
-      response.setBalance(miValueService.getBalance(userId));
+      response.setConsumedMi(settlement.price());
+      response.setBalance(settlement.afterBalance());
       imageTaskLogService.recordCreated(userId, request, response, requestStartedAt);
       return ApiResponse.ok(response);
     } catch (DuplicateKeyException dke) {
+      miValueService.rollback(userId, deduct.logId());
       // 并发竞态：另一个同 client_task_id 的请求先 INSERT 成功了（TOCTOU 被 UNIQUE INDEX 拦截）
       // 查回那条已有记录并返回，不再报错、不重复扣费。
       // DuplicateKey 只可能在 recordCreated 时抛出，说明扣费+外部调用已完成；
@@ -161,14 +176,12 @@ public class ImageTaskController {
   private boolean isTerminalSuccess(ImageGenerationDtos.TaskStatusResponse response) {
     if (response == null) return false;
     String status = response.status();
-    if (!isTerminalFailed(status) && response.imageUrls() != null && !response.imageUrls().isEmpty()) {
-      return true;
-    }
     if (status == null) return false;
     String s = status.trim().toLowerCase();
-    return s.equals("completed") || s.equals("succeeded") || s.equals("success")
+    boolean completed = s.equals("completed") || s.equals("succeeded") || s.equals("success")
         || s.equals("done") || s.equals("finished") || s.equals("generated")
         || s.equals("ready");
+    return completed && response.imageUrls() != null && !response.imageUrls().isEmpty();
   }
 
   /**

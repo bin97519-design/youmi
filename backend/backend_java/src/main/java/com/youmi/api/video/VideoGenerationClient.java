@@ -12,24 +12,20 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
-import java.util.UUID;
 import org.springframework.stereotype.Service;
 
 /**
- * 视频生成客户端。复用既有 Agnes 配置（baseUrl / apiKey），不新建一套配置。
- *
- * <p><b>注意（待联调）：</b> Agnes 视频生成的具体端点与请求/响应字段当前为基于图片接口的
- * 合理推测（见 TODO 标注），重点是让米值闸门闭环正确。联调时按真实接口校准路径与字段即可，
- * 闸门逻辑（checkAndDeduct → commit / rollback）不依赖具体字段。
+ * GetToken Veo3.1 Fast 图生视频客户端。
  */
 @Service
 public class VideoGenerationClient {
-  // TODO(联调): 确认 Agnes 视频生成端点；以下为基于图片接口的合理推测。
-  private static final String AGNES_VIDEO_GENERATION_PATH = "/v1/videos/generations";
-  private static final String AGNES_VIDEO_TASK_PATH = "/v1/tasks/";
-  private static final String AGNES_VIDEO_TASK_PREFIX = "agnes-video:";
-  private static final String DEFAULT_VIDEO_MODEL = "agnes-video";
+  private static final String PROVIDER = "gettoken";
+  private static final String VIDEO_GENERATION_PATH = "/veo3.1-fast/image-to-video";
+  private static final String VIDEO_TASK_PREFIX = "gettoken-video:";
+  private static final String VIDEO_MODEL = "veo31-fast-image2video";
+  private static final int VIDEO_DURATION_SECONDS = 8;
 
   private final ObjectMapper objectMapper;
   private final ImageGenerationProperties properties;
@@ -50,54 +46,49 @@ public class VideoGenerationClient {
     if (request == null || request.prompt() == null || request.prompt().isBlank()) {
       throw new ApiException(400, "prompt is required");
     }
-    if (!properties.isAgnesConfigured()) {
-      throw new ApiException(400, "Agnes video api key is not configured");
+    String prompt = request.prompt().trim();
+    if (prompt.length() < 5 || prompt.length() > 8000) {
+      throw new ApiException(400, "prompt length must be between 5 and 8000");
+    }
+    if (!properties.isGetTokenConfigured()) {
+      throw new ApiException(400, "GetToken video api key is not configured");
     }
 
-    String model = (request.model() == null || request.model().isBlank())
-        ? DEFAULT_VIDEO_MODEL : request.model();
-    // TODO(联调): ratio / duration 等字段需与 Agnes 视频接口确认。
+    List<String> imageUrls = request.normalizedImageUrls();
+    if (imageUrls.size() != 1) {
+      throw new ApiException(400, "Veo3.1 Fast image-to-video requires exactly one image URL");
+    }
+
+    String aspectRatio = normalizeAspectRatio(request.ratio());
+    String resolution = normalizeResolution(request.resolution());
+    int duration = normalizeDuration(request.durationSeconds());
+
     Map<String, Object> body = new LinkedHashMap<>();
-    body.put("model", model);
-    body.put("prompt", request.prompt().trim());
-    putIfPresent(body, "ratio", request.ratio());
-    putIfPresent(body, "duration", request.durationSeconds());
+    body.put("prompt", prompt);
+    body.put("aspectRatio", aspectRatio);
+    body.put("duration", String.valueOf(duration));
+    body.put("resolution", resolution);
+    body.put("imageUrls", imageUrls);
+    putIfPresent(body, "webhookUrl", request.webhookUrl());
+    putIfPresent(body, "clientTaskId", request.clientTaskId());
 
-    String endpoint = properties.normalizedAgnesBaseUrl() + AGNES_VIDEO_GENERATION_PATH;
-    HttpRequest httpRequest = HttpRequest.newBuilder()
-        .uri(URI.create(endpoint))
-        .timeout(Duration.ofSeconds(120))
-        .header("Authorization", "Bearer " + properties.getAgnesApiKey())
-        .header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
-        .build();
-    HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
-    if (response.statusCode() < 200 || response.statusCode() >= 300) {
-      throw new ApiException(502, "Agnes video request failed: " + response.statusCode() + " " + compact(response.body()));
-    }
-    JsonNode root = objectMapper.readTree(response.body());
+    JsonNode root = sendPost(
+        properties.normalizedGetTokenBaseUrl() + VIDEO_GENERATION_PATH,
+        body,
+        "GetToken video request");
 
-    // 兼容异步（返回 task_id）与同步（直接返回视频 url）两种形态
     String taskId = firstNonBlank(text(root, "task_id"), text(root, "taskId"), text(root, "id"));
+    if (taskId.isBlank()) {
+      throw new ApiException(502, "GetToken video did not return taskId: " + compact(root.toString()));
+    }
     List<String> videoUrls = new ArrayList<>();
     collectVideoUrls(root, videoUrls);
 
-    String status;
-    if (!taskId.isBlank()) {
-      taskId = AGNES_VIDEO_TASK_PREFIX + taskId;
-      status = "submitted";
-    } else if (!videoUrls.isEmpty()) {
-      taskId = AGNES_VIDEO_TASK_PREFIX + UUID.randomUUID().toString().replace("-", "");
-      status = "completed";
-    } else {
-      throw new ApiException(502, "Agnes video did not return task_id or video url: " + compact(response.body()));
-    }
-
     VideoGenerationDtos.CreateTaskResponse result = new VideoGenerationDtos.CreateTaskResponse();
-    result.setProvider("agnes");
-    result.setModel(model);
-    result.setTaskId(taskId);
-    result.setStatus(status);
+    result.setProvider(PROVIDER);
+    result.setModel(VIDEO_MODEL);
+    result.setTaskId(VIDEO_TASK_PREFIX + taskId);
+    result.setStatus(normalizeStatus(text(root, "status")));
     result.setVideoUrls(videoUrls);
     result.setRaw(root);
     return result;
@@ -108,39 +99,116 @@ public class VideoGenerationClient {
       throw new ApiException(400, "taskId is required");
     }
     String clean = taskId.trim();
-    if (!clean.startsWith(AGNES_VIDEO_TASK_PREFIX)) {
+    if (!clean.startsWith(VIDEO_TASK_PREFIX)) {
       throw new ApiException(400, "未知的 video taskId");
     }
-    String realTaskId = clean.substring(AGNES_VIDEO_TASK_PREFIX.length());
+    String realTaskId = clean.substring(VIDEO_TASK_PREFIX.length());
     if (realTaskId.isBlank()) {
       throw new ApiException(400, "video taskId 格式错误");
     }
-    // TODO(联调): 确认 Agnes 视频任务轮询端点；当前参考图片任务的 /v1/tasks/{id} 实现。
-    String endpoint = properties.normalizedAgnesBaseUrl() + AGNES_VIDEO_TASK_PATH + realTaskId;
-    HttpRequest httpRequest = HttpRequest.newBuilder()
-        .uri(URI.create(endpoint))
-        .timeout(Duration.ofSeconds(30))
-        .header("Authorization", "Bearer " + properties.getAgnesApiKey())
-        .GET()
-        .build();
-    HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
-    if (response.statusCode() < 200 || response.statusCode() >= 300) {
-      throw new ApiException(502, "Agnes video poll failed: " + response.statusCode());
-    }
-    JsonNode root = objectMapper.readTree(response.body());
-    String status = firstNonBlank(text(root, "status"), "unknown");
+
+    Map<String, Object> body = Map.of("taskId", realTaskId);
+    JsonNode root = sendPost(
+        properties.normalizedGetTokenBaseUrl() + properties.normalizedGetTokenQueryPath(),
+        body,
+        "GetToken video poll");
+    String status = normalizeStatus(text(root, "status"));
     List<String> videoUrls = new ArrayList<>();
     collectVideoUrls(root, videoUrls);
+    String error = firstNonBlank(
+        text(root, "errorMessage"),
+        text(root, "error"),
+        text(root, "message"));
+    if ("completed".equals(status) && videoUrls.isEmpty()) {
+      status = "failed";
+      error = firstNonBlank(
+          error,
+          "GetToken video task completed without a video result"
+              + describeOutputTypes(root.path("results")));
+    }
 
     VideoGenerationDtos.TaskStatusResponse result = new VideoGenerationDtos.TaskStatusResponse();
-    result.setProvider("agnes");
+    result.setProvider(PROVIDER);
     result.setTaskId(clean);
     result.setStatus(status);
-    result.setProgress(null);
+    result.setProgress(progressForStatus(status));
     result.setVideoUrls(videoUrls);
-    result.setError(null);
+    result.setError(error.isBlank() ? null : error);
     result.setRaw(root);
     return result;
+  }
+
+  private JsonNode sendPost(String endpoint, Map<String, Object> body, String operation) throws Exception {
+    HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create(endpoint))
+        .timeout(Duration.ofSeconds(Math.max(30, properties.getTimeoutSeconds())))
+        .header("Authorization", "Bearer " + properties.getGetTokenApiKey())
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
+        .build();
+    HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+    if (response.statusCode() < 200 || response.statusCode() >= 300) {
+      throw new ApiException(
+          502,
+          operation + " failed: " + response.statusCode() + " " + compact(response.body()));
+    }
+    if (response.body() == null || response.body().isBlank()) {
+      throw new ApiException(502, operation + " returned empty body");
+    }
+    return objectMapper.readTree(response.body());
+  }
+
+  private String normalizeAspectRatio(String value) {
+    String normalized = value == null ? "" : value.trim();
+    if (normalized.isBlank()) {
+      return "16:9";
+    }
+    if (!normalized.equals("16:9") && !normalized.equals("9:16")) {
+      throw new ApiException(400, "ratio must be 16:9 or 9:16");
+    }
+    return normalized;
+  }
+
+  private String normalizeResolution(String value) {
+    String normalized = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+    if (normalized.isBlank()) {
+      return "720p";
+    }
+    if (!normalized.equals("720p") && !normalized.equals("1080p") && !normalized.equals("4k")) {
+      throw new ApiException(400, "resolution must be 720p, 1080p or 4k");
+    }
+    return normalized;
+  }
+
+  private int normalizeDuration(Integer value) {
+    if (value == null) {
+      return VIDEO_DURATION_SECONDS;
+    }
+    if (value != VIDEO_DURATION_SECONDS) {
+      throw new ApiException(400, "durationSeconds must be 8");
+    }
+    return value;
+  }
+
+  private String normalizeStatus(String value) {
+    String status = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
+    return switch (status) {
+      case "QUEUED", "PENDING", "SUBMITTED" -> "queued";
+      case "RUNNING", "PROCESSING", "IN_PROGRESS" -> "processing";
+      case "SUCCESS", "SUCCEEDED", "COMPLETED", "DONE", "FINISHED" -> "completed";
+      case "FAILED", "FAILURE", "ERROR", "TIMEOUT" -> "failed";
+      case "CANCELED", "CANCELLED" -> "canceled";
+      default -> status.isBlank() ? "unknown" : status.toLowerCase(Locale.ROOT);
+    };
+  }
+
+  private Integer progressForStatus(String status) {
+    return switch (status) {
+      case "queued" -> 0;
+      case "processing" -> 50;
+      case "completed", "failed", "canceled" -> 100;
+      default -> null;
+    };
   }
 
   private void putIfPresent(Map<String, Object> body, String key, Object value) {
@@ -187,12 +255,34 @@ public class VideoGenerationClient {
     if (!node.isObject()) {
       return;
     }
-    collectVideoUrls(node.path("video_url"), urls);
-    collectVideoUrls(node.path("videoUrl"), urls);
-    collectVideoUrls(node.path("url"), urls);
+
+    String outputType = firstNonBlank(text(node, "outputType"), text(node, "output_type"));
+    if (isVideoOutputType(outputType)) {
+      addHttpUrl(urls, firstNonBlank(
+          text(node, "video_url"),
+          text(node, "videoUrl"),
+          text(node, "url")));
+    } else {
+      collectVideoUrls(node.path("video_url"), urls);
+      collectVideoUrls(node.path("videoUrl"), urls);
+      collectVideoUrls(node.path("url"), urls);
+    }
     collectVideoUrls(node.path("urls"), urls);
+    collectVideoUrls(node.path("results"), urls);
     collectVideoUrls(node.path("result"), urls);
     collectVideoUrls(node.path("data"), urls);
+  }
+
+  private void addHttpUrl(List<String> urls, String value) {
+    if (value == null || value.isBlank()) {
+      return;
+    }
+    String normalized = value.trim().toLowerCase(Locale.ROOT);
+    if (normalized.startsWith("http://")
+        || normalized.startsWith("https://")
+        || normalized.startsWith("data:video/")) {
+      addUrl(urls, value);
+    }
   }
 
   private void addUrl(List<String> urls, String value) {
@@ -209,8 +299,49 @@ public class VideoGenerationClient {
     if (value == null) {
       return false;
     }
-    String lower = value.toLowerCase();
-    return lower.startsWith("http://") || lower.startsWith("https://") || lower.startsWith("data:video/");
+    String lower = value.trim().toLowerCase(Locale.ROOT);
+    if (lower.startsWith("data:video/")) {
+      return true;
+    }
+    if (!lower.startsWith("http://") && !lower.startsWith("https://")) {
+      return false;
+    }
+    int queryIndex = lower.indexOf('?');
+    String path = queryIndex >= 0 ? lower.substring(0, queryIndex) : lower;
+    return path.endsWith(".mp4")
+        || path.endsWith(".webm")
+        || path.endsWith(".mov")
+        || path.endsWith(".m4v")
+        || path.endsWith(".avi")
+        || path.endsWith(".mkv")
+        || path.endsWith(".mpeg")
+        || path.endsWith(".mpg");
+  }
+
+  private boolean isVideoOutputType(String value) {
+    if (value == null || value.isBlank()) {
+      return false;
+    }
+    String normalized = value.trim().toLowerCase(Locale.ROOT);
+    return normalized.equals("video")
+        || normalized.equals("mp4")
+        || normalized.equals("webm")
+        || normalized.equals("mov")
+        || normalized.startsWith("video/");
+  }
+
+  private String describeOutputTypes(JsonNode results) {
+    if (results == null || !results.isArray()) {
+      return "";
+    }
+    List<String> types = new ArrayList<>();
+    for (JsonNode item : results) {
+      String value = firstNonBlank(text(item, "outputType"), text(item, "output_type"));
+      if (!value.isBlank() && !types.contains(value)) {
+        types.add(value);
+      }
+    }
+    return types.isEmpty() ? "" : " (outputType=" + String.join(",", types) + ")";
   }
 
   private String compact(String body) {

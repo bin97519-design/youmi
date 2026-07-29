@@ -49,9 +49,15 @@ class MiValueRepositoryTest {
         CREATE TABLE IF NOT EXISTS ym_sys_user_role (user_id BIGINT, role_id BIGINT)
         """);
     jdbcTemplate.execute("""
+        CREATE TABLE IF NOT EXISTS ym_platform (
+          id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(64), code VARCHAR(32),
+          status VARCHAR(20), sort_order INT, created_at TIMESTAMP, updated_at TIMESTAMP)
+        """);
+    jdbcTemplate.execute("""
         CREATE TABLE IF NOT EXISTS ym_shop (
           id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(128), code VARCHAR(64),
-          platform VARCHAR(32), status VARCHAR(20), created_at TIMESTAMP, updated_at TIMESTAMP)
+          platform_id BIGINT, platform VARCHAR(32), status VARCHAR(20),
+          created_at TIMESTAMP, updated_at TIMESTAMP)
         """);
     jdbcTemplate.execute("""
         CREATE TABLE IF NOT EXISTS ym_mi_value_log (

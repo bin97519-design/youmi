@@ -49,6 +49,14 @@ public class AdminController {
     return ApiResponse.ok("用户已创建", adminService.createUser(request));
   }
 
+  @GetMapping("/users/{id}")
+  public ApiResponse<AdminDtos.UserRow> user(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @PathVariable Long id) {
+    adminAuthService.requireAdmin(authorization);
+    return ApiResponse.ok(adminService.getUser(id));
+  }
+
   @PutMapping("/users/{id}")
   public ApiResponse<AdminDtos.UserRow> updateUser(
       @RequestHeader(value = "Authorization", required = false) String authorization,
@@ -56,6 +64,16 @@ public class AdminController {
       @RequestBody AdminDtos.UserUpdateRequest request) {
     adminAuthService.requireAdmin(authorization);
     return ApiResponse.ok("用户已更新", adminService.updateUser(id, request));
+  }
+
+  @PutMapping("/users/{id}/password")
+  public ApiResponse<Void> resetUserPassword(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @PathVariable Long id,
+      @RequestBody AdminDtos.UserPasswordResetRequest request) {
+    adminAuthService.requireAdmin(authorization);
+    adminService.resetUserPassword(id, request);
+    return ApiResponse.ok("密码已重置", null);
   }
 
   @DeleteMapping("/users/{id}")

@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from
 import ImageViewer from '../components/ImageViewer.vue'
 import { useUserStore } from '../stores/user'
 import { apiPath } from '../utils/apiBase'
+import { writeTextToClipboard } from '../utils/clipboard'
 import { subscribeImageTaskPersistence } from '../utils/imageTaskSync'
 
 const userStore = useUserStore()
@@ -102,26 +103,12 @@ async function copyTaskPrompt() {
   const text = taskPromptTooltip.text
   if (!text) return
 
-  let fallbackInput = null
   try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text)
-    } else {
-      fallbackInput = document.createElement('textarea')
-      fallbackInput.value = text
-      fallbackInput.setAttribute('readonly', '')
-      fallbackInput.style.position = 'fixed'
-      fallbackInput.style.opacity = '0'
-      document.body.appendChild(fallbackInput)
-      fallbackInput.select()
-      if (!document.execCommand('copy')) throw new Error('copy failed')
-    }
+    await writeTextToClipboard(text)
     taskPromptTooltip.copied = true
     showToast('提示词已复制')
   } catch {
     showToast('复制失败，请手动复制', 'error')
-  } finally {
-    fallbackInput?.remove()
   }
 }
 
@@ -175,6 +162,7 @@ const providerLabelMap = {
   apimart: 'APIMart',
   'apimart-direct': 'APIMart',
   gettoken: 'GetToken',
+  lk888: 'LK888',
   proxy: 'Proxy 兜底',
   agnes: 'Agnes',
   unknown: '其他通道',
@@ -218,6 +206,10 @@ const taskDateTo = ref('')
 const shopFilter = ref('')
 const platformFilter = ref('')
 const shops = ref([])
+const platforms = ref([])
+const activePlatforms = computed(() =>
+  platforms.value.filter((platform) => platform.status !== 'DISABLED'),
+)
 
 /* ── 账号详情/编辑抽屉 ── */
 const drawerOpen = ref(false)
@@ -231,8 +223,18 @@ const editingUser = reactive({
   planName: '普通用户',
   roleDraft: 'USER',
   shopId: '',
+  shopPlatformId: '',
   shopPlatform: '',
   passwordDraft: '',
+})
+const passwordResetSaving = ref(false)
+const passwordResetDialog = reactive({
+  open: false,
+  userId: null,
+  account: '',
+  password: '',
+  confirmPassword: '',
+  showPassword: false,
 })
 
 const filteredUsers = computed(() => {
@@ -251,7 +253,7 @@ const filteredUsers = computed(() => {
     if (sf === 'UNBOUND') { if (u.shopId) return false }
     else if (sf) { if (String(u.shopId) !== String(sf)) return false }
     // 平台筛选：AND 关系
-    if (pf && u.shopPlatform !== pf) return false
+    if (pf && String(u.shopPlatformId || '') !== String(pf)) return false
     return true
   })
 })
@@ -448,20 +450,8 @@ const userForm = reactive({
   roles: ['USER'],
   shopId: '',
   shopInput: '',
+  shopPlatformId: '',
   shopPlatform: '',
-})
-
-/* 创建卡片平台下拉 ↔ 编辑弹窗平台字段 双向同步 */
-watch(() => userForm.shopPlatform, (v) => {
-  editingUser.shopPlatform = v ?? ''
-})
-watch(() => editingUser.shopPlatform, (v) => {
-  userForm.shopPlatform = v ?? ''
-  /* 同步回列表行（列表渲染的是 users 数组，不经过表单对象） */
-  if (editingUser.id) {
-    const row = users.value.find((u) => String(u.id) === String(editingUser.id))
-    if (row) row.shopPlatform = v ?? ''
-  }
 })
 
 const roleForm = reactive({
@@ -473,20 +463,47 @@ const roleForm = reactive({
 const roleOptions = computed(() => roles.value.map((role) => role.code))
 const summary = computed(() => stats.value?.summary || {})
 
-/* 店铺名称→ID 映射表，用于创建账号时解析手输店名 */
-const shopNameMap = computed(() => {
-  const map = {}
-  for (const s of shops.value) map[s.name] = s.id
-  return map
-})
-
 /** 解析用户输入的店铺值：返回 { shopId, shopName } */
 function resolveShopInput(input) {
   const name = (input || '').trim()
   if (!name) return { shopId: null, shopName: '' }
-  const id = shopNameMap.value[name]
-  if (id != null) return { shopId: Number(id), shopName: '' }
+  const selectedPlatformId = String(userForm.shopPlatformId || '')
+  const matched =
+    shops.value.find(
+      (shop) =>
+        shop.name === name &&
+        (!selectedPlatformId || String(shop.platformId) === selectedPlatformId),
+    ) || shops.value.find((shop) => shop.name === name)
+  if (matched) return { shopId: Number(matched.id), shopName: '' }
   return { shopId: null, shopName: name }
+}
+
+function platformName(platformId) {
+  const platform = platforms.value.find(
+    (item) => String(item.id) === String(platformId || ''),
+  )
+  return platform?.name || ''
+}
+
+function selectCreatePlatform(platform) {
+  userForm.shopPlatformId = String(platform.id)
+  userForm.shopPlatform = platform.name
+  closeDropdown('createPlatform')
+}
+
+function selectCreateShop(shop) {
+  userForm.shopId = String(shop.id)
+  userForm.shopInput = shop.name
+  userForm.shopPlatformId = String(shop.platformId || '')
+  userForm.shopPlatform = shop.platformName || shop.platform || ''
+  closeDropdown('createShop')
+}
+
+function selectEditShop(shop) {
+  editingUser.shopId = String(shop.id)
+  editingUser.shopPlatformId = String(shop.platformId || '')
+  editingUser.shopPlatform = shop.platformName || shop.platform || ''
+  closeDropdown('editShop')
 }
 
 async function api(path, options = {}) {
@@ -512,20 +529,28 @@ async function loadConsole() {
   loading.value = true
   errorText.value = ''
   try {
-    /* 所有角色都能看统计 */
-    const imageStats = await api('/api/admin/image-stats' + buildImageStatsQuery())
-    stats.value = normalizeImageStats(imageStats)
-
-    /* 仅管理员加载账号和角色 */
+    const requests = [api('/api/admin/image-stats' + buildImageStatsQuery())]
     if (isAdmin.value) {
-      const [userRows, roleRows, shopRows] = await Promise.all([
+      requests.push(
         api('/api/admin/users').catch(() => []),
         api('/api/admin/roles').catch(() => []),
         api('/api/admin/shops').catch(() => []),
-      ])
+        api('/api/admin/platforms').catch(() => []),
+      )
+    }
+    const [
+      imageStats,
+      userRows = [],
+      roleRows = [],
+      shopRows = [],
+      platformRows = [],
+    ] = await Promise.all(requests)
+    stats.value = normalizeImageStats(imageStats)
+    if (isAdmin.value) {
       roles.value = roleRows.map(normalizeRole)
       users.value = userRows.map(normalizeUser)
       shops.value = shopRows
+      platforms.value = platformRows
     }
   } catch (error) {
     /* 非管理员请求 admin 接口返回 403 是预期行为，不必提示 */
@@ -547,6 +572,10 @@ async function createUser() {
   errorText.value = ''
   try {
     const { shopId: resolvedShopId, shopName: resolvedShopName } = resolveShopInput(userForm.shopInput)
+    if (resolvedShopName && !userForm.shopPlatformId) {
+      showToast('新建店铺时请选择所属平台', 'error')
+      return
+    }
     const created = await api('/api/admin/users', {
       method: 'POST',
       body: JSON.stringify({
@@ -559,6 +588,9 @@ async function createUser() {
         planName: userForm.planName,
         shopId: resolvedShopId,
         shopName: resolvedShopName,
+        shopPlatformId: userForm.shopPlatformId
+          ? Number(userForm.shopPlatformId)
+          : null,
         shopPlatform: userForm.shopPlatform || null,
         roles: [userForm.roles[0] || 'USER'],
       }),
@@ -616,6 +648,61 @@ async function deleteUser(user) {
     showToast(error.message || '删除失败', 'error')
   } finally {
     saving.value = false
+  }
+}
+
+function openPasswordReset(user) {
+  Object.assign(passwordResetDialog, {
+    open: true,
+    userId: user.id,
+    account: user.account,
+    password: '',
+    confirmPassword: '',
+    showPassword: false,
+  })
+}
+
+function closePasswordReset() {
+  if (passwordResetSaving.value) return
+  Object.assign(passwordResetDialog, {
+    open: false,
+    userId: null,
+    account: '',
+    password: '',
+    confirmPassword: '',
+    showPassword: false,
+  })
+}
+
+async function submitPasswordReset() {
+  if (passwordResetDialog.password.length < 6) {
+    showToast('新密码不能少于6位', 'error')
+    return
+  }
+  if (passwordResetDialog.password.length > 64) {
+    showToast('新密码不能超过64位', 'error')
+    return
+  }
+  if (passwordResetDialog.password !== passwordResetDialog.confirmPassword) {
+    showToast('两次输入的密码不一致', 'error')
+    return
+  }
+
+  passwordResetSaving.value = true
+  errorText.value = ''
+  try {
+    await api(`/api/admin/users/${passwordResetDialog.userId}/password`, {
+      method: 'PUT',
+      body: JSON.stringify({ password: passwordResetDialog.password }),
+    })
+    const account = passwordResetDialog.account
+    passwordResetSaving.value = false
+    closePasswordReset()
+    showToast(`账号「${account}」的密码已重置`)
+  } catch (error) {
+    errorText.value = error.message || '密码重置失败'
+    showToast(error.message || '密码重置失败', 'error')
+    passwordResetSaving.value = false
   }
 }
 
@@ -718,6 +805,7 @@ function resetUserForm() {
     roles: ['USER'],
     shopId: '',
     shopInput: '',
+    shopPlatformId: '',
     shopPlatform: '',
   })
 }
@@ -735,6 +823,7 @@ function openDrawer(user) {
     planName: user.planName || '普通用户',
     roleDraft: user.roles?.[0] || 'USER',
     shopId: user.shopId != null ? String(user.shopId) : '',
+    shopPlatformId: user.shopPlatformId != null ? String(user.shopPlatformId) : '',
     shopPlatform: user.shopPlatform || '',
     passwordDraft: '',
   })
@@ -760,7 +849,6 @@ async function saveUserDetail() {
         editingUser.shopId === '' || editingUser.shopId == null
           ? null
           : Number(editingUser.shopId),
-      shopPlatform: editingUser.shopPlatform || null,
     }
     const updated = await api(`/api/admin/users/${editingUser.id}`, {
       method: 'PUT',
@@ -1357,8 +1445,8 @@ onUnmounted(() => {
                 @focus="dropdownOpen.createShop = true"
               />
               <div v-show="dropdownOpen.createShop" class="custom-select-dropdown">
-                <div v-for="s in shops" :key="s.id" @click.stop="userForm.shopInput = s.name; closeDropdown('createShop')">
-                  {{ s.name }}
+                <div v-for="s in shops" :key="s.id" @click.stop="selectCreateShop(s)">
+                  {{ s.name }} · {{ s.platformName || s.platform }}
                 </div>
               </div>
             </div>
@@ -1367,12 +1455,17 @@ onUnmounted(() => {
             <span>平台</span>
             <div class="custom-select" @click.stop="toggleDropdown('createPlatform')">
               <div class="custom-select-trigger" :class="{ open: dropdownOpen.createPlatform }">
-                {{ userForm.shopPlatform || '请选择平台' }}
+                {{ platformName(userForm.shopPlatformId) || '请选择平台' }}
                 <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
               </div>
               <div v-show="dropdownOpen.createPlatform" class="custom-select-dropdown">
-                <div v-for="p in ['淘宝','天猫','京东','抖音','拼多多']" :key="p" @click.stop="userForm.shopPlatform = p; closeDropdown('createPlatform')" :class="{ active: userForm.shopPlatform === p }">
-                  {{ p }}
+                <div
+                  v-for="p in activePlatforms"
+                  :key="p.id"
+                  @click.stop="selectCreatePlatform(p)"
+                  :class="{ active: String(userForm.shopPlatformId) === String(p.id) }"
+                >
+                  {{ p.name }}
                 </div>
               </div>
             </div>
@@ -1414,15 +1507,18 @@ onUnmounted(() => {
             </div>
             <div class="custom-select console-filter-select" @click.stop="toggleDropdown('filterPlatform')">
               <div class="custom-select-trigger" :class="{ open: dropdownOpen.filterPlatform }">
-                {{ platformFilter || '全部平台' }}
+                {{ platformName(platformFilter) || '全部平台' }}
                 <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
               </div>
               <div v-show="dropdownOpen.filterPlatform" class="custom-select-dropdown">
                 <div @click.stop="platformFilter = ''; closeDropdown('filterPlatform')" :class="{ active: !platformFilter }">全部平台</div>
-                <div v-for="p in ['淘宝','天猫','京东','抖音','拼多多']" :key="p"
-                  @click.stop="platformFilter = p; closeDropdown('filterPlatform')"
-                  :class="{ active: platformFilter === p }">
-                  {{ p }}
+                <div
+                  v-for="p in activePlatforms"
+                  :key="p.id"
+                  @click.stop="platformFilter = String(p.id); closeDropdown('filterPlatform')"
+                  :class="{ active: String(platformFilter) === String(p.id) }"
+                >
+                  {{ p.name }}
                 </div>
               </div>
             </div>
@@ -1460,6 +1556,15 @@ onUnmounted(() => {
             <span class="console-actions">
               <button type="button" @click="openDrawer(user)">编辑</button>
               <button type="button" @click="saveUser(user)">保存</button>
+              <button
+                type="button"
+                class="console-password-reset-btn"
+                title="重置密码"
+                @click="openPasswordReset(user)"
+              >
+                <i class="ri-key-2-line" aria-hidden="true"></i>
+                <span>重置密码</span>
+              </button>
               <button type="button" class="console-btn-danger" @click="deleteUser(user)">
                 删除
               </button>
@@ -1540,26 +1645,19 @@ onUnmounted(() => {
                     <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
                   </div>
                   <div v-show="dropdownOpen.editShop" class="custom-select-dropdown">
-                    <div @click.stop="editingUser.shopId = ''; editingUser.shopPlatform = ''; closeDropdown('editShop')" :class="{ active: editingUser.shopId === '' }">解绑 / 不绑定</div>
-                    <div v-for="s in shops" :key="s.id" @click.stop="editingUser.shopId = String(s.id); editingUser.shopPlatform = s.platform || ''; closeDropdown('editShop')" :class="{ active: editingUser.shopId === String(s.id) }">
-                      {{ s.name }}（{{ s.code }}）
+                    <div @click.stop="editingUser.shopId = ''; editingUser.shopPlatformId = ''; editingUser.shopPlatform = ''; closeDropdown('editShop')" :class="{ active: editingUser.shopId === '' }">解绑 / 不绑定</div>
+                    <div v-for="s in shops" :key="s.id" @click.stop="selectEditShop(s)" :class="{ active: editingUser.shopId === String(s.id) }">
+                      {{ s.name }}（{{ s.platformName || s.platform }}）
                     </div>
                   </div>
                 </div>
               </label>
               <label>
                 <span>平台</span>
-                <div class="custom-select" @click.stop="toggleDropdown('editPlatform')">
-                  <div class="custom-select-trigger" :class="{ open: dropdownOpen.editPlatform }">
-                    {{ editingUser.shopPlatform || '请选择平台' }}
-                    <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
-                  </div>
-                  <div v-show="dropdownOpen.editPlatform" class="custom-select-dropdown">
-                    <div v-for="p in ['淘宝','天猫','京东','抖音','拼多多']" :key="p" @click.stop="editingUser.shopPlatform = p; closeDropdown('editPlatform')" :class="{ active: editingUser.shopPlatform === p }">
-                      {{ p }}
-                    </div>
-                  </div>
-                </div>
+                <input
+                  :value="platformName(editingUser.shopPlatformId) || editingUser.shopPlatform || '未绑定平台'"
+                  disabled
+                />
               </label>
             </div>
             <footer class="console-drawer-foot">
@@ -1569,6 +1667,80 @@ onUnmounted(() => {
               </button>
             </footer>
           </aside>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- 重置密码弹窗 -->
+    <Teleport to="body">
+      <Transition name="console-fade">
+        <div
+          v-if="passwordResetDialog.open"
+          class="console-password-mask"
+          @click.self="closePasswordReset()"
+        >
+          <form
+            class="console-password-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="password-reset-title"
+            @submit.prevent="submitPasswordReset()"
+          >
+            <header>
+              <div>
+                <h3 id="password-reset-title">重置密码</h3>
+                <p>{{ passwordResetDialog.account }}</p>
+              </div>
+              <button
+                type="button"
+                class="console-drawer-close"
+                aria-label="关闭"
+                @click="closePasswordReset()"
+              >×</button>
+            </header>
+            <section>
+              <label>
+                <span>新密码</span>
+                <div class="console-password-input">
+                  <input
+                    v-model="passwordResetDialog.password"
+                    :type="passwordResetDialog.showPassword ? 'text' : 'password'"
+                    minlength="6"
+                    maxlength="64"
+                    autocomplete="new-password"
+                    required
+                  />
+                  <button
+                    type="button"
+                    :title="passwordResetDialog.showPassword ? '隐藏密码' : '显示密码'"
+                    @click="passwordResetDialog.showPassword = !passwordResetDialog.showPassword"
+                  >
+                    <i
+                      :class="passwordResetDialog.showPassword ? 'ri-eye-off-line' : 'ri-eye-line'"
+                      aria-hidden="true"
+                    ></i>
+                  </button>
+                </div>
+              </label>
+              <label>
+                <span>确认新密码</span>
+                <input
+                  v-model="passwordResetDialog.confirmPassword"
+                  :type="passwordResetDialog.showPassword ? 'text' : 'password'"
+                  minlength="6"
+                  maxlength="64"
+                  autocomplete="new-password"
+                  required
+                />
+              </label>
+            </section>
+            <footer>
+              <button class="console-btn-ghost" type="button" @click="closePasswordReset()">取消</button>
+              <button class="console-primary" type="submit" :disabled="passwordResetSaving">
+                {{ passwordResetSaving ? '重置中...' : '确认重置' }}
+              </button>
+            </footer>
+          </form>
         </div>
       </Transition>
     </Teleport>
@@ -2222,6 +2394,111 @@ onUnmounted(() => {
   font-size: 13px;
   color: #94a3b8;
 }
+.users-table .console-row {
+  grid-template-columns: 130px 120px 80px 100px 80px 130px 80px minmax(270px, 1fr);
+}
+.console-password-reset-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.console-password-reset-btn i {
+  font-size: 15px;
+}
+.console-password-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(2, 6, 23, 0.68);
+  backdrop-filter: blur(2px);
+}
+.console-password-dialog {
+  width: min(400px, 100%);
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: #0f172a;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+}
+.console-password-dialog header,
+.console-password-dialog footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+}
+.console-password-dialog header {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.console-password-dialog header h3,
+.console-password-dialog header p {
+  margin: 0;
+}
+.console-password-dialog header h3 {
+  color: #f1f5f9;
+  font-size: 16px;
+}
+.console-password-dialog header p {
+  margin-top: 4px;
+  color: #94a3b8;
+  font-size: 12px;
+}
+.console-password-dialog section {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+.console-password-dialog label {
+  display: grid;
+  gap: 6px;
+  color: #94a3b8;
+  font-size: 13px;
+}
+.console-password-dialog input {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  outline: none;
+  color: #e2e8f0;
+  background: rgba(255, 255, 255, 0.04);
+  box-sizing: border-box;
+}
+.console-password-dialog input:focus {
+  border-color: #6366f1;
+}
+.console-password-input {
+  position: relative;
+}
+.console-password-input input {
+  padding-right: 42px;
+}
+.console-password-input button {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  color: #94a3b8;
+  background: transparent;
+  cursor: pointer;
+}
+.console-password-dialog footer {
+  justify-content: flex-end;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.console-password-dialog footer button {
+  min-width: 96px;
+}
 .console-drawer-mask {
   position: fixed;
   inset: 0;
@@ -2325,6 +2602,27 @@ onUnmounted(() => {
 }
 [data-theme='light'] .console-platform-cell {
   color: #64748b;
+}
+[data-theme='light'] .console-password-dialog {
+  border-color: #e2e8f0;
+  background: #fff;
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.18);
+}
+[data-theme='light'] .console-password-dialog header,
+[data-theme='light'] .console-password-dialog footer {
+  border-color: #e2e8f0;
+}
+[data-theme='light'] .console-password-dialog header h3 {
+  color: #1e293b;
+}
+[data-theme='light'] .console-password-dialog header p,
+[data-theme='light'] .console-password-dialog label {
+  color: #64748b;
+}
+[data-theme='light'] .console-password-dialog input {
+  color: #1e293b;
+  border-color: #cbd5e1;
+  background: #f8fafc;
 }
 [data-theme='light'] .console-drawer {
   background: #fff;

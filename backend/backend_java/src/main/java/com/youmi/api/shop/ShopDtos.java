@@ -10,12 +10,17 @@ public final class ShopDtos {
   private ShopDtos() {
   }
 
-  /** 新建店铺请求：name、code 必填，platform 可选。 */
-  public record ShopCreateRequest(String name, String code, String platform) {
+  /** 新建店铺请求：平台 ID 优先，platform 保留用于兼容旧客户端。 */
+  public record ShopCreateRequest(String name, String code, Long platformId, String platform) {
+    public ShopCreateRequest(String name, String code, String platform) {
+      this(name, code, null, platform);
+    }
   }
 
-  /** 更新店铺请求：可改 name 与 status。 */
-  public record ShopUpdateRequest(String name, String status) {
+  public record ShopUpdateRequest(String name, Long platformId, String status) {
+    public ShopUpdateRequest(String name, String status) {
+      this(name, null, status);
+    }
   }
 
   /** 后台店铺视图（含完整字段）。 */
@@ -23,13 +28,22 @@ public final class ShopDtos {
       Long id,
       String name,
       String code,
+      Long platformId,
+      String platformCode,
+      String platformName,
+      /** 兼容旧客户端，值与 platformName 相同。 */
       String platform,
       String status,
       String createdAt,
       String updatedAt) {
   }
 
-  /** 公开店铺视图（注册页下拉取数，仅暴露 id/name/code）。 */
-  public record ShopPublicView(Long id, String name, String code) {
+  public record ShopPublicView(
+      Long id,
+      String name,
+      String code,
+      Long platformId,
+      String platformCode,
+      String platformName) {
   }
 }

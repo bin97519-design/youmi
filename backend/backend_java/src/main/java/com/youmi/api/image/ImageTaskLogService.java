@@ -11,8 +11,6 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class ImageTaskLogService {
-  private static final int MI_COST_PER_IMAGE = 15;
-
   private final JdbcTemplate jdbcTemplate;
   private final ObjectMapper objectMapper;
 
@@ -41,9 +39,9 @@ public class ImageTaskLogService {
       jdbcTemplate.update("""
           INSERT INTO ym_image_task (
             task_id, client_task_id, user_id, provider, task_type, prompt, model, requested_model, size, resolution,
-            requested_count, status, progress, raw_response, created_at
+            requested_count, mi_cost, status, progress, raw_response, created_at
           )
-          VALUES (?, ?, ?, ?, 'IMAGE', ?, ?, ?, ?, ?, ?, ?, 0, ?, COALESCE(?, CURRENT_TIMESTAMP))
+          VALUES (?, ?, ?, ?, 'IMAGE', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, COALESCE(?, CURRENT_TIMESTAMP))
           ON DUPLICATE KEY UPDATE
             user_id = COALESCE(VALUES(user_id), user_id),
             provider = VALUES(provider),
@@ -53,6 +51,7 @@ public class ImageTaskLogService {
             size = VALUES(size),
             resolution = VALUES(resolution),
             requested_count = VALUES(requested_count),
+            mi_cost = VALUES(mi_cost),
             status = VALUES(status),
             raw_response = VALUES(raw_response)
           """,
@@ -66,6 +65,7 @@ public class ImageTaskLogService {
           response.size(),
           response.resolution(),
           response.n(),
+          response.consumedMi(),
           normalizeStatus(task.status(), "submitted"),
           raw,
           requestStartedAt);
@@ -138,9 +138,10 @@ public class ImageTaskLogService {
     if (response == null || response.taskId() == null || response.taskId().isBlank()) return;
     List<String> imageUrls = response.imageUrls() == null ? List.of() : response.imageUrls();
     boolean failed = isFailed(response.status());
-    boolean imageGenerated = !failed && (isDone(response.status()) || !imageUrls.isEmpty());
+    // A persisting response already means generation succeeded. Freeze generation
+    // metrics now while result_urls still waits for the permanent OSS copy.
+    boolean imageGenerated = !failed && !imageUrls.isEmpty();
     int imageCount = imageGenerated ? imageUrls.size() : 0;
-    int miCost = imageCount * MI_COST_PER_IMAGE;
     BigDecimal moneyCost = extractMoneyCost(response.raw());
     Timestamp completedAt = imageGenerated ? Timestamp.valueOf(LocalDateTime.now()) : null;
     String storedStatus = imageGenerated ? "completed" : normalizeStatus(response.status(), "unknown");
@@ -157,7 +158,8 @@ public class ImageTaskLogService {
     jdbcTemplate.update("""
         UPDATE ym_image_task
         SET provider = COALESCE(NULLIF(?, ''), provider),
-            status = ?, progress = ?, image_count = ?, mi_cost = ?, money_cost = ?,
+            status = ?, progress = ?, image_count = ?,
+            mi_cost = CASE WHEN ? = 1 THEN 0 ELSE mi_cost END, money_cost = ?,
             image_urls = ?,
             result_urls = CASE WHEN ? = 'DONE' THEN ? ELSE result_urls END,
             persist_status = CASE WHEN ? IN ('DONE', 'FAILED') THEN ? ELSE persist_status END,
@@ -168,7 +170,7 @@ public class ImageTaskLogService {
         storedStatus,
         storedProgress,
         imageCount,
-        miCost,
+        failed ? 1 : 0,
         moneyCost,
         rawString(objectMapper.valueToTree(imageUrls)),
         persistStatus,

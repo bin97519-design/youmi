@@ -27,9 +27,13 @@ spring:
       max-request-size: 50MB
 
 youmi:
+  verification:
+    public-base-url: ${YOUMI_VERIFICATION_PUBLIC_BASE_URL:https://101.133.149.214/youmi-api}
   file:
     upload-dir: ${YOUMI_FILE_UPLOAD_DIR:uploads}
     public-prefix: ${YOUMI_FILE_PUBLIC_PREFIX:/uploads}
+  report-file:
+    base-path: ${DATA_CAPTURE_REPORT_BASE_PATH:/opt/projects/data-capture-report}
   oss:
     enabled: ${OSS_ENABLED:true}
     endpoint: ${OSS_ENDPOINT:oss-cn-shanghai.aliyuncs.com}
@@ -52,13 +56,17 @@ youmi:
     proxy-generation-path: ${PROXY_GENERATION_PATH:/api/images/jobs}
     proxy-task-path: ${PROXY_TASK_PATH:/api/images/jobs}
     apimart-direct-base-url: ${YOUMI_IMAGE_APIMART_DIRECT_BASE_URL:https://apib.ai}
-    apimart-direct-api-key: ${YOUMI_IMAGE_APIMART_DIRECT_API_KEY:${APIMART_API_KEY:${APIMART_IMAGE_API_KEY:}}}
+    apimart-direct-api-key: ${YOUMI_IMAGE_APIMART_DIRECT_API_KEY:${YOUMI_IMAGE_API_KEY:${APIMART_API_KEY:${APIMART_IMAGE_API_KEY:}}}}
     apimart-direct-generation-path: ${YOUMI_IMAGE_APIMART_DIRECT_GENERATION_PATH:/v1/images/generations}
     apimart-direct-task-path: ${YOUMI_IMAGE_APIMART_DIRECT_TASK_PATH:/v1/tasks}
     fallback-enabled: ${YOUMI_IMAGE_FALLBACK_ENABLED:true}
     get-token-base-url: https://nb.gettoken.cn/openapi/v1
     get-token-api-key: ${GETTOKEN_API_KEY:${YOUMI_GETTOKEN_API_KEY:}}
     get-token-query-path: /query
+    lk888-base-url: ${LK888_BASE_URL:https://api.lk888.ai}
+    lk888-api-key: ${LK888_API_KEY:${AIGC_AGGREGATOR_API_KEY:}}
+    lk888-generation-path: ${LK888_GENERATION_PATH:/v1/media/generate}
+    lk888-task-path: ${LK888_TASK_PATH:/v1/media/status}
     model: gpt-image-2
     default-size: "9:16"
     default-resolution: 2K
@@ -72,6 +80,19 @@ youmi:
     prices:
       IMAGE: 10
       VIDEO: 50
+    image-prices:
+      banana2:
+        1K: 8
+        2K: 9
+        4K: 12
+      banana-pro:
+        1K: 13
+        2K: 15
+        4K: 21
+      gpt-image-2:
+        1K: 6
+        2K: 10
+        4K: 15
   dashscope:
     base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
     api-key: ${DASHSCOPE_API_KEY:}

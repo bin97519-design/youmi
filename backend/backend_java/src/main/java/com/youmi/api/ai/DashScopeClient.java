@@ -251,7 +251,7 @@ public class DashScopeClient {
     log.info("[detect] DashScope raw response (first 500 chars): {}", text.length() > 500 ? text.substring(0, 500) + "..." : text);
 
     // 提取 JSON 数组
-    String json = extractJsonArray(text);
+    String json = VisionJsonSupport.extractNormalizedJsonArray(text);
     if (json == null || json.isBlank()) {
       return List.of();
     }
@@ -392,16 +392,6 @@ public class DashScopeClient {
       }
     }
     return root.path("content").asText("").trim();
-  }
-
-  private String extractJsonArray(String text) {
-    if (text == null || text.isBlank()) return null;
-    int start = text.indexOf('[');
-    int end = text.lastIndexOf(']');
-    if (start >= 0 && end > start) {
-      return text.substring(start, end + 1);
-    }
-    return null;
   }
 
   private boolean isValidBox(List<Double> coords) {

@@ -10,6 +10,7 @@ import { useCanvasStore } from '../stores/canvas'
 import { useTheme } from '../composables/useTheme'
 import { apiPath } from '../utils/apiBase'
 import { uploadBase64ImageDirect } from '../utils/ossUpload'
+import { imageMiCost } from '../utils/imageMiPricing'
 
 const railExpanded = ref(false)
 const prompt = ref('')
@@ -18,6 +19,14 @@ const composerRef = ref(null)
 const userStore = useUserStore()
 const router = useRouter()
 const loggedIn = computed(() => userStore.isAuthenticated)
+const userDisplayName = computed(() => {
+  const nickname = String(
+    userStore.profile?.name || userStore.profile?.nickname || userStore.profile?.displayName || '',
+  ).trim()
+  const account = String(userStore.profile?.account || '').trim()
+  return nickname || account || '用户'
+})
+const userInitial = computed(() => Array.from(userDisplayName.value)[0]?.toUpperCase() || 'U')
 const userMenuOpen = ref(false)
 // 套餐 B 改造：使用统一的 useTheme composable
 const { cycle: cycleTheme, isDark } = useTheme()
@@ -66,7 +75,13 @@ const activeDetailPlan = computed(() => {
     },
   ]
 })
-const detailCost = computed(() => activeDetailPlan.value.length * 15)
+const detailCost = computed(() =>
+  imageMiCost(
+    generation.value?.model || DEFAULT_IMAGE_MODEL,
+    generation.value?.quality || '2K',
+    activeDetailPlan.value.length,
+  ),
+)
 const referenceImageUrl = computed(
   () =>
     generation.value?.images?.[0]?.url ||
@@ -539,20 +554,16 @@ onBeforeUnmount(() => {
             @click="userMenuOpen = !userMenuOpen"
             @blur="onUserMenuBlur"
           >
-            {{
-              userStore.profile?.account?.charAt(0)?.toUpperCase() ||
-              userStore.profile?.nickname?.charAt(0)?.toUpperCase() ||
-              'U'
-            }}
+            {{ userInitial }}
           </button>
           <div v-show="userMenuOpen" class="yh-user-menu">
             <div class="yh-user-menu-header">
               <div class="yh-user-menu-avatar">
-                {{ userStore.profile?.account?.charAt(0)?.toUpperCase() || 'U' }}
+                {{ userInitial }}
               </div>
               <div>
                 <div class="yh-user-menu-name">
-                  {{ userStore.profile?.account || userStore.profile?.nickname || '用户' }}
+                  {{ userDisplayName }}
                 </div>
                 <div class="yh-user-menu-uid">ID: {{ userStore.profile?.id || '--' }}</div>
               </div>

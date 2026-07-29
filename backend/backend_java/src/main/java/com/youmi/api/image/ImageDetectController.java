@@ -4,6 +4,7 @@ import com.youmi.api.ai.DashScopeClient;
 import com.youmi.api.ai.VisionElement;
 import com.youmi.api.ai.XfyunVisionClient;
 import com.youmi.api.common.ApiResponse;
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -46,13 +47,34 @@ public class ImageDetectController {
     if (imageUrl.startsWith("data:")) {
       return imageUrl;
     }
+    IOException lastError = null;
+    for (int attempt = 1; attempt <= 2; attempt++) {
+      try {
+        return downloadImageAsBase64(imageUrl);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw e;
+      } catch (IOException e) {
+        lastError = e;
+        if (attempt >= 2) throw e;
+        log.warn("Image download transient failure, retrying once: {}", e.getMessage());
+        Thread.sleep(300L);
+      }
+    }
+    throw lastError == null ? new IOException("Image download failed") : lastError;
+  }
+
+  private String downloadImageAsBase64(String imageUrl) throws Exception {
     log.info("Downloading image for base64 encode: {}", imageUrl);
     HttpRequest req = HttpRequest.newBuilder()
         .uri(URI.create(imageUrl))
-        .timeout(Duration.ofSeconds(15))
+        .timeout(Duration.ofSeconds(20))
         .GET()
         .build();
     HttpResponse<byte[]> resp = httpClient.send(req, HttpResponse.BodyHandlers.ofByteArray());
+    if (resp.statusCode() == 429 || resp.statusCode() >= 500) {
+      throw new IOException("Image download transient response: HTTP " + resp.statusCode());
+    }
     if (resp.statusCode() >= 300) {
       throw new IllegalStateException("Image download failed: HTTP " + resp.statusCode());
     }

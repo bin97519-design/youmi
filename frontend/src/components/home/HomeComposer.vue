@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useUserStore } from '../../stores/user'
 import { apiPath } from '../../utils/apiBase'
 import { uploadFileDirect } from '../../utils/ossUpload'
+import { imageMiCost, imageMiUnitPrice } from '../../utils/imageMiPricing'
 
 const UPLOAD_ENDPOINT = '/api/file/upload'
 
@@ -45,6 +46,16 @@ const cloneResolutionOptions = ['1K', '2K', '4K']
 const countOpen = ref(false)
 const selectedCount = ref('生成1张')
 const countOptions = ['生成1张', '生成2张', '生成3张', '生成4张']
+const selectedImageCount = computed(
+  () => Number.parseInt(String(selectedCount.value).match(/\d+/)?.[0] || '1', 10),
+)
+const mainUnitMiCost = computed(() => imageMiUnitPrice(selectedModel.value, selectedQuality.value))
+const mainTotalMiCost = computed(() =>
+  imageMiCost(selectedModel.value, selectedQuality.value, selectedImageCount.value),
+)
+const cloneUnitMiCost = computed(() =>
+  imageMiUnitPrice('gpt-image-2', cloneDraft.value?.resolution || '2K'),
+)
 const detailModalOpen = ref(false)
 const splitIdeaOpen = ref(false)
 const detailDraft = ref({
@@ -1706,10 +1717,8 @@ async function submitCloneGenerate() {
 
       <div class="yh-action-area">
         <template v-if="isMainImageMode">
-          <span class="yh-discount">限时优惠</span>
           <span class="yh-main-cost">
-            15米值/张
-            <s>20</s>
+            {{ mainUnitMiCost }}米值/张，共{{ mainTotalMiCost }}米值
           </span>
           <button
             :class="['yh-generate', 'yh-generate-primary', { 'is-ready': hasComposerContent }]"
@@ -2259,8 +2268,8 @@ async function submitCloneGenerate() {
               {{ cloneLoading ? '处理中...' : '立即生成' }}
             </button>
             <div>
-              <span>预计消耗 15 米值</span>
-              <strong>15 米值/张</strong>
+              <span>预计消耗 {{ cloneUnitMiCost }} 米值</span>
+              <strong>{{ cloneUnitMiCost }} 米值/张</strong>
             </div>
           </footer>
         </section>

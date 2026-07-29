@@ -86,9 +86,14 @@ class ShopAccountBindingTest {
           mi_value INT, plan_name VARCHAR(64), shop_id BIGINT,
           created_at TIMESTAMP, updated_at TIMESTAMP)""");
     jdbcTemplate.execute("""
+        CREATE TABLE IF NOT EXISTS ym_platform (
+          id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(64), code VARCHAR(32),
+          status VARCHAR(20), sort_order INT, created_at TIMESTAMP, updated_at TIMESTAMP)""");
+    jdbcTemplate.execute("""
         CREATE TABLE IF NOT EXISTS ym_shop (
           id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(128), code VARCHAR(64),
-          platform VARCHAR(32), status VARCHAR(20), created_at TIMESTAMP, updated_at TIMESTAMP)""");
+          platform_id BIGINT NOT NULL, platform VARCHAR(32), status VARCHAR(20),
+          created_at TIMESTAMP, updated_at TIMESTAMP)""");
   }
 
   private void resetData() {
@@ -96,6 +101,13 @@ class ShopAccountBindingTest {
     jdbcTemplate.update("DELETE FROM ym_sys_user");
     jdbcTemplate.update("DELETE FROM ym_sys_role");
     jdbcTemplate.update("DELETE FROM ym_shop");
+    jdbcTemplate.update("DELETE FROM ym_platform");
+    jdbcTemplate.update(
+        "INSERT INTO ym_platform (id, name, code, status, sort_order, created_at, updated_at) "
+            + "VALUES "
+            + "(1,'淘宝','TAOBAO','ACTIVE',10,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),"
+            + "(3,'抖音','DOUYIN','ACTIVE',30,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),"
+            + "(6,'其他','OTHER','ACTIVE',999,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)");
     jdbcTemplate.update(
         "INSERT INTO ym_sys_role (id, code, name) VALUES (1,'USER','用户'),(2,'ADMIN','管理员')");
     jdbcTemplate.update(
@@ -111,9 +123,11 @@ class ShopAccountBindingTest {
         U2, "u2", "U2", "x", "x", "x", "ACTIVE", 100, "标准版", SHOP_A);
     jdbcTemplate.update("INSERT INTO ym_sys_user_role (user_id, role_id) VALUES (?,?)", U2, 1L);
     jdbcTemplate.update(
-        "INSERT INTO ym_shop (id, name, code, platform, status, created_at, updated_at) VALUES (1,'店铺A','A001',NULL,'ACTIVE',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)");
+        "INSERT INTO ym_shop (id, name, code, platform_id, platform, status, created_at, updated_at) "
+            + "VALUES (1,'店铺A','A001',1,'淘宝','ACTIVE',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)");
     jdbcTemplate.update(
-        "INSERT INTO ym_shop (id, name, code, platform, status, created_at, updated_at) VALUES (2,'店铺B','B002',NULL,'DISABLED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)");
+        "INSERT INTO ym_shop (id, name, code, platform_id, platform, status, created_at, updated_at) "
+            + "VALUES (2,'店铺B','B002',1,'淘宝','DISABLED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)");
   }
 
   // ===================== 请求辅助（req 前缀避免与 MockMvcRequestBuilders 静态导入冲突） =====================

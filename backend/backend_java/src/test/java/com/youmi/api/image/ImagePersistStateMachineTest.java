@@ -187,6 +187,31 @@ class ImagePersistStateMachineTest {
     assertFalse(persistingTaskIds(fx.client).containsKey(taskId), "转存结束后应释放去重标记");
   }
 
+  @Test
+  void recoveryScan_prioritizesRecentCompletedTasks_andSkipsEmptyRows() {
+    JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+    AtomicReference<String> capturedSql = new AtomicReference<>();
+    when(jdbcTemplate.query(anyString(), any(RowMapper.class))).thenAnswer(invocation -> {
+      capturedSql.set(invocation.getArgument(0));
+      return List.of();
+    });
+
+    ImageGenerationClient client = new ImageGenerationClient(
+        new ObjectMapper(), new ImageGenerationProperties());
+    ReflectionTestUtils.setField(client, "jdbcTemplate", jdbcTemplate);
+
+    client.recoverPendingImagePersistence();
+
+    String sql = capturedSql.get();
+    assertNotNull(sql, "恢复任务应查询待转存记录");
+    assertTrue(sql.contains("LOWER(status) IN ('completed', 'success', 'succeeded', 'persisting')"),
+        "恢复任务只应扫描已经拿到结果的状态");
+    assertTrue(sql.contains("TRIM(image_urls) NOT IN ('', '[]', 'null')"),
+        "空图片数组不能长期占据恢复批次");
+    assertTrue(sql.contains("ORDER BY updated_at DESC"),
+        "临时链接会过期，应优先恢复最近完成的任务");
+  }
+
   // ===================== b. runPersistTask 成功 → DONE + 合法 JSON 数组 =====================
   @Test
   void runPersistTask_success_writesDoneWithValidJsonArray() throws Exception {
@@ -198,9 +223,10 @@ class ImagePersistStateMachineTest {
 
     Object[] done = fx.doneUpdate();
     assertNotNull(done, "成功路径应写 persist_status='DONE'");
-    // UPDATE ... SET result_urls = ?, persist_status = 'DONE' WHERE task_id = ?
+    // UPDATE ... SET result_urls = ?, image_urls = ?, persist_status = 'DONE' WHERE task_id = ?
     String json = (String) done[1]; // result_urls
-    assertEquals("apimart-direct:t2", done[2], "UPDATE 的 WHERE 条件必须是该 taskId，不能错行");
+    assertEquals(json, done[2], "image_urls 应同步替换为永久 OSS URL");
+    assertEquals("apimart-direct:t2", done[3], "UPDATE 的 WHERE 条件必须是该 taskId，不能错行");
     List<?> parsed = new ObjectMapper().readValue(json, List.class);
     assertEquals(2, parsed.size(), "result_urls JSON 数组应含全部图");
     assertEquals("https://temp.host/a.png", parsed.get(0));
