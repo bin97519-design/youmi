@@ -167,6 +167,7 @@ const reversePromptCard = reactive({ x: null, y: null, width: 380, height: 240, 
 const reversePromptConnectors = ref([])
 const selectedLayerId = ref('')
 const selectedLayerIds = ref([])
+const marqueeSelectionIds = ref([])
 // 画布内部复制缓冲区，支持多图并保留相对位置和智能分层数据。
 const clipboardLayers = ref([])
 const internalClipboardArmed = ref(false)
@@ -339,6 +340,7 @@ function deleteSelectedConnection() {
 
 // 选中图层
 function selectSingleLayer(layer) {
+  marqueeSelectionIds.value = []
   selectedLayerId.value = layer.id
   selectedLayerIds.value = [layer.id]
 }
@@ -4441,6 +4443,7 @@ function startLayerDrag(event, layer) {
       return
     event.preventDefault()
     event.stopPropagation()
+    marqueeSelectionIds.value = []
     const nextIds = new Set(selectedLayerIds.value)
     if (nextIds.has(layer.id)) nextIds.delete(layer.id)
     else nextIds.add(layer.id)
@@ -4478,6 +4481,7 @@ function startLayerDrag(event, layer) {
   const draggingGroup =
     selectedLayerIds.value.length > 1 && selectedLayerIds.value.includes(layer.id)
   if (!draggingGroup) {
+    marqueeSelectionIds.value = []
     selectedLayerId.value = layer.id
     selectedLayerIds.value = [layer.id]
   }
@@ -6439,17 +6443,20 @@ function autoArrangeLayerGeometry(layer) {
 
 function autoArrangeImages() {
   if (!userStore.requireLogin()) return
-  const selectedIds = new Set(selectedLayerIds.value)
-  const selectedImages = layers.value.filter(
-    (layer) => selectedIds.has(layer.id) && isAutoArrangeImageLayer(layer),
-  )
-  const arrangeSelected = selectedImages.length >= 2
-  const candidates = arrangeSelected
-    ? selectedImages
-    : layers.value.filter((layer) => isAutoArrangeImageLayer(layer))
+  const marqueeIds = new Set(marqueeSelectionIds.value)
+  const hasActiveMarqueeSelection =
+    marqueeIds.size > 0 &&
+    selectedLayerIds.value.length === marqueeIds.size &&
+    selectedLayerIds.value.every((id) => marqueeIds.has(id))
+  const allImages = layers.value.filter((layer) => isAutoArrangeImageLayer(layer))
+  const candidates = hasActiveMarqueeSelection
+    ? allImages.filter((layer) => marqueeIds.has(layer.id))
+    : allImages
 
   if (candidates.length < 2) {
-    showCopyPasteToast('画布中至少需要两张图片')
+    showCopyPasteToast(
+      hasActiveMarqueeSelection ? '框选区域中至少需要两张图片' : '画布中至少需要两张图片',
+    )
     return
   }
 
@@ -6473,8 +6480,8 @@ function autoArrangeImages() {
     fitCanvasView()
   })
   showCopyPasteToast(
-    arrangeSelected
-      ? `已自动排列选中的 ${candidates.length} 张图片`
+    hasActiveMarqueeSelection
+      ? `已自动排列框选的 ${candidates.length} 张图片`
       : `已按连接关系排列 ${candidates.length} 张图片`,
   )
 }
@@ -6874,6 +6881,7 @@ function startMarquee(event) {
   marquee.startY = event.clientY - rect.top
   marquee.currentX = marquee.startX
   marquee.currentY = marquee.startY
+  marqueeSelectionIds.value = []
   selectedLayerId.value = ''
   selectedLayerIds.value = []
 }
@@ -6997,6 +7005,7 @@ function stopMarquee(event) {
       )
     })
     .map((node) => node.dataset.layerId)
+  marqueeSelectionIds.value = picked
   selectedLayerIds.value = picked
   selectedLayerId.value = picked[picked.length - 1] || ''
   marquee.active = false
@@ -8545,6 +8554,16 @@ async function loadImageForCrop(layer) {
     <section class="editor-body">
       <div class="top-tools">
         <button @click="router.push('/canvas')">▣ 我的画布列表</button>
+        <button
+          type="button"
+          class="uc-top-creation-btn"
+          :disabled="creationRunning"
+          title="选中产品图，生成主图、需求创意或详情页"
+          @click="creationPanelOpen = true"
+        >
+          <i class="ri-layout-masonry-line" aria-hidden="true"></i>
+          <span>画布创作</span>
+        </button>
         <div class="add-image">
           <input
             ref="fileInput"
@@ -9585,7 +9604,7 @@ async function loadImageForCrop(layer) {
         <button
           type="button"
           class="uc-sidebar-tool-btn"
-          title="自动排列图片（选中多张时仅排列选中项）"
+          title="自动排列图片（有框选时仅排列框选图片，否则排列全部图片）"
           aria-label="自动排列图片"
           @click="autoArrangeImages"
         >
@@ -9658,13 +9677,6 @@ async function loadImageForCrop(layer) {
         </header>
 
         <section v-if="rightTab === 'chat'" class="chat-panel uc-chat">
-          <div class="uc-creation-toolbar">
-            <button type="button" :disabled="creationRunning" @click="creationPanelOpen = true">
-              <i class="ri-layout-masonry-line"></i>
-              画布创作
-            </button>
-            <span>选中产品图，可生成主图、需求创意或详情页</span>
-          </div>
           <div
             ref="chatHistoryRef"
             class="chat-history uc-chat-history"
@@ -10871,41 +10883,24 @@ async function loadImageForCrop(layer) {
 </template>
 
 <style>
-.uc-creation-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--uc-border, rgba(148, 163, 184, 0.2));
-  background: var(--uc-bg-2, rgba(255, 255, 255, 0.75));
-}
-
-.uc-creation-toolbar button {
+.top-tools .uc-top-creation-btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  height: 30px;
-  padding: 0 11px;
-  border: 1px solid rgba(100, 88, 232, 0.28);
-  border-radius: 8px;
-  background: rgba(100, 88, 232, 0.08);
-  color: #5b50d6;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
+  border-color: var(--canvas-accent-border);
+  background: var(--canvas-accent-soft);
+  color: var(--canvas-accent);
 }
 
-.uc-creation-toolbar button:disabled {
+.top-tools .uc-top-creation-btn:hover:not(:disabled) {
+  border-color: var(--canvas-accent);
+  background: color-mix(in srgb, var(--canvas-accent-soft) 72%, var(--canvas-surface-hover));
+}
+
+.top-tools .uc-top-creation-btn:disabled {
   cursor: wait;
   opacity: 0.55;
-}
-
-.uc-creation-toolbar > span {
-  overflow: hidden;
-  color: var(--uc-fg-3, #8a92a2);
-  font-size: 10.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .uc-image-broken {

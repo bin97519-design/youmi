@@ -127,6 +127,8 @@ CREATE TABLE IF NOT EXISTS ym_ecommerce_set_task (
 CREATE TABLE IF NOT EXISTS ym_mi_value_log (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   user_id BIGINT NOT NULL,
+  shop_id BIGINT NULL COMMENT '消费发生时的店铺快照',
+  platform_id BIGINT NULL COMMENT '消费发生时的平台快照',
   biz_type VARCHAR(20) NOT NULL COMMENT 'IMAGE/VIDEO/ADMIN_ADJUST',
   task_type VARCHAR(32) NULL,
   price INT NOT NULL COMMENT '本次变动的米值绝对值',
@@ -138,6 +140,8 @@ CREATE TABLE IF NOT EXISTS ym_mi_value_log (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_log_user (user_id),
+  INDEX idx_log_shop_created (shop_id, created_at),
+  INDEX idx_log_platform_created (platform_id, created_at),
   INDEX idx_log_status (status),
   INDEX idx_log_task (task_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -247,6 +251,24 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 -- 给 shop_id 增加外键约束（幂等，ON DELETE RESTRICT）
 SET @has_shop_fk = (SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=@db AND table_name='ym_sys_user' AND constraint_name='fk_user_shop' AND constraint_type='FOREIGN KEY');
 SET @sql = IF(@has_shop_fk=0, 'ALTER TABLE ym_sys_user ADD CONSTRAINT fk_user_shop FOREIGN KEY (shop_id) REFERENCES ym_shop (id) ON DELETE RESTRICT', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- ── 财务流水归属快照 ──
+-- 新流水在扣费时记录平台/店铺，账号后续换店不会改变历史财务归属。
+SET @has_log_shop_col = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@db AND table_name='ym_mi_value_log' AND column_name='shop_id');
+SET @sql = IF(@has_log_shop_col=0, 'ALTER TABLE ym_mi_value_log ADD COLUMN shop_id BIGINT NULL AFTER user_id', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @has_log_platform_col = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@db AND table_name='ym_mi_value_log' AND column_name='platform_id');
+SET @sql = IF(@has_log_platform_col=0, 'ALTER TABLE ym_mi_value_log ADD COLUMN platform_id BIGINT NULL AFTER shop_id', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @has_log_shop_idx = (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@db AND table_name='ym_mi_value_log' AND index_name='idx_log_shop_created');
+SET @sql = IF(@has_log_shop_idx=0, 'ALTER TABLE ym_mi_value_log ADD INDEX idx_log_shop_created (shop_id, created_at)', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @has_log_platform_idx = (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@db AND table_name='ym_mi_value_log' AND index_name='idx_log_platform_created');
+SET @sql = IF(@has_log_platform_idx=0, 'ALTER TABLE ym_mi_value_log ADD INDEX idx_log_platform_created (platform_id, created_at)', 'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- ── 生图结果持久化（后端异步转存落库，抗刷新裂图） ──

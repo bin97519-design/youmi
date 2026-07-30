@@ -50,12 +50,34 @@ public class MiValueRepository {
   public long insertLog(
       Long userId, MiBizType bizType, String taskType, int price,
       int beforeBalance, int afterBalance, String status, String taskId, String remark) {
+    ShopSnapshot snapshot = findShopSnapshot(userId);
     jdbcTemplate.update(
         "INSERT INTO ym_mi_value_log"
-            + " (user_id, biz_type, task_type, price, before_balance, after_balance, status, task_id, remark)"
-            + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        userId, bizType.name(), taskType, price, beforeBalance, afterBalance, status, taskId, remark);
+            + " (user_id, shop_id, platform_id, biz_type, task_type, price,"
+            + " before_balance, after_balance, status, task_id, remark)"
+            + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        userId, snapshot.shopId(), snapshot.platformId(), bizType.name(), taskType, price,
+        beforeBalance, afterBalance, status, taskId, remark);
     return jdbcTemplate.queryForObject("SELECT LAST_INSERT_ID()", Long.class);
+  }
+
+  private ShopSnapshot findShopSnapshot(Long userId) {
+    String sql = """
+        SELECT u.shop_id, s.platform_id
+        FROM ym_sys_user u
+        LEFT JOIN ym_shop s ON s.id = u.shop_id
+        WHERE u.id = ?
+        """;
+    return jdbcTemplate.query(sql, (rs, rowNum) -> new ShopSnapshot(
+        nullableLong(rs.getObject("shop_id")),
+        nullableLong(rs.getObject("platform_id"))), userId)
+        .stream()
+        .findFirst()
+        .orElse(new ShopSnapshot(null, null));
+  }
+
+  private Long nullableLong(Object value) {
+    return value instanceof Number number ? number.longValue() : null;
   }
 
   /** 将流水状态置为目标状态（commit/失败标记），并刷新 updated_at */
@@ -140,4 +162,6 @@ public class MiValueRepository {
 
   /** 消费流水行快照（供 commit/rollback 时取 price 与 user_id） */
   public record LogRow(long logId, Long userId, int price, String status, String bizType) {}
+
+  private record ShopSnapshot(Long shopId, Long platformId) {}
 }

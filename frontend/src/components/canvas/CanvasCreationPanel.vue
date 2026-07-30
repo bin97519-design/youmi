@@ -549,18 +549,19 @@ function runDetail() {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(15, 23, 42, 0.52);
+  background: color-mix(in srgb, var(--canvas-workspace) 76%, transparent);
   backdrop-filter: blur(5px);
 }
 .ccp-panel {
   width: min(900px, 96vw);
   max-height: 90vh;
   overflow: auto;
-  border: 1px solid rgba(15, 23, 42, 0.12);
+  border: 1px solid var(--canvas-border-strong);
   border-radius: 18px;
-  background: #fff;
-  color: #172033;
-  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.24);
+  background: var(--canvas-panel);
+  color: var(--canvas-text);
+  box-shadow: var(--canvas-panel-shadow);
+  color-scheme: inherit;
 }
 .ccp-panel > header,
 .ccp-panel > footer {
@@ -571,7 +572,7 @@ function runDetail() {
 }
 .ccp-panel > header {
   justify-content: space-between;
-  border-bottom: 1px solid #edf0f5;
+  border-bottom: 1px solid var(--canvas-border);
 }
 .ccp-panel h2 {
   margin: 0;
@@ -579,7 +580,7 @@ function runDetail() {
 }
 .ccp-panel header p {
   margin: 4px 0 0;
-  color: #737b8c;
+  color: var(--canvas-text-subtle);
   font-size: 12px;
 }
 .ccp-panel header button {
@@ -587,10 +588,14 @@ function runDetail() {
   height: 32px;
   border: 0;
   border-radius: 9px;
-  background: #f3f5f8;
-  color: #5d6575;
+  background: var(--canvas-surface);
+  color: var(--canvas-text-muted);
   font-size: 22px;
   cursor: pointer;
+}
+.ccp-panel header button:hover {
+  background: var(--canvas-surface-hover);
+  color: var(--canvas-text);
 }
 .ccp-tabs {
   display: flex;
@@ -603,14 +608,14 @@ function runDetail() {
   border: 0;
   border-radius: 10px;
   background: transparent;
-  color: #737b8c;
+  color: var(--canvas-text-muted);
   font-size: 13px;
   font-weight: 700;
   cursor: pointer;
 }
 .ccp-tabs button.active {
-  background: #f0efff;
-  color: #5b50d6;
+  background: var(--canvas-accent-soft);
+  color: var(--canvas-accent);
 }
 .ccp-mode-grid {
   display: grid;
@@ -625,19 +630,20 @@ function runDetail() {
   flex-direction: column;
   gap: 5px;
   padding: 13px 14px 13px 40px;
-  border: 1px solid #dfe3ea;
+  border: 1px solid var(--canvas-border);
   border-radius: 13px;
   cursor: pointer;
 }
 .ccp-mode-grid label.active {
-  border-color: #6458e8;
-  background: #f7f6ff;
-  box-shadow: 0 0 0 2px rgba(100, 88, 232, 0.1);
+  border-color: var(--canvas-accent-border);
+  background: var(--canvas-accent-soft);
+  box-shadow: 0 0 0 2px var(--canvas-accent-soft);
 }
 .ccp-mode-grid input {
   position: absolute;
   top: 15px;
   left: 14px;
+  accent-color: var(--canvas-accent);
 }
 .ccp-mode-grid b {
   font-size: 14px;
@@ -645,7 +651,7 @@ function runDetail() {
 .ccp-mode-grid span,
 .ccp-selection p {
   margin: 0;
-  color: #7b8290;
+  color: var(--canvas-text-subtle);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -658,15 +664,15 @@ function runDetail() {
 .ccp-selection > div {
   min-width: 0;
   padding: 12px;
-  border: 1px solid #e5e8ee;
+  border: 1px solid var(--canvas-border);
   border-radius: 12px;
-  background: #fafbfc;
+  background: var(--canvas-surface);
 }
 .ccp-selection > div > span,
 .ccp-extra > span {
   display: block;
   margin-bottom: 9px;
-  color: #4f5665;
+  color: var(--canvas-text-muted);
   font-size: 12px;
   font-weight: 700;
 }
@@ -684,13 +690,13 @@ function runDetail() {
   width: 96px;
   height: 96px;
   border-radius: 9px;
-  background: #eef1f5;
+  background: var(--canvas-surface-hover);
   object-fit: cover;
 }
 .ccp-selection figcaption {
   margin-top: 5px;
   overflow: hidden;
-  color: #727a89;
+  color: var(--canvas-text-subtle);
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -700,7 +706,7 @@ function runDetail() {
   padding: 8px 20px 18px;
 }
 .ccp-extra small {
-  color: #9aa1ae;
+  color: var(--canvas-text-subtle);
   font-weight: 400;
 }
 .ccp-extra textarea {
@@ -708,8 +714,9 @@ function runDetail() {
   box-sizing: border-box;
   resize: vertical;
   padding: 10px 12px;
-  border: 1px solid #dfe3ea;
+  border: 1px solid var(--canvas-border);
   border-radius: 11px;
+  background: var(--canvas-input);
   color: inherit;
   font: inherit;
   font-size: 13px;
@@ -728,7 +735,7 @@ function runDetail() {
 .ccp-demand-fields label > span {
   display: block;
   margin-bottom: 7px;
-  color: #4f5665;
+  color: var(--canvas-text-muted);
   font-size: 12px;
   font-weight: 700;
 }
@@ -740,13 +747,13 @@ function runDetail() {
   width: 126px;
   height: 126px;
   border-radius: 12px;
-  background: #eef1f5;
+  background: var(--canvas-surface-hover);
   object-fit: cover;
 }
 .ccp-product-thumb figcaption {
   margin-top: 5px;
   overflow: hidden;
-  color: #727a89;
+  color: var(--canvas-text-subtle);
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -761,7 +768,7 @@ function runDetail() {
 .ccp-reference-summary {
   display: block;
   margin-top: 14px;
-  color: #4f5665;
+  color: var(--canvas-text-muted);
   font-size: 11px;
   font-weight: 700;
 }
@@ -776,7 +783,7 @@ function runDetail() {
   height: 46px;
   flex: 0 0 34px;
   border-radius: 6px;
-  background: #eef1f5;
+  background: var(--canvas-surface-hover);
   object-fit: cover;
 }
 .ccp-demand-fields textarea,
@@ -786,9 +793,9 @@ function runDetail() {
 .ccp-card-title {
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid #dfe3ea;
+  border: 1px solid var(--canvas-border);
   border-radius: 9px;
-  background: #fff;
+  background: var(--canvas-input);
   color: inherit;
   font: inherit;
   font-size: 12px;
@@ -817,13 +824,17 @@ function runDetail() {
 .ccp-demand-fields button {
   height: 36px;
   padding: 0 14px;
-  border: 1px solid #6458e8;
+  border: 1px solid var(--canvas-accent-border);
   border-radius: 9px;
-  background: #fff;
-  color: #5b50d6;
+  background: var(--canvas-surface);
+  color: var(--canvas-accent);
   font-size: 12px;
   font-weight: 700;
   cursor: pointer;
+}
+.ccp-demand-fields button:hover:not(:disabled) {
+  border-color: var(--canvas-accent);
+  background: var(--canvas-accent-soft);
 }
 .ccp-demand-fields button:disabled {
   cursor: not-allowed;
@@ -834,13 +845,13 @@ function runDetail() {
 }
 .ccp-notice {
   margin: 8px 0 0;
-  color: #5c6678;
+  color: var(--canvas-text-muted);
   font-size: 11px;
   line-height: 1.5;
 }
 .ccp-detail-help {
   margin: 8px 0 0;
-  color: #8a92a2;
+  color: var(--canvas-text-subtle);
   font-size: 10.5px;
   line-height: 1.5;
 }
@@ -859,25 +870,26 @@ function runDetail() {
   flex-direction: column;
   gap: 7px;
   padding: 12px;
-  border: 1px solid #dfe3ea;
+  border: 1px solid var(--canvas-border);
   border-radius: 12px;
-  background: #fafbfc;
+  background: var(--canvas-surface);
 }
 .ccp-demand-card.selected {
-  border-color: rgba(100, 88, 232, 0.65);
-  background: #f8f7ff;
+  border-color: var(--canvas-accent-border);
+  background: var(--canvas-accent-soft);
 }
 .ccp-demand-card > input[type='checkbox'] {
   position: absolute;
   top: 12px;
   right: 12px;
+  accent-color: var(--canvas-accent);
 }
 .ccp-dimension {
   align-self: flex-start;
   padding: 3px 7px;
   border-radius: 999px;
-  background: #eceaff;
-  color: #5b50d6;
+  background: var(--canvas-accent-soft);
+  color: var(--canvas-accent);
   font-size: 10px;
   font-weight: 700;
 }
@@ -888,7 +900,7 @@ function runDetail() {
 }
 .ccp-demand-card small {
   overflow: hidden;
-  color: #8a92a2;
+  color: var(--canvas-text-subtle);
   font-size: 10px;
   line-height: 1.4;
   text-overflow: ellipsis;
@@ -909,27 +921,28 @@ function runDetail() {
   flex-direction: column;
   gap: 7px;
   padding: 12px;
-  border: 1px solid #dfe3ea;
+  border: 1px solid var(--canvas-border);
   border-radius: 12px;
-  background: #fafbfc;
+  background: var(--canvas-surface);
 }
 .ccp-detail-screen.selected {
-  border-color: rgba(100, 88, 232, 0.65);
-  background: #f8f7ff;
+  border-color: var(--canvas-accent-border);
+  background: var(--canvas-accent-soft);
 }
 .ccp-detail-screen > input[type='checkbox'] {
   position: absolute;
   top: 12px;
   right: 12px;
+  accent-color: var(--canvas-accent);
 }
 .ccp-detail-screen textarea {
   width: 100%;
   box-sizing: border-box;
   resize: vertical;
   padding: 9px 10px;
-  border: 1px solid #dfe3ea;
+  border: 1px solid var(--canvas-border);
   border-radius: 9px;
-  background: #fff;
+  background: var(--canvas-input);
   color: inherit;
   font: inherit;
   font-size: 12px;
@@ -937,7 +950,7 @@ function runDetail() {
 }
 .ccp-detail-screen small {
   overflow: hidden;
-  color: #8a92a2;
+  color: var(--canvas-text-subtle);
   font-size: 10px;
   line-height: 1.4;
   text-overflow: ellipsis;
@@ -947,8 +960,8 @@ function runDetail() {
   align-self: flex-start;
   padding: 3px 7px;
   border-radius: 999px;
-  background: #e9f6f0;
-  color: #27815f;
+  background: color-mix(in srgb, var(--color-success) 14%, transparent);
+  color: var(--color-success);
   font-size: 10px;
   font-weight: 700;
 }
@@ -960,15 +973,15 @@ function runDetail() {
   flex-direction: column;
   gap: 8px;
   padding: 12px 20px 22px;
-  color: #858d9c;
+  color: var(--canvas-text-subtle);
   text-align: center;
 }
 .ccp-demand-empty i {
-  color: #6458e8;
+  color: var(--canvas-accent);
   font-size: 34px;
 }
 .ccp-demand-empty b {
-  color: #535b6c;
+  color: var(--canvas-text-muted);
   font-size: 13px;
 }
 .ccp-demand-empty span {
@@ -976,12 +989,12 @@ function runDetail() {
 }
 .ccp-panel > footer {
   justify-content: flex-end;
-  border-top: 1px solid #edf0f5;
-  background: #fafbfc;
+  border-top: 1px solid var(--canvas-border);
+  background: var(--canvas-surface);
 }
 .ccp-panel footer > span {
   margin-right: auto;
-  color: #7b8290;
+  color: var(--canvas-text-subtle);
   font-size: 11px;
 }
 .ccp-panel footer button {
@@ -991,14 +1004,14 @@ function runDetail() {
   cursor: pointer;
 }
 .ccp-panel footer .secondary {
-  border: 1px solid #dfe3ea;
-  background: #fff;
-  color: #4d5564;
+  border: 1px solid var(--canvas-border-strong);
+  background: var(--canvas-panel);
+  color: var(--canvas-text-muted);
 }
 .ccp-panel footer .primary {
-  border: 1px solid #6458e8;
-  background: #6458e8;
-  color: #fff;
+  border: 1px solid var(--canvas-accent);
+  background: var(--canvas-accent);
+  color: var(--color-text-inverse);
   font-weight: 700;
 }
 .ccp-panel footer button:disabled {

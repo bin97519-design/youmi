@@ -1,5 +1,8 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { match as matchPinyin } from 'pinyin-pro'
+import ConsolePagination from '../components/console/ConsolePagination.vue'
+import FinancePanel from '../components/console/FinancePanel.vue'
 import ImageViewer from '../components/ImageViewer.vue'
 import { useUserStore } from '../stores/user'
 import { apiPath } from '../utils/apiBase'
@@ -14,6 +17,7 @@ const errorText = ref('')
 const users = ref([])
 const roles = ref([])
 const stats = ref(null)
+const financeRefreshKey = ref(0)
 const elapsedClock = ref(Date.now())
 let elapsedTimer = null
 let taskRefreshTimer = null
@@ -260,6 +264,33 @@ const filteredUsers = computed(() => {
   })
 })
 
+/* ── 账号列表分页 ── */
+const userCurrentPage = ref(1)
+const userPageSize = ref(10)
+const userTotal = computed(() => filteredUsers.value.length)
+const userTotalPages = computed(() => Math.max(1, Math.ceil(userTotal.value / userPageSize.value)))
+const pagedUsers = computed(() => {
+  const start = (userCurrentPage.value - 1) * userPageSize.value
+  return filteredUsers.value.slice(start, start + userPageSize.value)
+})
+
+function changeUserPage(page) {
+  userCurrentPage.value = Math.min(Math.max(1, page), userTotalPages.value)
+}
+
+function changeUserPageSize(size) {
+  userPageSize.value = size
+  userCurrentPage.value = 1
+}
+
+watch([userSearch, shopFilter, platformFilter], () => {
+  userCurrentPage.value = 1
+})
+
+watch(userTotalPages, (totalPages) => {
+  if (userCurrentPage.value > totalPages) userCurrentPage.value = totalPages
+})
+
 const filteredRoles = computed(() => {
   const q = roleSearch.value.trim().toLowerCase()
   if (!q) return roles.value
@@ -291,21 +322,6 @@ const pagedTasks = computed(() => {
 })
 const taskTotal = computed(() => filteredTasks.value.length)
 const taskTotalPages = computed(() => Math.max(1, Math.ceil(taskTotal.value / taskPageSize.value)))
-const pageWindow = computed(() => {
-  const total = taskTotalPages.value
-  const cur = taskCurrentPage.value
-  const span = 2
-  let start = Math.max(1, cur - span)
-  let end = Math.min(total, cur + span)
-  if (end - start < span * 2) {
-    if (start === 1) end = Math.min(total, start + span * 2)
-    else if (end === total) start = Math.max(1, end - span * 2)
-  }
-  const arr = []
-  for (let i = start; i <= end; i++) arr.push(i)
-  return arr
-})
-
 /* 筛选条件变化只重置页码，保留筛选值 */
 watch([taskStatusFilter, taskModelFilter, taskUserFilter], () => {
   taskCurrentPage.value = 1
@@ -448,6 +464,7 @@ const tabs = computed(() => {
   if (isAdmin.value) {
     list.push({ key: 'accounts', label: '账号管理' })
     list.push({ key: 'roles', label: '角色管理' })
+    list.push({ key: 'finance', label: '财务统计' })
   }
   list.push({ key: 'stats', label: '生图统计' })
   return list
@@ -573,6 +590,7 @@ async function loadConsole() {
     }
   } finally {
     loading.value = false
+    if (activeTab.value === 'finance') financeRefreshKey.value += 1
   }
 }
 
@@ -1066,6 +1084,7 @@ function selectTaskUser(userId = '') {
 function onDocClick() {
   Object.keys(dropdownOpen).forEach((k) => (dropdownOpen[k] = false))
   showDatePicker.value = false
+  trendDropdownOpen.value = false
 }
 
 function shopLabel(shopId) {
@@ -1080,17 +1099,148 @@ function taskUserLabel(userId) {
 
 /* ── Canvas 折线图 ── */
 const trendCanvas = ref(null)
-const trendTooltip = reactive({ show: false, x: 0, y: 0, label: '', value: 0 })
+const trendCard = ref(null)
+const trendFilterRow = ref(null)
+const trendDimension = ref('total')
+const trendFilter = ref('')
+const trendSelectedKey = ref('')
+const trendDropdownOpen = ref(false)
+const trendDropdownMaxHeight = ref(240)
+const trendTooltip = reactive({ show: false, x: 0, y: 0, label: '', items: [] })
+const trendPalette = ['#818cf8', '#22d3ee', '#f59e0b', '#34d399', '#f472b6']
+const trendTabs = [
+  { key: 'total', label: '总量' },
+  { key: 'model', label: '模型' },
+  { key: 'shop', label: '店铺' },
+  { key: 'user', label: '个人' },
+]
+
+const trendDimensionConfig = computed(() => {
+  if (trendDimension.value === 'model') {
+    return { rows: stats.value?.modelTrends || [], placeholder: '筛选模型' }
+  }
+  if (trendDimension.value === 'shop') {
+    return { rows: stats.value?.shopTrends || [], placeholder: '筛选店铺' }
+  }
+  if (trendDimension.value === 'user') {
+    return { rows: stats.value?.userTrends || [], placeholder: '筛选账号或昵称' }
+  }
+  const daily = stats.value?.daily || []
+  return {
+    rows: [
+      {
+        key: 'total',
+        label: '总量',
+        totalTasks: daily.reduce((sum, point) => sum + Number(point.tasks || 0), 0),
+        daily,
+      },
+    ],
+    placeholder: '',
+  }
+})
+
+function matchesTrendOption(row, rawQuery) {
+  const query = rawQuery.trim().toLowerCase()
+  if (!query) return true
+  const label = String(row.label || '')
+  const searchable = `${label} ${row.key || ''}`.toLowerCase()
+  if (searchable.includes(query)) return true
+  return Boolean(matchPinyin(label, query))
+}
+
+const trendFilterOptions = computed(() =>
+  [...trendDimensionConfig.value.rows]
+    .filter((row) => matchesTrendOption(row, trendFilter.value))
+    .sort((left, right) => Number(right.totalTasks || 0) - Number(left.totalTasks || 0)),
+)
+
+const trendVisibleSeries = computed(() => {
+  const selected = trendSelectedKey.value
+    ? trendDimensionConfig.value.rows.find((row) => String(row.key) === trendSelectedKey.value)
+    : null
+  const rows = selected ? [selected] : trendDimensionConfig.value.rows
+  return [...rows]
+    .sort((left, right) => Number(right.totalTasks || 0) - Number(left.totalTasks || 0))
+    .slice(0, 5)
+})
+
+const trendFilterCount = computed(() => {
+  if (trendSelectedKey.value) return 1
+  if (trendFilter.value.trim()) return trendFilterOptions.value.length
+  return Math.min(5, trendDimensionConfig.value.rows.length)
+})
+
+async function updateTrendDropdownHeight() {
+  await nextTick()
+  const card = trendCard.value
+  const row = trendFilterRow.value
+  if (!card || !row) return
+  const chart = card.querySelector('.console-trend-wrap')
+  const boundaryBottom = chart?.getBoundingClientRect().bottom || card.getBoundingClientRect().bottom
+  const available = Math.floor(boundaryBottom - row.getBoundingClientRect().bottom - 12)
+  trendDropdownMaxHeight.value = Math.max(80, Math.min(260, available))
+}
+
+function openTrendDropdown() {
+  trendDropdownOpen.value = true
+  updateTrendDropdownHeight()
+}
+
+function toggleTrendDropdown() {
+  trendDropdownOpen.value = !trendDropdownOpen.value
+  if (trendDropdownOpen.value) updateTrendDropdownHeight()
+}
+
+function onTrendFilterInput() {
+  trendSelectedKey.value = ''
+  openTrendDropdown()
+}
+
+function selectTrendOption(option) {
+  trendSelectedKey.value = option ? String(option.key) : ''
+  trendFilter.value = option?.label || ''
+  trendDropdownOpen.value = false
+  trendTooltip.show = false
+}
+
+function clearTrendFilter() {
+  trendFilter.value = ''
+  trendSelectedKey.value = ''
+  openTrendDropdown()
+}
+
+const trendDayLabels = computed(() => {
+  const days = []
+  for (let offset = 13; offset >= 0; offset -= 1) {
+    const day = new Date()
+    day.setHours(12, 0, 0, 0)
+    day.setDate(day.getDate() - offset)
+    days.push(fmtDateValue(day))
+  }
+  return days
+})
+
+const trendHasData = computed(() =>
+  trendVisibleSeries.value.some((series) =>
+    (series.daily || []).some((point) => Number(point.tasks || 0) > 0),
+  ),
+)
+
+watch(trendDimension, () => {
+  trendFilter.value = ''
+  trendSelectedKey.value = ''
+  trendDropdownOpen.value = false
+  trendTooltip.show = false
+})
 
 function drawTrendChart() {
   const canvas = trendCanvas.value
   if (!canvas) return
-  const daily = stats.value?.daily || []
-  if (!daily.length) return
 
   const ctx = canvas.getContext('2d')
   const dpr = window.devicePixelRatio || 1
   const rect = canvas.getBoundingClientRect()
+  if (!rect.width || !rect.height) return
   canvas.width = rect.width * dpr
   canvas.height = rect.height * dpr
   ctx.scale(dpr, dpr)
@@ -1104,9 +1254,21 @@ function drawTrendChart() {
   const chartW = W - padL - padR
   const chartH = H - padT - padB
 
-  const values = daily.map((d) => d.tasks || 0)
+  const days = trendDayLabels.value
+  const series = trendVisibleSeries.value.map((item, index) => {
+    const valuesByDay = new Map(
+      (item.daily || []).map((point) => [point.day, Number(point.tasks || 0)]),
+    )
+    return {
+      key: item.key,
+      label: item.label || item.key,
+      color: trendPalette[index % trendPalette.length],
+      values: days.map((day) => valuesByDay.get(day) || 0),
+    }
+  })
+  const values = series.flatMap((item) => item.values)
   const maxVal = Math.max(...values, 1)
-  const stepX = daily.length > 1 ? chartW / (daily.length - 1) : chartW
+  const stepX = days.length > 1 ? chartW / (days.length - 1) : chartW
 
   const isLight = document.documentElement.getAttribute('data-theme') === 'light'
 
@@ -1133,75 +1295,84 @@ function drawTrendChart() {
 
   /* x-axis labels */
   ctx.textAlign = 'center'
-  daily.forEach((d, i) => {
+  days.forEach((day, i) => {
+    if (i % 2 !== 0 && i !== days.length - 1) return
     const x = padL + stepX * i
-    ctx.fillText(d.day?.slice(5) || '', x, H - 6)
+    ctx.fillText(day.slice(5), x, H - 6)
   })
 
-  /* area fill */
-  const grad = ctx.createLinearGradient(0, padT, 0, padT + chartH)
-  grad.addColorStop(0, isLight ? 'rgba(99,102,241,0.18)' : 'rgba(99,102,241,0.25)')
-  grad.addColorStop(1, isLight ? 'rgba(99,102,241,0.01)' : 'rgba(99,102,241,0.02)')
-  ctx.beginPath()
-  daily.forEach((d, i) => {
-    const x = padL + stepX * i
-    const y = padT + chartH - ((d.tasks || 0) / maxVal) * chartH
-    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
-  })
-  ctx.lineTo(padL + stepX * (daily.length - 1), padT + chartH)
-  ctx.lineTo(padL, padT + chartH)
-  ctx.closePath()
-  ctx.fillStyle = grad
-  ctx.fill()
-
-  /* line */
-  ctx.beginPath()
-  ctx.strokeStyle = isLight ? '#6366f1' : '#818cf8'
-  ctx.lineWidth = 2
-  ctx.lineJoin = 'round'
-  daily.forEach((d, i) => {
-    const x = padL + stepX * i
-    const y = padT + chartH - ((d.tasks || 0) / maxVal) * chartH
-    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
-  })
-  ctx.stroke()
-
-  /* dots */
-  daily.forEach((d, i) => {
-    const x = padL + stepX * i
-    const y = padT + chartH - ((d.tasks || 0) / maxVal) * chartH
+  if (series.length === 1) {
+    const grad = ctx.createLinearGradient(0, padT, 0, padT + chartH)
+    grad.addColorStop(0, isLight ? 'rgba(99,102,241,0.18)' : 'rgba(99,102,241,0.25)')
+    grad.addColorStop(1, isLight ? 'rgba(99,102,241,0.01)' : 'rgba(99,102,241,0.02)')
     ctx.beginPath()
-    ctx.arc(x, y, 3.5, 0, Math.PI * 2)
-    ctx.fillStyle = isLight ? '#6366f1' : '#818cf8'
+    series[0].values.forEach((value, i) => {
+      const x = padL + stepX * i
+      const y = padT + chartH - (value / maxVal) * chartH
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
+    })
+    ctx.lineTo(padL + stepX * (days.length - 1), padT + chartH)
+    ctx.lineTo(padL, padT + chartH)
+    ctx.closePath()
+    ctx.fillStyle = grad
     ctx.fill()
-    ctx.strokeStyle = isLight ? '#fff' : '#0f172a'
-    ctx.lineWidth = 1.5
+  }
+
+  series.forEach((item) => {
+    ctx.beginPath()
+    ctx.strokeStyle = item.color
+    ctx.lineWidth = 2
+    ctx.lineJoin = 'round'
+    item.values.forEach((value, i) => {
+      const x = padL + stepX * i
+      const y = padT + chartH - (value / maxVal) * chartH
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
+    })
     ctx.stroke()
+
+    item.values.forEach((value, i) => {
+      const x = padL + stepX * i
+      const y = padT + chartH - (value / maxVal) * chartH
+      ctx.beginPath()
+      ctx.arc(x, y, series.length > 2 ? 2.5 : 3.5, 0, Math.PI * 2)
+      ctx.fillStyle = item.color
+      ctx.fill()
+      ctx.strokeStyle = isLight ? '#fff' : '#0f172a'
+      ctx.lineWidth = 1.25
+      ctx.stroke()
+    })
   })
 
   /* store for hover */
-  canvas._chartData = { padL, padR, padT, chartH, chartW, stepX, maxVal, daily }
+  canvas._chartData = { padL, padT, chartH, stepX, maxVal, days, series }
 }
 
 function handleTrendMove(e) {
   const canvas = trendCanvas.value
   if (!canvas?._chartData) return
-  const { padL, padT, chartH, stepX, maxVal, daily } = canvas._chartData
+  const { padL, padT, chartH, stepX, maxVal, days, series } = canvas._chartData
   const rect = canvas.getBoundingClientRect()
   const mx = e.clientX - rect.left
   const idx = Math.round((mx - padL) / stepX)
-  if (idx < 0 || idx >= daily.length) {
+  if (idx < 0 || idx >= days.length || !series.length) {
     trendTooltip.show = false
     return
   }
-  const d = daily[idx]
   const x = padL + stepX * idx
-  const y = padT + chartH - ((d.tasks || 0) / maxVal) * chartH
+  const items = series.map((item) => ({
+    key: item.key,
+    label: item.label,
+    color: item.color,
+    value: item.values[idx] || 0,
+  }))
+  const y = Math.min(
+    ...items.map((item) => padT + chartH - (item.value / maxVal) * chartH),
+  )
   trendTooltip.show = true
   trendTooltip.x = x
   trendTooltip.y = y
-  trendTooltip.label = d.day || ''
-  trendTooltip.value = d.tasks || 0
+  trendTooltip.label = days[idx]
+  trendTooltip.items = items
 }
 
 function handleTrendLeave() {
@@ -1267,7 +1438,7 @@ function drawDonutChart() {
 }
 
 /* ── Redraw charts on tab switch / data load ── */
-watch([activeTab, stats], () => {
+watch([activeTab, stats, trendDimension, trendFilter, trendSelectedKey], () => {
   nextTick(() => {
     if (activeTab.value === 'stats') {
       drawTrendChart()
@@ -1275,6 +1446,11 @@ watch([activeTab, stats], () => {
     }
   })
 })
+
+function handleTrendResize() {
+  drawTrendChart()
+  if (trendDropdownOpen.value) updateTrendDropdownHeight()
+}
 
 onMounted(() => {
   loadConsole()
@@ -1285,6 +1461,7 @@ onMounted(() => {
   unsubscribeTaskPersistence = subscribeImageTaskPersistence(onImageTaskPersistence)
   document.addEventListener('visibilitychange', onVisibilityChange)
   document.addEventListener('click', onDocClick)
+  window.addEventListener('resize', handleTrendResize)
 })
 
 onUnmounted(() => {
@@ -1294,6 +1471,7 @@ onUnmounted(() => {
   unsubscribeTaskPersistence?.()
   document.removeEventListener('visibilitychange', onVisibilityChange)
   document.removeEventListener('click', onDocClick)
+  window.removeEventListener('resize', handleTrendResize)
 })
 </script>
 
@@ -1364,7 +1542,7 @@ onUnmounted(() => {
     <p v-if="errorText" class="console-error">{{ errorText }}</p>
 
     <!-- Metrics with skeleton -->
-    <section class="console-metrics">
+    <section v-if="activeTab !== 'finance'" class="console-metrics">
       <template v-if="loading && !users.length">
         <article v-for="i in isAdmin ? 5 : 3" :key="i" class="console-skeleton-metric">
           <span class="console-skeleton-bar" style="width: 48px"></span>
@@ -1562,7 +1740,7 @@ onUnmounted(() => {
             <span>平台</span>
             <span>操作</span>
           </div>
-          <div v-for="user in filteredUsers" :key="user.id" class="console-row">
+          <div v-for="user in pagedUsers" :key="user.id" class="console-row">
             <span>
               <strong>{{ user.account }}</strong>
               <small>ID {{ user.id }}</small>
@@ -1601,6 +1779,13 @@ onUnmounted(() => {
             {{ userSearch ? '无匹配结果' : '暂无账号' }}
           </p>
         </div>
+        <ConsolePagination
+          :current-page="userCurrentPage"
+          :page-size="userPageSize"
+          :total="userTotal"
+          @change="changeUserPage"
+          @update:page-size="changeUserPageSize"
+        />
       </section>
     </section>
 
@@ -1843,8 +2028,18 @@ onUnmounted(() => {
       </section>
     </section>
 
+    <!-- Finance Tab -->
+    <FinancePanel
+      v-if="activeTab === 'finance'"
+      :platforms="platforms"
+      :shops="shops"
+      :refresh-key="financeRefreshKey"
+      @error="showToast($event, 'error')"
+      @loaded="errorText = ''"
+    />
+
     <!-- Stats Tab -->
-    <section v-else class="console-stats">
+    <section v-if="activeTab === 'stats'" class="console-stats">
       <!-- 模型用量: 环形图 + 图例 -->
       <section class="console-card">
         <h2>模型用量</h2>
@@ -1904,8 +2099,113 @@ onUnmounted(() => {
       </section>
 
       <!-- 趋势折线图 -->
-      <section class="console-card console-trend-card">
-        <h2>近 14 天趋势</h2>
+      <section ref="trendCard" class="console-card console-trend-card">
+        <div class="console-trend-head">
+          <div>
+            <h2>近 14 天趋势</h2>
+            <p>按生图任务数统计</p>
+          </div>
+        </div>
+        <div class="console-trend-controls">
+          <div class="console-trend-tabs" role="tablist" aria-label="趋势统计维度">
+            <button
+              v-for="tab in trendTabs"
+              :key="tab.key"
+              type="button"
+              role="tab"
+              :aria-selected="trendDimension === tab.key"
+              :class="{ active: trendDimension === tab.key }"
+              @click="trendDimension = tab.key"
+            >
+              {{ tab.label }}
+            </button>
+          </div>
+          <div
+            v-if="trendDimension !== 'total'"
+            ref="trendFilterRow"
+            class="console-trend-filter-row"
+            @click.stop
+          >
+            <div
+              class="console-trend-search"
+              role="combobox"
+              :aria-expanded="trendDropdownOpen"
+              aria-haspopup="listbox"
+            >
+              <i class="ri-search-line" aria-hidden="true"></i>
+              <input
+                v-model="trendFilter"
+                :placeholder="trendDimensionConfig.placeholder"
+                autocomplete="off"
+                @focus="openTrendDropdown"
+                @input="onTrendFilterInput"
+              />
+              <small>{{ trendFilterCount }}</small>
+              <button
+                v-if="trendFilter"
+                type="button"
+                title="清空筛选"
+                aria-label="清空趋势筛选"
+                @click="clearTrendFilter"
+              >
+                <i class="ri-close-line" aria-hidden="true"></i>
+              </button>
+              <button
+                type="button"
+                class="console-trend-dropdown-toggle"
+                title="展开筛选条件"
+                aria-label="展开趋势筛选条件"
+                @click="toggleTrendDropdown"
+              >
+                <i :class="trendDropdownOpen ? 'ri-arrow-up-s-line' : 'ri-arrow-down-s-line'"></i>
+              </button>
+            </div>
+            <div
+              v-show="trendDropdownOpen"
+              class="console-trend-dropdown"
+              role="listbox"
+              :style="{ maxHeight: `${trendDropdownMaxHeight}px` }"
+            >
+              <button
+                v-if="!trendFilter"
+                type="button"
+                class="console-trend-dropdown-option"
+                :class="{ active: !trendSelectedKey }"
+                @click="selectTrendOption(null)"
+              >
+                <span>全部（默认展示前 5 项）</span>
+                <i v-if="!trendSelectedKey" class="ri-check-line" aria-hidden="true"></i>
+              </button>
+              <button
+                v-for="option in trendFilterOptions"
+                :key="option.key"
+                type="button"
+                class="console-trend-dropdown-option"
+                :class="{ active: trendSelectedKey === String(option.key) }"
+                @click="selectTrendOption(option)"
+              >
+                <span>{{ option.label }}</span>
+                <small>{{ option.totalTasks || 0 }} 任务</small>
+                <i
+                  v-if="trendSelectedKey === String(option.key)"
+                  class="ri-check-line"
+                  aria-hidden="true"
+                ></i>
+              </button>
+              <p v-if="!trendFilterOptions.length" class="console-trend-dropdown-empty">
+                没有匹配的筛选条件
+              </p>
+            </div>
+          </div>
+          <div v-else class="console-trend-filter-spacer" aria-hidden="true"></div>
+        </div>
+        <div v-if="trendVisibleSeries.length" class="console-trend-legend" aria-label="趋势图例">
+          <span v-for="(series, index) in trendVisibleSeries" :key="series.key">
+            <i :style="{ background: trendPalette[index % trendPalette.length] }"></i>
+            <b>{{ series.label }}</b>
+            <small>{{ series.totalTasks || 0 }}</small>
+          </span>
+        </div>
         <div class="console-trend-wrap">
           <canvas
             ref="trendCanvas"
@@ -1919,10 +2219,20 @@ onUnmounted(() => {
             :style="{ left: trendTooltip.x + 'px', top: trendTooltip.y + 'px' }"
           >
             <strong>{{ trendTooltip.label }}</strong>
-            <span>{{ trendTooltip.value }} 任务</span>
+            <span
+              v-for="item in trendTooltip.items"
+              :key="item.key"
+              class="console-trend-tooltip-item"
+            >
+              <i :style="{ background: item.color }"></i>
+              <b>{{ item.label }}</b>
+              <em>{{ item.value }} 任务</em>
+            </span>
           </div>
         </div>
-        <p v-if="!stats?.daily?.length" class="console-empty">暂无趋势数据。</p>
+        <p v-if="!trendHasData" class="console-empty console-trend-empty">
+          {{ trendFilter ? '没有匹配的趋势数据。' : '暂无趋势数据。' }}
+        </p>
       </section>
 
       <!-- 最近任务 + 筛选 -->
@@ -2101,16 +2411,14 @@ onUnmounted(() => {
           </div>
           <p v-if="!taskReloading && pagedTasks.length === 0" class="console-empty">暂无匹配任务。</p>
         </div>
-        <div class="console-pagination" v-if="taskTotal > 0">
-          <select class="page-size" :disabled="taskReloading" @change="changeTaskPageSize(Number($event.target.value))">
-            <option v-for="s in [10, 20, 50]" :key="s" :value="s" :selected="s === taskPageSize">{{ s }}条/页</option>
-          </select>
-          <span class="page-total">共 {{ taskTotal }} 条</span>
-          <button class="page-btn" :disabled="taskCurrentPage <= 1 || taskReloading" @click="reloadTaskPage(taskCurrentPage - 1)">上一页</button>
-          <button v-for="p in pageWindow" :key="p" class="page-btn" :class="{ active: p === taskCurrentPage }" :disabled="taskReloading" @click="reloadTaskPage(p)">{{ p }}</button>
-          <button class="page-btn" :disabled="taskCurrentPage >= taskTotalPages || taskReloading" @click="reloadTaskPage(taskCurrentPage + 1)">下一页</button>
-          <span v-if="taskReloading" class="page-loading">加载中…</span>
-        </div>
+        <ConsolePagination
+          :current-page="taskCurrentPage"
+          :page-size="taskPageSize"
+          :total="taskTotal"
+          :loading="taskReloading"
+          @change="reloadTaskPage"
+          @update:page-size="changeTaskPageSize"
+        />
       </section>
     </section>
 
@@ -2941,86 +3249,6 @@ onUnmounted(() => {
   color: #2563eb;
 }
 
-/* ── 最近生图任务分页（中性色，贴合暗色半透明主题） ── */
-.console-pagination {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 14px;
-  flex-wrap: wrap;
-  font-size: 13px;
-  color: #94a3b8;
-}
-.page-total {
-  margin-right: 4px;
-}
-.page-btn {
-  padding: 4px 10px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.04);
-  color: #e2e8f0;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.page-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.1);
-}
-.page-btn.active {
-  background: rgba(255, 255, 255, 0.16);
-  border-color: rgba(255, 255, 255, 0.25);
-  color: #fff;
-}
-.page-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-.page-size {
-  padding: 4px 8px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.04);
-  color: #e2e8f0;
-  width: fit-content;
-  height: 28px;
-  box-sizing: border-box;
-  vertical-align: middle;
-}
-.page-size option {
-  background: #1e293b;
-  color: #e2e8f0;
-}
-.page-loading {
-  color: #94a3b8;
-}
-[data-theme='light'] .console-pagination {
-  color: #64748b;
-}
-[data-theme='light'] .page-btn {
-  border-color: #e2e8f0;
-  background: #f8fafc;
-  color: #1e293b;
-}
-[data-theme='light'] .page-btn:hover:not(:disabled) {
-  background: #f1f5f9;
-}
-[data-theme='light'] .page-btn.active {
-  background: rgba(0, 0, 0, 0.06);
-  border-color: rgba(0, 0, 0, 0.12);
-  color: #1e293b;
-}
-[data-theme='light'] .page-size {
-  border-color: #e2e8f0;
-  background: #f8fafc;
-  color: #1e293b;
-  height: 28px;
-  box-sizing: border-box;
-}
-[data-theme='light'] .page-size option {
-  background: #ffffff;
-  color: #1e293b;
-}
-
 /* ── 兜底通道徽章（仅管理员可见，中性琥珀色） ── */
 .fallback-badge {
   display: inline-block;
@@ -3167,5 +3395,326 @@ onUnmounted(() => {
 }
 [data-theme='light'] .date-range-inputs span {
   color: #94a3b8;
+}
+
+.console-trend-card {
+  position: relative;
+  gap: 12px;
+}
+
+.console-trend-head {
+  display: grid;
+  gap: 12px;
+}
+
+.console-trend-head > div:first-child {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.console-trend-head h2 {
+  margin: 0;
+}
+
+.console-trend-head p {
+  margin: 0;
+  color: var(--yq-muted);
+  font-size: 11px;
+}
+
+.console-trend-controls {
+  display: grid;
+  grid-template-columns: minmax(300px, 1.15fr) minmax(220px, 0.85fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.console-trend-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--yq-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--yq-bg-main) 78%, transparent);
+}
+
+.console-trend-tabs button {
+  min-width: 0;
+  height: 30px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--yq-muted);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.console-trend-tabs button:hover {
+  color: var(--yq-text);
+}
+
+.console-trend-tabs button.active {
+  background: var(--yq-primary);
+  color: #ffffff;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--yq-primary) 28%, transparent);
+}
+
+.console-trend-filter-row {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  z-index: 4;
+}
+
+.console-trend-filter-spacer {
+  min-width: 0;
+  height: 32px;
+}
+
+.console-trend-search {
+  display: flex;
+  min-width: 0;
+  height: 32px;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+  border: 1px solid var(--yq-border);
+  border-radius: 7px;
+  background: var(--yq-bg-main);
+  color: var(--yq-muted);
+}
+
+.console-trend-search small {
+  display: inline-flex;
+  min-width: 20px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--yq-primary) 15%, transparent);
+  color: var(--yq-primary);
+  font-size: 10px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.console-trend-search:focus-within {
+  border-color: var(--yq-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--yq-primary) 16%, transparent);
+}
+
+.console-trend-search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--yq-text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.console-trend-search input::placeholder {
+  color: var(--yq-muted);
+}
+
+.console-trend-search button {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--yq-muted);
+  cursor: pointer;
+}
+
+.console-trend-search button:hover {
+  background: color-mix(in srgb, var(--yq-border) 70%, transparent);
+  color: var(--yq-text);
+}
+
+.console-trend-dropdown-toggle {
+  flex: 0 0 auto;
+}
+
+.console-trend-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  left: 0;
+  z-index: 20;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid var(--yq-border);
+  border-radius: 8px;
+  background: var(--yq-bg-card);
+  box-shadow: 0 14px 30px rgba(2, 6, 23, 0.42);
+  scrollbar-width: thin;
+}
+
+.console-trend-dropdown-option {
+  display: grid;
+  width: 100%;
+  min-height: 34px;
+  grid-template-columns: minmax(0, 1fr) auto 16px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--yq-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.console-trend-dropdown-option:hover,
+.console-trend-dropdown-option.active {
+  background: color-mix(in srgb, var(--yq-primary) 14%, transparent);
+}
+
+.console-trend-dropdown-option > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.console-trend-dropdown-option > small {
+  color: var(--yq-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.console-trend-dropdown-option > i {
+  color: var(--yq-primary);
+  font-size: 14px;
+}
+
+.console-trend-dropdown-option:first-child > span {
+  grid-column: 1 / 3;
+}
+
+.console-trend-dropdown-empty {
+  margin: 0;
+  padding: 14px 10px;
+  color: var(--yq-muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+.console-trend-legend {
+  display: flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 8px 14px;
+  overflow: hidden;
+  flex-wrap: wrap;
+}
+
+.console-trend-legend > span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  color: var(--yq-text);
+  font-size: 11px;
+}
+
+.console-trend-legend i,
+.console-trend-tooltip-item i {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+.console-trend-legend b {
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.console-trend-legend small {
+  color: var(--yq-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.console-trend-card .console-trend-wrap {
+  height: 245px;
+}
+
+.console-trend-tooltip {
+  min-width: 170px;
+  padding: 8px 10px;
+  white-space: normal;
+}
+
+.console-trend-tooltip-item {
+  display: grid !important;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+}
+
+.console-trend-tooltip-item b {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.console-trend-tooltip-item em {
+  color: var(--yq-muted);
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.console-trend-empty {
+  margin: -150px 0 120px;
+  text-align: center;
+  pointer-events: none;
+}
+
+@media (max-width: 700px) {
+  .console-trend-head > div:first-child {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .console-trend-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .console-trend-search {
+    width: 100%;
+  }
+
+  .console-trend-filter-spacer {
+    display: none;
+  }
+
+  .console-trend-card .console-trend-wrap {
+    height: 220px;
+  }
 }
 </style>

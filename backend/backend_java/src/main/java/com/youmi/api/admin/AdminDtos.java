@@ -77,7 +77,10 @@ public final class AdminDtos {
       List<ImageTaskRow> tasks,
       List<DailyImageStat> daily,
       List<ModelImageStat> models,
-      List<ProviderSuccessStat> providers) {
+      List<ProviderSuccessStat> providers,
+      List<DimensionImageTrend> modelTrends,
+      List<DimensionImageTrend> shopTrends,
+      List<DimensionImageTrend> userTrends) {
   }
 
   public record ImageStatsSummary(
@@ -119,6 +122,13 @@ public final class AdminDtos {
   }
 
   public record DailyImageStat(String day, Long tasks, Integer images, Integer miCost, BigDecimal moneyCost) {
+  }
+
+  public record DimensionImageTrend(
+      String key,
+      String label,
+      Long totalTasks,
+      List<DailyImageStat> daily) {
   }
 
   public record ModelImageStat(String model, Long tasks, Integer images, Integer miCost, BigDecimal moneyCost) {

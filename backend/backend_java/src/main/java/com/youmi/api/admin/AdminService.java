@@ -319,7 +319,10 @@ public class AdminService {
         recentImageTasks(scopeUserId, dateFrom, dateTo),
         dailyImageStats(scopeUserId),
         modelImageStats(scopeUserId),
-        providerSuccessStats(scopeUserId));
+        providerSuccessStats(scopeUserId),
+        modelDailyTrends(scopeUserId),
+        shopDailyTrends(scopeUserId),
+        userDailyTrends(scopeUserId));
   }
 
   private AdminDtos.ImageStatsSummary imageSummary(Long scopeUserId) {
@@ -471,6 +474,141 @@ public class AdminService {
     List<AdminDtos.ModelImageStat> result = new ArrayList<>(merged.values());
     result.sort((left, right) -> Long.compare(right.tasks(), left.tasks()));
     return result.size() > 12 ? new ArrayList<>(result.subList(0, 12)) : result;
+  }
+
+  private List<AdminDtos.DimensionImageTrend> modelDailyTrends(Long scopeUserId) {
+    String where = scopeUserId == null ? "" : " AND t.user_id = ?";
+    String sql = """
+        SELECT COALESCE(t.requested_model, t.model, 'unknown') AS dimension_key,
+               COALESCE(t.requested_model, t.model, 'unknown') AS dimension_label,
+               DATE(t.created_at) AS day,
+               COUNT(*) AS tasks,
+               COALESCE(SUM(t.image_count), 0) AS images,
+               COALESCE(SUM(t.mi_cost), 0) AS mi_cost,
+               COALESCE(SUM(t.money_cost), 0) AS money_cost
+        FROM ym_image_task t
+        WHERE t.created_at >= DATE_SUB(CURRENT_DATE, INTERVAL 13 DAY)
+        """ + where + """
+        GROUP BY COALESCE(t.requested_model, t.model, 'unknown'), DATE(t.created_at)
+        ORDER BY day
+        """;
+    return buildDimensionTrends(queryDimensionTrendRows(sql, scopeUserId), true);
+  }
+
+  private List<AdminDtos.DimensionImageTrend> shopDailyTrends(Long scopeUserId) {
+    String where = scopeUserId == null ? "" : " AND t.user_id = ?";
+    String sql = """
+        SELECT COALESCE(CAST(s.id AS CHAR), 'unbound') AS dimension_key,
+               CASE
+                 WHEN s.id IS NULL THEN '未绑定店铺'
+                 WHEN COALESCE(NULLIF(p.name, ''), NULLIF(s.platform, '')) IS NULL THEN s.name
+                 ELSE CONCAT(s.name, '（', COALESCE(NULLIF(p.name, ''), NULLIF(s.platform, '')), '）')
+               END AS dimension_label,
+               DATE(t.created_at) AS day,
+               COUNT(*) AS tasks,
+               COALESCE(SUM(t.image_count), 0) AS images,
+               COALESCE(SUM(t.mi_cost), 0) AS mi_cost,
+               COALESCE(SUM(t.money_cost), 0) AS money_cost
+        FROM ym_image_task t
+        LEFT JOIN ym_sys_user u ON u.id = t.user_id
+        LEFT JOIN ym_shop s ON s.id = u.shop_id
+        LEFT JOIN ym_platform p ON p.id = s.platform_id
+        WHERE t.created_at >= DATE_SUB(CURRENT_DATE, INTERVAL 13 DAY)
+        """ + where + """
+        GROUP BY s.id, s.name, p.name, s.platform, DATE(t.created_at)
+        ORDER BY day
+        """;
+    return buildDimensionTrends(queryDimensionTrendRows(sql, scopeUserId), false);
+  }
+
+  private List<AdminDtos.DimensionImageTrend> userDailyTrends(Long scopeUserId) {
+    String where = scopeUserId == null ? "" : " AND t.user_id = ?";
+    String sql = """
+        SELECT COALESCE(u.account, CONCAT('user-', t.user_id), 'unknown') AS dimension_key,
+               COALESCE(NULLIF(u.nickname, ''), u.account, CONCAT('用户 #', t.user_id), '未知用户') AS dimension_label,
+               DATE(t.created_at) AS day,
+               COUNT(*) AS tasks,
+               COALESCE(SUM(t.image_count), 0) AS images,
+               COALESCE(SUM(t.mi_cost), 0) AS mi_cost,
+               COALESCE(SUM(t.money_cost), 0) AS money_cost
+        FROM ym_image_task t
+        LEFT JOIN ym_sys_user u ON u.id = t.user_id
+        WHERE t.created_at >= DATE_SUB(CURRENT_DATE, INTERVAL 13 DAY)
+        """ + where + """
+        GROUP BY t.user_id, u.account, u.nickname, DATE(t.created_at)
+        ORDER BY day
+        """;
+    return buildDimensionTrends(queryDimensionTrendRows(sql, scopeUserId), false);
+  }
+
+  private List<RawDimensionTrend> queryDimensionTrendRows(String sql, Long scopeUserId) {
+    Object[] args = scopeUserId == null ? new Object[]{} : new Object[]{scopeUserId};
+    return jdbcTemplate.query(sql, (rs, rowNum) -> new RawDimensionTrend(
+        rs.getString("dimension_key"),
+        rs.getString("dimension_label"),
+        new AdminDtos.DailyImageStat(
+            rs.getString("day"),
+            rs.getLong("tasks"),
+            rs.getInt("images"),
+            rs.getInt("mi_cost"),
+            rs.getBigDecimal("money_cost"))), args);
+  }
+
+  private List<AdminDtos.DimensionImageTrend> buildDimensionTrends(
+      List<RawDimensionTrend> rows, boolean canonicalizeModel) {
+    Map<String, TrendAccumulator> grouped = new LinkedHashMap<>();
+    for (RawDimensionTrend row : rows) {
+      String key = canonicalizeModel ? imageProps.canonicalDisplayModel(row.key()) : row.key();
+      String label = canonicalizeModel ? key : row.label();
+      TrendAccumulator accumulator = grouped.computeIfAbsent(key, ignored -> new TrendAccumulator(key, label));
+      accumulator.add(row.daily());
+    }
+
+    List<AdminDtos.DimensionImageTrend> result = grouped.values().stream()
+        .map(TrendAccumulator::toView)
+        .sorted((left, right) -> Long.compare(right.totalTasks(), left.totalTasks()))
+        .toList();
+    return new ArrayList<>(result);
+  }
+
+  private record RawDimensionTrend(
+      String key,
+      String label,
+      AdminDtos.DailyImageStat daily) {
+  }
+
+  private static final class TrendAccumulator {
+    private final String key;
+    private final String label;
+    private final Map<String, AdminDtos.DailyImageStat> daily = new LinkedHashMap<>();
+
+    private TrendAccumulator(String key, String label) {
+      this.key = key;
+      this.label = label;
+    }
+
+    private void add(AdminDtos.DailyImageStat point) {
+      daily.merge(point.day(), point, TrendAccumulator::mergeDaily);
+    }
+
+    private AdminDtos.DimensionImageTrend toView() {
+      List<AdminDtos.DailyImageStat> points = new ArrayList<>(daily.values());
+      points.sort((left, right) -> left.day().compareTo(right.day()));
+      long totalTasks = points.stream().mapToLong(AdminDtos.DailyImageStat::tasks).sum();
+      return new AdminDtos.DimensionImageTrend(key, label, totalTasks, points);
+    }
+
+    private static AdminDtos.DailyImageStat mergeDaily(
+        AdminDtos.DailyImageStat left, AdminDtos.DailyImageStat right) {
+      BigDecimal leftMoney = left.moneyCost() == null ? BigDecimal.ZERO : left.moneyCost();
+      BigDecimal rightMoney = right.moneyCost() == null ? BigDecimal.ZERO : right.moneyCost();
+      return new AdminDtos.DailyImageStat(
+          left.day(),
+          left.tasks() + right.tasks(),
+          left.images() + right.images(),
+          left.miCost() + right.miCost(),
+          leftMoney.add(rightMoney));
+    }
   }
 
   private List<AdminDtos.ProviderSuccessStat> providerSuccessStats(Long scopeUserId) {
