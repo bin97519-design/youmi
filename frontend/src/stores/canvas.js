@@ -22,11 +22,22 @@ function storageKey(base) {
   return userId ? `${base}_u${userId}` : base;
 }
 let authFailed = false;  // 认证失败后静默，避免重复请求刷屏
-const demoImages = [
-  new URL('../assets/youqian/images/060-1780040674695_a003c35a-7592-42ae-9a69-bcae7156c3bf.png', import.meta.url).href,
-  new URL('../assets/youqian/images/061-1780040584339_6fd15155-2051-4c0c-bf83-5e32fd8201a8.png', import.meta.url).href,
-  new URL('../assets/youqian/images/062-1780040599143_7bd9c869-2fa9-48f7-9947-9dbf481a9686.png', import.meta.url).href,
-];
+const LEGACY_SEED_DOCUMENT_ID = /^seed-(?:.+-)?(?:1904|2905|2201|2309)$/;
+const LEGACY_SEED_DOCUMENT_TITLES = {
+  1904: '未命名画布 05-23 14:16',
+  2905: 'chat_image(5/29_14:58)',
+  2201: '未命名画布 05-22 14:01',
+  2309: '未命名画布 05-23 14:09',
+};
+
+function isLegacySeedDocument(documentOrId) {
+  const id = String(
+    typeof documentOrId === 'object' ? documentOrId?.id || documentOrId?.docId : documentOrId,
+  );
+  if (LEGACY_SEED_DOCUMENT_ID.test(id)) return true;
+  const title = typeof documentOrId === 'object' ? documentOrId?.title : '';
+  return LEGACY_SEED_DOCUMENT_TITLES[id] === title;
+}
 
 function nowTitle() {
   const date = new Date();
@@ -63,99 +74,12 @@ export function makeCanvasDocument(id = String(Date.now()).slice(-4)) {
   };
 }
 
-function seed() {
-  const userStore = useUserStore();
-  if (!userStore.isAuthenticated) userStore.restoreSession();
-  const userId = userStore.profile?.id ?? 'anon';
-  // 给默认样例 docId 加 userId 前缀，避免不同用户之间的 seed docId 全局冲突（未来分享/协作功能需要）
-  const prefix = `seed-${userId}-`;
-  const configs = [
-    {
-      id: prefix + '1904',
-      baseId: '1904',
-      title: '未命名画布 05-23 14:16',
-      image: demoImages[1],
-      layers: 5,
-      age: '7 小时前',
-    },
-    {
-      id: prefix + '2905',
-      baseId: '2905',
-      title: 'chat_image(5/29_14:58)',
-      image: demoImages[0],
-      layers: 1,
-      age: '1 天前',
-    },
-    {
-      id: prefix + '2201',
-      baseId: '2201',
-      title: '未命名画布 05-22 14:01',
-      image: demoImages[2],
-      layers: 2,
-      age: '1 天前',
-    },
-    {
-      id: prefix + '2309',
-      baseId: '2309',
-      title: '未命名画布 05-23 14:09',
-      image: demoImages[1],
-      layers: 1,
-      age: '7 天前',
-      editing: true,
-    },
-  ];
-
-  return configs.map((config, docIndex) => {
-    const doc = makeCanvasDocument(config.id);
-    doc.title = config.title;
-    doc.thumbnailUrl = config.image;
-    doc.meta = {
-      layerCount: config.layers,
-      age: config.age,
-      editing: Boolean(config.editing),
-    };
-    // 使用 baseId 判断特殊样例（保持原先 1904 专属的 scale / chat 行为）
-    doc.payload.view.scale = config.baseId === '1904' ? 0.2 : 0.68;
-    doc.payload.layers = Array.from({ length: config.layers }, (_, index) => ({
-      id: `seed-${config.baseId}-${index + 1}`,
-      name: layerName(index),
-      url: demoImages[(docIndex + index) % demoImages.length],
-      thumbnailUrl: demoImages[(docIndex + index) % demoImages.length],
-      naturalWidth: 1080,
-      naturalHeight: 1620,
-      width: index % 2 === 0 ? 720 : 560,
-      height: index % 2 === 0 ? 980 : 740,
-      x: 620 + index * 420,
-      y: 520 + (index % 2) * 110,
-      zIndex: index + 1,
-      visible: true,
-      locked: false,
-    }));
-    doc.payload.chat = config.baseId === '1904'
-      ? [
-          { id: 'seed-chat-1', role: 'assistant', text: '3333', createdAt: Date.now() - 1000 * 60 * 60 * 7 },
-          { id: 'seed-chat-2', role: 'assistant', text: '已提交对话修改任务，请等待生成结果（生成完成后会显示在画布中）。', createdAt: Date.now() - 1000 * 60 * 30 },
-          { id: 'seed-chat-3', role: 'assistant', text: '已添加 2 张参考图到画布。', createdAt: Date.now() - 1000 * 60 * 20 },
-        ]
-      : [];
-    return doc;
-  });
-}
-
-function mergeSeedDocuments(documents) {
-  const deletedIds = loadDeletedDocumentIds();
-  const visibleDocuments = documents.filter((doc) => !deletedIds.has(doc.id));
-  const seeds = seed().filter((doc) => !deletedIds.has(doc.id));
-  const existingIds = new Set(visibleDocuments.map((doc) => doc.id));
-  return [...visibleDocuments, ...seeds.filter((doc) => !existingIds.has(doc.id))];
-}
-
 function loadLocal() {
   try {
     const data = JSON.parse(localStorage.getItem(storageKey(STORAGE_KEY)) || 'null');
-    return mergeSeedDocuments(Array.isArray(data) ? data : []);
+    return (Array.isArray(data) ? data : []).filter((doc) => !isLegacySeedDocument(doc));
   } catch {
-    return mergeSeedDocuments([]);
+    return [];
   }
 }
 
@@ -363,31 +287,39 @@ async function loadFromServer() {
     const response = await fetch(apiPath('/api/canvas/list'), { headers: { ...headers } });
     const payload = await response.json().catch(() => ({}));
     if (payload.code !== 0 || !Array.isArray(payload.data)) return [];
+    const legacySeedIds = payload.data
+      .filter((item) => isLegacySeedDocument(item))
+      .map((item) => item.docId);
+    if (legacySeedIds.length) {
+      await Promise.allSettled(legacySeedIds.map((docId) => syncDeleteFromServer(docId)));
+    }
     // 并行请求每个文档的完整 payload（list 只返回 summary，不含 payload）
     const deletedIds = loadDeletedDocumentIds();
     const docs = await Promise.all(
-      payload.data.filter((item) => !deletedIds.has(item.docId)).map(async (item) => {
-        let fullPayload = item.payload || null;
-        if (!fullPayload) {
-          try {
-            const detailRes = await fetch(apiPath(`/api/canvas/${item.docId}`), { headers: { ...headers } });
-            const detail = await detailRes.json().catch(() => ({}));
-            fullPayload = detail.data?.payload || null;
-          } catch {
-            // 单个文档拉取失败不影响其他
+      payload.data
+        .filter((item) => !isLegacySeedDocument(item) && !deletedIds.has(item.docId))
+        .map(async (item) => {
+          let fullPayload = item.payload || null;
+          if (!fullPayload) {
+            try {
+              const detailRes = await fetch(apiPath(`/api/canvas/${item.docId}`), { headers: { ...headers } });
+              const detail = await detailRes.json().catch(() => ({}));
+              fullPayload = detail.data?.payload || null;
+            } catch {
+              // 单个文档拉取失败不影响其他
+            }
           }
-        }
-        return {
-          id: item.docId,
-          title: item.title,
-          updatedAt: item.updatedAt,
-          createdAt: item.createdAt || item.updatedAt,
-          lastOpenedAt: item.updatedAt,
-          thumbnailUrl: item.thumbnailUrl || '',
-          payload: fullPayload || { schemaVersion: 1, view: { scale: 0.68, offset: { x: 0, y: 0 } }, layers: [], chat: [] },
-          meta: {},
-        };
-      })
+          return {
+            id: item.docId,
+            title: item.title,
+            updatedAt: item.updatedAt,
+            createdAt: item.createdAt || item.updatedAt,
+            lastOpenedAt: item.updatedAt,
+            thumbnailUrl: item.thumbnailUrl || '',
+            payload: fullPayload || { schemaVersion: 1, view: { scale: 0.68, offset: { x: 0, y: 0 } }, layers: [], chat: [] },
+            meta: {},
+          };
+        }),
     );
     return docs;
   } catch (e) {
