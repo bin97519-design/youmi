@@ -14,6 +14,15 @@ const props = defineProps({
   selectedLayers: { type: Array, default: () => [] },
   model: { type: String, default: '' },
   resolution: { type: String, default: '2K' },
+  modelOptions: {
+    type: Array,
+    default: () => ['banana2', 'banana-pro', 'gpt-image-2', 'agnes-image-2.1-flash'],
+  },
+  ratioOptions: {
+    type: Array,
+    default: () => ['auto', '1:1', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'],
+  },
+  resolutionOptions: { type: Array, default: () => ['1K', '2K', '4K'] },
   busy: { type: Boolean, default: false },
 })
 
@@ -54,6 +63,59 @@ const productLayerCount = ref(0)
 const draggedLayerIndex = ref(-1)
 const dragTargetIndex = ref(-1)
 const activeLayerDropZone = ref('')
+const selectedModel = ref(props.model || 'banana2')
+const selectedRatio = ref('source')
+const selectedResolution = ref(props.resolution || '2K')
+const generationSelectOpen = ref('')
+
+const availableModelOptions = computed(() => {
+  const options = props.modelOptions.map((item) => String(item || '').trim()).filter(Boolean)
+  return options.length ? options : ['banana2']
+})
+const availableRatioOptions = computed(() => [
+  'source',
+  ...props.ratioOptions
+    .map((item) => String(item || '').trim())
+    .filter(
+      (item, index, options) =>
+        item && item !== 'auto' && item !== 'source' && options.indexOf(item) === index,
+    ),
+])
+const availableResolutionOptions = computed(() => {
+  const options = props.resolutionOptions.map((item) => String(item || '').trim()).filter(Boolean)
+  return options.length ? options : ['2K']
+})
+const sourceRatioLabel = computed(() =>
+  tab.value !== 'demand' && references.value.length ? '跟随参考图' : '跟随产品图',
+)
+const selectedRatioLabel = computed(() =>
+  selectedRatio.value === 'source' ? sourceRatioLabel.value : selectedRatio.value,
+)
+const generationSelectDisabled = computed(() => props.busy || mainAnalyzing.value)
+const generationSelectConfigs = computed(() => [
+  {
+    key: 'model',
+    label: '模型',
+    value: selectedModel.value,
+    options: availableModelOptions.value.map((value) => ({ value, label: value })),
+  },
+  {
+    key: 'ratio',
+    label: '比例',
+    value: selectedRatio.value,
+    displayValue: selectedRatioLabel.value,
+    options: availableRatioOptions.value.map((value) => ({
+      value,
+      label: value === 'source' ? sourceRatioLabel.value : value,
+    })),
+  },
+  {
+    key: 'resolution',
+    label: '分辨率',
+    value: selectedResolution.value,
+    options: availableResolutionOptions.value.map((value) => ({ value, label: value })),
+  },
+])
 
 const products = computed(() => orderedLayers.value.slice(0, productLayerCount.value))
 const product = computed(() => products.value[0] || null)
@@ -99,6 +161,13 @@ watch(
   () => props.open,
   (open) => {
     if (open) {
+      selectedModel.value = availableModelOptions.value.includes(props.model)
+        ? props.model
+        : availableModelOptions.value[0]
+      selectedRatio.value = 'source'
+      selectedResolution.value = availableResolutionOptions.value.includes(props.resolution)
+        ? props.resolution
+        : availableResolutionOptions.value[0]
       orderedLayers.value = [...props.selectedLayers]
       productLayerCount.value = props.selectedLayers.length ? 1 : 0
       resetLayerDrag()
@@ -109,6 +178,7 @@ watch(
       void loadMainCategories()
       return
     }
+    generationSelectOpen.value = ''
     extra.value = ''
     mainAnalysisError.value = ''
     mainAnalysisStatus.value = ''
@@ -119,15 +189,33 @@ watch(
   },
 )
 
+function toggleGenerationSelect(key) {
+  if (generationSelectDisabled.value) return
+  generationSelectOpen.value = generationSelectOpen.value === key ? '' : key
+}
+
+function selectGenerationOption(key, value) {
+  if (key === 'model') selectedModel.value = value
+  if (key === 'ratio') selectedRatio.value = value
+  if (key === 'resolution') selectedResolution.value = value
+  generationSelectOpen.value = ''
+}
+
 watch([mode, mainCategory, references], () => {
   mainAnalysisError.value = ''
   mainAnalysisStatus.value = ''
 })
 
 function outputAspect(layer) {
-  const ratio = resolveSupportedImageRatio(layer)
+  const ratio =
+    selectedRatio.value === 'source' ? resolveSupportedImageRatio(layer) : selectedRatio.value
   const [aspectWidth, aspectHeight] = ratio.split(':').map(Number)
   return { ratio, aspectWidth, aspectHeight }
+}
+
+function planningRatio(layer, hasReference = false) {
+  if (selectedRatio.value !== 'source') return selectedRatio.value
+  return hasReference ? '对应参考图原始比例' : outputAspect(layer).ratio
 }
 
 async function loadMainCategories() {
@@ -322,8 +410,8 @@ async function runMainImages() {
           sourceIds: [...selectedProducts.map((item) => item.id), reference.id],
           previewUrl: selectedProduct.url,
           ...aspect,
-          model: props.model,
-          resolution: props.resolution,
+          model: selectedModel.value,
+          resolution: selectedResolution.value,
         }
       }),
     })
@@ -402,8 +490,8 @@ function runDemands() {
       sourceIds: products.value.map((item) => item.id),
       previewUrl: product.value.url,
       ...aspect,
-      model: props.model,
-      resolution: props.resolution,
+      model: selectedModel.value,
+      resolution: selectedResolution.value,
     })),
   })
 }
@@ -427,7 +515,7 @@ async function planDetail() {
         count: Number(detailCount.value) || 6,
         platform: '淘宝/天猫',
         style: detailStyle.value.trim(),
-        ratio: references.value.length ? '对应参考图原始比例' : ratioOf(product.value),
+        ratio: planningRatio(product.value, references.value.length > 0),
         cloneStrength: detailStrength.value,
       }),
     })
@@ -452,7 +540,7 @@ async function planDetail() {
         style: detailStyle.value.trim(),
         strength: detailStrength.value,
         referenceCount: references.value.length,
-        ratio: references.value.length ? '对应参考图原始比例' : ratioOf(product.value),
+        ratio: planningRatio(product.value, references.value.length > 0),
       })
       detailNotice.value = '规划服务暂不可用，已按内置详情页结构生成可编辑分屏。'
     }
@@ -472,6 +560,7 @@ function runDetail() {
           ? references.value[screen.referenceIndex]
           : null
       const aspectSource = reference || product.value
+      const aspect = outputAspect(aspectSource)
       return {
         name: `详情页 ${screen.index} · ${screen.title}`,
         prompt: [
@@ -485,11 +574,9 @@ function runDetail() {
         imageUrls: [...products.value.map((item) => item.url), reference?.url].filter(Boolean),
         sourceIds: [...products.value.map((item) => item.id), reference?.id].filter(Boolean),
         previewUrl: product.value.url,
-        aspectWidth: aspectSource.naturalWidth || aspectSource.width,
-        aspectHeight: aspectSource.naturalHeight || aspectSource.height,
-        ratio: ratioOf(aspectSource),
-        model: props.model,
-        resolution: props.resolution,
+        ...aspect,
+        model: selectedModel.value,
+        resolution: selectedResolution.value,
       }
     }),
   })
@@ -499,7 +586,13 @@ function runDetail() {
 <template>
   <Teleport to="body">
     <div v-if="open" class="ccp-backdrop" @click.self="emit('close')">
-      <section class="ccp-panel" role="dialog" aria-modal="true" aria-label="画布创作">
+      <section
+        class="ccp-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label="画布创作"
+        @click="generationSelectOpen = ''"
+      >
         <header>
           <div>
             <h2>画布创作</h2>
@@ -519,6 +612,51 @@ function runDetail() {
             详情页生成
           </button>
         </nav>
+
+        <section class="ccp-generation-settings" aria-label="生成参数">
+          <label v-for="select in generationSelectConfigs" :key="select.key">
+            <span>{{ select.label }}</span>
+            <div
+              class="ccp-custom-select"
+              :class="{
+                open: generationSelectOpen === select.key,
+                disabled: generationSelectDisabled,
+              }"
+            >
+              <button
+                type="button"
+                class="ccp-custom-select-trigger"
+                :disabled="generationSelectDisabled"
+                :aria-expanded="generationSelectOpen === select.key"
+                @click.stop="toggleGenerationSelect(select.key)"
+                @keydown.esc.stop="generationSelectOpen = ''"
+              >
+                <span>{{ select.displayValue || select.value }}</span>
+                <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
+              </button>
+              <div
+                v-if="generationSelectOpen === select.key"
+                class="ccp-custom-select-menu"
+                role="listbox"
+                @click.stop
+              >
+                <button
+                  v-for="option in select.options"
+                  :key="option.value"
+                  type="button"
+                  class="ccp-custom-select-option"
+                  :class="{ active: select.value === option.value }"
+                  role="option"
+                  :aria-selected="select.value === option.value"
+                  @click="selectGenerationOption(select.key, option.value)"
+                >
+                  <span>{{ option.label }}</span>
+                  <i v-if="select.value === option.value" class="ri-check-line" aria-hidden="true"></i>
+                </button>
+              </div>
+            </div>
+          </label>
+        </section>
 
         <template v-if="tab === 'main'">
           <div class="ccp-mode-grid">
@@ -892,14 +1030,16 @@ function runDetail() {
             {{
               mainAnalyzing
                 ? mainAnalysisStatus
-                : `${model} · ${resolution} · ${references.length || 0} 张结果`
+                : `${selectedModel} · ${selectedRatioLabel} · ${selectedResolution} · ${references.length || 0} 张结果`
             }}
           </span>
           <span v-else-if="tab === 'demand'">
-            {{ model }} · {{ resolution }} · 已选择 {{ selectedDemandCards.length }} 个方向
+            {{ selectedModel }} · {{ selectedRatioLabel }} · {{ selectedResolution }} · 已选择
+            {{ selectedDemandCards.length }} 个方向
           </span>
           <span v-else>
-            {{ model }} · {{ resolution }} · 已选择 {{ selectedDetailScreens.length }} 屏
+            {{ selectedModel }} · {{ selectedRatioLabel }} · {{ selectedResolution }} · 已选择
+            {{ selectedDetailScreens.length }} 屏
           </span>
           <button type="button" class="secondary" @click="emit('close')">取消</button>
           <button
@@ -1004,6 +1144,135 @@ function runDetail() {
 .ccp-tabs button.active {
   background: var(--canvas-accent-soft);
   color: var(--canvas-accent);
+}
+.ccp-generation-settings {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) repeat(2, minmax(120px, 0.8fr));
+  gap: 10px;
+  margin: 12px 20px 0;
+  padding: 10px;
+  border: 1px solid var(--canvas-border);
+  border-radius: 11px;
+  background: var(--canvas-surface);
+}
+.ccp-generation-settings label {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+.ccp-generation-settings span {
+  color: var(--canvas-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+.ccp-custom-select {
+  position: relative;
+  min-width: 0;
+}
+.ccp-custom-select-trigger {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  height: 34px;
+  padding: 0 9px 0 11px;
+  border: 1px solid var(--canvas-border-strong);
+  border-radius: 9px;
+  background: var(--canvas-input);
+  color: var(--canvas-text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    box-shadow 140ms ease;
+}
+.ccp-custom-select-trigger > span {
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  font-size: inherit;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.ccp-custom-select-trigger > i {
+  flex: 0 0 auto;
+  color: var(--canvas-text-subtle);
+  font-size: 16px;
+  transition: transform 140ms ease;
+}
+.ccp-custom-select-trigger:hover {
+  border-color: var(--canvas-accent);
+  background: var(--canvas-surface-hover);
+}
+.ccp-custom-select.open .ccp-custom-select-trigger {
+  border-color: var(--canvas-accent);
+  box-shadow: 0 0 0 2px var(--canvas-accent-soft);
+}
+.ccp-custom-select.open .ccp-custom-select-trigger > i {
+  transform: rotate(180deg);
+}
+.ccp-custom-select-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.ccp-custom-select-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  left: 0;
+  z-index: 40;
+  max-height: 232px;
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid var(--canvas-border-strong);
+  border-radius: 10px;
+  background: var(--canvas-panel);
+  box-shadow: var(--canvas-panel-shadow);
+  overscroll-behavior: contain;
+}
+.ccp-custom-select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-height: 32px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--canvas-text-muted);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.ccp-custom-select-option > span {
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.ccp-custom-select-option:hover {
+  background: var(--canvas-surface-hover);
+  color: var(--canvas-text);
+}
+.ccp-custom-select-option.active {
+  background: var(--canvas-accent-soft);
+  color: var(--canvas-accent);
+  font-weight: 700;
+}
+.ccp-custom-select-option i {
+  color: currentColor;
+  font-size: 15px;
 }
 .ccp-mode-grid {
   display: grid;
@@ -1567,6 +1836,7 @@ function runDetail() {
   opacity: 0.45;
 }
 @media (max-width: 680px) {
+  .ccp-generation-settings,
   .ccp-mode-grid,
   .ccp-selection,
   .ccp-demand-input,

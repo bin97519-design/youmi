@@ -872,8 +872,31 @@ const cropMode = reactive({
   selectedCells: new Set(),
 })
 const cropPickerOpen = ref(false) // 宫格选择器弹窗
-const cropPickerX = ref(0)
-const cropPickerY = ref(0)
+const cropPickerRef = ref(null)
+const cropPickerOffset = reactive({ x: 0, y: 0 })
+const cropPickerDrag = reactive({
+  active: false,
+})
+const cropPickerDragRuntime = {
+  pointerId: null,
+  startX: 0,
+  startY: 0,
+  originX: 0,
+  originY: 0,
+  currentX: 0,
+  currentY: 0,
+  minX: 0,
+  maxX: 0,
+  minY: 0,
+  maxY: 0,
+  captureEl: null,
+}
+const cropPickerStyle = computed(() => ({
+  transform: `translate3d(${cropPickerOffset.x}px, ${cropPickerOffset.y}px, 0)`,
+}))
+function handleCropPickerViewportResize() {
+  if (cropPickerOpen.value) nextTick(() => clampCropPickerOffset())
+}
 const cropQuickOpen = ref(false) // 快捷裁图子菜单
 const promptCategoryOpen = ref(false) // 获取提示词品类子菜单
 const stitchSubmenuOpen = ref(false) // 拼接图片方向子菜单
@@ -3511,7 +3534,7 @@ function showVideoControlsTemporarily() {
 }
 
 // 打开图片查看器
-function openImageViewer(url, name) {
+function openImageViewer(url, name, layerId = '') {
   // 收集所有选中图层中的图片，支持多图切换
   const imageLayers = selectedLayerIds.value
     .map((id) => layers.value.find((l) => l.id === id))
@@ -3525,9 +3548,9 @@ function openImageViewer(url, name) {
     images = imageLayers
       .slice()
       .sort((a, b) => a.y - b.y || a.x - b.x)
-      .map((l) => ({ url: l.url, name: l.name || '图片' }))
+      .map((l) => ({ id: l.id, url: l.url, name: l.name || '图片' }))
     // 找到当前点击的图片在列表中的位置
-    currentIndex = images.findIndex((img) => img.url === url)
+    currentIndex = images.findIndex((img) => (layerId ? img.id === layerId : img.url === url))
     if (currentIndex < 0) currentIndex = 0
   } else {
     // 单图模式
@@ -3937,7 +3960,7 @@ function onLayerDblClick(event, layer) {
     openVideoViewer(layer.url, layer.name)
   } else if (layer.url && (layer.type === 'image' || (layer.url && !layer.type))) {
     // 双击图片：打开查看器
-    openImageViewer(layer.url, layer.name)
+    openImageViewer(layer.url, layer.name, layer.id)
   }
 }
 
@@ -4091,35 +4114,47 @@ function viewportCenterWorld() {
   )
 }
 
-function fitImportedImage(size, useGrid) {
+function fitImportedImage(size) {
   const naturalWidth = Math.max(1, Number(size.width) || 1)
   const naturalHeight = Math.max(1, Number(size.height) || 1)
-  if (!useGrid) {
-    return {
-      width: CANVAS_IMAGE_WIDTH,
-      height: Math.round((CANVAS_IMAGE_WIDTH * naturalHeight) / naturalWidth),
-    }
-  }
-  const scale = Math.min(CANVAS_IMAGE_WIDTH / naturalWidth, 480 / naturalHeight)
   return {
-    width: Math.max(1, Math.round(naturalWidth * scale)),
-    height: Math.max(1, Math.round(naturalHeight * scale)),
+    width: CANVAS_IMAGE_WIDTH,
+    height: Math.max(1, Math.round((CANVAS_IMAGE_WIDTH * naturalHeight) / naturalWidth)),
   }
 }
 
-function gridImportPosition(index, count, width, height, anchor) {
+function buildGridImportPlan(displaySizes, anchor) {
+  const count = displaySizes.length
   const columns = Math.min(5, Math.max(1, count))
-  const rows = Math.ceil(count / columns)
-  const cellWidth = CANVAS_IMAGE_WIDTH + 32
-  const cellHeight = 512
-  const startX = anchor.x - (columns * cellWidth) / 2
-  const startY = anchor.y - (rows * cellHeight) / 2
-  const column = index % columns
-  const row = Math.floor(index / columns)
-  return {
-    x: Math.round(startX + column * cellWidth + (cellWidth - width) / 2),
-    y: Math.round(startY + row * cellHeight + (cellHeight - height) / 2),
+  const gap = 32
+  const rowCount = Math.ceil(count / columns)
+  const rowHeights = Array.from({ length: rowCount }, (_, row) =>
+    displaySizes
+      .slice(row * columns, (row + 1) * columns)
+      .reduce((max, size) => Math.max(max, size.height), 0),
+  )
+  const totalWidth = columns * CANVAS_IMAGE_WIDTH + Math.max(0, columns - 1) * gap
+  const totalHeight = rowHeights.reduce((sum, height) => sum + height, 0) +
+    Math.max(0, rowCount - 1) * gap
+  const startX = anchor.x - totalWidth / 2
+  let rowTop = anchor.y - totalHeight / 2
+  const positions = []
+
+  for (let row = 0; row < rowCount; row += 1) {
+    const rowHeight = rowHeights[row]
+    const rowStart = row * columns
+    const rowEnd = Math.min(count, rowStart + columns)
+    for (let index = rowStart; index < rowEnd; index += 1) {
+      const column = index - rowStart
+      positions[index] = {
+        x: Math.round(startX + column * (CANVAS_IMAGE_WIDTH + gap)),
+        y: Math.round(rowTop + (rowHeight - displaySizes[index].height) / 2),
+      }
+    }
+    rowTop += rowHeight + gap
   }
+
+  return positions
 }
 
 async function addFiles(fileList, options = {}) {
@@ -4138,6 +4173,23 @@ async function addFiles(fileList, options = {}) {
 
   const useGrid = options.layout === 'grid'
   const anchor = options.anchor || viewportCenterWorld()
+  const gridNaturalSizes = []
+  if (useGrid) {
+    for (const file of files) {
+      const localUrl = URL.createObjectURL(file)
+      try {
+        const fallback = isVideoFile(file) ? { width: 16, height: 9 } : { width: 1, height: 1 }
+        const size = isVideoFile(file)
+          ? await videoSize(localUrl).catch(() => fallback)
+          : await imageSize(localUrl)
+        gridNaturalSizes.push(size)
+      } finally {
+        URL.revokeObjectURL(localUrl)
+      }
+    }
+  }
+  const gridDisplaySizes = gridNaturalSizes.map((size) => fitImportedImage(size))
+  const gridPositions = useGrid ? buildGridImportPlan(gridDisplaySizes, anchor) : []
   let uploadedCount = 0
   const uploadedLayerIds = []
   const failedFiles = []
@@ -4180,9 +4232,11 @@ async function addFiles(fileList, options = {}) {
 
       if (isVideo) {
         // 视频文件：创建视频图层，按真实比例适配
-        const size = await videoSize(url).catch(() => ({ width: 16, height: 9 }))
-        const layerW = CANVAS_IMAGE_WIDTH
-        const layerH = Math.round((layerW * size.height) / size.width)
+        const size = gridNaturalSizes[fileIndex] ||
+          (await videoSize(url).catch(() => ({ width: 16, height: 9 })))
+        const displaySize = gridDisplaySizes[fileIndex] || fitImportedImage(size)
+        const layerW = displaySize.width
+        const layerH = displaySize.height
         let layerId = ''
         canvas.updateDocument(props.id, (draft) => {
           const index = draft.payload.layers.length
@@ -4191,7 +4245,10 @@ async function addFiles(fileList, options = {}) {
             0,
           )
           const base = selectedLayer.value
-          const gridPosition = gridImportPosition(fileIndex, files.length, layerW, layerH, anchor)
+          const gridPosition = gridPositions[fileIndex] || {
+            x: anchor.x - layerW / 2,
+            y: anchor.y - layerH / 2,
+          }
           const layer = {
             id: `layer-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
             type: 'video',
@@ -4223,8 +4280,8 @@ async function addFiles(fileList, options = {}) {
         uploadedLayerIds.push(layerId)
         uploadedCount += 1
       } else {
-        const size = await imageSize(url)
-        const displaySize = fitImportedImage(size, useGrid)
+        const size = gridNaturalSizes[fileIndex] || (await imageSize(url))
+        const displaySize = gridDisplaySizes[fileIndex] || fitImportedImage(size)
         let layerId = ''
         canvas.updateDocument(props.id, (draft) => {
           const index = draft.payload.layers.length
@@ -4233,13 +4290,10 @@ async function addFiles(fileList, options = {}) {
             0,
           )
           const base = selectedLayer.value
-          const gridPosition = gridImportPosition(
-            fileIndex,
-            files.length,
-            displaySize.width,
-            displaySize.height,
-            anchor,
-          )
+          const gridPosition = gridPositions[fileIndex] || {
+            x: anchor.x - displaySize.width / 2,
+            y: anchor.y - displaySize.height / 2,
+          }
           const layer = {
             id: `layer-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
             name: layerName(index),
@@ -4662,20 +4716,6 @@ function startLayerDrag(event, layer) {
     }
   }
 
-  // 选中图片时置顶为前景：将当前图层 zIndex 设为最高
-  // 但占位图不修改zIndex（保持占位图的优先级，确保占位图始终在最上层）
-  if (layer.type !== 'placeholder') {
-    const maxZ = layers.value.reduce((max, l) => Math.max(max, l.zIndex || 0), 0)
-    const currentZ = layer.zIndex || 0
-    if (currentZ < maxZ) {
-      canvas.updateDocument(props.id, (draft) => {
-        const target = draft.payload.layers.find((l) => l.id === layer.id)
-        if (target) target.zIndex = maxZ + 1
-        return draft
-      })
-    }
-  }
-
   const draggingGroup =
     selectedLayerIds.value.length > 1 && selectedLayerIds.value.includes(layer.id)
   if (!draggingGroup) {
@@ -4684,9 +4724,56 @@ function startLayerDrag(event, layer) {
     selectedLayerIds.value = [layer.id]
   }
   const ids = draggingGroup ? [...selectedLayerIds.value] : [layer.id]
+
+  // 拖动时将整组选中图层提到前景，避免组内只有当前图层置顶而其他图层被遮挡。
+  // 按原 zIndex 保留组内前后关系；占位图沿用原有层级规则。
+  const layerOrder = new Map(layers.value.map((item, index) => [item.id, index]))
+  const foregroundLayers = layers.value
+    .filter((item) => ids.includes(item.id) && item.type !== 'placeholder')
+    .sort(
+      (a, b) =>
+        (Number(a.zIndex) || 0) - (Number(b.zIndex) || 0) ||
+        (layerOrder.get(a.id) || 0) - (layerOrder.get(b.id) || 0),
+    )
+  const foregroundIds = new Set(foregroundLayers.map((item) => item.id))
+  const highestBackgroundZ = layers.value.reduce(
+    (max, item) =>
+      foregroundIds.has(item.id) ? max : Math.max(max, Number(item.zIndex) || 0),
+    0,
+  )
+  const alreadyInFront = foregroundLayers.every(
+    (item) => (Number(item.zIndex) || 0) > highestBackgroundZ,
+  )
+  if (foregroundLayers.length && !alreadyInFront) {
+    const maxZ = layers.value.reduce(
+      (max, item) => Math.max(max, Number(item.zIndex) || 0),
+      0,
+    )
+    canvas.updateDocument(props.id, (draft) => {
+      foregroundLayers.forEach((item, index) => {
+        const target = draft.payload.layers.find((candidate) => candidate.id === item.id)
+        if (target) target.zIndex = maxZ + index + 1
+      })
+      return draft
+    })
+  }
+
+  const dragLayerOrder = layers.value
+    .filter((item) => ids.includes(item.id))
+    .sort(
+      (a, b) =>
+        (Number(a.zIndex) || 0) - (Number(b.zIndex) || 0) ||
+        (layerOrder.get(a.id) || 0) - (layerOrder.get(b.id) || 0),
+    )
+  const dragZById = Object.fromEntries(
+    dragLayerOrder.map((item, index) => [item.id, 200001 + index]),
+  )
+
   dragState.value = {
     pointerId: event.pointerId ?? null,
     captureEl: event.currentTarget,
+    primaryLayerId: layer.id,
+    dragZById,
     ids,
     startX: event.clientX,
     startY: event.clientY,
@@ -4794,7 +4881,7 @@ function stopLayerDrag(event) {
   const ds = dragState.value
   const pointerTravel = Math.hypot(event.clientX - ds.startX, event.clientY - ds.startY)
   if ((event.type === 'pointerup' || event.type === 'mouseup') && pointerTravel <= 6) {
-    layerClickMemory.layerId = ds.ids.length === 1 ? ds.ids[0] : ''
+    layerClickMemory.layerId = ds.primaryLayerId || ds.ids[0] || ''
     layerClickMemory.at = Date.now()
     layerClickMemory.x = event.clientX
     layerClickMemory.y = event.clientY
@@ -7134,6 +7221,8 @@ function startMarquee(event) {
   }
 
   if (event.target !== event.currentTarget) return
+  event.preventDefault()
+  window.getSelection?.()?.removeAllRanges?.()
   const rect = event.currentTarget.getBoundingClientRect()
   event.currentTarget.setPointerCapture(event.pointerId)
   marquee.active = true
@@ -7565,6 +7654,7 @@ onMounted(() => {
   _mounted.value = true
   updateViewportSize()
   window.addEventListener('resize', updateViewportSize)
+  window.addEventListener('resize', handleCropPickerViewportResize)
   window.addEventListener('keydown', onGlobalKeydown)
   window.addEventListener('keyup', onGlobalKeyup)
   window.addEventListener('paste', handleGlobalPaste)
@@ -7677,11 +7767,13 @@ onMounted(() => {
   }
   window.addEventListener('click', onDocClick)
   onBeforeUnmount(() => {
+    finishCropPickerDrag(false)
     window.removeEventListener('keydown', onCtrlDown)
     window.removeEventListener('keyup', onCtrlUp)
     window.removeEventListener('mousemove', onGlobalMouseMove)
     window.removeEventListener('click', onDocClick)
     window.removeEventListener('resize', updateViewportSize)
+    window.removeEventListener('resize', handleCropPickerViewportResize)
     window.removeEventListener('paste', handleGlobalPaste)
     window.removeEventListener('blur', disarmInternalClipboard)
     window.removeEventListener('blur', resetTemporaryPanShortcut)
@@ -7907,28 +7999,44 @@ function transferableImageKey(layer) {
 function copiedLayerSize(layer) {
   const rawWidth = Math.max(1, Number(layer.width || layer.naturalWidth || 320))
   const rawHeight = Math.max(1, Number(layer.height || layer.naturalHeight || 320))
-  const ratio = rawWidth / rawHeight
-  let width = Math.min(360, Math.max(240, rawWidth))
-  let height = width / ratio
-  if (height > 440) {
-    height = 440
-    width = height * ratio
-  }
   return {
-    width: Math.max(120, Math.round(width)),
-    height: Math.max(120, Math.round(height)),
+    width: CANVAS_IMAGE_WIDTH,
+    height: Math.max(1, Math.round((CANVAS_IMAGE_WIDTH * rawHeight) / rawWidth)),
   }
 }
 
-function makeCopiedLayer(layer, index, startY, maxZ) {
-  const { width, height } = copiedLayerSize(layer)
+function copiedLayerPositions(sizes, startY) {
   const columns = 5
-  const column = index % columns
-  const row = Math.floor(index / columns)
+  const columnGap = 40
+  const rowGap = 60
+  const rowCount = Math.ceil(sizes.length / columns)
+  const rowHeights = Array.from({ length: rowCount }, (_, row) =>
+    sizes
+      .slice(row * columns, (row + 1) * columns)
+      .reduce((max, size) => Math.max(max, size.height), 0),
+  )
+  const positions = []
+  let rowTop = startY
+  for (let row = 0; row < rowCount; row += 1) {
+    const rowStart = row * columns
+    const rowEnd = Math.min(sizes.length, rowStart + columns)
+    for (let index = rowStart; index < rowEnd; index += 1) {
+      positions[index] = {
+        x: 140 + (index - rowStart) * (CANVAS_IMAGE_WIDTH + columnGap),
+        y: rowTop,
+      }
+    }
+    rowTop += rowHeights[row] + rowGap
+  }
+  return positions
+}
+
+function makeCopiedLayer(layer, index, maxZ, size, position) {
+  const { width, height } = size
   const copied = JSON.parse(JSON.stringify(layer))
   copied.id = `copy-${Date.now().toString(36)}-${index}-${Math.random().toString(36).slice(2, 7)}`
-  copied.x = 140 + column * 400 + Math.round((360 - width) / 2)
-  copied.y = startY + row * 500
+  copied.x = position.x
+  copied.y = position.y
   copied.width = width
   copied.height = height
   copied.zIndex = maxZ + index + 1
@@ -7979,8 +8087,10 @@ async function copyImagesToCanvas(targetId) {
     (maximum, layer) => Math.max(maximum, Number(layer.zIndex || 0)),
     0,
   )
+  const copiedSizes = uniqueSourceLayers.map(copiedLayerSize)
+  const copiedPositions = copiedLayerPositions(copiedSizes, startY)
   const copiedLayers = uniqueSourceLayers.map((layer, index) =>
-    makeCopiedLayer(layer, index, startY, maxZ),
+    makeCopiedLayer(layer, index, maxZ, copiedSizes[index], copiedPositions[index]),
   )
   const copiedDetectedElements = new Map()
   for (let index = 0; index < uniqueSourceLayers.length; index += 1) {
@@ -8962,28 +9072,129 @@ async function executeHorizontalCut() {
 
 // ====== 宫格裁图 ======
 
-function openCropPicker(x, y, layer) {
+function clampCropPickerOffset(nextX = cropPickerOffset.x, nextY = cropPickerOffset.y) {
+  const picker = cropPickerRef.value
+  if (!picker || !cropPickerOpen.value) return
+
+  const margin = 12
+  const rect = picker.getBoundingClientRect()
+  const centeredLeft = rect.left - cropPickerOffset.x
+  const centeredTop = rect.top - cropPickerOffset.y
+  const minX = margin - centeredLeft
+  const maxX = window.innerWidth - margin - (centeredLeft + rect.width)
+  const minY = margin - centeredTop
+  const maxY = window.innerHeight - margin - (centeredTop + rect.height)
+
+  cropPickerOffset.x = minX <= maxX ? Math.min(maxX, Math.max(minX, nextX)) : 0
+  cropPickerOffset.y = minY <= maxY ? Math.min(maxY, Math.max(minY, nextY)) : 0
+}
+
+function startCropPickerDrag(event) {
+  if (event.button !== 0) return
+  const picker = cropPickerRef.value
+  if (!picker) return
+  event.preventDefault()
+  event.stopPropagation()
+  const margin = 12
+  const rect = picker.getBoundingClientRect()
+  const centeredLeft = rect.left - cropPickerOffset.x
+  const centeredTop = rect.top - cropPickerOffset.y
+  cropPickerDrag.active = true
+  cropPickerDragRuntime.pointerId = event.pointerId
+  cropPickerDragRuntime.startX = event.clientX
+  cropPickerDragRuntime.startY = event.clientY
+  cropPickerDragRuntime.originX = cropPickerOffset.x
+  cropPickerDragRuntime.originY = cropPickerOffset.y
+  cropPickerDragRuntime.currentX = cropPickerOffset.x
+  cropPickerDragRuntime.currentY = cropPickerOffset.y
+  cropPickerDragRuntime.minX = margin - centeredLeft
+  cropPickerDragRuntime.maxX = window.innerWidth - margin - (centeredLeft + rect.width)
+  cropPickerDragRuntime.minY = margin - centeredTop
+  cropPickerDragRuntime.maxY = window.innerHeight - margin - (centeredTop + rect.height)
+  cropPickerDragRuntime.captureEl = event.currentTarget
+  event.currentTarget.setPointerCapture?.(event.pointerId)
+  window.addEventListener('pointermove', moveCropPicker, true)
+  window.addEventListener('pointerup', stopCropPickerDrag, true)
+  window.addEventListener('pointercancel', stopCropPickerDrag, true)
+}
+
+function moveCropPicker(event) {
+  if (!cropPickerDrag.active || event.pointerId !== cropPickerDragRuntime.pointerId) return
+  event.preventDefault()
+  const rawX = cropPickerDragRuntime.originX + event.clientX - cropPickerDragRuntime.startX
+  const rawY = cropPickerDragRuntime.originY + event.clientY - cropPickerDragRuntime.startY
+  const nextX =
+    cropPickerDragRuntime.minX <= cropPickerDragRuntime.maxX
+      ? Math.min(cropPickerDragRuntime.maxX, Math.max(cropPickerDragRuntime.minX, rawX))
+      : 0
+  const nextY =
+    cropPickerDragRuntime.minY <= cropPickerDragRuntime.maxY
+      ? Math.min(cropPickerDragRuntime.maxY, Math.max(cropPickerDragRuntime.minY, rawY))
+      : 0
+
+  cropPickerDragRuntime.currentX = nextX
+  cropPickerDragRuntime.currentY = nextY
+  const picker = cropPickerRef.value
+  if (picker) picker.style.transform = `translate3d(${nextX}px, ${nextY}px, 0)`
+}
+
+function stopCropPickerDrag(event) {
+  if (!cropPickerDrag.active || event.pointerId !== cropPickerDragRuntime.pointerId) return
+  finishCropPickerDrag(true)
+}
+
+function finishCropPickerDrag(commitPosition) {
+  const wasActive = cropPickerDrag.active
+  window.removeEventListener('pointermove', moveCropPicker, true)
+  window.removeEventListener('pointerup', stopCropPickerDrag, true)
+  window.removeEventListener('pointercancel', stopCropPickerDrag, true)
+  try {
+    cropPickerDragRuntime.captureEl?.releasePointerCapture?.(cropPickerDragRuntime.pointerId)
+  } catch {
+    // Pointer capture may already be released by the browser.
+  }
+  if (commitPosition && wasActive) {
+    cropPickerOffset.x = cropPickerDragRuntime.currentX
+    cropPickerOffset.y = cropPickerDragRuntime.currentY
+  }
+  cropPickerDrag.active = false
+  cropPickerDragRuntime.pointerId = null
+  cropPickerDragRuntime.captureEl = null
+}
+
+function openCropPicker(_x, _y, layer) {
   const layerRef = layer || contextMenu.layer
   if (!layerRef) return
+  finishCropPickerDrag(false)
+  cropPickerOffset.x = 0
+  cropPickerOffset.y = 0
   cropPickerOpen.value = true
-  cropPickerX.value = x
-  cropPickerY.value = y
   cropMode.layerId = layerRef.id
   cropMode.rows = 3
   cropMode.cols = 3
   cropMode.selectedCells = new Set()
   closeContextMenu()
+  nextTick(() => clampCropPickerOffset())
 }
 
 function confirmCropPicker() {
+  finishCropPickerDrag(true)
   cropPickerOpen.value = false
   cropMode.active = true
 }
 
 function cancelCropPicker() {
+  finishCropPickerDrag(false)
   cropPickerOpen.value = false
   exitCropMode()
 }
+
+watch(
+  () => [cropMode.rows, cropMode.cols],
+  () => {
+    if (cropPickerOpen.value) nextTick(() => clampCropPickerOffset())
+  },
+)
 
 function enterQuickCrop(cols, rows) {
   const layer = contextMenu.layer
@@ -9295,6 +9506,7 @@ async function loadImageForCrop(layer) {
             'is-panning': panState,
             'is-connecting': connecting.active,
             'is-file-dragging': canvasFileDragActive,
+            'is-marquee-selecting': marquee.active,
           },
         ]"
         @wheel.prevent="wheelZoom"
@@ -9389,6 +9601,7 @@ async function loadImageForCrop(layer) {
                   ? `${layer.height}px`
                   : undefined,
               zIndex: layer.zIndex,
+              '--drag-z-index': dragState?.dragZById?.[layer.id],
               '--canvas-inverse-scale': 1 / viewScale,
             }"
             draggable="false"
@@ -11185,6 +11398,9 @@ async function loadImageForCrop(layer) {
     :selected-layers="selectedCreationLayers"
     :model="chatModel"
     :resolution="chatResolution"
+    :model-options="chatModelOptions"
+    :ratio-options="chatRatioOptions"
+    :resolution-options="chatResolutionOptions"
     :busy="creationRunning"
     @close="creationPanelOpen = false"
     @run="runCanvasCreation"
@@ -11700,8 +11916,21 @@ async function loadImageForCrop(layer) {
   <!-- 宫格裁图选择器 -->
   <Teleport to="body">
     <div v-if="cropPickerOpen" class="uc-crop-picker-backdrop" @click.self="cancelCropPicker">
-      <div class="uc-crop-picker" :style="{ left: cropPickerX + 'px', top: cropPickerY + 'px' }">
-        <h3>宫格裁图</h3>
+      <div
+        ref="cropPickerRef"
+        class="uc-crop-picker"
+        :class="{ 'is-dragging': cropPickerDrag.active }"
+        :style="cropPickerStyle"
+      >
+        <header
+          class="uc-crop-picker-header"
+          :class="{ 'is-dragging': cropPickerDrag.active }"
+          title="拖动弹窗"
+          @pointerdown="startCropPickerDrag"
+        >
+          <h3>宫格裁图</h3>
+          <i class="ri-drag-move-2-line" aria-hidden="true"></i>
+        </header>
         <div class="uc-crop-picker-controls">
           <label>
             行

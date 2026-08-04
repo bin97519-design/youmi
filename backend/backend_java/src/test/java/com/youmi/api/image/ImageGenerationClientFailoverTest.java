@@ -4,7 +4,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -17,7 +16,6 @@ import static org.mockito.Mockito.when;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
-import com.youmi.api.common.ApiException;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -32,20 +30,11 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
 
 /**
- * 回归验证：gettoken 轮询阶段（getTaskInternal → getGetTokenTask → sendGetTokenPost → send）
- * 返回 HTTP 500/599 抛 ApiException 时，getTask 的 try/catch 必须捕获异常并触发 proxy 兜底，
- * 以原始 taskId 透传返回，而不是把异常原样甩给调用方。
- *
- * 同时覆盖「轮询返回带 error 字段的成功响应（不抛异常）」的错误字段分支（574–583 行）。
- *
- * 测试策略：用真实 ObjectMapper + 真实 ImageGenerationProperties（通过 setter 配置 proxy 中转站），
- * 仅用 Mockito 替换底层的 java.net.http.HttpClient（通过 ReflectionTestUtils 注入），
- * 让 gettoken 端点返回 500/599/带 error 字段，proxy 端点返回正常 job_id / status。
- * FailoverState 为私有内部类，通过反射构造并直接注入 failoverStates 映射。
+ * Covers polling errors, the three-minute failover threshold, backup creation
+ * failures, and recovery when the original provider later returns an image.
  */
 class ImageGenerationClientFailoverTest {
 
@@ -53,24 +42,20 @@ class ImageGenerationClientFailoverTest {
 
   // ============ 异常路径：500 ============
   @Test
-  void getToken500PollException_triggersProxyFailover() throws Exception {
+  void getToken500PollException_keepsPrimaryAliveBeforeTimeout() throws Exception {
     ImageGenerationClient client = buildClient(500, "{\"error\":\"internal server error\"}", true);
-    JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
-    ReflectionTestUtils.setField(client, "jdbcTemplate", jdbcTemplate);
 
     ImageGenerationDtos.TaskStatusResponse resp = client.getTask("gettoken:xxx");
 
-    assertNotNull(resp, "getTask 不应抛异常，应返回 proxy 兜底响应");
+    assertNotNull(resp);
     assertEquals("gettoken:xxx", resp.taskId(), "taskId 必须透传为原始值（前端无感知）");
-    assertEquals("proxy", resp.provider(), "异常路径应已切到 proxy 中转站");
+    assertEquals("gettoken", resp.provider());
+    assertEquals("processing", resp.status());
 
-    // 证明：确实命中了 proxy 中转站（47.90.226.52）与失败的 gettoken 主站
-    verify(mockHttpClient, atLeastOnce()).send(
+    verify(mockHttpClient, never()).send(
         argThat(req -> req.uri().toString().contains("47.90.226.52")), any());
     verify(mockHttpClient, atLeastOnce()).send(
         argThat(req -> req.uri().toString().contains("gettoken")), any());
-    verify(jdbcTemplate).update(
-        "UPDATE ym_image_task SET provider = ? WHERE task_id = ?", "proxy", "gettoken:xxx");
   }
 
   @Test
@@ -192,6 +177,48 @@ class ImageGenerationClientFailoverTest {
   }
 
   @Test
+  void timedOutPollException_backupCreationFailureStillAcceptsPrimaryResult() throws Exception {
+    AtomicInteger polls = new AtomicInteger();
+    HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext("/", exchange -> {
+      if (polls.incrementAndGet() == 1) {
+        byte[] payload = "{\"error\":\"temporary gateway error\"}"
+            .getBytes(StandardCharsets.UTF_8);
+        exchange.sendResponseHeaders(500, payload.length);
+        exchange.getResponseBody().write(payload);
+        exchange.close();
+        return;
+      }
+      sendJson(exchange, """
+          {"data":{"status":"completed","progress":100,
+          "result":{"images":[{"url":"https://cdn.example.com/recovered.png"}]}}}
+          """);
+    });
+    server.start();
+    try {
+      ImageGenerationClient client = newApimartDirectClient(serverBaseUrl(server));
+      HttpResponse<String> failedBackupResponse =
+          mockResponse(400, "{\"error\":\"backup create failed\"}");
+      when(mockHttpClient.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
+          .thenReturn(failedBackupResponse);
+      String taskId = "apimart-direct:recover-after-poll-error";
+      getFailoverStates(client).put(taskId,
+          newFailoverState(gptImageRequest(), "apimart-direct", System.currentTimeMillis() - 181_000L));
+
+      ImageGenerationDtos.TaskStatusResponse transientResponse = client.getTask(taskId);
+      ImageGenerationDtos.TaskStatusResponse recoveredResponse = client.getTask(taskId);
+
+      assertEquals("processing", transientResponse.status());
+      assertEquals("apimart-direct", transientResponse.provider());
+      assertEquals("persisting", recoveredResponse.status());
+      assertEquals("https://cdn.example.com/recovered.png", recoveredResponse.imageUrls().get(0));
+      assertFalse(getFailoverStates(client).containsKey(taskId));
+    } finally {
+      server.stop(0);
+    }
+  }
+
+  @Test
   void completedConcurrentPoll_preventsStaleTimeoutFailover() throws Exception {
     CountDownLatch processingRequestEntered = new CountDownLatch(1);
     CountDownLatch releaseProcessingResponse = new CountDownLatch(1);
@@ -257,14 +284,32 @@ class ImageGenerationClientFailoverTest {
 
   // ============ 异常路径：599 ============
   @Test
-  void getToken599PollException_triggersProxyFailover() throws Exception {
+  void getToken599PollException_keepsPrimaryAliveBeforeTimeout() throws Exception {
     ImageGenerationClient client = buildClient(599, "{\"error\":\"bad gateway\"}", true);
 
     ImageGenerationDtos.TaskStatusResponse resp = client.getTask("gettoken:xxx");
 
     assertNotNull(resp);
     assertEquals("gettoken:xxx", resp.taskId());
-    assertEquals("proxy", resp.provider());
+    assertEquals("gettoken", resp.provider());
+    assertEquals("processing", resp.status());
+    verify(mockHttpClient, never()).send(
+        argThat(req -> req.uri().toString().contains("47.90.226.52")), any());
+  }
+
+  @Test
+  void getTokenPollException_afterThreeMinutesTriggersProxyFailover() throws Exception {
+    ImageGenerationClient client = buildClient(500, "{\"error\":\"internal server error\"}", true);
+    ImageGenerationDtos.CreateTaskRequest request = new ImageGenerationDtos.CreateTaskRequest(
+        "a cat", "gemini-3-pro-image-preview", "1:1", "1:1", "2K",
+        null, null, null, null, null, null, null, null, null, null, null);
+    getFailoverStates(client).put("gettoken:xxx",
+        newFailoverState(request, "gettoken", System.currentTimeMillis() - 181_000L));
+
+    ImageGenerationDtos.TaskStatusResponse response = client.getTask("gettoken:xxx");
+
+    assertEquals("proxy", response.provider());
+    assertEquals("gettoken:xxx", response.taskId());
     verify(mockHttpClient, atLeastOnce()).send(
         argThat(req -> req.uri().toString().contains("47.90.226.52")), any());
   }
@@ -302,12 +347,13 @@ class ImageGenerationClientFailoverTest {
 
   // ============ 反向用例：proxy 未配置（无可用备份）→ 异常原样抛出，保留旧行为 ============
   @Test
-  void getTokenPollException_noProxyConfigured_rethrowsOriginalException() throws Exception {
+  void getTokenPollException_noProxyConfigured_keepsPrimaryAlive() throws Exception {
     ImageGenerationClient client = buildClient(500, "{\"error\":\"internal\"}", false);
 
-    ApiException ex = assertThrows(ApiException.class, () -> client.getTask("gettoken:xxx"));
-    assertNotNull(ex);
-    // 确认未触发任何 proxy 兜底调用
+    ImageGenerationDtos.TaskStatusResponse response = client.getTask("gettoken:xxx");
+
+    assertEquals("gettoken", response.provider());
+    assertEquals("processing", response.status());
     verify(mockHttpClient, never()).send(
         argThat(req -> req.uri().toString().contains("47.90.226.52")), any());
   }
@@ -359,7 +405,7 @@ class ImageGenerationClientFailoverTest {
    * 下面的断言据此使用 "xxx" 作为原始 taskId（而非 "apimart:xxx"），与源码实际行为一致。
    */
   @Test
-  void apimartPollFailure_fallsBackDirectlyToProxy() throws Exception {
+  void apimartPollFailure_keepsPrimaryAliveBeforeTimeout() throws Exception {
     ImageGenerationClient client = newApimartClient();
 
     when(mockHttpClient.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
@@ -395,17 +441,18 @@ class ImageGenerationClientFailoverTest {
     assertEquals("apimart", created.provider());
     assertEquals("xxx", created.tasks().get(0).taskId(), "apimart 主通道返回原始 task id（无前缀）");
 
-    // 2) getTask 轮询：apimart 主站返回 500 → 触发 proxy 兜底（注意主通道 task id 无 apimart: 前缀）
+    // A transient poll failure before the threshold keeps the primary task alive.
     ImageGenerationDtos.TaskStatusResponse resp = client.getTask("xxx");
 
-    assertNotNull(resp, "apimart 轮询失败不应抛异常，应返回 proxy 兜底响应");
-    assertEquals("proxy", resp.provider(), "apimart 轮询失败应直接切换到 Proxy");
+    assertNotNull(resp);
+    assertEquals("apimart", resp.provider());
+    assertEquals("processing", resp.status());
     assertEquals("xxx", resp.taskId(), "taskId 必须透传为原始值（前端无感知）");
 
-    // 核心断言：命中 Proxy，GetToken 完全未被调用
+    // Neither fallback provider should be called before the threshold.
     verify(mockHttpClient, never()).send(
         argThat(r -> r.uri().toString().contains("gettoken")), any());
-    verify(mockHttpClient, atLeastOnce()).send(
+    verify(mockHttpClient, never()).send(
         argThat(r -> r.uri().toString().contains("47.90.226.52")), any());
   }
 

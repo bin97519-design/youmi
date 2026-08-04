@@ -768,17 +768,35 @@ public class ImageGenerationClient {
     try {
       primaryResp = getTaskInternal(cleanTaskId);
     } catch (Exception pollError) {
-      // 轮询主任务抛异常（如 GetToken 中转站 500/599）：满足前置条件则触发故障转移兜底
-      if (state != null && failoverStates.get(cleanTaskId) == state
-          && !PROVIDER_ANNES.equals(state.primaryProvider) && !state.failoverTriggered) {
-        System.out.println("[image-failover] poll exception, triggering backup: " + pollError.getMessage());
-        ImageGenerationDtos.TaskStatusResponse backupResp = pollBackupIfTriggered(cleanTaskId, state);
-        if (backupResp != null) {
-          return backupResp;
+      boolean trackedPrimary = state != null
+          && failoverStates.get(cleanTaskId) == state
+          && !PROVIDER_ANNES.equals(state.primaryProvider);
+      if (trackedPrimary && isTransientPollFailure(pollError)) {
+        long elapsed = System.currentTimeMillis() - state.createdAt;
+        if (elapsed >= PROVIDER_TIMEOUT_MS && !state.failoverTriggered) {
+          System.out.println("[image-failover] primary poll is still unavailable after "
+              + (elapsed / 1000) + "s; trying backup: " + pollError.getMessage());
+          ImageGenerationDtos.TaskStatusResponse backupResp =
+              pollBackupIfTriggered(cleanTaskId, state, "timeout");
+          if (backupResp != null) return backupResp;
         }
+
+        // A polling request can time out while the provider task continues normally.
+        // Keep polling the original task, especially when backup creation fails.
+        System.out.println("[image-poll] transient failure; keeping primary task alive: "
+            + pollError.getMessage());
+        return transientPrimaryResponse(cleanTaskId, state, pollError);
       }
-      // 无可用备份（state 为 null / 已触发过 / 备份创建失败）：保持原行为，继续抛出原异常
+
+      if (trackedPrimary && !state.failoverTriggered) {
+        ImageGenerationDtos.TaskStatusResponse backupResp =
+            pollBackupIfTriggered(cleanTaskId, state, "error");
+        if (backupResp != null) return backupResp;
+      }
       throw pollError;
+    }
+    if (state != null && failoverStates.get(cleanTaskId) == state) {
+      state.lastPrimaryResponse = primaryResp;
     }
 
     // 主任务已经出图、正在转存 OSS 时，不再参与超时故障转移。
@@ -792,7 +810,8 @@ public class ImageGenerationClient {
     if (state != null && failoverStates.get(cleanTaskId) == state
         && !PROVIDER_ANNES.equals(state.primaryProvider) && !state.failoverTriggered) {
       if (isTerminalErrorStatus(primaryResp.status(), primaryResp.error())) {
-        ImageGenerationDtos.TaskStatusResponse backupResp = pollBackupIfTriggered(cleanTaskId, state);
+        ImageGenerationDtos.TaskStatusResponse backupResp =
+            pollBackupIfTriggered(cleanTaskId, state, "error");
         if (backupResp != null) {
           return backupResp;
         }
@@ -847,12 +866,13 @@ public class ImageGenerationClient {
    * 以原始 taskId 透传构造返回（对调用方完全无感）。
    * 仅在「存在可用备份链且尚未触发过」时生效；否则返回 null（由调用方自行处理）。
    */
-  private ImageGenerationDtos.TaskStatusResponse pollBackupIfTriggered(String cleanTaskId, FailoverState state)
+  private ImageGenerationDtos.TaskStatusResponse pollBackupIfTriggered(
+      String cleanTaskId, FailoverState state, String reason)
       throws Exception {
     if (state == null || PROVIDER_ANNES.equals(state.primaryProvider) || state.failoverTriggered) {
       return null;
     }
-    triggerBackup(state, "error");
+    triggerBackup(state, reason);
     if (state.failoverTriggered && state.backupTaskId != null) {
       markFallbackProvider(cleanTaskId, state);
       if (!state.failoverLogged) {
@@ -879,6 +899,62 @@ public class ImageGenerationClient {
           backupResp.raw());
     }
     return null;
+  }
+
+  private boolean isTransientPollFailure(Exception error) {
+    Throwable current = error;
+    while (current != null) {
+      if (current instanceof java.io.IOException
+          || current instanceof java.net.http.HttpTimeoutException) {
+        return true;
+      }
+      if (current instanceof ApiException apiError && apiError.getCode() == 504) {
+        return true;
+      }
+      current = current.getCause();
+    }
+
+    String message = error.getMessage() == null ? "" : error.getMessage().toLowerCase();
+    return message.contains("timed out")
+        || message.contains("timeout")
+        || message.contains("io error")
+        || message.contains("connection")
+        || message.contains("ssl/http")
+        || message.contains("empty response")
+        || message.contains("request failed: 500")
+        || message.contains("request failed: 502")
+        || message.contains("request failed: 503")
+        || message.contains("request failed: 504")
+        || message.contains("request failed: 599");
+  }
+
+  private ImageGenerationDtos.TaskStatusResponse transientPrimaryResponse(
+      String taskId, FailoverState state, Exception pollError) {
+    ImageGenerationDtos.TaskStatusResponse previous = state.lastPrimaryResponse;
+    if (previous != null && !isTerminalStatus(previous.status())) {
+      return new ImageGenerationDtos.TaskStatusResponse(
+          previous.provider(),
+          taskId,
+          previous.status(),
+          previous.progress(),
+          previous.imageUrls(),
+          previous.persistStatus(),
+          null,
+          previous.raw());
+    }
+
+    ObjectNode raw = objectMapper.createObjectNode();
+    raw.put("transientPollFailure", true);
+    raw.put("message", pollError.getMessage() == null ? "" : pollError.getMessage());
+    return new ImageGenerationDtos.TaskStatusResponse(
+        state.primaryProvider,
+        taskId,
+        "processing",
+        null,
+        List.of(),
+        null,
+        null,
+        raw);
   }
 
   /** 纯查询（不含故障转移逻辑）：根据 taskId 前缀分发到各 provider 查询实现 */
@@ -2029,6 +2105,7 @@ public class ImageGenerationClient {
     volatile boolean failoverTriggered = false;               // 是否已触发切换
     volatile boolean failoverLogged = false;                  // 切换日志是否已打印
     volatile String failoverReason = "timeout";               // 触发原因：timeout / error
+    volatile ImageGenerationDtos.TaskStatusResponse lastPrimaryResponse = null;
 
     FailoverState(long createdAt, ImageGenerationDtos.CreateTaskRequest originalRequest, String primaryProvider) {
       this.createdAt = createdAt;

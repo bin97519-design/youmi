@@ -17,6 +17,7 @@ const report = ref(null)
 const platformId = ref('')
 const shopId = ref('')
 const shopSearch = ref('')
+const openFilterSelect = ref('')
 
 function formatDate(date) {
   const year = date.getFullYear()
@@ -126,10 +127,16 @@ function closeDatePicker(event) {
   if (openDatePicker.value && !datePickerArea.value?.contains(event.target)) {
     openDatePicker.value = ''
   }
+  if (openFilterSelect.value && !event.target.closest?.('.finance-custom-select')) {
+    openFilterSelect.value = ''
+  }
 }
 
 function closeDatePickerOnEscape(event) {
-  if (event.key === 'Escape') openDatePicker.value = ''
+  if (event.key === 'Escape') {
+    openDatePicker.value = ''
+    openFilterSelect.value = ''
+  }
 }
 
 const availableShops = computed(() =>
@@ -137,6 +144,30 @@ const availableShops = computed(() =>
     (shop) => !platformId.value || String(shop.platformId) === String(platformId.value),
   ),
 )
+const selectedPlatformLabel = computed(
+  () =>
+    props.platforms.find((platform) => String(platform.id) === String(platformId.value))?.name ||
+    '全部平台',
+)
+const selectedShopLabel = computed(() => {
+  const shop = availableShops.value.find((item) => String(item.id) === String(shopId.value))
+  return shop ? `${shop.name}（${shop.platformName || shop.platform}）` : '全部店铺'
+})
+
+function toggleFilterSelect(key) {
+  openDatePicker.value = ''
+  openFilterSelect.value = openFilterSelect.value === key ? '' : key
+}
+
+function selectPlatform(value) {
+  platformId.value = value
+  openFilterSelect.value = ''
+}
+
+function selectShop(value) {
+  shopId.value = value
+  openFilterSelect.value = ''
+}
 
 const filteredShopRows = computed(() => {
   const rows = report.value?.shops || []
@@ -236,6 +267,7 @@ function applyRange(days) {
 
 function resetFilters() {
   openDatePicker.value = ''
+  openFilterSelect.value = ''
   const current = new Date()
   dateFrom.value = formatDate(new Date(current.getFullYear(), current.getMonth(), 1))
   dateTo.value = formatDate(current)
@@ -537,21 +569,99 @@ onBeforeUnmount(() => {
       </div>
       <label>
         <span>平台</span>
-        <select v-model="platformId">
-          <option value="">全部平台</option>
-          <option v-for="platform in platforms" :key="platform.id" :value="String(platform.id)">
-            {{ platform.name }}
-          </option>
-        </select>
+        <div class="finance-custom-select" :class="{ open: openFilterSelect === 'platform' }">
+          <button
+            type="button"
+            class="finance-custom-select-trigger"
+            :aria-expanded="openFilterSelect === 'platform'"
+            @click.stop="toggleFilterSelect('platform')"
+          >
+            <span>{{ selectedPlatformLabel }}</span>
+            <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
+          </button>
+          <div
+            v-if="openFilterSelect === 'platform'"
+            class="finance-custom-select-menu"
+            role="listbox"
+          >
+            <button
+              type="button"
+              class="finance-custom-select-option"
+              :class="{ active: !platformId }"
+              role="option"
+              :aria-selected="!platformId"
+              @click.stop="selectPlatform('')"
+            >
+              <span>全部平台</span>
+              <i v-if="!platformId" class="ri-check-line" aria-hidden="true"></i>
+            </button>
+            <button
+              v-for="platform in platforms"
+              :key="platform.id"
+              type="button"
+              class="finance-custom-select-option"
+              :class="{ active: String(platformId) === String(platform.id) }"
+              role="option"
+              :aria-selected="String(platformId) === String(platform.id)"
+              @click.stop="selectPlatform(String(platform.id))"
+            >
+              <span>{{ platform.name }}</span>
+              <i
+                v-if="String(platformId) === String(platform.id)"
+                class="ri-check-line"
+                aria-hidden="true"
+              ></i>
+            </button>
+          </div>
+        </div>
       </label>
       <label>
         <span>店铺</span>
-        <select v-model="shopId">
-          <option value="">全部店铺</option>
-          <option v-for="shop in availableShops" :key="shop.id" :value="String(shop.id)">
-            {{ shop.name }}（{{ shop.platformName || shop.platform }}）
-          </option>
-        </select>
+        <div class="finance-custom-select" :class="{ open: openFilterSelect === 'shop' }">
+          <button
+            type="button"
+            class="finance-custom-select-trigger"
+            :aria-expanded="openFilterSelect === 'shop'"
+            @click.stop="toggleFilterSelect('shop')"
+          >
+            <span>{{ selectedShopLabel }}</span>
+            <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
+          </button>
+          <div
+            v-if="openFilterSelect === 'shop'"
+            class="finance-custom-select-menu finance-custom-select-menu--shop"
+            role="listbox"
+          >
+            <button
+              type="button"
+              class="finance-custom-select-option"
+              :class="{ active: !shopId }"
+              role="option"
+              :aria-selected="!shopId"
+              @click.stop="selectShop('')"
+            >
+              <span>全部店铺</span>
+              <i v-if="!shopId" class="ri-check-line" aria-hidden="true"></i>
+            </button>
+            <button
+              v-for="shop in availableShops"
+              :key="shop.id"
+              type="button"
+              class="finance-custom-select-option"
+              :class="{ active: String(shopId) === String(shop.id) }"
+              role="option"
+              :aria-selected="String(shopId) === String(shop.id)"
+              @click.stop="selectShop(String(shop.id))"
+            >
+              <span>{{ shop.name }}（{{ shop.platformName || shop.platform }}）</span>
+              <i
+                v-if="String(shopId) === String(shop.id)"
+                class="ri-check-line"
+                aria-hidden="true"
+              ></i>
+            </button>
+          </div>
+        </div>
       </label>
       <button type="button" class="finance-query" :disabled="loading" @click="loadReport">
         <i
@@ -1085,6 +1195,122 @@ onBeforeUnmount(() => {
   background: #111827;
 }
 
+.finance-custom-select {
+  position: relative;
+  min-width: 148px;
+}
+
+.finance-custom-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  height: 36px;
+  padding: 0 9px 0 11px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 9px;
+  background: #111827;
+  color: #e2e8f0;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.finance-custom-select-trigger > span,
+.finance-custom-select-option > span {
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.finance-custom-select-trigger > i {
+  flex: 0 0 auto;
+  color: #94a3b8;
+  font-size: 17px;
+  transition: transform 140ms ease;
+}
+
+.finance-custom-select-trigger:hover {
+  border-color: rgba(34, 211, 238, 0.58);
+  background: #172033;
+}
+
+.finance-custom-select.open .finance-custom-select-trigger {
+  border-color: #22d3ee;
+  box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.14);
+}
+
+.finance-custom-select.open .finance-custom-select-trigger > i {
+  transform: rotate(180deg);
+}
+
+.finance-custom-select-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  left: 0;
+  z-index: 60;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 10px;
+  background: #111827;
+  box-shadow: 0 18px 42px rgba(2, 6, 23, 0.48);
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.4) transparent;
+}
+
+.finance-custom-select-menu--shop {
+  min-width: min(280px, calc(100vw - 32px));
+}
+
+.finance-custom-select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #cbd5e1;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.finance-custom-select-option:hover {
+  background: rgba(51, 65, 85, 0.72);
+  color: #f8fafc;
+}
+
+.finance-custom-select-option.active {
+  background: rgba(34, 211, 238, 0.14);
+  color: #67e8f9;
+  font-weight: 700;
+}
+
+.finance-custom-select-option > i {
+  flex: 0 0 auto;
+  color: currentColor;
+  font-size: 16px;
+}
+
 .finance-range-shortcuts {
   align-self: end;
 }
@@ -1262,6 +1488,47 @@ td small {
   border-color: #dbe3ef;
   color: #1e293b;
   background: #f8fafc;
+}
+
+:global([data-theme='light']) .finance-custom-select-trigger {
+  border-color: #dbe3ef;
+  color: #1e293b;
+  background: #f8fafc;
+}
+
+:global([data-theme='light']) .finance-custom-select-trigger > i {
+  color: #64748b;
+}
+
+:global([data-theme='light']) .finance-custom-select-trigger:hover {
+  border-color: #0891b2;
+  background: #f1f5f9;
+}
+
+:global([data-theme='light']) .finance-custom-select.open .finance-custom-select-trigger {
+  border-color: #0891b2;
+  box-shadow: 0 0 0 2px rgba(8, 145, 178, 0.13);
+}
+
+:global([data-theme='light']) .finance-custom-select-menu {
+  border-color: #dbe3ef;
+  background: #fff;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
+  scrollbar-color: rgba(100, 116, 139, 0.36) transparent;
+}
+
+:global([data-theme='light']) .finance-custom-select-option {
+  color: #475569;
+}
+
+:global([data-theme='light']) .finance-custom-select-option:hover {
+  color: #0f172a;
+  background: #f1f5f9;
+}
+
+:global([data-theme='light']) .finance-custom-select-option.active {
+  color: #0e7490;
+  background: #cffafe;
 }
 
 :global([data-theme='light']) .finance-calendar {

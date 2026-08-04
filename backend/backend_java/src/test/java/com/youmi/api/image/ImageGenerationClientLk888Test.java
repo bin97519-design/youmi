@@ -9,8 +9,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
@@ -92,8 +95,10 @@ class ImageGenerationClientLk888Test {
     try {
       ImageGenerationClient client = new ImageGenerationClient(
           objectMapper, properties(server, true, false));
+      ImageGenerationDtos.CreateTaskRequest request = request("banana2", "1:1", "1K", null);
       ImageGenerationDtos.CreateTaskResponse created =
-          client.createTask(request("banana2", "1:1", "1K", null));
+          client.createTask(request);
+      ageFailoverState(client, created.tasks().get(0).taskId(), request, "gettoken");
       ImageGenerationDtos.TaskStatusResponse status =
           client.getTask(created.tasks().get(0).taskId());
 
@@ -106,6 +111,25 @@ class ImageGenerationClientLk888Test {
     } finally {
       server.stop(0);
     }
+  }
+
+  @SuppressWarnings("unchecked")
+  private void ageFailoverState(
+      ImageGenerationClient client,
+      String taskId,
+      ImageGenerationDtos.CreateTaskRequest request,
+      String provider) throws Exception {
+    Class<?> stateClass = Class.forName(
+        "com.youmi.api.image.ImageGenerationClient$FailoverState");
+    Constructor<?> constructor = stateClass.getDeclaredConstructor(
+        long.class, ImageGenerationDtos.CreateTaskRequest.class, String.class);
+    constructor.setAccessible(true);
+    Object state = constructor.newInstance(
+        System.currentTimeMillis() - 181_000L, request, provider);
+
+    Field statesField = ImageGenerationClient.class.getDeclaredField("failoverStates");
+    statesField.setAccessible(true);
+    ((Map<String, Object>) statesField.get(client)).put(taskId, state);
   }
 
   @Test
