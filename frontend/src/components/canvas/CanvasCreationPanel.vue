@@ -36,10 +36,16 @@ const detailScreens = ref([])
 const detailPlanning = ref(false)
 const detailError = ref('')
 const detailNotice = ref('')
+const orderedLayers = ref([])
+const productLayerCount = ref(0)
+const draggedLayerIndex = ref(-1)
+const dragTargetIndex = ref(-1)
+const activeLayerDropZone = ref('')
 
-const product = computed(() => props.selectedLayers[0] || null)
-const references = computed(() => props.selectedLayers.slice(1))
-const canRunMain = computed(() => Boolean(product.value && references.value.length && !props.busy))
+const products = computed(() => orderedLayers.value.slice(0, productLayerCount.value))
+const product = computed(() => products.value[0] || null)
+const references = computed(() => orderedLayers.value.slice(productLayerCount.value))
+const canRunMain = computed(() => Boolean(products.value.length && references.value.length && !props.busy))
 const selectedDemandCards = computed(() => demandCards.value.filter((card) => card.selected))
 const canPlanDemands = computed(() =>
   Boolean(product.value && demandProductInfo.value.trim() && !demandPlanning.value && !props.busy),
@@ -62,15 +68,32 @@ const canRunDetail = computed(() =>
 )
 
 watch(
+  () =>
+    props.selectedLayers
+      .map((layer, index) => `${layer?.id || index}:${layer?.url || ''}`)
+      .join('|'),
+  () => {
+    orderedLayers.value = [...props.selectedLayers]
+    productLayerCount.value = props.selectedLayers.length ? 1 : 0
+    resetLayerDrag()
+  },
+  { immediate: true },
+)
+
+watch(
   () => props.open,
   (open) => {
-    if (!open) {
-      extra.value = ''
-      demandError.value = ''
-      demandNotice.value = ''
-      detailError.value = ''
-      detailNotice.value = ''
+    if (open) {
+      orderedLayers.value = [...props.selectedLayers]
+      productLayerCount.value = props.selectedLayers.length ? 1 : 0
+      resetLayerDrag()
+      return
     }
+    extra.value = ''
+    demandError.value = ''
+    demandNotice.value = ''
+    detailError.value = ''
+    detailNotice.value = ''
   },
 )
 
@@ -89,17 +112,116 @@ function gcd(a, b) {
   return b ? gcd(b, a % b) : Math.max(1, a)
 }
 
+function beginLayerDrag(index, event) {
+  draggedLayerIndex.value = index
+  dragTargetIndex.value = index
+  if (!event?.dataTransfer) return
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData('text/plain', String(index))
+}
+
+function enterLayerDropTarget(index) {
+  if (draggedLayerIndex.value >= 0) dragTargetIndex.value = index
+}
+
+function enterLayerDropZone(zone, event) {
+  if (draggedLayerIndex.value < 0) return
+  activeLayerDropZone.value = zone
+  if (event?.dataTransfer) {
+    event.dataTransfer.dropEffect = 'move'
+  }
+}
+
+function leaveLayerDropZone(zone, event) {
+  if (event?.currentTarget?.contains(event.relatedTarget)) return
+  if (activeLayerDropZone.value === zone) activeLayerDropZone.value = ''
+}
+
+function swapLayerPositions(targetIndex, event) {
+  const transferredIndex = Number(event?.dataTransfer?.getData('text/plain'))
+  const sourceIndex = draggedLayerIndex.value >= 0 ? draggedLayerIndex.value : transferredIndex
+  if (
+    !Number.isInteger(sourceIndex) ||
+    sourceIndex < 0 ||
+    sourceIndex >= orderedLayers.value.length ||
+    targetIndex < 0 ||
+    targetIndex >= orderedLayers.value.length ||
+    sourceIndex === targetIndex
+  ) {
+    resetLayerDrag()
+    return
+  }
+
+  const nextLayers = [...orderedLayers.value]
+  ;[nextLayers[sourceIndex], nextLayers[targetIndex]] = [
+    nextLayers[targetIndex],
+    nextLayers[sourceIndex],
+  ]
+  orderedLayers.value = nextLayers
+  invalidateCreationPlans()
+  resetLayerDrag()
+}
+
+function dropIntoLayerZone(zone) {
+  const sourceIndex = draggedLayerIndex.value
+  if (sourceIndex >= 0) {
+    moveLayerIntoZone(sourceIndex, zone)
+  }
+  resetLayerDrag()
+}
+
+function moveLayerIntoZone(sourceIndex, zone) {
+  if (sourceIndex < 0 || sourceIndex >= orderedLayers.value.length) return
+  const sourceZone = sourceIndex < productLayerCount.value ? 'product' : 'references'
+  if (sourceZone === zone) return
+
+  const nextLayers = [...orderedLayers.value]
+  const [movingLayer] = nextLayers.splice(sourceIndex, 1)
+  if (!movingLayer) return
+
+  if (sourceZone === 'product') productLayerCount.value -= 1
+  if (zone === 'product') {
+    nextLayers.splice(productLayerCount.value, 0, movingLayer)
+    productLayerCount.value += 1
+  } else {
+    nextLayers.push(movingLayer)
+  }
+  orderedLayers.value = nextLayers
+  invalidateCreationPlans()
+}
+
+function removeCreationLayer(index) {
+  if (index < 0 || index >= orderedLayers.value.length) return
+  if (index < productLayerCount.value) productLayerCount.value -= 1
+  orderedLayers.value = orderedLayers.value.filter((_, layerIndex) => layerIndex !== index)
+  invalidateCreationPlans()
+  resetLayerDrag()
+}
+
+function invalidateCreationPlans() {
+  demandCards.value = []
+  detailScreens.value = []
+  demandNotice.value = ''
+  detailNotice.value = ''
+}
+
+function resetLayerDrag() {
+  draggedLayerIndex.value = -1
+  dragTargetIndex.value = -1
+  activeLayerDropZone.value = ''
+}
+
 function runMainImages() {
   if (!canRunMain.value) return
   const prompt = expandMainImagePrompt(mode.value, extra.value)
   emit('run', {
     type: 'main-image',
-    sourceIds: [product.value.id],
+    sourceIds: products.value.map((item) => item.id),
     jobs: references.value.map((reference, index) => ({
       name: `${mode.value === 'layout' ? '主图复刻' : '风格迁移'} ${index + 1}`,
       prompt,
-      imageUrls: [product.value.url, reference.url],
-      sourceIds: [product.value.id, reference.id],
+      imageUrls: [...products.value.map((item) => item.url), reference.url],
+      sourceIds: [...products.value.map((item) => item.id), reference.id],
       previewUrl: product.value.url,
       aspectWidth: reference.naturalWidth || reference.width,
       aspectHeight: reference.naturalHeight || reference.height,
@@ -124,7 +246,7 @@ async function planDemands() {
       },
       body: JSON.stringify({
         productInfo: demandProductInfo.value.trim(),
-        productImages: [product.value.url],
+        productImages: products.value.map((item) => item.url),
         count: Number(demandCount.value) || 6,
         platform: '淘宝/天猫',
         style: demandStyle.value.trim(),
@@ -161,7 +283,7 @@ function runDemands() {
   if (!canRunDemands.value) return
   emit('run', {
     type: 'demand',
-    sourceIds: [product.value.id],
+    sourceIds: products.value.map((item) => item.id),
     jobs: selectedDemandCards.value.map((card) => ({
       name: `${card.dimension || '需求'} · ${card.title || card.index}`,
       prompt: [
@@ -172,8 +294,8 @@ function runDemands() {
       ]
         .filter(Boolean)
         .join('\n'),
-      imageUrls: [product.value.url],
-      sourceIds: [product.value.id],
+      imageUrls: products.value.map((item) => item.url),
+      sourceIds: products.value.map((item) => item.id),
       previewUrl: product.value.url,
       aspectWidth: product.value.naturalWidth || product.value.width,
       aspectHeight: product.value.naturalHeight || product.value.height,
@@ -198,7 +320,7 @@ async function planDetail() {
       },
       body: JSON.stringify({
         productInfo: detailProductInfo.value.trim(),
-        productImages: [product.value.url],
+        productImages: products.value.map((item) => item.url),
         referenceImages: references.value.map((reference) => reference.url),
         count: Number(detailCount.value) || 6,
         platform: '淘宝/天猫',
@@ -241,7 +363,7 @@ function runDetail() {
   if (!canRunDetail.value) return
   emit('run', {
     type: 'detail',
-    sourceIds: [product.value.id],
+    sourceIds: products.value.map((item) => item.id),
     jobs: selectedDetailScreens.value.map((screen) => {
       const reference =
         Number.isInteger(screen.referenceIndex) && screen.referenceIndex >= 0
@@ -258,8 +380,8 @@ function runDetail() {
         ]
           .filter(Boolean)
           .join('\n'),
-        imageUrls: [product.value.url, reference?.url].filter(Boolean),
-        sourceIds: [product.value.id, reference?.id].filter(Boolean),
+        imageUrls: [...products.value.map((item) => item.url), reference?.url].filter(Boolean),
+        sourceIds: [...products.value.map((item) => item.id), reference?.id].filter(Boolean),
         previewUrl: product.value.url,
         aspectWidth: aspectSource.naturalWidth || aspectSource.width,
         aspectHeight: aspectSource.naturalHeight || aspectSource.height,
@@ -311,23 +433,91 @@ function runDetail() {
           </div>
 
           <div class="ccp-selection">
-            <div>
-              <span>产品图</span>
-              <figure v-if="product">
-                <img :src="product.url" alt="" />
-                <figcaption>{{ product.name || '产品图' }}</figcaption>
-              </figure>
-              <p v-else>请先在画布选中产品图。</p>
+            <div
+              class="ccp-layer-zone"
+              :class="{ 'zone-active': activeLayerDropZone === 'product' }"
+              @dragover.stop.prevent="enterLayerDropZone('product', $event)"
+              @dragleave="leaveLayerDropZone('product', $event)"
+              @drop.stop.prevent="dropIntoLayerZone('product')"
+            >
+              <span>产品图 · {{ products.length }}</span>
+              <div class="ccp-product-list">
+                <figure
+                  v-for="(item, index) in products"
+                  :key="item.id"
+                  class="ccp-draggable-layer"
+                  :class="{
+                    dragging: draggedLayerIndex === index,
+                    'drag-target': dragTargetIndex === index && draggedLayerIndex !== index,
+                  }"
+                  draggable="true"
+                  title="拖到参考图区空白处可移入，拖到图片上可交换"
+                  @dragstart="beginLayerDrag(index, $event)"
+                  @dragenter.prevent="enterLayerDropTarget(index)"
+                  @dragover.prevent
+                  @drop.stop.prevent="swapLayerPositions(index, $event)"
+                  @dragend="resetLayerDrag"
+                >
+                  <img :src="item.url" alt="" />
+                  <button
+                    type="button"
+                    class="ccp-layer-remove"
+                    :aria-label="`删除${item.name || '产品图'}`"
+                    title="删除图片"
+                    draggable="false"
+                    @pointerdown.stop
+                    @click.stop="removeCreationLayer(index)"
+                  >
+                    <i class="ri-close-line" aria-hidden="true"></i>
+                  </button>
+                  <figcaption>{{ item.name || '产品图' }}</figcaption>
+                </figure>
+                <p v-if="!products.length">把图片拖入产品图区。</p>
+              </div>
             </div>
-            <div>
+            <div
+              class="ccp-layer-zone"
+              :class="{ 'zone-active': activeLayerDropZone === 'references' }"
+              @dragover.stop.prevent="enterLayerDropZone('references', $event)"
+              @dragleave="leaveLayerDropZone('references', $event)"
+              @drop.stop.prevent="dropIntoLayerZone('references')"
+            >
               <span>参考图 · {{ references.length }}</span>
-              <div v-if="references.length" class="ccp-reference-list">
-                <figure v-for="reference in references" :key="reference.id">
+              <div class="ccp-reference-list">
+                <figure
+                  v-for="(reference, index) in references"
+                  :key="reference.id"
+                  class="ccp-draggable-layer"
+                  :class="{
+                    dragging: draggedLayerIndex === productLayerCount + index,
+                    'drag-target':
+                      dragTargetIndex === productLayerCount + index &&
+                      draggedLayerIndex !== productLayerCount + index,
+                  }"
+                  draggable="true"
+                  title="拖到产品图区空白处可移入，拖到图片上可交换"
+                  @dragstart="beginLayerDrag(productLayerCount + index, $event)"
+                  @dragenter.prevent="enterLayerDropTarget(productLayerCount + index)"
+                  @dragover.prevent
+                  @drop.stop.prevent="swapLayerPositions(productLayerCount + index, $event)"
+                  @dragend="resetLayerDrag"
+                >
                   <img :src="reference.url" alt="" />
+                  <button
+                    type="button"
+                    class="ccp-layer-remove"
+                    :aria-label="`删除${reference.name || '参考图'}`"
+                    title="删除图片"
+                    draggable="false"
+                    @pointerdown.stop
+                    @click.stop="removeCreationLayer(productLayerCount + index)"
+                  >
+                    <i class="ri-close-line" aria-hidden="true"></i>
+                  </button>
                   <figcaption>{{ reference.name || '参考图' }}</figcaption>
                 </figure>
+                <p v-if="!references.length">按住 Shift 再选一张或多张参考图。</p>
               </div>
-              <p v-else>按住 Shift 再选一张或多张参考图。</p>
             </div>
           </div>
 
@@ -417,20 +607,86 @@ function runDetail() {
         <template v-else>
           <div class="ccp-demand-input">
             <div class="ccp-product-thumb">
-              <span>产品图</span>
-              <figure v-if="product">
-                <img :src="product.url" alt="" />
-                <figcaption>{{ product.name || '产品图' }}</figcaption>
-              </figure>
-              <p v-else>请先在画布选中一张产品图。</p>
+              <span>产品图 · {{ products.length }}</span>
+              <div
+                class="ccp-detail-product-zone"
+                :class="{ 'zone-active': activeLayerDropZone === 'product' }"
+                @dragover.stop.prevent="enterLayerDropZone('product', $event)"
+                @dragleave="leaveLayerDropZone('product', $event)"
+                @drop.stop.prevent="dropIntoLayerZone('product')"
+              >
+                <figure
+                  v-for="(item, index) in products"
+                  :key="item.id"
+                  class="ccp-draggable-layer"
+                  :class="{
+                    dragging: draggedLayerIndex === index,
+                    'drag-target': dragTargetIndex === index && draggedLayerIndex !== index,
+                  }"
+                  draggable="true"
+                  title="拖到参考图区空白处可移入，拖到图片上可交换"
+                  @dragstart="beginLayerDrag(index, $event)"
+                  @dragenter.prevent="enterLayerDropTarget(index)"
+                  @dragover.prevent
+                  @drop.stop.prevent="swapLayerPositions(index, $event)"
+                  @dragend="resetLayerDrag"
+                >
+                  <img :src="item.url" alt="" />
+                  <button
+                    type="button"
+                    class="ccp-layer-remove compact"
+                    :aria-label="`删除${item.name || '产品图'}`"
+                    title="删除图片"
+                    draggable="false"
+                    @pointerdown.stop
+                    @click.stop="removeCreationLayer(index)"
+                  >
+                    <i class="ri-close-line" aria-hidden="true"></i>
+                  </button>
+                  <figcaption>{{ item.name || '产品图' }}</figcaption>
+                </figure>
+                <p v-if="!products.length">把图片拖入产品图区。</p>
+              </div>
               <span class="ccp-reference-summary">参考图 · {{ references.length }}</span>
-              <div v-if="references.length" class="ccp-mini-references">
-                <img
-                  v-for="reference in references"
+              <div
+                class="ccp-mini-references"
+                :class="{ 'zone-active': activeLayerDropZone === 'references' }"
+                @dragover.stop.prevent="enterLayerDropZone('references', $event)"
+                @dragleave="leaveLayerDropZone('references', $event)"
+                @drop.stop.prevent="dropIntoLayerZone('references')"
+              >
+                <div
+                  v-for="(reference, index) in references"
                   :key="reference.id"
-                  :src="reference.url"
-                  alt=""
-                />
+                  class="ccp-mini-reference ccp-draggable-layer"
+                  :class="{
+                    dragging: draggedLayerIndex === productLayerCount + index,
+                    'drag-target':
+                      dragTargetIndex === productLayerCount + index &&
+                      draggedLayerIndex !== productLayerCount + index,
+                  }"
+                  draggable="true"
+                  title="拖到产品图区空白处可移入，拖到图片上可交换"
+                  @dragstart="beginLayerDrag(productLayerCount + index, $event)"
+                  @dragenter.prevent="enterLayerDropTarget(productLayerCount + index)"
+                  @dragover.prevent
+                  @drop.stop.prevent="swapLayerPositions(productLayerCount + index, $event)"
+                  @dragend="resetLayerDrag"
+                >
+                  <img :src="reference.url" alt="" />
+                  <button
+                    type="button"
+                    class="ccp-layer-remove compact"
+                    :aria-label="`删除${reference.name || '参考图'}`"
+                    title="删除图片"
+                    draggable="false"
+                    @pointerdown.stop
+                    @click.stop="removeCreationLayer(productLayerCount + index)"
+                  >
+                    <i class="ri-close-line" aria-hidden="true"></i>
+                  </button>
+                </div>
+                <span v-if="!references.length" class="ccp-mini-empty">暂无参考图</span>
               </div>
             </div>
             <div class="ccp-demand-fields">
@@ -670,6 +926,21 @@ function runDetail() {
   border-radius: 12px;
   background: var(--canvas-surface);
 }
+.ccp-layer-zone,
+.ccp-detail-product-zone,
+.ccp-mini-references {
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    box-shadow 140ms ease;
+}
+.ccp-layer-zone.zone-active,
+.ccp-detail-product-zone.zone-active,
+.ccp-mini-references.zone-active {
+  border-color: var(--canvas-accent-border);
+  background: var(--canvas-accent-soft);
+  box-shadow: inset 0 0 0 1px var(--canvas-accent);
+}
 .ccp-selection > div > span,
 .ccp-extra > span {
   display: block;
@@ -678,15 +949,72 @@ function runDetail() {
   font-size: 12px;
   font-weight: 700;
 }
+.ccp-product-list,
 .ccp-reference-list {
   display: flex;
+  min-height: 116px;
+  align-items: flex-start;
   gap: 8px;
   overflow-x: auto;
 }
+.ccp-product-list > p,
+.ccp-reference-list > p {
+  align-self: center;
+}
 .ccp-selection figure {
+  position: relative;
   width: 96px;
   flex: 0 0 96px;
   margin: 0;
+}
+.ccp-draggable-layer {
+  cursor: grab;
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease,
+    box-shadow 140ms ease;
+}
+.ccp-draggable-layer:active {
+  cursor: grabbing;
+}
+.ccp-draggable-layer.dragging {
+  opacity: 0.42;
+  transform: scale(0.97);
+}
+.ccp-draggable-layer.drag-target {
+  border-radius: 9px;
+  box-shadow: 0 0 0 2px var(--canvas-accent);
+}
+.ccp-layer-remove {
+  position: absolute;
+  z-index: 2;
+  top: 5px;
+  right: 5px;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 50%;
+  background: rgba(16, 20, 26, 0.72);
+  color: #fff;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.84;
+}
+.ccp-layer-remove:hover,
+.ccp-layer-remove:focus-visible {
+  background: #d14343;
+  opacity: 1;
+}
+.ccp-layer-remove.compact {
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  font-size: 12px;
 }
 .ccp-selection img {
   width: 96px;
@@ -742,8 +1070,28 @@ function runDetail() {
   font-weight: 700;
 }
 .ccp-product-thumb figure {
+  position: relative;
   width: 126px;
   margin: 0;
+}
+.ccp-detail-product-zone {
+  display: flex;
+  min-width: 0;
+  min-height: 150px;
+  gap: 5px;
+  padding: 6px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  overflow-x: auto;
+}
+.ccp-detail-product-zone figure {
+  width: 54px;
+  flex: 0 0 54px;
+}
+.ccp-product-thumb .ccp-detail-product-zone img {
+  width: 54px;
+  height: 72px;
+  border-radius: 7px;
 }
 .ccp-product-thumb img {
   width: 126px;
@@ -776,15 +1124,30 @@ function runDetail() {
 }
 .ccp-mini-references {
   display: flex;
+  min-height: 50px;
   gap: 5px;
   margin-top: 7px;
+  padding: 4px;
+  border: 1px solid transparent;
+  border-radius: 8px;
   overflow-x: auto;
 }
-.ccp-mini-references img {
+.ccp-mini-empty {
+  align-self: center;
+  color: var(--canvas-text-subtle);
+  font-size: 10px;
+}
+.ccp-mini-reference {
+  position: relative;
   width: 34px;
   height: 46px;
   flex: 0 0 34px;
+  overflow: hidden;
   border-radius: 6px;
+}
+.ccp-mini-reference img {
+  width: 34px;
+  height: 46px;
   background: var(--canvas-surface-hover);
   object-fit: cover;
 }
