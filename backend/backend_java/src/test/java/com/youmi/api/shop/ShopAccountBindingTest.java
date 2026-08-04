@@ -231,41 +231,33 @@ class ShopAccountBindingTest {
   // ===================== 注册绑定校验 =====================
 
   @Test
-  @DisplayName("注册不传 shopId：200，DB shop_id 为 NULL（店铺由后台后续分配）")
+  @DisplayName("开放注册已关闭：不传 shopId 也拒绝")
   void register_emptyShop() throws Exception {
     MvcResult r = reqPost("/api/auth/register", null, "{\"account\":\"nu1\",\"password\":\"p\"}");
-    assertEquals(200, r.getResponse().getStatus(), r.getResponse().getContentAsString());
-    Long dbShop = jdbcTemplate.queryForObject(
-        "SELECT shop_id FROM ym_sys_user WHERE account='nu1'", Long.class);
-    assertTrue(dbShop == null, "注册未传 shopId 时 shop_id 应为 NULL");
+    assertEquals(403, r.getResponse().getStatus(), r.getResponse().getContentAsString());
   }
 
   @Test
-  @DisplayName("注册 shopId 不存在：400，文案含「请选择有效的店铺」")
+  @DisplayName("开放注册已关闭：传入不存在店铺仍拒绝")
   void register_shopNotExists() throws Exception {
     MvcResult r = reqPost("/api/auth/register", null, "{\"account\":\"nu2\",\"password\":\"p\",\"shopId\":999}");
-    assertEquals(400, r.getResponse().getStatus(), r.getResponse().getContentAsString());
-    assertTrue(msg(r).contains("请选择有效的店铺"), msg(r));
+    assertEquals(403, r.getResponse().getStatus(), r.getResponse().getContentAsString());
   }
 
   @Test
-  @DisplayName("注册 shopId 为 DISABLED 店铺：400，文案含「请选择有效的店铺」")
+  @DisplayName("开放注册已关闭：传入停用店铺仍拒绝")
   void register_disabledShop() throws Exception {
     MvcResult r = reqPost("/api/auth/register", null,
         "{\"account\":\"nu3\",\"password\":\"p\",\"shopId\":" + SHOP_B + "}");
-    assertEquals(400, r.getResponse().getStatus(), r.getResponse().getContentAsString());
-    assertTrue(msg(r).contains("请选择有效的店铺"), msg(r));
+    assertEquals(403, r.getResponse().getStatus(), r.getResponse().getContentAsString());
   }
 
   @Test
-  @DisplayName("注册正常绑定店铺：200，DB ym_sys_user.shop_id 写入")
+  @DisplayName("开放注册已关闭：有效店铺也不能自助注册")
   void register_bindShop() throws Exception {
     MvcResult r = reqPost("/api/auth/register", null,
         "{\"account\":\"nu4\",\"password\":\"p\",\"shopId\":" + SHOP_A + "}");
-    assertEquals(200, r.getResponse().getStatus(), r.getResponse().getContentAsString());
-    Long dbShop = jdbcTemplate.queryForObject(
-        "SELECT shop_id FROM ym_sys_user WHERE account='nu4'", Long.class);
-    assertEquals(SHOP_A, dbShop, "注册应写入 shop_id");
+    assertEquals(403, r.getResponse().getStatus(), r.getResponse().getContentAsString());
   }
 
   // ===================== 后台改店 / 筛选 =====================

@@ -104,7 +104,7 @@ public class AdminService {
     String password = normalizeRequired(request.password(), "密码不能为空");
     String nickname = StringUtils.hasText(request.nickname()) ? request.nickname().trim() : account;
     String status = normalizeStatus(request.status());
-    int miValue = request.miValue() == null ? 0 : Math.max(0, request.miValue());
+    int miValue = 0;
     String planName = StringUtils.hasText(request.planName()) ? request.planName().trim() : "普通用户";
     Long shopId = request.shopId();
     String shopName = request.shopName();
@@ -169,12 +169,11 @@ public class AdminService {
   @Transactional
   public AdminDtos.UserRow updateUser(Long id, AdminDtos.UserUpdateRequest request) {
     ensureUserExists(id);
-    StringBuilder sql = new StringBuilder("UPDATE ym_sys_user SET phone = ?, nickname = ?, status = ?, mi_value = ?, plan_name = ?");
+    StringBuilder sql = new StringBuilder("UPDATE ym_sys_user SET phone = ?, nickname = ?, status = ?, plan_name = ?");
     List<Object> args = new ArrayList<>();
     args.add(blankToNull(request.phone()));
     args.add(StringUtils.hasText(request.nickname()) ? request.nickname().trim() : "未命名用户");
     args.add(normalizeStatus(request.status()));
-    args.add(request.miValue() == null ? 0 : Math.max(0, request.miValue()));
     args.add(StringUtils.hasText(request.planName()) ? request.planName().trim() : "普通用户");
 
     if (StringUtils.hasText(request.password())) {
@@ -687,6 +686,7 @@ public class AdminService {
         rs.getString("nickname"),
         rs.getString("status"),
         rs.getInt("mi_value"),
+        consumedMi(id),
         rs.getString("plan_name"),
         nullableLong(rs, "shop_id"),
         rs.getString("shop_name"),
@@ -696,6 +696,19 @@ public class AdminService {
         findUserRoleCodes(id),
         time(rs, "created_at"),
         time(rs, "updated_at"));
+  }
+
+  private int consumedMi(Long userId) {
+    try {
+      Integer total = jdbcTemplate.queryForObject(
+          "SELECT COALESCE(SUM(price), 0) FROM ym_mi_value_log"
+              + " WHERE user_id = ? AND status = 'SUCCESS' AND biz_type IN ('IMAGE', 'VIDEO')",
+          Integer.class, userId);
+      return total == null ? 0 : total;
+    } catch (org.springframework.dao.DataAccessException ignored) {
+      // Compatibility for installations/tests upgrading before the ledger migration runs.
+      return 0;
+    }
   }
 
   private AdminDtos.RoleRow mapRole(ResultSet rs) throws SQLException {

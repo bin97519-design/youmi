@@ -72,6 +72,14 @@ const copyToCanvasDialog = reactive({
   error: '',
   result: null,
 })
+const imageStitchDialog = reactive({
+  visible: false,
+  direction: 'vertical',
+  layerIds: [],
+  draggingId: '',
+  processing: false,
+  error: '',
+})
 
 // 视频播放状态
 const playingVideoLayerId = ref(null)
@@ -343,6 +351,122 @@ function selectSingleLayer(layer) {
   marqueeSelectionIds.value = []
   selectedLayerId.value = layer.id
   selectedLayerIds.value = [layer.id]
+}
+
+// 右侧图层列表排序：列表从上到下代表 z-index 从高到低。
+function onLayerListDragStart(event, layer) {
+  layerListDrag.sourceId = layer.id
+  layerListDrag.targetId = ''
+  layerListDrag.position = ''
+  selectSingleLayer(layer)
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData('text/plain', layer.id)
+}
+
+function onLayerListDragOver(event, layer) {
+  if (!layerListDrag.sourceId || layer.id === layerListDrag.sourceId) return
+  event.preventDefault()
+  event.dataTransfer.dropEffect = 'move'
+  const rect = event.currentTarget.getBoundingClientRect()
+  layerListDrag.targetId = layer.id
+  layerListDrag.position = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
+}
+
+function clearLayerListDrag() {
+  layerListDrag.sourceId = ''
+  layerListDrag.targetId = ''
+  layerListDrag.position = ''
+}
+
+function commitLayerListDrop(sourceId, targetId, position = 'before') {
+  if (!sourceId || sourceId === targetId) {
+    clearLayerListDrag()
+    return
+  }
+
+  const visualLayers = [...layers.value].sort(
+    (a, b) => (Number(b.zIndex) || 0) - (Number(a.zIndex) || 0),
+  )
+  const sourceIndex = visualLayers.findIndex((layer) => layer.id === sourceId)
+  const targetIndex = visualLayers.findIndex((layer) => layer.id === targetId)
+  if (sourceIndex < 0 || targetIndex < 0) {
+    clearLayerListDrag()
+    return
+  }
+
+  const [source] = visualLayers.splice(sourceIndex, 1)
+  let insertIndex = visualLayers.findIndex((layer) => layer.id === targetId)
+  if (position === 'after') insertIndex += 1
+  visualLayers.splice(Math.max(0, insertIndex), 0, source)
+
+  pushUndo()
+  const bottomToTop = [...visualLayers].reverse()
+  canvas.updateDocument(props.id, (draft) => {
+    draft.payload.layers = bottomToTop.map((layer, index) => ({
+      ...layer,
+      zIndex: index + 1,
+    }))
+    return draft
+  })
+  clearLayerListDrag()
+}
+
+function onLayerListDrop(event, targetLayer) {
+  event.preventDefault()
+  const sourceId = layerListDrag.sourceId || event.dataTransfer.getData('text/plain')
+  commitLayerListDrop(sourceId, targetLayer.id, layerListDrag.position || 'before')
+}
+
+function onLayerListPointerDown(event, layer) {
+  if (event.button !== 0) return
+  layerListPointerDrag.sourceId = layer.id
+  layerListPointerDrag.pointerId = event.pointerId
+  layerListPointerDrag.startX = event.clientX
+  layerListPointerDrag.startY = event.clientY
+  layerListPointerDrag.active = false
+  window.addEventListener('pointermove', onLayerListPointerMove)
+  window.addEventListener('pointerup', onLayerListPointerUp, { once: true })
+  window.addEventListener('pointercancel', onLayerListPointerUp, { once: true })
+}
+
+function onLayerListPointerMove(event) {
+  if (event.pointerId !== layerListPointerDrag.pointerId) return
+  const distance = Math.hypot(
+    event.clientX - layerListPointerDrag.startX,
+    event.clientY - layerListPointerDrag.startY,
+  )
+  if (!layerListPointerDrag.active && distance < 5) return
+  layerListPointerDrag.active = true
+  event.preventDefault()
+  const target = document
+    .elementFromPoint(event.clientX, event.clientY)
+    ?.closest('section.layers-panel > button')
+  if (!target || !target.dataset.layerId || target.dataset.layerId === layerListPointerDrag.sourceId) {
+    layerListDrag.targetId = ''
+    layerListDrag.position = ''
+    return
+  }
+  const rect = target.getBoundingClientRect()
+  layerListDrag.sourceId = layerListPointerDrag.sourceId
+  layerListDrag.targetId = target.dataset.layerId
+  layerListDrag.position = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
+}
+
+function onLayerListPointerUp(event) {
+  if (event.pointerId !== layerListPointerDrag.pointerId) return
+  if (layerListPointerDrag.active && layerListDrag.targetId) {
+    commitLayerListDrop(
+      layerListPointerDrag.sourceId,
+      layerListDrag.targetId,
+      layerListDrag.position || 'before',
+    )
+  } else {
+    clearLayerListDrag()
+  }
+  window.removeEventListener('pointermove', onLayerListPointerMove)
+  layerListPointerDrag.sourceId = ''
+  layerListPointerDrag.pointerId = null
+  layerListPointerDrag.active = false
 }
 
 const CANVAS_TUTORIAL_URL =
@@ -697,6 +821,8 @@ const canvasTools = [
   },
 ]
 const dragState = ref(null)
+const layerClickMemory = { layerId: '', at: 0, x: 0, y: 0 }
+const nativeLayerDblClickGuard = { layerId: '', until: 0 }
 const panState = ref(null) // 手形工具 & 右键拖动共用
 const resizeState = ref(null)
 const marquee = reactive({ active: false, startX: 0, startY: 0, currentX: 0, currentY: 0 })
@@ -750,6 +876,15 @@ const cropPickerX = ref(0)
 const cropPickerY = ref(0)
 const cropQuickOpen = ref(false) // 快捷裁图子菜单
 const promptCategoryOpen = ref(false) // 获取提示词品类子菜单
+const stitchSubmenuOpen = ref(false) // 拼接图片方向子菜单
+
+// 横向拆切：在同一张图片上添加多条归一化横线，确认后原位拆成独立图层。
+const horizontalCutMode = reactive({
+  active: false,
+  processing: false,
+  layerId: '',
+  positions: [],
+})
 
 // 重叠元素候选列表：key = "layerId::elementId" → [{layerId, el, id, name, box_2d, area}]
 const elementOverlapCandidates = ref({})
@@ -766,8 +901,19 @@ const panel = reactive({
   resizingChat: null,
 })
 const toolbar = reactive({ x: null, y: null, dragging: null })
+const layerListDrag = reactive({ sourceId: '', targetId: '', position: '' })
+const layerListPointerDrag = reactive({
+  sourceId: '',
+  pointerId: null,
+  startX: 0,
+  startY: 0,
+  active: false,
+})
 
 const layers = computed(() => doc.value.payload.layers)
+const orderedLayers = computed(() =>
+  [...layers.value].sort((a, b) => (Number(b.zIndex) || 0) - (Number(a.zIndex) || 0)),
+)
 const selectedLayer = computed(() => layers.value.find((item) => item.id === selectedLayerId.value))
 const selectedCreationLayers = computed(() =>
   selectedLayerIds.value
@@ -946,6 +1092,7 @@ let _panRafId = null // rAF 批处理，确保每帧最多一次 reactive 更新
 let _panDomEl = null // 缓存 canvas-viewport DOM 引用，直写 transform 零延迟
 let _dragRafId = null // 拖拽图层 snap 计算 rAF 批处理
 // 拖动时直接读 reactive panOffset（零延迟），静止时读 store
+let _layerDragListenersAttached = false
 const viewOffset = computed(() => {
   if (panState.value) return { x: panOffset.x, y: panOffset.y }
   return doc.value.payload.view.offset || { x: 0, y: 0 }
@@ -2870,7 +3017,7 @@ async function runCanvasCreation({ type, sourceIds, jobs }) {
       const source = layers.value.find((item) => item.id === sourceId)
       const placeholder = layers.value.find((item) => item.id === placeholderId)
       if (source && placeholder) {
-        const columns = Math.max(1, Math.ceil(Math.sqrt(jobs.length)))
+        const columns = 5
         const column = index % columns
         const row = Math.floor(index / columns)
         updateLayer(placeholderId, {
@@ -3772,6 +3919,15 @@ function downloadVideo() {
 
 // figure 上的 dblclick 统一入口（因为 setPointerCapture 会劫持内层事件）
 function onLayerDblClick(event, layer) {
+  if (
+    event?.type === 'dblclick' &&
+    nativeLayerDblClickGuard.layerId === layer.id &&
+    Date.now() <= nativeLayerDblClickGuard.until
+  ) {
+    nativeLayerDblClickGuard.layerId = ''
+    nativeLayerDblClickGuard.until = 0
+    return
+  }
   if (layer.type === 'text') {
     startEditText(layer)
   } else if (layer.type === 'image-placeholder' || (layer.type === 'video' && !layer.url)) {
@@ -3952,7 +4108,7 @@ function fitImportedImage(size, useGrid) {
 }
 
 function gridImportPosition(index, count, width, height, anchor) {
-  const columns = Math.min(4, Math.max(1, Math.ceil(Math.sqrt(count))))
+  const columns = Math.min(5, Math.max(1, count))
   const rows = Math.ceil(count / columns)
   const cellWidth = CANVAS_IMAGE_WIDTH + 32
   const cellHeight = 512
@@ -4319,6 +4475,9 @@ async function onFileChange(event) {
     await addFiles(event.target.files || [], {
       addChatNotice: isChatUpload,
       addToChatDeck: isChatUpload,
+      layout: 'grid',
+      selectBatch: true,
+      anchor: viewportCenterWorld(),
     })
   } catch (error) {
     window.alert(error.message || '图片上传失败')
@@ -4417,9 +4576,30 @@ function findOverlappingPlaceholder(event, clickedLayer) {
   return bestPlaceholder
 }
 
+function onStageLayerPointerDown(event) {
+  if (dragState.value) return
+  const target = event.target
+  if (!(target instanceof Element)) return
+  const hitElements = [target]
+  if (document.elementsFromPoint) {
+    hitElements.push(...document.elementsFromPoint(event.clientX, event.clientY))
+  }
+  const layerEl = hitElements.map((item) => item.closest?.('.canvas-layer')).find(Boolean)
+  if (!layerEl) return
+  const layer = layers.value.find((item) => item.id === layerEl.dataset.layerId)
+  if (layer) startLayerDrag(event, layer)
+}
+
 function startLayerDrag(event, layer) {
+  if (dragState.value) return
   // 按住空格时，图层不响应自身拖拽，让事件冒泡给 stage 临时平移画布。
   if (spacePanHeld.value) return
+  // 横向拆切模式下，图片点击只用于落拆切线，不触发图层拖动。
+  if (
+    isHorizontalCutTarget(layer) &&
+    event.target instanceof Element &&
+    event.target.closest('.uc-horizontal-cut-overlay')
+  ) return
 
   // 【Bug修复】占位图优先选中：当点击的图层不是占位图时，检查该位置是否有占位图重叠，
   // 如果有，将选中目标切换为占位图（确保占位图在重叠时始终被优先选中）。
@@ -4431,9 +4611,20 @@ function startLayerDrag(event, layer) {
     }
   }
 
-  if (!userStore.requireLogin()) return
-  if (activeTool.value === 'hand') return
+  // Pointer capture can prevent Chromium from synthesizing a native dblclick.
+  // Recognize the second stationary pointer press ourselves as a reliable fallback.
+  if (openLayerFromSecondPointerDown(event, layer)) return
+
+  if (activeTool.value === 'hand' && !selectedLayerIds.value.includes(layer.id)) return
   if (activeTool.value === 'annotate') return
+  if (
+    event.target instanceof Element &&
+    event.target.closest(
+        '.layer-toolbar, .resize-dot, .uc-connection-port, .uc-node-close, .right-panel, .top-tools, .bottom-tools, input, textarea, select, [contenteditable="true"], button, a',
+    )
+  ) {
+    return
+  }
   if (event.shiftKey) {
     if (
       event.button !== 0 ||
@@ -4461,8 +4652,15 @@ function startLayerDrag(event, layer) {
   )
     return
   pushUndo()
+  event.preventDefault()
   event.stopPropagation()
-  event.currentTarget.setPointerCapture(event.pointerId)
+  if (event.pointerId != null && event.currentTarget.setPointerCapture) {
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId)
+    } catch {
+      // Pointer capture is best-effort; window listeners keep dragging alive.
+    }
+  }
 
   // 选中图片时置顶为前景：将当前图层 zIndex 设为最高
   // 但占位图不修改zIndex（保持占位图的优先级，确保占位图始终在最上层）
@@ -4487,7 +4685,8 @@ function startLayerDrag(event, layer) {
   }
   const ids = draggingGroup ? [...selectedLayerIds.value] : [layer.id]
   dragState.value = {
-    pointerId: event.pointerId,
+    pointerId: event.pointerId ?? null,
+    captureEl: event.currentTarget,
     ids,
     startX: event.clientX,
     startY: event.clientY,
@@ -4495,6 +4694,35 @@ function startLayerDrag(event, layer) {
       .filter((item) => ids.includes(item.id))
       .map((item) => ({ id: item.id, x: item.x, y: item.y })),
   }
+
+  if (!_layerDragListenersAttached) {
+    window.addEventListener('pointermove', moveLayer, true)
+    window.addEventListener('pointerup', stopLayerDrag, true)
+    window.addEventListener('pointercancel', stopLayerDrag, true)
+    window.addEventListener('mousemove', moveLayer, true)
+    window.addEventListener('mouseup', stopLayerDrag, true)
+    _layerDragListenersAttached = true
+  }
+}
+
+function openLayerFromSecondPointerDown(event, layer) {
+  if (event.type !== 'pointerdown' || event.button !== 0) return false
+  const now = Date.now()
+  const closeInTime = now - layerClickMemory.at <= 450
+  const closeInSpace = Math.hypot(
+    event.clientX - layerClickMemory.x,
+    event.clientY - layerClickMemory.y,
+  ) <= 8
+  if (layerClickMemory.layerId !== layer.id || !closeInTime || !closeInSpace) return false
+
+  layerClickMemory.layerId = ''
+  layerClickMemory.at = 0
+  nativeLayerDblClickGuard.layerId = layer.id
+  nativeLayerDblClickGuard.until = now + 600
+  event.preventDefault()
+  event.stopPropagation()
+  onLayerDblClick(event, layer)
+  return true
 }
 
 function moveLayer(event) {
@@ -4522,6 +4750,12 @@ function moveLayer(event) {
         if (layer) {
           layer.x = Math.round(origin.x + finalDx)
           layer.y = Math.round(origin.y + finalDy)
+          const layerNode = [...document.querySelectorAll('.canvas-layer')].find(
+            (node) => node.dataset.layerId === layer.id,
+          )
+          if (layerNode) {
+            layerNode.style.transform = `translate(${layer.x}px, ${layer.y}px)`
+          }
         }
       }
       ds._lastDx = finalDx
@@ -4545,6 +4779,12 @@ function stopLayerDrag(event) {
         if (layer) {
           layer.x = Math.round(origin.x + snapResult.dx)
           layer.y = Math.round(origin.y + snapResult.dy)
+          const layerNode = [...document.querySelectorAll('.canvas-layer')].find(
+            (node) => node.dataset.layerId === layer.id,
+          )
+          if (layerNode) {
+            layerNode.style.transform = `translate(${layer.x}px, ${layer.y}px)`
+          }
         }
       }
     }
@@ -4552,8 +4792,28 @@ function stopLayerDrag(event) {
   // 持久化到 store（深拷贝 + localStorage + 服务器同步）
   canvas.updateDocument(props.id, (draft) => draft)
   const ds = dragState.value
-  if (event.currentTarget.hasPointerCapture(ds.pointerId))
-    event.currentTarget.releasePointerCapture(ds.pointerId)
+  const pointerTravel = Math.hypot(event.clientX - ds.startX, event.clientY - ds.startY)
+  if ((event.type === 'pointerup' || event.type === 'mouseup') && pointerTravel <= 6) {
+    layerClickMemory.layerId = ds.ids.length === 1 ? ds.ids[0] : ''
+    layerClickMemory.at = Date.now()
+    layerClickMemory.x = event.clientX
+    layerClickMemory.y = event.clientY
+  } else {
+    layerClickMemory.layerId = ''
+    layerClickMemory.at = 0
+  }
+  if (_layerDragListenersAttached) {
+    window.removeEventListener('pointermove', moveLayer, true)
+    window.removeEventListener('pointerup', stopLayerDrag, true)
+    window.removeEventListener('pointercancel', stopLayerDrag, true)
+    window.removeEventListener('mousemove', moveLayer, true)
+    window.removeEventListener('mouseup', stopLayerDrag, true)
+    _layerDragListenersAttached = false
+  }
+  const captureEl = ds.captureEl
+  if (ds.pointerId != null && captureEl?.hasPointerCapture?.(ds.pointerId)) {
+    captureEl.releasePointerCapture(ds.pointerId)
+  }
   dragState.value = null
   snapGuides.value = []
   nextTick(() => refreshConnections())
@@ -6463,7 +6723,7 @@ function autoArrangeImages() {
   // 普通图片节点会按图片比例撑开，实际 DOM 高度可能大于历史数据中的
   // layer.height。排版必须使用真实可见尺寸，才能保证图片之间不遮挡。
   const layoutCandidates = candidates.map(autoArrangeLayerGeometry)
-  const positions = buildCanvasAutoLayout(layoutCandidates, connections.value)
+  const positions = buildCanvasAutoLayout(layoutCandidates, connections.value, { columns: 5 })
   if (!positions.size) return
 
   pushUndo()
@@ -7028,6 +7288,11 @@ function onGlobalKeydown(event) {
     closeCopyToCanvasDialog()
     return
   }
+  if (event.key === 'Escape' && imageStitchDialog.visible) {
+    event.preventDefault()
+    closeImageStitchDialog()
+    return
+  }
   if ((event.code === 'Space' || event.key === ' ') && !inInput) {
     event.preventDefault()
     spacePanHeld.value = true
@@ -7441,6 +7706,15 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   _mounted.value = false
+  if (_layerDragListenersAttached) {
+    window.removeEventListener('pointermove', moveLayer, true)
+    window.removeEventListener('pointerup', stopLayerDrag, true)
+    window.removeEventListener('pointercancel', stopLayerDrag, true)
+    window.removeEventListener('mousemove', moveLayer, true)
+    window.removeEventListener('mouseup', stopLayerDrag, true)
+    _layerDragListenersAttached = false
+  }
+  dragState.value = null
   // 暂停所有正在播放的视频
   document.querySelectorAll('video.uc-video-node-video').forEach((v) => {
     if (!v.paused) v.pause()
@@ -7648,7 +7922,7 @@ function copiedLayerSize(layer) {
 
 function makeCopiedLayer(layer, index, startY, maxZ) {
   const { width, height } = copiedLayerSize(layer)
-  const columns = 4
+  const columns = 5
   const column = index % columns
   const row = Math.floor(index / columns)
   const copied = JSON.parse(JSON.stringify(layer))
@@ -7809,11 +8083,20 @@ function onCanvasContextMenu(event) {
   contextMenu.y = event.clientY
   contextMenu.layerId = layerId
   contextMenu.layer = layer
+  nextTick(() => {
+    const menu = document.querySelector('.uc-context-menu')
+    if (!menu || !contextMenu.visible) return
+    const rect = menu.getBoundingClientRect()
+    const edge = 8
+    contextMenu.x = Math.max(edge, Math.min(contextMenu.x, window.innerWidth - rect.width - edge))
+    contextMenu.y = Math.max(edge, Math.min(contextMenu.y, window.innerHeight - rect.height - edge))
+  })
 }
 function closeContextMenu() {
   contextMenu.visible = false
   promptCategoryOpen.value = false
   cropQuickOpen.value = false
+  stitchSubmenuOpen.value = false
 }
 function promptSourceTypeForLayer(layer) {
   if (!isRealImageLayer(layer)) return ''
@@ -8269,6 +8552,414 @@ function contextMenuAddToReference() {
   closeContextMenu()
 }
 
+// ====== 多图拼接 ======
+
+const stitchDialogLayers = computed(() =>
+  imageStitchDialog.layerIds
+    .map((id) => layers.value.find((layer) => layer.id === id))
+    .filter(isRealImageLayer),
+)
+
+function openImageStitchDialog(direction) {
+  const imageLayers = contextMenuImageLayers()
+  if (imageLayers.length < 2) {
+    closeContextMenu()
+    showCopyPasteToast('请先选择至少 2 张图片')
+    return
+  }
+  const isHorizontal = direction === 'horizontal'
+  imageLayers.sort((left, right) => {
+    const primary = Number(isHorizontal ? left.x : left.y) - Number(isHorizontal ? right.x : right.y)
+    if (primary) return primary
+    return Number(isHorizontal ? left.y : left.x) - Number(isHorizontal ? right.y : right.x)
+  })
+  imageStitchDialog.visible = true
+  imageStitchDialog.direction = isHorizontal ? 'horizontal' : 'vertical'
+  imageStitchDialog.layerIds = imageLayers.map((layer) => layer.id)
+  imageStitchDialog.draggingId = ''
+  imageStitchDialog.processing = false
+  imageStitchDialog.error = ''
+  closeContextMenu()
+}
+
+function closeImageStitchDialog() {
+  if (imageStitchDialog.processing) return
+  imageStitchDialog.visible = false
+  imageStitchDialog.draggingId = ''
+  imageStitchDialog.error = ''
+}
+
+function setImageStitchDirection(direction) {
+  if (imageStitchDialog.processing) return
+  imageStitchDialog.direction = direction === 'horizontal' ? 'horizontal' : 'vertical'
+}
+
+function startStitchSlotDrag(event, layerId) {
+  if (imageStitchDialog.processing) return
+  imageStitchDialog.draggingId = layerId
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData('text/plain', layerId)
+}
+
+function dropStitchSlot(targetLayerId) {
+  const sourceLayerId = imageStitchDialog.draggingId
+  imageStitchDialog.draggingId = ''
+  if (!sourceLayerId || sourceLayerId === targetLayerId) return
+  const nextIds = [...imageStitchDialog.layerIds]
+  const sourceIndex = nextIds.indexOf(sourceLayerId)
+  const targetIndex = nextIds.indexOf(targetLayerId)
+  if (sourceIndex < 0 || targetIndex < 0) return
+  nextIds.splice(sourceIndex, 1)
+  nextIds.splice(targetIndex, 0, sourceLayerId)
+  imageStitchDialog.layerIds = nextIds
+}
+
+function finishStitchSlotDrag() {
+  imageStitchDialog.draggingId = ''
+}
+
+async function executeImageStitch() {
+  const sourceLayers = stitchDialogLayers.value
+  if (sourceLayers.length < 2 || imageStitchDialog.processing) return
+
+  imageStitchDialog.processing = true
+  imageStitchDialog.error = ''
+  try {
+    const loadedImages = []
+    for (const layer of sourceLayers) {
+      const image = await loadImageForCrop(layer)
+      if (!image) throw new Error(`图片“${layer.name || '未命名'}”加载失败`)
+      loadedImages.push({
+        layer,
+        image,
+        width: Math.max(1, image.naturalWidth || layer.naturalWidth || layer.width),
+        height: Math.max(1, image.naturalHeight || layer.naturalHeight || layer.height),
+      })
+    }
+
+    const horizontal = imageStitchDialog.direction === 'horizontal'
+    // 保持每张原图的像素尺寸：纵向取最大宽度，横向取最大高度。
+    const drawItems = loadedImages.map((item) => ({
+      ...item,
+      drawWidth: item.width,
+      drawHeight: item.height,
+    }))
+    let outputWidth = horizontal
+      ? drawItems.reduce((sum, item) => sum + item.drawWidth, 0)
+      : Math.max(...drawItems.map((item) => item.drawWidth))
+    let outputHeight = horizontal
+      ? Math.max(...drawItems.map((item) => item.drawHeight))
+      : drawItems.reduce((sum, item) => sum + item.drawHeight, 0)
+
+    const maxDimension = 12000
+    const maxPixels = 48_000_000
+    const dimensionScale = Math.min(1, maxDimension / Math.max(outputWidth, outputHeight))
+    const pixelScale = Math.min(1, Math.sqrt(maxPixels / (outputWidth * outputHeight)))
+    const outputScale = Math.min(dimensionScale, pixelScale)
+    if (outputScale < 1) {
+      for (const item of drawItems) {
+        item.drawWidth = Math.max(1, Math.round(item.drawWidth * outputScale))
+        item.drawHeight = Math.max(1, Math.round(item.drawHeight * outputScale))
+      }
+      outputWidth = horizontal
+        ? drawItems.reduce((sum, item) => sum + item.drawWidth, 0)
+        : Math.max(...drawItems.map((item) => item.drawWidth))
+      outputHeight = horizontal
+        ? Math.max(...drawItems.map((item) => item.drawHeight))
+        : drawItems.reduce((sum, item) => sum + item.drawHeight, 0)
+    }
+
+    const stitchCanvas = document.createElement('canvas')
+    stitchCanvas.width = outputWidth
+    stitchCanvas.height = outputHeight
+    const context = stitchCanvas.getContext('2d')
+    if (!context) throw new Error('浏览器无法创建拼接画布')
+    context.imageSmoothingEnabled = true
+    context.imageSmoothingQuality = 'high'
+    let offset = 0
+    for (const item of drawItems) {
+      const drawX = horizontal
+        ? offset
+        : Math.round((outputWidth - item.drawWidth) / 2)
+      const drawY = horizontal
+        ? Math.round((outputHeight - item.drawHeight) / 2)
+        : offset
+      context.drawImage(
+        item.image,
+        drawX,
+        drawY,
+        item.drawWidth,
+        item.drawHeight,
+      )
+      offset += horizontal ? item.drawWidth : item.drawHeight
+    }
+
+    const blob = await new Promise((resolve) => stitchCanvas.toBlob(resolve, 'image/png'))
+    if (!blob) throw new Error('拼接图片编码失败')
+    const directionLabel = horizontal ? '横向' : '纵向'
+    const fileName = `${directionLabel}拼接_${Date.now()}.png`
+    const url = await uploadFile(new File([blob], fileName, { type: 'image/png' }))
+
+    const sourceBounds = sourceLayers.reduce(
+      (bounds, layer) => ({
+        left: Math.min(bounds.left, Number(layer.x || 0)),
+        top: Math.min(bounds.top, Number(layer.y || 0)),
+        right: Math.max(bounds.right, Number(layer.x || 0) + Number(layer.width || 0)),
+        bottom: Math.max(bounds.bottom, Number(layer.y || 0) + Number(layer.height || 0)),
+      }),
+      { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity },
+    )
+    const renderedSourceSizes = sourceLayers.map((layer) => {
+      const width = Math.max(1, Number(layer.width || layer.naturalWidth || 360))
+      const naturalWidth = Math.max(1, Number(layer.naturalWidth || width))
+      const naturalHeight = Math.max(1, Number(layer.naturalHeight || layer.height || width))
+      return { width, height: Math.max(1, Math.round((width * naturalHeight) / naturalWidth)) }
+    })
+    const outputRatio = outputWidth / outputHeight
+    let displayWidth
+    let displayHeight
+    if (horizontal) {
+      displayHeight = Math.max(...renderedSourceSizes.map((item) => item.height))
+      displayWidth = Math.max(1, Math.round(displayHeight * outputRatio))
+    } else {
+      displayWidth = Math.max(...renderedSourceSizes.map((item) => item.width))
+      displayHeight = Math.max(1, Math.round(displayWidth / outputRatio))
+    }
+    const sourceIds = new Set(sourceLayers.map((layer) => layer.id))
+    const replacementLayerId = sourceLayers[0].id
+    const remappedConnectionKeys = new Set()
+    const replacementConnections = connections.value
+      .map((connection) => ({
+        ...connection,
+        fromLayerId: sourceIds.has(connection.fromLayerId)
+          ? replacementLayerId
+          : connection.fromLayerId,
+        toLayerId: sourceIds.has(connection.toLayerId)
+          ? replacementLayerId
+          : connection.toLayerId,
+      }))
+      .filter((connection) => {
+        if (connection.fromLayerId === connection.toLayerId) return false
+        const key = `${connection.fromLayerId}|${connection.fromPort}|${connection.toLayerId}|${connection.toPort}`
+        if (remappedConnectionKeys.has(key)) return false
+        remappedConnectionKeys.add(key)
+        return true
+      })
+
+    pushUndo()
+    canvas.updateDocument(props.id, (draft) => {
+      const sourceIndexes = draft.payload.layers
+        .map((layer, index) => (sourceIds.has(layer.id) ? index : -1))
+        .filter((index) => index >= 0)
+      const insertIndex = sourceIndexes.length ? Math.min(...sourceIndexes) : draft.payload.layers.length
+      const replacementLayer = {
+        ...sourceLayers[0],
+        id: replacementLayerId,
+        name: `${directionLabel}拼接图`,
+        url,
+        thumbnailUrl: url,
+        naturalWidth: outputWidth,
+        naturalHeight: outputHeight,
+        width: displayWidth,
+        height: displayHeight,
+        x: Number.isFinite(sourceBounds.left) ? sourceBounds.left : 0,
+        y: Number.isFinite(sourceBounds.top) ? sourceBounds.top : 0,
+        zIndex: Math.max(...sourceLayers.map((layer) => Number(layer.zIndex || 0))),
+        visible: true,
+        locked: false,
+        source: '图片拼接',
+        stitchedFromLayerIds: sourceLayers.map((layer) => layer.id),
+        stitchDirection: imageStitchDialog.direction,
+      }
+      draft.payload.layers = draft.payload.layers.filter((layer) => !sourceIds.has(layer.id))
+      draft.payload.layers.splice(insertIndex, 0, replacementLayer)
+      draft.payload.connections = replacementConnections
+      if (draft.payload.detectedElements) {
+        for (const sourceId of sourceIds) delete draft.payload.detectedElements[sourceId]
+      }
+      return draft
+    })
+    const nextDetectedElements = { ...layerDetectedElements.value }
+    for (const sourceId of sourceIds) delete nextDetectedElements[sourceId]
+    layerDetectedElements.value = nextDetectedElements
+    connections.value = replacementConnections
+    selectedLayerId.value = replacementLayerId
+    selectedLayerIds.value = [replacementLayerId]
+    imageStitchDialog.visible = false
+    imageStitchDialog.processing = false
+    imageStitchDialog.draggingId = ''
+    void canvas.flushNow?.(props.id)
+    showCopyPasteToast(`${directionLabel}拼接完成，已替换 ${sourceLayers.length} 张原图`)
+  } catch (error) {
+    console.error('[image-stitch] 拼接失败:', error)
+    imageStitchDialog.processing = false
+    imageStitchDialog.error = error instanceof Error ? error.message : '图片拼接失败，请重试'
+  }
+}
+
+// ====== 横向拆切 ======
+
+function isHorizontalCutTarget(layer) {
+  return horizontalCutMode.active && horizontalCutMode.layerId === layer?.id
+}
+
+function resetHorizontalCutMode() {
+  horizontalCutMode.active = false
+  horizontalCutMode.processing = false
+  horizontalCutMode.layerId = ''
+  horizontalCutMode.positions = []
+}
+
+function horizontalCutMenuLabel(layer) {
+  if (!isHorizontalCutTarget(layer)) return '横向裁剪'
+  if (horizontalCutMode.processing) return '正在裁切…'
+  return horizontalCutMode.positions.length ? '确认裁切' : '取消'
+}
+
+function toggleHorizontalCutForLayer(layer) {
+  if (!isRealImageLayer(layer) || horizontalCutMode.processing) return
+
+  if (isHorizontalCutTarget(layer)) {
+    if (horizontalCutMode.positions.length) {
+      void executeHorizontalCut()
+    } else {
+      resetHorizontalCutMode()
+      showCopyPasteToast('已取消横向裁剪')
+    }
+    return
+  }
+  horizontalCutMode.active = true
+  horizontalCutMode.layerId = layer.id
+  horizontalCutMode.positions = []
+  selectedLayerId.value = layer.id
+  selectedLayerIds.value = [layer.id]
+  showCopyPasteToast('点击图片添加横向拆切线，双击拆切线可删除')
+}
+
+function addHorizontalCutLine(event, layer) {
+  if (!isHorizontalCutTarget(layer) || horizontalCutMode.processing) return
+  if (event.button !== 0) return
+  const rect = event.currentTarget.getBoundingClientRect()
+  if (!rect.height) return
+  const position = Math.min(0.98, Math.max(0.02, (event.clientY - rect.top) / rect.height))
+  if (horizontalCutMode.positions.some((item) => Math.abs(item - position) < 0.015)) {
+    showCopyPasteToast('该位置已经有一条拆切线')
+    return
+  }
+  horizontalCutMode.positions = [...horizontalCutMode.positions, position].sort((a, b) => a - b)
+}
+
+function removeHorizontalCutLine(position) {
+  if (horizontalCutMode.processing) return
+  horizontalCutMode.positions = horizontalCutMode.positions.filter((item) => item !== position)
+}
+
+async function executeHorizontalCut() {
+  const layer = layers.value.find((item) => item.id === horizontalCutMode.layerId)
+  if (!isRealImageLayer(layer)) {
+    showCopyPasteToast('拆切失败：图片图层已不存在')
+    resetHorizontalCutMode()
+    return
+  }
+  if (!horizontalCutMode.positions.length) {
+    showCopyPasteToast('请先点击图片添加拆切线')
+    return
+  }
+
+  horizontalCutMode.processing = true
+  try {
+    const img = await loadImageForCrop(layer)
+    if (!img) throw new Error('图片加载失败，无法拆切')
+
+    const naturalWidth = Math.max(1, img.naturalWidth || layer.naturalWidth || layer.width)
+    const naturalHeight = Math.max(1, img.naturalHeight || layer.naturalHeight || layer.height)
+    const boundaries = [0, ...horizontalCutMode.positions, 1]
+    const displayWidth = Math.max(1, Number(layer.width || naturalWidth))
+    // 普通图片图层的 DOM 高度由原图比例决定，不能沿用可能为方形占位值的 layer.height。
+    const displayHeight = Math.max(1, Math.round((displayWidth * naturalHeight) / naturalWidth))
+    const uploadedSegments = []
+
+    for (let index = 0; index < boundaries.length - 1; index += 1) {
+      const start = boundaries[index]
+      const end = boundaries[index + 1]
+      const sourceTop = Math.round(start * naturalHeight)
+      const sourceBottom = index === boundaries.length - 2
+        ? naturalHeight
+        : Math.round(end * naturalHeight)
+      const sourceHeight = Math.max(1, sourceBottom - sourceTop)
+      const cutCanvas = document.createElement('canvas')
+      cutCanvas.width = naturalWidth
+      cutCanvas.height = sourceHeight
+      const context = cutCanvas.getContext('2d')
+      if (!context) throw new Error('浏览器无法创建裁切画布')
+      context.drawImage(
+        img,
+        0,
+        sourceTop,
+        naturalWidth,
+        sourceHeight,
+        0,
+        0,
+        naturalWidth,
+        sourceHeight,
+      )
+      const blob = await new Promise((resolve) => cutCanvas.toBlob(resolve, 'image/png'))
+      if (!blob) throw new Error('拆切图片编码失败')
+      const fileName = `${layer.name || 'image'}_横向拆切_${index + 1}.png`
+      const url = await uploadFile(new File([blob], fileName, { type: 'image/png' }))
+      uploadedSegments.push({ url, sourceHeight, start, end })
+    }
+
+    pushUndo()
+    const timestamp = Date.now().toString(36)
+    const newLayers = uploadedSegments.map((segment, index) => {
+      const slice = JSON.parse(JSON.stringify(layer))
+      slice.id = index === 0
+        ? layer.id
+        : `horizontal-slice-${timestamp}-${index}-${Math.random().toString(36).slice(2, 7)}`
+      slice.name = `${layer.name || '图片'}-${index + 1}`
+      slice.url = segment.url
+      slice.thumbnailUrl = segment.url
+      slice.naturalWidth = naturalWidth
+      slice.naturalHeight = segment.sourceHeight
+      slice.width = displayWidth
+      slice.height = Math.max(1, Math.round(displayHeight * (segment.end - segment.start)))
+      slice.x = Number(layer.x || 0)
+      slice.y = Number(layer.y || 0) + Math.round(displayHeight * segment.start)
+      slice.zIndex = Number(layer.zIndex || 0) + index * 0.001
+      slice.source = '横向拆切'
+      slice.horizontalSlice = {
+        sourceLayerId: layer.id,
+        index: index + 1,
+        total: uploadedSegments.length,
+      }
+      slice.reversePromptPending = false
+      slice.reversePromptError = ''
+      delete slice.reversePromptText
+      return slice
+    })
+
+    canvas.updateDocument(props.id, (draft) => {
+      const sourceIndex = draft.payload.layers.findIndex((item) => item.id === layer.id)
+      if (sourceIndex >= 0) draft.payload.layers.splice(sourceIndex, 1, ...newLayers)
+      if (draft.payload.detectedElements) delete draft.payload.detectedElements[layer.id]
+      return draft
+    })
+    const nextDetected = { ...layerDetectedElements.value }
+    delete nextDetected[layer.id]
+    layerDetectedElements.value = nextDetected
+    selectedLayerIds.value = newLayers.map((item) => item.id)
+    selectedLayerId.value = newLayers[0]?.id || ''
+    void canvas.flushNow?.(props.id)
+    showCopyPasteToast(`横向拆切完成，已生成 ${newLayers.length} 个图层`)
+    resetHorizontalCutMode()
+  } catch (error) {
+    console.error('[horizontal-cut] 拆切失败:', error)
+    horizontalCutMode.processing = false
+    showCopyPasteToast(error instanceof Error ? error.message : '横向拆切失败，请重试')
+  }
+}
+
 // ====== 宫格裁图 ======
 
 function openCropPicker(x, y, layer) {
@@ -8611,6 +9302,7 @@ async function loadImageForCrop(layer) {
         @dragover.prevent="handleCanvasDragOver"
         @dragleave="handleCanvasDragLeave"
         @drop.prevent="handleCanvasFileDrop"
+        @pointerdown.capture="onStageLayerPointerDown($event)"
         @pointerdown="startMarquee($event)"
         @pointermove="onStagePointerMove($event)"
         @pointerup="onStagePointerUp($event)"
@@ -8678,6 +9370,7 @@ async function loadImageForCrop(layer) {
                 'is-video': layer.type === 'video',
                 'is-video-placeholder': layer.type === 'video' && !layer.url,
                 'is-image': layer.type === 'image' || (layer.url && !layer.type),
+                'is-horizontal-slice': Boolean(layer.horizontalSlice),
                 'is-image-placeholder': layer.type === 'image-placeholder',
                 'is-failed': layer.status === 'failed',
                 'is-interrupted': layer.status === 'interrupted',
@@ -8691,16 +9384,15 @@ async function loadImageForCrop(layer) {
                 layer.type === 'placeholder' ||
                 layer.type === 'text' ||
                 layer.type === 'video' ||
-                layer.type === 'image-placeholder'
+                layer.type === 'image-placeholder' ||
+                layer.horizontalSlice
                   ? `${layer.height}px`
                   : undefined,
               zIndex: layer.zIndex,
               '--canvas-inverse-scale': 1 / viewScale,
             }"
-            @pointerdown="startLayerDrag($event, layer)"
-            @pointermove="moveLayer"
-            @pointerup="stopLayerDrag"
-            @pointercancel="stopLayerDrag"
+            draggable="false"
+            @dragstart.prevent
             @dblclick="onLayerDblClick($event, layer)"
           >
             <div
@@ -8737,7 +9429,14 @@ async function loadImageForCrop(layer) {
                 <button>☏ 对话修改</button>
                 <button>▧ 尺寸修改</button>
                 <button @click.stop="openCropPicker(0, 0, layer)">⌗ 裁剪</button>
-                <button>✂ 分割</button>
+                <button
+                  :disabled="horizontalCutMode.processing && isHorizontalCutTarget(layer)"
+                  :title="horizontalCutMenuLabel(layer)"
+                  @click.stop="toggleHorizontalCutForLayer(layer)"
+                >
+                  <i class="ri-scissors-cut-line" aria-hidden="true"></i>
+                  {{ horizontalCutMenuLabel(layer) }}
+                </button>
                 <button>⇩ 下载</button>
                 <button @click.stop="removeLayer(layer.id)">⌫ 删除</button>
               </div>
@@ -9050,6 +9749,27 @@ async function loadImageForCrop(layer) {
                     <span>图片加载失败</span>
                     <button type="button" class="uc-broken-retry" @click="retryImage(layer.id)">
                       重试
+                    </button>
+                  </div>
+                  <div
+                    v-if="isHorizontalCutTarget(layer)"
+                    class="uc-horizontal-cut-overlay"
+                    :class="{ 'is-processing': horizontalCutMode.processing }"
+                    title="点击添加横向拆切线"
+                    @pointerdown.stop.prevent="addHorizontalCutLine($event, layer)"
+                  >
+                    <button
+                      v-for="position in horizontalCutMode.positions"
+                      :key="position"
+                      type="button"
+                      class="uc-horizontal-cut-line"
+                      :style="{ top: `${position * 100}%` }"
+                      title="双击删除拆切线"
+                      @pointerdown.stop.prevent
+                      @click.stop.prevent
+                      @dblclick.stop.prevent="removeHorizontalCutLine(position)"
+                    >
+                      <span>双击删除</span>
                     </button>
                   </div>
                 </div>
@@ -9971,10 +10691,18 @@ async function loadImageForCrop(layer) {
             <b>{{ layers.length }}</b>
           </h3>
           <button
-            v-for="layer in [...layers].reverse()"
+            v-for="layer in orderedLayers"
             :key="layer.id"
-            :class="{ active: selectedLayerIds.includes(layer.id) }"
+            :data-layer-id="layer.id"
+            :class="{
+              active: selectedLayerIds.includes(layer.id),
+              'is-layer-dragging': layerListDrag.sourceId === layer.id,
+              'drop-before': layerListDrag.targetId === layer.id && layerListDrag.position === 'before',
+              'drop-after': layerListDrag.targetId === layer.id && layerListDrag.position === 'after',
+            }"
             @click="selectSingleLayer(layer)"
+            @pointerdown="onLayerListPointerDown($event, layer)"
+            @contextmenu.prevent
           >
             <span>◉</span>
             <img
@@ -10537,6 +11265,40 @@ async function loadImageForCrop(layer) {
             : '下载图片'
         }}
       </button>
+      <div
+        v-if="contextMenuDownloadCount() > 1"
+        class="uc-context-menu-item uc-context-menu-sub"
+        @mouseenter="stitchSubmenuOpen = true"
+        @mouseleave="stitchSubmenuOpen = false"
+        @click.stop="stitchSubmenuOpen = !stitchSubmenuOpen"
+      >
+        <i class="ri-layout-grid-line"></i>
+        拼接图片
+        <span class="uc-context-menu-arrow">›</span>
+        <div
+          v-show="stitchSubmenuOpen"
+          class="uc-context-submenu uc-stitch-direction-submenu"
+          @mouseenter="stitchSubmenuOpen = true"
+          @mouseleave="stitchSubmenuOpen = false"
+        >
+          <button
+            type="button"
+            class="uc-context-menu-item"
+            @click.stop="openImageStitchDialog('horizontal')"
+          >
+            <i class="ri-layout-horizontal-line"></i>
+            横向拼接
+          </button>
+          <button
+            type="button"
+            class="uc-context-menu-item"
+            @click.stop="openImageStitchDialog('vertical')"
+          >
+            <i class="ri-layout-vertical-line"></i>
+            纵向拼接
+          </button>
+        </div>
+      </div>
       <div class="uc-context-menu-divider"></div>
       <button class="uc-context-menu-item" @click="openCropPicker(contextMenu.x, contextMenu.y)">
         <i class="ri-grid-line"></i>
@@ -10569,6 +11331,115 @@ async function loadImageForCrop(layer) {
         <i class="ri-delete-bin-line"></i>
         删除图片
       </button>
+    </div>
+  </Teleport>
+
+  <!-- 多图拼接排序 -->
+  <Teleport to="body">
+    <div
+      v-if="imageStitchDialog.visible"
+      class="uc-image-stitch-backdrop"
+      @click.self="closeImageStitchDialog"
+    >
+      <section
+        class="uc-image-stitch-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="image-stitch-title"
+      >
+        <header class="uc-image-stitch-head">
+          <div>
+            <h2 id="image-stitch-title">
+              <i class="ri-layout-grid-line"></i>
+              拼接图片
+            </h2>
+            <p>拖动图片槽调整顺序，拼接时不会裁掉原图内容</p>
+          </div>
+          <button
+            type="button"
+            aria-label="关闭"
+            :disabled="imageStitchDialog.processing"
+            @click="closeImageStitchDialog"
+          >
+            <i class="ri-close-line"></i>
+          </button>
+        </header>
+
+        <div class="uc-image-stitch-body">
+          <div class="uc-image-stitch-direction" role="tablist" aria-label="拼接方向">
+            <button
+              type="button"
+              :class="{ active: imageStitchDialog.direction === 'horizontal' }"
+              :disabled="imageStitchDialog.processing"
+              @click="setImageStitchDirection('horizontal')"
+            >
+              <i class="ri-layout-horizontal-line"></i>
+              横向拼接
+            </button>
+            <button
+              type="button"
+              :class="{ active: imageStitchDialog.direction === 'vertical' }"
+              :disabled="imageStitchDialog.processing"
+              @click="setImageStitchDirection('vertical')"
+            >
+              <i class="ri-layout-vertical-line"></i>
+              纵向拼接
+            </button>
+          </div>
+
+          <div class="uc-image-stitch-section-head">
+            <strong>
+              {{ imageStitchDialog.direction === 'horizontal' ? '横向图片槽' : '纵向图片槽' }}
+            </strong>
+            <span>{{ stitchDialogLayers.length }} 张 · 按住拖动换位</span>
+          </div>
+          <div
+            class="uc-image-stitch-slots"
+            :class="`is-${imageStitchDialog.direction}`"
+          >
+            <article
+              v-for="(layer, index) in stitchDialogLayers"
+              :key="layer.id"
+              class="uc-image-stitch-slot"
+              :class="{ dragging: imageStitchDialog.draggingId === layer.id }"
+              draggable="true"
+              @dragstart="startStitchSlotDrag($event, layer.id)"
+              @dragover.prevent
+              @drop.prevent="dropStitchSlot(layer.id)"
+              @dragend="finishStitchSlotDrag"
+            >
+              <span class="uc-image-stitch-order">{{ index + 1 }}</span>
+              <img :src="layer.thumbnailUrl || layer.url" :alt="layer.name || `图片 ${index + 1}`" />
+              <span class="uc-image-stitch-slot-name">{{ layer.name || `图片 ${index + 1}` }}</span>
+              <i class="ri-drag-move-2-line" aria-hidden="true"></i>
+            </article>
+          </div>
+          <p v-if="imageStitchDialog.error" class="uc-image-stitch-error">
+            <i class="ri-error-warning-line"></i>
+            {{ imageStitchDialog.error }}
+          </p>
+        </div>
+
+        <footer class="uc-image-stitch-actions">
+          <button
+            type="button"
+            class="uc-image-stitch-btn"
+            :disabled="imageStitchDialog.processing"
+            @click="closeImageStitchDialog"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            class="uc-image-stitch-btn primary"
+            :disabled="imageStitchDialog.processing || stitchDialogLayers.length < 2"
+            @click="executeImageStitch"
+          >
+            <i :class="imageStitchDialog.processing ? 'ri-loader-4-line uc-spin' : 'ri-layout-grid-line'"></i>
+            {{ imageStitchDialog.processing ? '正在拼接' : '确认拼接' }}
+          </button>
+        </footer>
+      </section>
     </div>
   </Teleport>
 

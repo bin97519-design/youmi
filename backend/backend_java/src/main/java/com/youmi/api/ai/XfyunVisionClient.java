@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Semaphore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -20,9 +21,12 @@ import org.springframework.stereotype.Service;
 @Service
 public class XfyunVisionClient {
   private static final Logger log = LoggerFactory.getLogger(XfyunVisionClient.class);
+  private static final int MAX_TRANSIENT_ATTEMPTS = 4;
+  private static final long INITIAL_RETRY_DELAY_MS = 800L;
   private final ObjectMapper objectMapper;
   private final XfyunVisionProperties properties;
   private final HttpClient httpClient;
+  private final Semaphore requestGate = new Semaphore(1, true);
 
   public XfyunVisionClient(ObjectMapper objectMapper, XfyunVisionProperties properties) {
     this.objectMapper = objectMapper;
@@ -159,21 +163,32 @@ public class XfyunVisionClient {
   }
 
   private String sendChat(Map<String, Object> body) throws Exception {
-    IOException lastError = null;
-    for (int attempt = 1; attempt <= 2; attempt++) {
-      try {
-        return sendChatOnce(body);
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        throw e;
-      } catch (IOException e) {
-        lastError = e;
-        if (attempt >= 2) throw e;
-        log.warn("Xfyun vision transient failure, retrying once: {}", e.getMessage());
-        Thread.sleep(500L);
+    requestGate.acquire();
+    try {
+      IOException lastError = null;
+      for (int attempt = 1; attempt <= MAX_TRANSIENT_ATTEMPTS; attempt++) {
+        try {
+          return sendChatOnce(body);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          throw e;
+        } catch (IOException e) {
+          lastError = e;
+          if (attempt >= MAX_TRANSIENT_ATTEMPTS) throw e;
+          long delayMs = INITIAL_RETRY_DELAY_MS << (attempt - 1);
+          log.warn(
+              "Xfyun vision transient failure, retrying {}/{} after {} ms: {}",
+              attempt + 1,
+              MAX_TRANSIENT_ATTEMPTS,
+              delayMs,
+              e.getMessage());
+          Thread.sleep(delayMs);
+        }
       }
+      throw lastError == null ? new IOException("Xfyun vision request failed") : lastError;
+    } finally {
+      requestGate.release();
     }
-    throw lastError == null ? new IOException("Xfyun vision request failed") : lastError;
   }
 
   private String sendChatOnce(Map<String, Object> body) throws Exception {

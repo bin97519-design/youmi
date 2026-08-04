@@ -20,6 +20,9 @@ public final class MiValueDtos {
   public record MiValueAdminView(int balance, String planName) {
   }
 
+  public record MiValueConsumptionView(int consumedMi, String planName) {
+  }
+
   /** 管理后台调账请求体 */
   public record MiValueAdjustRequest(int delta, String reason) {
   }

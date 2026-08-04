@@ -129,7 +129,6 @@ function downloadSelected() {
       </div>
       <div v-if="store.billing.consumedMi" class="es-billing">
         已消耗 {{ store.billing.consumedMi }} 米值
-        <span v-if="store.billing.balance !== null">· 余额 {{ store.billing.balance }}</span>
       </div>
     </div>
 
@@ -193,7 +192,7 @@ function downloadSelected() {
           <div v-if="isFailed(img)" class="es-failed-card">
             <i class="ri-error-warning-line" aria-hidden="true"></i>
             <strong>{{ img.sellingPointTitle || `${section.title} ${idx + 1}` }}</strong>
-            <span>{{ img.errorMessage || '生成失败，对应米值已退回' }}</span>
+            <span>{{ img.errorMessage || '生成失败，本次不计入米值消耗' }}</span>
             <button type="button" :disabled="retryingId === img.id" @click="retryImage(img)">
               <i class="ri-refresh-line" aria-hidden="true"></i>
               {{ retryingId === img.id ? '正在重试...' : '单张重试' }}

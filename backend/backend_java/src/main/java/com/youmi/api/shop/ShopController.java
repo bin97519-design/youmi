@@ -19,7 +19,7 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <ul>
  *   <li>后台 CRUD：{@code /api/admin/shops}（需 ADMIN 权限）</li>
- *   <li>公开列表：{@code /api/shops}（无需登录，仅返回 ACTIVE 店铺，供注册页下拉）</li>
+ *   <li>公开列表：{@code /api/shops}（无需登录，仅返回 ACTIVE 店铺）</li>
  * </ul>
  */
 @RestController

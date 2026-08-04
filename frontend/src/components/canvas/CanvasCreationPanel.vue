@@ -2,11 +2,12 @@
 import { computed, ref, watch } from 'vue'
 import { useUserStore } from '../../stores/user'
 import { apiPath } from '../../utils/apiBase'
+import { createDemandFallback, createDetailFallback } from '../../utils/canvasCreative'
 import {
-  createDemandFallback,
-  createDetailFallback,
-  expandMainImagePrompt,
-} from '../../utils/canvasCreative'
+  buildCompetitorStyleClonePrompt,
+  extractCompetitorStylePrompt,
+} from '../../utils/canvasStyleClone'
+import { resolveSupportedImageRatio } from '../../utils/imageRatio'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -21,6 +22,18 @@ const userStore = useUserStore()
 const tab = ref('main')
 const mode = ref('layout')
 const extra = ref('')
+const mainCategory = ref('mattress')
+const mainCategories = ref([
+  { value: 'mattress', label: '床垫' },
+  { value: 'curtain', label: '窗帘' },
+  { value: 'solid_wood_bed', label: '实木床' },
+  { value: 'general', label: '通用' },
+])
+const mainCategoriesLoaded = ref(false)
+const mainAnalyzing = ref(false)
+const mainAnalysisStatus = ref('')
+const mainAnalysisError = ref('')
+const mainAnalysisCache = new Map()
 const demandProductInfo = ref('')
 const demandCount = ref(6)
 const demandStyle = ref('真实、清晰、有品质感')
@@ -45,7 +58,9 @@ const activeLayerDropZone = ref('')
 const products = computed(() => orderedLayers.value.slice(0, productLayerCount.value))
 const product = computed(() => products.value[0] || null)
 const references = computed(() => orderedLayers.value.slice(productLayerCount.value))
-const canRunMain = computed(() => Boolean(products.value.length && references.value.length && !props.busy))
+const canRunMain = computed(() =>
+  Boolean(products.value.length && references.value.length && !props.busy && !mainAnalyzing.value),
+)
 const selectedDemandCards = computed(() => demandCards.value.filter((card) => card.selected))
 const canPlanDemands = computed(() =>
   Boolean(product.value && demandProductInfo.value.trim() && !demandPlanning.value && !props.busy),
@@ -87,9 +102,16 @@ watch(
       orderedLayers.value = [...props.selectedLayers]
       productLayerCount.value = props.selectedLayers.length ? 1 : 0
       resetLayerDrag()
+      mainAnalysisError.value = ''
+      mainAnalysisStatus.value = ''
+      const productCategory = String(product.value?.reversePromptCategory || '').trim()
+      if (productCategory && productCategory !== 'general') mainCategory.value = productCategory
+      void loadMainCategories()
       return
     }
     extra.value = ''
+    mainAnalysisError.value = ''
+    mainAnalysisStatus.value = ''
     demandError.value = ''
     demandNotice.value = ''
     detailError.value = ''
@@ -97,19 +119,36 @@ watch(
   },
 )
 
-function ratioOf(layer) {
-  const width = Number(layer?.naturalWidth || layer?.width || 0)
-  const height = Number(layer?.naturalHeight || layer?.height || 0)
-  if (!width || !height) return 'auto'
-  const divisor = gcd(Math.round(width), Math.round(height))
-  const rw = Math.round(width) / divisor
-  const rh = Math.round(height) / divisor
-  if (rw <= 20 && rh <= 20) return `${rw}:${rh}`
-  return `${(width / height).toFixed(2)}:1`
+watch([mode, mainCategory, references], () => {
+  mainAnalysisError.value = ''
+  mainAnalysisStatus.value = ''
+})
+
+function outputAspect(layer) {
+  const ratio = resolveSupportedImageRatio(layer)
+  const [aspectWidth, aspectHeight] = ratio.split(':').map(Number)
+  return { ratio, aspectWidth, aspectHeight }
 }
 
-function gcd(a, b) {
-  return b ? gcd(b, a % b) : Math.max(1, a)
+async function loadMainCategories() {
+  if (mainCategoriesLoaded.value) return
+  try {
+    const response = await fetch(apiPath('/api/prompt/categories'), {
+      headers: userStore.authHeaders(),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok || payload.code) return
+    const categories = Array.isArray(payload.data) ? payload.data : []
+    if (categories.length) {
+      mainCategories.value = categories.map((item) => ({
+        value: String(item.value || 'general'),
+        label: String(item.label || item.value || '通用'),
+      }))
+    }
+    mainCategoriesLoaded.value = true
+  } catch {
+    // Keep the built-in category list when metadata is temporarily unavailable.
+  }
 }
 
 function beginLayerDrag(index, event) {
@@ -211,25 +250,89 @@ function resetLayerDrag() {
   activeLayerDropZone.value = ''
 }
 
-function runMainImages() {
-  if (!canRunMain.value) return
-  const prompt = expandMainImagePrompt(mode.value, extra.value)
-  emit('run', {
-    type: 'main-image',
-    sourceIds: products.value.map((item) => item.id),
-    jobs: references.value.map((reference, index) => ({
-      name: `${mode.value === 'layout' ? '主图复刻' : '风格迁移'} ${index + 1}`,
-      prompt,
-      imageUrls: [...products.value.map((item) => item.url), reference.url],
-      sourceIds: [...products.value.map((item) => item.id), reference.id],
-      previewUrl: product.value.url,
-      aspectWidth: reference.naturalWidth || reference.width,
-      aspectHeight: reference.naturalHeight || reference.height,
-      ratio: ratioOf(reference),
-      model: props.model,
-      resolution: props.resolution,
-    })),
+async function analyzeMainReference(reference, category) {
+  const cacheKey = `${category}::${reference.url}`
+  if (mainAnalysisCache.has(cacheKey)) return mainAnalysisCache.get(cacheKey)
+
+  const response = await fetch(apiPath('/api/prompt/analyze-image'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...userStore.authHeaders(),
+    },
+    body: JSON.stringify({
+      category,
+      imageUrl: reference.url,
+      thinkingEnabled: false,
+    }),
   })
+  const payload = await response.json().catch(() => ({}))
+  if (response.status === 401 || response.status === 403) {
+    throw new Error(payload.message || '登录已失效，请重新登录')
+  }
+  if (!response.ok || payload.code) {
+    throw new Error(payload.message || `${reference.name || '竞品图'}反推失败`)
+  }
+
+  const result = payload.data || {}
+  const stylePrompt = extractCompetitorStylePrompt(result.promptJson, result.fieldLabels)
+  if (!stylePrompt) throw new Error(`${reference.name || '竞品图'}没有解析出可用风格`)
+  const analyzed = { ...result, stylePrompt }
+  mainAnalysisCache.set(cacheKey, analyzed)
+  return analyzed
+}
+
+async function analyzeMainReferences(items, category) {
+  const results = new Array(items.length)
+  let completed = 0
+  for (let index = 0; index < items.length; index += 1) {
+    results[index] = await analyzeMainReference(items[index], category)
+    completed += 1
+    mainAnalysisStatus.value = `正在反推竞品风格 ${completed}/${items.length}`
+  }
+  return results
+}
+
+async function runMainImages() {
+  if (!canRunMain.value) return
+  mainAnalyzing.value = true
+  mainAnalysisError.value = ''
+  const selectedMode = mode.value
+  const selectedCategory = selectedMode === 'layout' ? mainCategory.value : 'general'
+  const selectedProducts = [...products.value]
+  const selectedProduct = product.value
+  const selectedReferences = [...references.value]
+  mainAnalysisStatus.value = `正在反推竞品风格 0/${selectedReferences.length}`
+
+  try {
+    const analyses = await analyzeMainReferences(selectedReferences, selectedCategory)
+    emit('run', {
+      type: 'main-image',
+      sourceIds: selectedProducts.map((item) => item.id),
+      jobs: selectedReferences.map((reference, index) => {
+        const aspect = outputAspect(reference)
+        return {
+          name: `${selectedMode === 'layout' ? '主图复刻' : '风格迁移'} ${index + 1}`,
+          prompt: buildCompetitorStyleClonePrompt({
+            mode: selectedMode,
+            stylePrompt: analyses[index].stylePrompt,
+            extra: extra.value,
+          }),
+          imageUrls: selectedProducts.map((item) => item.url),
+          sourceIds: [...selectedProducts.map((item) => item.id), reference.id],
+          previewUrl: selectedProduct.url,
+          ...aspect,
+          model: props.model,
+          resolution: props.resolution,
+        }
+      }),
+    })
+  } catch (error) {
+    mainAnalysisError.value = String(error?.message || error || '竞品风格反推失败')
+  } finally {
+    mainAnalyzing.value = false
+    mainAnalysisStatus.value = ''
+  }
 }
 
 async function planDemands() {
@@ -281,6 +384,7 @@ async function planDemands() {
 
 function runDemands() {
   if (!canRunDemands.value) return
+  const aspect = outputAspect(product.value)
   emit('run', {
     type: 'demand',
     sourceIds: products.value.map((item) => item.id),
@@ -297,9 +401,7 @@ function runDemands() {
       imageUrls: products.value.map((item) => item.url),
       sourceIds: products.value.map((item) => item.id),
       previewUrl: product.value.url,
-      aspectWidth: product.value.naturalWidth || product.value.width,
-      aspectHeight: product.value.naturalHeight || product.value.height,
-      ratio: ratioOf(product.value),
+      ...aspect,
       model: props.model,
       resolution: props.resolution,
     })),
@@ -431,6 +533,30 @@ function runDetail() {
               <span>保留产品真实外观，只迁移参考图的配色、光线和氛围。</span>
             </label>
           </div>
+
+          <div class="ccp-analysis-settings">
+            <label v-if="mode === 'layout'">
+              <span>产品类目</span>
+              <select v-model="mainCategory" :disabled="mainAnalyzing">
+                <option
+                  v-for="category in mainCategories"
+                  :key="category.value"
+                  :value="category.value"
+                >
+                  {{ category.label }}
+                </option>
+              </select>
+            </label>
+            <span>
+              <i class="ri-sparkling-line"></i>
+              {{
+                mode === 'layout'
+                  ? '先按产品类目反推竞品版式与风格，再用我方产品图生成'
+                  : '先通用反推竞品视觉风格，再用我方产品图跨类目迁移'
+              }}
+            </span>
+          </div>
+          <p v-if="mainAnalysisError" class="ccp-main-error">{{ mainAnalysisError }}</p>
 
           <div class="ccp-selection">
             <div
@@ -763,7 +889,11 @@ function runDetail() {
 
         <footer>
           <span v-if="tab === 'main'">
-            {{ model }} · {{ resolution }} · {{ references.length || 0 }} 张结果
+            {{
+              mainAnalyzing
+                ? mainAnalysisStatus
+                : `${model} · ${resolution} · ${references.length || 0} 张结果`
+            }}
           </span>
           <span v-else-if="tab === 'demand'">
             {{ model }} · {{ resolution }} · 已选择 {{ selectedDemandCards.length }} 个方向
@@ -779,7 +909,7 @@ function runDetail() {
             :disabled="!canRunMain"
             @click="runMainImages"
           >
-            {{ busy ? '正在提交…' : '开始生成' }}
+            {{ mainAnalyzing ? '正在反推风格…' : busy ? '正在提交…' : '开始生成' }}
           </button>
           <button
             v-else-if="tab === 'demand'"
@@ -910,6 +1040,59 @@ function runDetail() {
 .ccp-selection p {
   margin: 0;
   color: var(--canvas-text-subtle);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.ccp-analysis-settings {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 12px;
+  margin: 0 20px 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--canvas-border);
+  border-radius: 10px;
+  background: var(--canvas-surface);
+}
+.ccp-analysis-settings label {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+}
+.ccp-analysis-settings label > span {
+  color: var(--canvas-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+.ccp-analysis-settings select {
+  height: 30px;
+  min-width: 110px;
+  padding: 0 28px 0 9px;
+  border: 1px solid var(--canvas-border-strong);
+  border-radius: 8px;
+  background: var(--canvas-input);
+  color: var(--canvas-text);
+  font: inherit;
+  font-size: 12px;
+}
+.ccp-analysis-settings > span {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  color: var(--canvas-text-subtle);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.ccp-analysis-settings > span i {
+  flex: 0 0 auto;
+  color: var(--canvas-accent);
+  font-size: 14px;
+}
+.ccp-main-error {
+  margin: 5px 20px 0;
+  color: #d14343;
   font-size: 12px;
   line-height: 1.5;
 }
@@ -1391,6 +1574,10 @@ function runDetail() {
   .ccp-detail-screens,
   .ccp-demand-fields > div {
     grid-template-columns: 1fr;
+  }
+  .ccp-analysis-settings {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 </style>

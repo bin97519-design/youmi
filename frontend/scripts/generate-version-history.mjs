@@ -1,15 +1,13 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { versionHistory } from '../src/data/versionHistory.js'
+import { resolveVersionHistoryImageUrl } from '../src/utils/versionHistoryImages.js'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const frontendDir = path.resolve(scriptDir, '..')
 const projectDir = path.resolve(frontendDir, '..')
 const publicDir = path.resolve(frontendDir, 'public', 'version-log')
-const assetsDir = path.resolve(publicDir, 'assets')
-const visualDataUrls = new Map()
-
 function escapeHtml(value) {
   return String(value)
     .replaceAll('&', '&amp;')
@@ -25,7 +23,7 @@ function releaseHtml(release, index) {
       (visual) => `
         <figure class="${visual.wide ? 'wide' : ''}">
           <div class="visual-media">
-            <img src="${escapeHtml(visualDataUrls.get(visual.src) || '')}" alt="${escapeHtml(visual.alt)}" loading="lazy">
+            <img src="${escapeHtml(resolveVersionHistoryImageUrl(visual.src))}" alt="${escapeHtml(visual.alt)}" loading="lazy">
           </div>
           <figcaption>
             <strong>${escapeHtml(visual.title)}</strong>
@@ -69,20 +67,6 @@ function releaseHtml(release, index) {
       <div class="sections">${sections}</div>
     </details>`
 }
-
-const visualFiles = [
-  ...new Set(
-    versionHistory.flatMap((release) => (release.visuals || []).map((visual) => visual.src)),
-  ),
-]
-await Promise.all(
-  visualFiles.map(async (filename) => {
-    const extension = path.extname(filename).slice(1).toLowerCase()
-    const mimeType = extension === 'jpg' || extension === 'jpeg' ? 'image/jpeg' : 'image/png'
-    const file = await readFile(path.resolve(assetsDir, filename))
-    visualDataUrls.set(filename, `data:${mimeType};base64,${file.toString('base64')}`)
-  }),
-)
 
 const latestVersion = versionHistory[0].version
 const timeline = versionHistory.map(releaseHtml).join('')

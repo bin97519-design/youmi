@@ -7,6 +7,7 @@ import ImageViewer from '../components/ImageViewer.vue'
 import { useUserStore } from '../stores/user'
 import { apiPath } from '../utils/apiBase'
 import { writeTextToClipboard } from '../utils/clipboard'
+import { buildDailyTopSeries } from '../utils/consoleTrend'
 import { subscribeImageTaskPersistence } from '../utils/imageTaskSync'
 
 const userStore = useUserStore()
@@ -225,7 +226,6 @@ const editingUser = reactive({
   nickname: '',
   phone: '',
   status: 'ACTIVE',
-  miValue: 0,
   planName: '普通用户',
   roleDraft: 'USER',
   shopId: '',
@@ -347,6 +347,93 @@ taskDateFrom.value = sevenDaysAgoStr
 taskDateTo.value = todayStr
 
 const showDatePicker = ref(false)
+const taskRangeSelecting = ref('from')
+const taskRangeDraftFrom = ref('')
+const taskRangeDraftTo = ref('')
+const taskCalendarCursor = ref(new Date(new Date().getFullYear(), new Date().getMonth(), 1))
+const taskWeekDays = ['日', '一', '二', '三', '四', '五', '六']
+
+function parseTaskDate(value) {
+  const matched = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!matched) return null
+  return new Date(Number(matched[1]), Number(matched[2]) - 1, Number(matched[3]))
+}
+
+const taskCalendarTitle = computed(
+  () => `${taskCalendarCursor.value.getFullYear()}年${taskCalendarCursor.value.getMonth() + 1}月`,
+)
+
+function isTaskCalendarDateDisabled(value) {
+  if (value > todayStr) return true
+  return Boolean(
+    taskRangeSelecting.value === 'to' &&
+      taskRangeDraftFrom.value &&
+      value < taskRangeDraftFrom.value,
+  )
+}
+
+const taskCalendarDays = computed(() => {
+  const year = taskCalendarCursor.value.getFullYear()
+  const month = taskCalendarCursor.value.getMonth()
+  const firstDay = new Date(year, month, 1)
+  const gridStart = new Date(year, month, 1 - firstDay.getDay())
+
+  return Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(
+      gridStart.getFullYear(),
+      gridStart.getMonth(),
+      gridStart.getDate() + index,
+    )
+    const value = fmtDateValue(date)
+    return {
+      value,
+      label: date.getDate(),
+      currentMonth: date.getMonth() === month,
+      today: value === todayStr,
+      rangeStart: value === taskRangeDraftFrom.value,
+      rangeEnd: value === taskRangeDraftTo.value,
+      inRange: Boolean(
+        taskRangeDraftFrom.value &&
+          taskRangeDraftTo.value &&
+          value > taskRangeDraftFrom.value &&
+          value < taskRangeDraftTo.value,
+      ),
+      disabled: isTaskCalendarDateDisabled(value),
+    }
+  })
+})
+
+function toggleTaskDatePicker() {
+  showDatePicker.value = !showDatePicker.value
+  if (!showDatePicker.value) return
+  taskRangeSelecting.value = 'from'
+  taskRangeDraftFrom.value = taskDateFrom.value
+  taskRangeDraftTo.value = taskDateTo.value
+  const current = parseTaskDate(taskDateFrom.value) || new Date()
+  taskCalendarCursor.value = new Date(current.getFullYear(), current.getMonth(), 1)
+}
+
+function moveTaskCalendarMonth(offset) {
+  taskCalendarCursor.value = new Date(
+    taskCalendarCursor.value.getFullYear(),
+    taskCalendarCursor.value.getMonth() + offset,
+    1,
+  )
+}
+
+function selectTaskCalendarDate(day) {
+  if (day.disabled) return
+  if (taskRangeSelecting.value === 'from') {
+    taskRangeDraftFrom.value = day.value
+    taskRangeDraftTo.value = ''
+    taskRangeSelecting.value = 'to'
+    return
+  }
+  taskRangeDraftTo.value = day.value
+  taskDateFrom.value = taskRangeDraftFrom.value
+  taskDateTo.value = taskRangeDraftTo.value
+  showDatePicker.value = false
+}
 
 const dateShortcuts = [
   { key: 'today', label: '今天' },
@@ -414,6 +501,7 @@ function buildImageStatsQuery() {
 
 // 日期变化 → 重置页码并重新拉取（日期过滤在后端 SQL 完成）
 watch([taskDateFrom, taskDateTo], () => {
+  if (Boolean(taskDateFrom.value) !== Boolean(taskDateTo.value)) return
   taskCurrentPage.value = 1
   reloadTaskPage(1)
 })
@@ -476,7 +564,6 @@ const userForm = reactive({
   nickname: '',
   password: '',
   status: 'ACTIVE',
-  miValue: 100,
   planName: '普通用户',
   roles: ['USER'],
   shopId: '',
@@ -616,7 +703,6 @@ async function createUser() {
         nickname: userForm.nickname,
         password: userForm.password,
         status: userForm.status,
-        miValue: Number(userForm.miValue || 0),
         planName: userForm.planName,
         shopId: resolvedShopId,
         shopName: resolvedShopName,
@@ -649,7 +735,6 @@ async function saveUser(user) {
         nickname: user.nickname,
         password: user.passwordDraft || '',
         status: user.status,
-        miValue: Number(user.miValue || 0),
         planName: user.planName,
         shopId: user.shopId ?? null,
         roles: [user.roleDraft || 'USER'],
@@ -832,7 +917,6 @@ function resetUserForm() {
     nickname: '',
     password: '',
     status: 'ACTIVE',
-    miValue: 100,
     planName: '普通用户',
     roles: ['USER'],
     shopId: '',
@@ -851,7 +935,6 @@ function openDrawer(user) {
     nickname: user.nickname || '',
     phone: user.phone || '',
     status: user.status || 'ACTIVE',
-    miValue: user.miValue || 0,
     planName: user.planName || '普通用户',
     roleDraft: user.roles?.[0] || 'USER',
     shopId: user.shopId != null ? String(user.shopId) : '',
@@ -874,7 +957,6 @@ async function saveUserDetail() {
       nickname: editingUser.nickname || '',
       password: '',
       status: editingUser.status,
-      miValue: Number(editingUser.miValue || 0),
       planName: editingUser.planName || '普通用户',
       roles: [editingUser.roleDraft || 'USER'],
       shopId:
@@ -1103,11 +1185,24 @@ const trendCard = ref(null)
 const trendFilterRow = ref(null)
 const trendDimension = ref('total')
 const trendFilter = ref('')
-const trendSelectedKey = ref('')
+const trendSelectedKeys = ref([])
 const trendDropdownOpen = ref(false)
 const trendDropdownMaxHeight = ref(240)
 const trendTooltip = reactive({ show: false, x: 0, y: 0, label: '', items: [] })
-const trendPalette = ['#818cf8', '#22d3ee', '#f59e0b', '#34d399', '#f472b6']
+const trendPalette = [
+  '#818cf8',
+  '#22d3ee',
+  '#f59e0b',
+  '#34d399',
+  '#f472b6',
+  '#fb7185',
+  '#a78bfa',
+  '#2dd4bf',
+  '#facc15',
+  '#60a5fa',
+  '#c084fc',
+  '#4ade80',
+]
 const trendTabs = [
   { key: 'total', label: '总量' },
   { key: 'model', label: '模型' },
@@ -1148,26 +1243,40 @@ function matchesTrendOption(row, rawQuery) {
   return Boolean(matchPinyin(label, query))
 }
 
-const trendFilterOptions = computed(() =>
-  [...trendDimensionConfig.value.rows]
+const trendUsesDailyTop = computed(() => ['shop', 'user'].includes(trendDimension.value))
+
+const trendFilterOptions = computed(() => {
+  const today = trendDayLabels.value[trendDayLabels.value.length - 1]
+  const rows = trendDimensionConfig.value.rows.map((row) => ({
+    ...row,
+    todayTasks: (row.daily || []).find((point) => point?.day === today)?.tasks || 0,
+  }))
+  return [...rows]
     .filter((row) => matchesTrendOption(row, trendFilter.value))
-    .sort((left, right) => Number(right.totalTasks || 0) - Number(left.totalTasks || 0)),
-)
+    .sort(
+      (left, right) =>
+        Number(right.totalTasks || 0) - Number(left.totalTasks || 0),
+    )
+})
 
 const trendVisibleSeries = computed(() => {
-  const selected = trendSelectedKey.value
-    ? trendDimensionConfig.value.rows.find((row) => String(row.key) === trendSelectedKey.value)
-    : null
-  const rows = selected ? [selected] : trendDimensionConfig.value.rows
-  return [...rows]
-    .sort((left, right) => Number(right.totalTasks || 0) - Number(left.totalTasks || 0))
-    .slice(0, 5)
+  if (trendSelectedKeys.value.length) {
+    const rowsByKey = new Map(
+      trendDimensionConfig.value.rows.map((row) => [String(row.key), row]),
+    )
+    return trendSelectedKeys.value.map((key) => rowsByKey.get(key)).filter(Boolean)
+  }
+  if (trendDimension.value === 'total' || !trendUsesDailyTop.value) {
+    return trendDimensionConfig.value.rows
+  }
+  return buildDailyTopSeries(trendDimensionConfig.value.rows, trendDayLabels.value, 5)
 })
 
 const trendFilterCount = computed(() => {
-  if (trendSelectedKey.value) return 1
+  if (trendSelectedKeys.value.length) return `${trendSelectedKeys.value.length}/5`
   if (trendFilter.value.trim()) return trendFilterOptions.value.length
-  return Math.min(5, trendDimensionConfig.value.rows.length)
+  if (trendDimension.value === 'total') return 1
+  return trendUsesDailyTop.value ? '5/日' : trendDimensionConfig.value.rows.length
 })
 
 async function updateTrendDropdownHeight() {
@@ -1192,20 +1301,32 @@ function toggleTrendDropdown() {
 }
 
 function onTrendFilterInput() {
-  trendSelectedKey.value = ''
   openTrendDropdown()
 }
 
 function selectTrendOption(option) {
-  trendSelectedKey.value = option ? String(option.key) : ''
-  trendFilter.value = option?.label || ''
-  trendDropdownOpen.value = false
+  if (!option) {
+    trendSelectedKeys.value = []
+    trendFilter.value = ''
+  } else {
+    const key = String(option.key)
+    if (trendSelectedKeys.value.includes(key)) {
+      trendSelectedKeys.value = trendSelectedKeys.value.filter((item) => item !== key)
+    } else if (trendSelectedKeys.value.length >= 5) {
+      showToast('最多选择 5 个对象', 'error')
+      return
+    } else {
+      trendSelectedKeys.value = [...trendSelectedKeys.value, key]
+    }
+    trendFilter.value = ''
+  }
+  trendDropdownOpen.value = true
   trendTooltip.show = false
 }
 
 function clearTrendFilter() {
   trendFilter.value = ''
-  trendSelectedKey.value = ''
+  trendSelectedKeys.value = []
   openTrendDropdown()
 }
 
@@ -1228,7 +1349,7 @@ const trendHasData = computed(() =>
 
 watch(trendDimension, () => {
   trendFilter.value = ''
-  trendSelectedKey.value = ''
+  trendSelectedKeys.value = []
   trendDropdownOpen.value = false
   trendTooltip.show = false
 })
@@ -1263,10 +1384,12 @@ function drawTrendChart() {
       key: item.key,
       label: item.label || item.key,
       color: trendPalette[index % trendPalette.length],
-      values: days.map((day) => valuesByDay.get(day) || 0),
+      values: days.map((day) =>
+        valuesByDay.has(day) ? valuesByDay.get(day) : item.dailyTopOnly ? null : 0,
+      ),
     }
   })
-  const values = series.flatMap((item) => item.values)
+  const values = series.flatMap((item) => item.values).filter((value) => value != null)
   const maxVal = Math.max(...values, 1)
   const stepX = days.length > 1 ? chartW / (days.length - 1) : chartW
 
@@ -1301,7 +1424,7 @@ function drawTrendChart() {
     ctx.fillText(day.slice(5), x, H - 6)
   })
 
-  if (series.length === 1) {
+  if (series.length === 1 && !trendVisibleSeries.value[0]?.dailyTopOnly) {
     const grad = ctx.createLinearGradient(0, padT, 0, padT + chartH)
     grad.addColorStop(0, isLight ? 'rgba(99,102,241,0.18)' : 'rgba(99,102,241,0.25)')
     grad.addColorStop(1, isLight ? 'rgba(99,102,241,0.01)' : 'rgba(99,102,241,0.02)')
@@ -1323,14 +1446,25 @@ function drawTrendChart() {
     ctx.strokeStyle = item.color
     ctx.lineWidth = 2
     ctx.lineJoin = 'round'
+    let segmentStarted = false
     item.values.forEach((value, i) => {
+      if (value == null) {
+        segmentStarted = false
+        return
+      }
       const x = padL + stepX * i
       const y = padT + chartH - (value / maxVal) * chartH
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
+      if (!segmentStarted) {
+        ctx.moveTo(x, y)
+        segmentStarted = true
+      } else {
+        ctx.lineTo(x, y)
+      }
     })
     ctx.stroke()
 
     item.values.forEach((value, i) => {
+      if (value == null) return
       const x = padL + stepX * i
       const y = padT + chartH - (value / maxVal) * chartH
       ctx.beginPath()
@@ -1359,12 +1493,18 @@ function handleTrendMove(e) {
     return
   }
   const x = padL + stepX * idx
-  const items = series.map((item) => ({
-    key: item.key,
-    label: item.label,
-    color: item.color,
-    value: item.values[idx] || 0,
-  }))
+  const items = series
+    .filter((item) => item.values[idx] != null)
+    .map((item) => ({
+      key: item.key,
+      label: item.label,
+      color: item.color,
+      value: item.values[idx],
+    }))
+  if (!items.length) {
+    trendTooltip.show = false
+    return
+  }
   const y = Math.min(
     ...items.map((item) => padT + chartH - (item.value / maxVal) * chartH),
   )
@@ -1438,7 +1578,7 @@ function drawDonutChart() {
 }
 
 /* ── Redraw charts on tab switch / data load ── */
-watch([activeTab, stats, trendDimension, trendFilter, trendSelectedKey], () => {
+watch([activeTab, stats, trendDimension, trendFilter, trendSelectedKeys], () => {
   nextTick(() => {
     if (activeTab.value === 'stats') {
       drawTrendChart()
@@ -1614,10 +1754,6 @@ onUnmounted(() => {
               </div>
             </div>
           </label>
-          <label>
-            <span>米值</span>
-            <input v-model.number="userForm.miValue" type="number" min="0" />
-          </label>
         </div>
         <div class="console-form-row">
           <label>
@@ -1734,7 +1870,7 @@ onUnmounted(() => {
             <span>账号</span>
             <span>昵称</span>
             <span>角色</span>
-            <span>米值</span>
+            <span>累计消耗</span>
             <span>状态</span>
             <span>所属店铺</span>
             <span>平台</span>
@@ -1751,7 +1887,7 @@ onUnmounted(() => {
                 {{ roleLabel(role) }}
               </option>
             </select>
-            <input v-model.number="user.miValue" type="number" min="0" />
+            <span class="console-consumed-mi">{{ user.consumedMi || 0 }} 米值</span>
             <select v-model="user.status">
               <option value="ACTIVE">启用</option>
               <option value="DISABLED">禁用</option>
@@ -1826,10 +1962,6 @@ onUnmounted(() => {
                   </div>
                 </div>
               </label>
-                <label>
-                  <span>米值</span>
-                  <input v-model.number="editingUser.miValue" type="number" min="0" />
-                </label>
               </div>
               <label>
                 <span>会员</span>
@@ -2103,7 +2235,17 @@ onUnmounted(() => {
         <div class="console-trend-head">
           <div>
             <h2>近 14 天趋势</h2>
-            <p>按生图任务数统计</p>
+            <p>
+              {{
+                trendDimension === 'total'
+                  ? '按生图任务数统计'
+                  : trendSelectedKeys.length
+                    ? '单项完整趋势'
+                    : trendDimension === 'shop' || trendDimension === 'user'
+                      ? '每天任务数前 5 名'
+                      : '按模型分组统计'
+              }}
+            </p>
           </div>
         </div>
         <div class="console-trend-controls">
@@ -2142,7 +2284,7 @@ onUnmounted(() => {
               />
               <small>{{ trendFilterCount }}</small>
               <button
-                v-if="trendFilter"
+                v-if="trendFilter || trendSelectedKeys.length"
                 type="button"
                 title="清空筛选"
                 aria-label="清空趋势筛选"
@@ -2170,24 +2312,24 @@ onUnmounted(() => {
                 v-if="!trendFilter"
                 type="button"
                 class="console-trend-dropdown-option"
-                :class="{ active: !trendSelectedKey }"
+                :class="{ active: !trendSelectedKeys.length }"
                 @click="selectTrendOption(null)"
               >
-                <span>全部（默认展示前 5 项）</span>
-                <i v-if="!trendSelectedKey" class="ri-check-line" aria-hidden="true"></i>
+                <span>全部（每天展示前 5 名）</span>
+                <i v-if="!trendSelectedKeys.length" class="ri-check-line" aria-hidden="true"></i>
               </button>
               <button
                 v-for="option in trendFilterOptions"
                 :key="option.key"
                 type="button"
                 class="console-trend-dropdown-option"
-                :class="{ active: trendSelectedKey === String(option.key) }"
+                :class="{ active: trendSelectedKeys.includes(String(option.key)) }"
                 @click="selectTrendOption(option)"
               >
                 <span>{{ option.label }}</span>
-                <small>{{ option.totalTasks || 0 }} 任务</small>
+                <small>{{ trendUsesDailyTop ? option.todayTasks || 0 : option.totalTasks || 0 }} 任务</small>
                 <i
-                  v-if="trendSelectedKey === String(option.key)"
+                  v-if="trendSelectedKeys.includes(String(option.key))"
                   class="ri-check-line"
                   aria-hidden="true"
                 ></i>
@@ -2203,7 +2345,8 @@ onUnmounted(() => {
           <span v-for="(series, index) in trendVisibleSeries" :key="series.key">
             <i :style="{ background: trendPalette[index % trendPalette.length] }"></i>
             <b>{{ series.label }}</b>
-            <small>{{ series.totalTasks || 0 }}</small>
+            <small v-if="series.todayRank">今日 {{ series.todayTasks || 0 }}</small>
+            <small v-else>{{ series.totalTasks || 0 }}</small>
           </span>
         </div>
         <div class="console-trend-wrap">
@@ -2321,8 +2464,8 @@ onUnmounted(() => {
               </div>
             </div>
             <!-- 日期范围筛选 -->
-            <div class="date-range-picker console-filter-select" @click.stop="showDatePicker = !showDatePicker">
-              <div class="custom-select-trigger" :class="{ open: showDatePicker }">
+            <div class="date-range-picker console-filter-select" @click.stop>
+              <div class="custom-select-trigger" :class="{ open: showDatePicker }" @click="toggleTaskDatePicker">
                 {{ dateDisplayText }}
                 <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
               </div>
@@ -2332,10 +2475,54 @@ onUnmounted(() => {
                     @click.stop="applyDateShortcut(s.key)"
                     :class="{ active: activeShortcut === s.key }">{{ s.label }}</button>
                 </div>
-                <div class="date-range-inputs">
-                  <input type="date" v-model="taskDateFrom" :max="todayStr" />
-                  <span>~</span>
-                  <input type="date" v-model="taskDateTo" :max="todayStr" />
+                <div class="task-date-range-status">
+                  <button
+                    type="button"
+                    :class="{ active: taskRangeSelecting === 'from' }"
+                    @click="taskRangeSelecting = 'from'"
+                  >
+                    <span>开始日期</span>
+                    <b>{{ taskRangeDraftFrom || '请选择' }}</b>
+                  </button>
+                  <span>至</span>
+                  <button
+                    type="button"
+                    :class="{ active: taskRangeSelecting === 'to' }"
+                    :disabled="!taskRangeDraftFrom"
+                    @click="taskRangeSelecting = 'to'"
+                  >
+                    <span>结束日期</span>
+                    <b>{{ taskRangeDraftTo || '请选择' }}</b>
+                  </button>
+                </div>
+                <div class="task-date-calendar-head">
+                  <button type="button" title="上个月" @click="moveTaskCalendarMonth(-1)">
+                    <i class="ri-arrow-left-s-line" aria-hidden="true"></i>
+                  </button>
+                  <strong>{{ taskCalendarTitle }}</strong>
+                  <button type="button" title="下个月" @click="moveTaskCalendarMonth(1)">
+                    <i class="ri-arrow-right-s-line" aria-hidden="true"></i>
+                  </button>
+                </div>
+                <div class="task-date-calendar-week">
+                  <span v-for="weekday in taskWeekDays" :key="weekday">{{ weekday }}</span>
+                </div>
+                <div class="task-date-calendar-days">
+                  <button
+                    v-for="day in taskCalendarDays"
+                    :key="day.value"
+                    type="button"
+                    :class="{
+                      muted: !day.currentMonth,
+                      today: day.today,
+                      selected: day.rangeStart || day.rangeEnd,
+                      'in-range': day.inRange,
+                    }"
+                    :disabled="day.disabled"
+                    @click="selectTaskCalendarDate(day)"
+                  >
+                    {{ day.label }}
+                  </button>
                 </div>
               </div>
             </div>
@@ -3338,6 +3525,149 @@ onUnmounted(() => {
   color: #fff;
   border-color: rgba(255, 255, 255, 0.2);
 }
+
+.task-date-range-status {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.task-date-range-status > span {
+  color: #64748b;
+  font-size: 11px;
+  text-align: center;
+}
+
+.task-date-range-status button {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: #94a3b8;
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  text-align: left;
+}
+
+.task-date-range-status button.active {
+  border-color: rgba(99, 102, 241, 0.72);
+  color: #e2e8f0;
+  background: rgba(99, 102, 241, 0.14);
+}
+
+.task-date-range-status button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.task-date-range-status button span {
+  font-size: 10px;
+}
+
+.task-date-range-status button b {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-date-calendar-head {
+  display: grid;
+  grid-template-columns: 30px 1fr 30px;
+  align-items: center;
+  margin-bottom: 5px;
+}
+
+.task-date-calendar-head strong {
+  color: #f8fafc;
+  font-size: 13px;
+  text-align: center;
+}
+
+.task-date-calendar-head button,
+.task-date-calendar-days button {
+  display: grid;
+  place-items: center;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.task-date-calendar-head button {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  font-size: 18px;
+}
+
+.task-date-calendar-head button:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.task-date-calendar-week,
+.task-date-calendar-days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+}
+
+.task-date-calendar-week span {
+  color: #64748b;
+  font-size: 10px;
+  line-height: 24px;
+  text-align: center;
+}
+
+.task-date-calendar-days {
+  gap: 2px;
+}
+
+.task-date-calendar-days button {
+  width: 32px;
+  height: 30px;
+  border-radius: 5px;
+  font-size: 11px;
+}
+
+.task-date-calendar-days button:hover:not(:disabled):not(.selected) {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.task-date-calendar-days button.muted {
+  color: #475569;
+}
+
+.task-date-calendar-days button.today {
+  outline: 1px solid rgba(99, 102, 241, 0.7);
+  outline-offset: -2px;
+}
+
+.task-date-calendar-days button.in-range {
+  color: #dbeafe;
+  border-radius: 0;
+  background: rgba(99, 102, 241, 0.17);
+}
+
+.task-date-calendar-days button.selected {
+  position: relative;
+  z-index: 1;
+  color: #fff;
+  background: #6366f1;
+  font-weight: 700;
+}
+
+.task-date-calendar-days button:disabled {
+  color: #334155;
+  cursor: not-allowed;
+  text-decoration: line-through;
+}
+
 .date-range-inputs {
   display: flex;
   align-items: center;
@@ -3387,6 +3717,31 @@ onUnmounted(() => {
   background: #e2e8f0;
   color: #0f172a;
   border-color: #cbd5e1;
+}
+[data-theme='light'] .task-date-range-status button {
+  border-color: #e2e8f0;
+  color: #64748b;
+  background: #f8fafc;
+}
+[data-theme='light'] .task-date-range-status button.active {
+  border-color: #818cf8;
+  color: #1e293b;
+  background: #eef2ff;
+}
+[data-theme='light'] .task-date-calendar-head strong {
+  color: #1e293b;
+}
+[data-theme='light'] .task-date-calendar-head button:hover,
+[data-theme='light'] .task-date-calendar-days button:hover:not(:disabled):not(.selected) {
+  color: #1e293b;
+  background: #f1f5f9;
+}
+[data-theme='light'] .task-date-calendar-days button.muted {
+  color: #cbd5e1;
+}
+[data-theme='light'] .task-date-calendar-days button.in-range {
+  color: #3730a3;
+  background: #eef2ff;
 }
 [data-theme='light'] .date-range-inputs input[type='date'] {
   background: #ffffff;
@@ -3623,12 +3978,15 @@ onUnmounted(() => {
   min-height: 24px;
   align-items: center;
   gap: 8px 14px;
-  overflow: hidden;
-  flex-wrap: wrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex-wrap: nowrap;
+  scrollbar-width: thin;
 }
 
 .console-trend-legend > span {
   display: inline-flex;
+  flex: 0 0 auto;
   min-width: 0;
   align-items: center;
   gap: 5px;

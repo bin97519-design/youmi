@@ -66,7 +66,7 @@ public class ShopService {
     shopRepository.deleteById(id);
   }
 
-  /** 公开列表：仅返回 ACTIVE 店铺的 id/name/code，供注册页下拉取数。 */
+  /** 公开列表：仅返回 ACTIVE 店铺的 id/name/code。 */
   public List<ShopDtos.ShopPublicView> listActiveShops() {
     return shopRepository.findActive().stream()
         .map(shop -> new ShopDtos.ShopPublicView(

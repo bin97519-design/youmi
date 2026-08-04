@@ -31,6 +31,49 @@ export function buildCanvasAutoLayout(layers, connections = [], options = {}) {
 
   const gapX = Math.max(24, finiteNumber(options.gapX, 96))
   const gapY = Math.max(24, finiteNumber(options.gapY, 64))
+  const requestedColumns = Math.floor(finiteNumber(options.columns, 0))
+
+  if (requestedColumns > 0) {
+    const orderedNodes = [...nodes].sort(stableLayerOrder)
+    const columnCount = Math.min(requestedColumns, orderedNodes.length)
+    const rowCount = Math.ceil(orderedNodes.length / columnCount)
+    const columnWidths = Array.from({ length: columnCount }, () => 0)
+    const rowHeights = Array.from({ length: rowCount }, () => 0)
+
+    orderedNodes.forEach((node, index) => {
+      const column = index % columnCount
+      const row = Math.floor(index / columnCount)
+      columnWidths[column] = Math.max(columnWidths[column], node.width)
+      rowHeights[row] = Math.max(rowHeights[row], node.height)
+    })
+
+    const columnOffsets = []
+    const rowOffsets = []
+    let offsetX = 0
+    let offsetY = 0
+    for (const width of columnWidths) {
+      columnOffsets.push(offsetX)
+      offsetX += width + gapX
+    }
+    for (const height of rowHeights) {
+      rowOffsets.push(offsetY)
+      offsetY += height + gapY
+    }
+
+    const originX = Math.min(...nodes.map((node) => node.x))
+    const originY = Math.min(...nodes.map((node) => node.y))
+    const positions = new Map()
+    orderedNodes.forEach((node, index) => {
+      const column = index % columnCount
+      const row = Math.floor(index / columnCount)
+      positions.set(node.id, {
+        x: Math.round(originX + columnOffsets[column] + (columnWidths[column] - node.width) / 2),
+        y: Math.round(originY + rowOffsets[row] + (rowHeights[row] - node.height) / 2),
+      })
+    })
+    return positions
+  }
+
   const maxRows = Math.max(
     2,
     Math.floor(finiteNumber(options.maxRows, Math.ceil(Math.sqrt(nodes.length)))),

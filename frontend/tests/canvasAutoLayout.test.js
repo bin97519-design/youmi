@@ -89,3 +89,20 @@ test('uses the visible card dimensions supplied by the canvas renderer', () => {
   assertNoOverlap(layers, layout)
   assert.equal(layout.get('portrait-1').y - layout.get('portrait-0').y, 544)
 })
+
+test('arranges canvas images in fixed rows of five without overlap', () => {
+  const layers = Array.from({ length: 12 }, (_, index) => ({
+    id: `grid-${index}`,
+    x: 120 + index * 10,
+    y: 80 + index * 10,
+    width: index % 2 ? 240 : 360,
+    height: index % 3 ? 320 : 480,
+  }))
+  const layout = buildCanvasAutoLayout(layers, [], { columns: 5, gapX: 48, gapY: 40 })
+
+  assert.equal(layout.size, 12)
+  assert.equal(new Set(layers.slice(0, 5).map((layer) => layout.get(layer.id).y)).size, 2)
+  assert.ok(layout.get('grid-5').y > layout.get('grid-0').y)
+  assert.ok(layout.get('grid-10').y > layout.get('grid-5').y)
+  assertNoOverlap(layers, layout)
+})

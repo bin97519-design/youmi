@@ -1,5 +1,6 @@
 package com.youmi.api.ecommerce;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.util.List;
 import java.util.Map;
 
@@ -47,7 +48,7 @@ public class EcommerceSetDtos {
       String setId,
       int totalTasks,
       int consumedMi,
-      int balance) {}
+      @JsonIgnore int balance) {}
 
   /** 进度响应 */
   public record ProgressResponse(
@@ -92,7 +93,7 @@ public class EcommerceSetDtos {
       long imageId,
       String status,
       int consumedMi,
-      int balance) {}
+      @JsonIgnore int balance) {}
 
   /** 当前用户最近生成、可作为产品参考的图片 */
   public record SourceImage(

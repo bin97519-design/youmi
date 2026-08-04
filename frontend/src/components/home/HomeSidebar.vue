@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import VersionHistoryDialog from '../common/VersionHistoryDialog.vue'
 import { useVersionHistory } from '../../composables/useVersionHistory'
+import { downloadLatestCliInstaller } from '../../utils/cliDownload'
 
 const {
   currentAppVersion,
@@ -31,12 +32,12 @@ const emit = defineEmits(['toggle', 'login'])
 const router = useRouter()
 const route = useRoute()
 const openGroup = ref('designer')
+const cliDownloadLoading = ref(false)
 const displayUser = computed(
   () =>
     props.user || {
       id: '85296258',
       name: '用户8529...',
-      miValue: 36,
       plan: '普通用户',
     },
 )
@@ -193,6 +194,21 @@ function openConsole() {
     return
   }
   router.push('/console')
+}
+
+async function openCliDownload() {
+  if (cliDownloadLoading.value) return
+
+  cliDownloadLoading.value = true
+  try {
+    const releaseInfo = await downloadLatestCliInstaller()
+    const versionLabel = releaseInfo.version ? `v${releaseInfo.version}` : '最新版本'
+    console.info('[CLI Download] 下载已触发:', versionLabel, releaseInfo.downloadUrl)
+  } catch (error) {
+    window.alert(error instanceof Error ? error.message : 'CLI 下载失败，请稍后重试。')
+  } finally {
+    cliDownloadLoading.value = false
+  }
 }
 </script>
 
@@ -379,7 +395,19 @@ function openConsole() {
         <button v-if="expanded" class="yh-login-wide" type="button" @click="emit('login')">
           登录
         </button>
-        <button class="yh-bottom-icon" type="button">♧</button>
+        <button
+          class="yh-bottom-icon yh-cli-download"
+          type="button"
+          :disabled="cliDownloadLoading"
+          title="CLI download (checks latest.yml first)"
+          aria-label="CLI download"
+          @click="openCliDownload"
+        >
+          <i
+            :class="['ri-download-cloud-2-line', { 'is-loading': cliDownloadLoading }]"
+            aria-hidden="true"
+          ></i>
+        </button>
         <button v-if="!expanded" class="yh-login-mini" type="button" @click="emit('login')">
           登录
         </button>
@@ -394,10 +422,6 @@ function openConsole() {
               <small>ID: {{ displayUser.id }}</small>
             </span>
             <span class="yh-user-caret">⌄</span>
-          </div>
-          <div class="yh-user-row">
-            <span>米值余额</span>
-            <strong>{{ displayUser.miValue }} ›</strong>
           </div>
           <div class="yh-user-row">
             <span>{{ displayUser.plan }}</span>
@@ -418,11 +442,19 @@ function openConsole() {
       </template>
 
       <template v-else>
-        <button class="yh-points-chip" type="button">
-          <strong>✦ {{ displayUser.miValue }}</strong>
-          <span>开会员</span>
+        <button
+          class="yh-bottom-icon yh-cli-download"
+          type="button"
+          :disabled="cliDownloadLoading"
+          title="CLI download (checks latest.yml first)"
+          aria-label="CLI download"
+          @click="openCliDownload"
+        >
+          <i
+            :class="['ri-download-cloud-2-line', { 'is-loading': cliDownloadLoading }]"
+            aria-hidden="true"
+          ></i>
         </button>
-        <button class="yh-bottom-icon" type="button">♧</button>
         <button class="yh-bottom-icon yh-avatar-mini" type="button">♙</button>
       </template>
     </div>

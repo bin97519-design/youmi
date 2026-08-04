@@ -569,10 +569,6 @@ onBeforeUnmount(() => {
               </div>
               <span class="yh-user-menu-vip">免费</span>
             </div>
-            <div class="yh-user-menu-balance">
-              <span class="yh-balance-label">算力余额</span>
-              <span class="yh-balance-value">0</span>
-            </div>
             <div class="yh-user-menu-divider"></div>
             <button type="button" class="yh-user-menu-item" @click="userMenuOpen = false">
               <i class="ri-user-line"></i>
@@ -612,7 +608,6 @@ onBeforeUnmount(() => {
         </div>
       </template>
       <template v-else>
-        <button type="button" @click="userStore.openLogin()">注册</button>
         <button type="button" @click="userStore.openLogin()">登录</button>
       </template>
     </div>

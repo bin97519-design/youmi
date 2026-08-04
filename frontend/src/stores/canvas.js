@@ -438,6 +438,12 @@ export const useCanvasStore = defineStore('canvas', {
             continue;
           }
 
+          // 服务端版本更新时以服务端为准。继续做图层并集会把服务端已删除的旧图层重新复活。
+          if (serverUpdatedAt > localUpdatedAt) {
+            merged[existingIndex] = serverDoc;
+            continue;
+          }
+
           // 服务器有数据 → 合并本地；layers 按 id 并集（本地优先），保留 detection 缓存 + 本地独有字段
           const mergedDoc = { ...serverDoc };
           if (serverDoc.payload?.layers && localDoc.payload?.layers) {

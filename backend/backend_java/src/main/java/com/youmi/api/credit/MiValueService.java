@@ -1,42 +1,26 @@
 package com.youmi.api.credit;
 
 import com.youmi.api.auth.UserRepository;
-import java.util.Optional;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * 米值计费服务层。承载「先扣后生成、失败回滚、可审计」的核心闭环逻辑。
- *
- * <p>设计要点：
- * <ul>
- *   <li>扣减成功 = 余额已减少（原子 SQL 保证）；后续只有 commit/rollback 改流水状态，不动余额，
- *       保证扣减与流水最终一致。</li>
- *   <li>余额不足或并发 race 时抛出 {@link MiValueInsufficientException}(HTTP 402)，绝不发起外部调用。</li>
- *   <li>回滚是幂等的：仅当流水处于 PENDING/SUCCESS 时才退款，重复调用不会多退。</li>
- * </ul>
+ * 米值消费记录服务。米值不是预付余额，生成前只创建待确认流水，成功后计入消费，失败则回滚流水。
  */
 @Service
 public class MiValueService {
   private final MiValueRepository repository;
   private final MiValueProperties properties;
-  private final UserRepository userRepository;
 
   public MiValueService(
       MiValueRepository repository,
       MiValueProperties properties,
-      UserRepository userRepository) {
+      UserRepository ignoredUserRepository) {
     this.repository = repository;
     this.properties = properties;
-    this.userRepository = userRepository;
   }
 
-  /**
-   * 校验并原子扣减。仅当扣减成功后写入 PENDING 流水。
-   *
-   * @return 扣减明细（含自增流水 id）
-   * @throws MiValueInsufficientException 余额不足或并发竞争失败（HTTP 402）
-   */
+  /** 创建 PENDING 消费流水，保留旧方法名以兼容现有调用方。 */
   public MiValueDtos.DeductResult checkAndDeduct(Long userId, MiBizType bizType) {
     return checkAndDeduct(userId, bizType, properties.getPrice(bizType));
   }
@@ -44,18 +28,11 @@ public class MiValueService {
   @Transactional
   public MiValueDtos.DeductResult checkAndDeduct(Long userId, MiBizType bizType, int price) {
     if (price < 0) throw new IllegalArgumentException("Mi value price must not be negative");
-    int balance = repository.getBalance(userId);
-    if (balance < price) {
-      throw new MiValueInsufficientException(balance);
-    }
-    int affected = repository.deductAtomic(userId, price);
-    if (affected == 0) {
-      // 并发 race：在 getBalance 之后、扣减之前被其他请求抢先扣光
-      throw new MiValueInsufficientException(balance);
-    }
+    // Mi value is consumption accounting, not a prepaid balance. Keep the legacy
+    // method name for callers, but only create an auditable pending record here.
     long logId = repository.insertLog(
-        userId, bizType, null, price, balance, balance - price, "PENDING", null);
-    return new MiValueDtos.DeductResult(logId, balance, balance - price, price, bizType);
+        userId, bizType, null, price, 0, 0, "PENDING", null);
+    return new MiValueDtos.DeductResult(logId, 0, 0, price, bizType);
   }
 
   @Transactional
@@ -65,16 +42,12 @@ public class MiValueService {
     if (settledPrice < 0 || settledPrice > row.price()) {
       throw new IllegalArgumentException("Settled price exceeds reserved price");
     }
-    int refundAmount = row.price() - settledPrice;
-    if (repository.settle(logId, settledPrice, refundAmount) > 0 && refundAmount > 0) {
-      repository.refund(row.userId(), refundAmount);
-    }
-    int balance = repository.getBalance(row.userId());
+    repository.settle(logId, settledPrice, 0);
     return new MiValueDtos.DeductResult(
-        logId, balance - refundAmount, balance, settledPrice, MiBizType.valueOf(row.bizType()));
+        logId, 0, 0, settledPrice, MiBizType.valueOf(row.bizType()));
   }
 
-  /** 生成成功：将 PENDING 流水置为 SUCCESS（不动余额） */
+  /** 生成成功：将 PENDING 流水置为 SUCCESS。 */
   public void commit(Long logId) {
     repository.setLogStatus(logId, "SUCCESS");
   }
@@ -85,13 +58,9 @@ public class MiValueService {
         .ifPresent(row -> repository.setLogStatus(row.logId(), "SUCCESS"));
   }
 
-  /** 生成失败：幂等回滚——仅当流水处于 PENDING/SUCCESS 时才退回米值 */
+  /** 生成失败：幂等标记为 ROLLBACK，不计入消费。 */
   public void rollback(Long userId, Long logId) {
-    Optional<MiValueRepository.LogRow> row = repository.findLogById(logId);
-    int price = row.map(MiValueRepository.LogRow::price).orElse(0);
-    if (repository.markRollback(logId) > 0 && price > 0) {
-      repository.refund(userId, price);
-    }
+    repository.markRollback(logId);
   }
 
   /** 生成失败（已知 userId）：按 task_id 回滚 */
@@ -117,23 +86,17 @@ public class MiValueService {
     return repository.isTaskOwnedByUser(taskId, userId, bizType);
   }
 
-  /** 查询用户当前余额 */
+  /** 兼容旧响应字段；米值余额账户已取消，固定返回 0。 */
   public int getBalance(Long userId) {
-    return repository.getBalance(userId);
+    return 0;
   }
 
-  /**
-   * 管理后台调账：写一条 ADMIN_ADJUST 流水（status=SUCCESS）并调整余额（不允许负余额）。
-   *
-   * @return 调账前后的余额快照
-   */
+  public int getConsumedMi(Long userId) {
+    return repository.getConsumedMi(userId);
+  }
+
+  /** 米值余额账户已取消，不再支持充值或调账。 */
   public MiValueDtos.DeductResult adjustByAdmin(Long userId, int delta, String reason) {
-    int before = repository.getBalance(userId);
-    repository.adminAdjust(userId, delta);
-    int after = repository.getBalance(userId);
-    long logId = repository.insertLog(
-        userId, MiBizType.ADMIN_ADJUST, null, Math.abs(delta),
-        before, after, "SUCCESS", null, reason);
-    return new MiValueDtos.DeductResult(logId, before, after, delta, MiBizType.ADMIN_ADJUST);
+    throw new UnsupportedOperationException("Mi value balance accounts have been removed");
   }
 }

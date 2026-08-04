@@ -49,7 +49,7 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
     planningLoading: false,
     generationLoading: false,
     errorMessage: '',
-    billing: { consumedMi: 0, balance: null },
+    billing: { consumedMi: 0 },
     recentImages: [],
 
     // 配置相关
@@ -249,7 +249,6 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
         }
         this.billing = {
           consumedMi: json.data.consumedMi || 0,
-          balance: json.data.balance ?? null,
         }
         this.startPolling()
         return json.data
@@ -361,7 +360,6 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
         if (json.code !== 0) throw new Error(json.message || '重试失败')
         this.billing = {
           consumedMi: this.billing.consumedMi + (json.data.consumedMi || 0),
-          balance: json.data.balance ?? this.billing.balance,
         }
         this.currentStep = 'generating'
         this.progress.status = 'GENERATING'
@@ -381,7 +379,6 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
       this.stopPolling()
       let submitted = 0
       let consumedMi = 0
-      let balance = this.billing.balance
       const errors = []
       try {
         for (const imageId of ids) {
@@ -394,7 +391,6 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
             if (json.code !== 0) throw new Error(json.message || '重试失败')
             submitted += 1
             consumedMi += json.data.consumedMi || 0
-            balance = json.data.balance ?? balance
           } catch (err) {
             errors.push(err.message || '重试失败')
           }
@@ -402,7 +398,6 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
         if (!submitted) throw new Error(errors[0] || '批量重试失败')
         this.billing = {
           consumedMi: this.billing.consumedMi + consumedMi,
-          balance,
         }
         this.currentStep = 'generating'
         this.progress.status = 'GENERATING'
@@ -472,7 +467,7 @@ export const useEcommerceSetStore = defineStore('ecommerceSet', {
       this.planningLoading = false
       this.generationLoading = false
       this.errorMessage = ''
-      this.billing = { consumedMi: 0, balance: null }
+      this.billing = { consumedMi: 0 }
       this.recentImages = []
       this.config = createDefaultConfig()
       this.progress = {

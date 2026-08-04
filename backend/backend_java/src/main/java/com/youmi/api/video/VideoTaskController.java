@@ -49,7 +49,7 @@ public class VideoTaskController {
       return ApiResponse.ok(response);
     } catch (Exception e) {
       miValueService.rollback(userId, deduct.logId());
-      throw new ApiException(502, "生成服务异常，米值已退回");
+      throw new ApiException(502, "生成服务异常，失败任务不计入米值消耗");
     }
   }
 

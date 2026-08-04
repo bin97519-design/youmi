@@ -1,6 +1,7 @@
 package com.youmi.api.image;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.util.ArrayList;
@@ -84,7 +85,7 @@ public class ImageGenerationDtos {
     private JsonNode raw;
     @JsonProperty("consumedMi")
     private int consumedMi = 0;
-    @JsonProperty("balance")
+    @JsonIgnore
     private int balance = 0;
 
     public CreateTaskResponse(

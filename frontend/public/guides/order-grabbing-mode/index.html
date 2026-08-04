@@ -1,0 +1,1695 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="抢单模式完整操作指南：从旺店通导出订单、管理员创建生产计划，到员工抢单与管理员查看进度。"
+    />
+    <meta name="theme-color" content="#f5f7fa" />
+    <title>抢单模式操作指南</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --page: #f4f6f8;
+        --surface: #ffffff;
+        --surface-soft: #f8fafc;
+        --ink: #172033;
+        --muted: #667085;
+        --line: #d8dee8;
+        --line-strong: #b7c1d0;
+        --blue: #1769e0;
+        --blue-soft: #eaf2ff;
+        --teal: #087f76;
+        --teal-soft: #e6f6f3;
+        --orange: #c45111;
+        --orange-soft: #fff1e7;
+        --shadow: 0 12px 30px rgba(23, 32, 51, 0.08);
+        font-family:
+          "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+        letter-spacing: 0;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        color: var(--ink);
+        background: var(--page);
+        line-height: 1.65;
+      }
+
+      button,
+      input {
+        font: inherit;
+      }
+
+      button {
+        color: inherit;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 30;
+        height: 62px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.96);
+        backdrop-filter: blur(12px);
+      }
+
+      .topbar-inner {
+        width: min(1460px, calc(100% - 40px));
+        height: 100%;
+        margin: 0 auto;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
+      }
+
+      .brand-mark {
+        width: 34px;
+        height: 34px;
+        display: grid;
+        place-items: center;
+        border-radius: 7px;
+        color: #fff;
+        background: var(--ink);
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .brand-copy {
+        min-width: 0;
+      }
+
+      .brand-title {
+        margin: 0;
+        font-size: 16px;
+        line-height: 1.25;
+      }
+
+      .brand-meta {
+        margin: 2px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.25;
+      }
+
+      .top-actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .progress-text {
+        color: var(--muted);
+        font-size: 13px;
+        white-space: nowrap;
+      }
+
+      .print-button {
+        min-height: 36px;
+        padding: 0 14px;
+        border: 1px solid var(--line-strong);
+        border-radius: 6px;
+        background: var(--surface);
+        cursor: pointer;
+        font-weight: 700;
+      }
+
+      .print-button:hover {
+        border-color: var(--blue);
+        color: var(--blue);
+      }
+
+      .page {
+        width: min(1460px, calc(100% - 40px));
+        margin: 0 auto;
+        padding: 34px 0 72px;
+        display: grid;
+        grid-template-columns: 278px minmax(0, 1fr);
+        gap: 30px;
+        align-items: start;
+      }
+
+      .sidebar {
+        position: sticky;
+        top: 88px;
+      }
+
+      .sidebar-panel {
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--surface);
+        box-shadow: 0 8px 24px rgba(23, 32, 51, 0.05);
+      }
+
+      .sidebar-head {
+        padding: 18px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .sidebar-kicker {
+        margin: 0 0 6px;
+        color: var(--blue);
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .sidebar-title {
+        margin: 0;
+        font-size: 17px;
+      }
+
+      .sidebar-progress {
+        margin-top: 14px;
+      }
+
+      .progress-track {
+        height: 7px;
+        overflow: hidden;
+        border-radius: 4px;
+        background: #e8ecf2;
+      }
+
+      .progress-bar {
+        width: 0;
+        height: 100%;
+        background: var(--teal);
+        transition: width 180ms ease;
+      }
+
+      .progress-detail {
+        margin-top: 7px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .toc {
+        padding: 8px;
+      }
+
+      .toc-group + .toc-group {
+        margin-top: 3px;
+      }
+
+      .toc-link {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px;
+        border: 0;
+        border-radius: 6px;
+        text-align: left;
+        text-decoration: none;
+        background: transparent;
+        cursor: pointer;
+      }
+
+      .toc-link:hover,
+      .toc-link.active {
+        color: var(--blue);
+        background: var(--blue-soft);
+      }
+
+      .toc-index {
+        flex: 0 0 25px;
+        width: 25px;
+        height: 25px;
+        display: grid;
+        place-items: center;
+        border: 1px solid currentColor;
+        border-radius: 50%;
+        font-size: 11px;
+        font-weight: 800;
+      }
+
+      .toc-copy {
+        min-width: 0;
+      }
+
+      .toc-name {
+        display: block;
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      .toc-range {
+        display: block;
+        margin-top: 1px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .content {
+        min-width: 0;
+      }
+
+      .intro {
+        padding: 10px 0 34px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .eyebrow {
+        margin: 0 0 8px;
+        color: var(--orange);
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      h1 {
+        max-width: 860px;
+        margin: 0;
+        font-size: clamp(34px, 5vw, 56px);
+        line-height: 1.12;
+      }
+
+      .lead {
+        max-width: 880px;
+        margin: 18px 0 0;
+        color: #46516a;
+        font-size: 17px;
+      }
+
+      .flow-strip {
+        margin-top: 28px;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 12px;
+      }
+
+      .flow-item {
+        min-height: 96px;
+        padding: 16px;
+        border-left: 4px solid var(--blue);
+        background: var(--surface);
+      }
+
+      .flow-item:nth-child(2) {
+        border-color: var(--teal);
+      }
+
+      .flow-item:nth-child(3) {
+        border-color: var(--orange);
+      }
+
+      .flow-label {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .flow-title {
+        display: block;
+        margin-top: 5px;
+        font-size: 16px;
+        font-weight: 800;
+      }
+
+      .flow-summary {
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .preflight {
+        margin: 30px 0 0;
+        padding: 20px 22px;
+        border: 1px solid #f0c29f;
+        border-radius: 8px;
+        background: var(--orange-soft);
+      }
+
+      .preflight h2 {
+        margin: 0;
+        font-size: 17px;
+      }
+
+      .preflight-list {
+        margin: 10px 0 0;
+        padding-left: 20px;
+        color: #5f3b24;
+      }
+
+      .section {
+        scroll-margin-top: 84px;
+        padding-top: 46px;
+      }
+
+      .section-head {
+        display: flex;
+        align-items: flex-start;
+        gap: 16px;
+        margin-bottom: 22px;
+      }
+
+      .section-number {
+        flex: 0 0 40px;
+        width: 40px;
+        height: 40px;
+        display: grid;
+        place-items: center;
+        border-radius: 7px;
+        color: #fff;
+        background: var(--ink);
+        font-size: 14px;
+        font-weight: 800;
+      }
+
+      .section h2 {
+        margin: 0;
+        font-size: 28px;
+        line-height: 1.2;
+      }
+
+      .section-desc {
+        margin: 6px 0 0;
+        color: var(--muted);
+      }
+
+      .steps {
+        display: grid;
+        gap: 22px;
+      }
+
+      .step {
+        position: relative;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--surface);
+        box-shadow: 0 8px 24px rgba(23, 32, 51, 0.04);
+        scroll-margin-top: 88px;
+      }
+
+      .step.completed {
+        border-color: #8ecbc4;
+      }
+
+      .step.completed .step-head {
+        background: var(--teal-soft);
+      }
+
+      .step-head {
+        min-height: 72px;
+        padding: 15px 18px;
+        display: grid;
+        grid-template-columns: 44px minmax(0, 1fr) auto;
+        gap: 14px;
+        align-items: center;
+        border-bottom: 1px solid var(--line);
+        background: var(--surface-soft);
+      }
+
+      .step-index {
+        width: 44px;
+        height: 44px;
+        display: grid;
+        place-items: center;
+        border-radius: 7px;
+        color: #fff;
+        background: var(--blue);
+        font-size: 15px;
+        font-weight: 800;
+      }
+
+      .step-title {
+        margin: 0;
+        font-size: 18px;
+        line-height: 1.35;
+      }
+
+      .step-subtitle {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .step-check-label {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        color: var(--muted);
+        font-size: 13px;
+        cursor: pointer;
+        user-select: none;
+      }
+
+      .step-check {
+        width: 18px;
+        height: 18px;
+        accent-color: var(--teal);
+      }
+
+      .step-body {
+        padding: 18px;
+      }
+
+      .instruction {
+        margin: 0 0 16px;
+        color: #38445a;
+      }
+
+      .path {
+        display: inline-flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 8px;
+        color: var(--blue);
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      .path span + span::before {
+        content: "›";
+        margin-right: 6px;
+        color: #8fa1bc;
+      }
+
+      .shot {
+        position: relative;
+        margin: 0;
+      }
+
+      .shot-button {
+        width: 100%;
+        padding: 0;
+        overflow: hidden;
+        display: block;
+        border: 1px solid var(--line-strong);
+        border-radius: 6px;
+        background: #eef1f5;
+        cursor: zoom-in;
+      }
+
+      .shot img {
+        width: 100%;
+        height: auto;
+        display: block;
+      }
+
+      .shot-caption {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .result {
+        margin-top: 15px;
+        padding: 12px 14px;
+        border-left: 3px solid var(--teal);
+        background: var(--teal-soft);
+        color: #28534f;
+        font-size: 13px;
+      }
+
+      .callout {
+        margin-top: 18px;
+        padding: 16px 18px;
+        border: 1px solid #bdd2ee;
+        border-radius: 8px;
+        background: var(--blue-soft);
+      }
+
+      .callout strong {
+        display: block;
+        margin-bottom: 4px;
+        color: #174d96;
+      }
+
+      .callout p {
+        margin: 0;
+        color: #365779;
+      }
+
+      .finish {
+        margin-top: 46px;
+        padding: 28px;
+        border-radius: 8px;
+        color: #fff;
+        background: var(--ink);
+      }
+
+      .finish h2 {
+        margin: 0;
+        font-size: 27px;
+      }
+
+      .finish p {
+        margin: 8px 0 0;
+        color: #cbd3df;
+      }
+
+      .finish-actions {
+        margin-top: 18px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .finish-button {
+        min-height: 38px;
+        padding: 0 15px;
+        border: 1px solid #56627a;
+        border-radius: 6px;
+        color: #fff;
+        background: transparent;
+        cursor: pointer;
+        font-weight: 700;
+      }
+
+      .finish-button.primary {
+        border-color: #fff;
+        color: var(--ink);
+        background: #fff;
+      }
+
+      .finish-button:hover {
+        border-color: #9fd6d0;
+        color: #9fd6d0;
+      }
+
+      .finish-button.primary:hover {
+        color: var(--teal);
+      }
+
+      .lightbox {
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 28px;
+        background: rgba(10, 15, 25, 0.88);
+      }
+
+      .lightbox.open {
+        display: flex;
+      }
+
+      .lightbox-figure {
+        width: min(1500px, 100%);
+        max-height: calc(100vh - 56px);
+        margin: 0;
+        overflow: auto;
+        border-radius: 8px;
+        background: #111827;
+        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.4);
+      }
+
+      .lightbox-image {
+        width: 100%;
+        height: auto;
+        display: block;
+        background: #fff;
+      }
+
+      .lightbox-caption {
+        padding: 12px 54px 13px 16px;
+        color: #e5e7eb;
+        font-size: 13px;
+      }
+
+      .lightbox-close {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        width: 42px;
+        height: 42px;
+        display: grid;
+        place-items: center;
+        border: 1px solid rgba(255, 255, 255, 0.45);
+        border-radius: 50%;
+        color: #fff;
+        background: rgba(17, 24, 39, 0.8);
+        cursor: pointer;
+        font-size: 24px;
+        line-height: 1;
+      }
+
+      .back-top {
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+        width: 42px;
+        height: 42px;
+        display: none;
+        place-items: center;
+        border: 1px solid var(--line-strong);
+        border-radius: 7px;
+        color: #fff;
+        background: var(--ink);
+        cursor: pointer;
+        font-size: 19px;
+        box-shadow: var(--shadow);
+      }
+
+      .back-top.visible {
+        display: grid;
+      }
+
+      :focus-visible {
+        outline: 3px solid rgba(23, 105, 224, 0.35);
+        outline-offset: 2px;
+      }
+
+      @media (max-width: 980px) {
+        .page {
+          grid-template-columns: 1fr;
+        }
+
+        .sidebar {
+          position: static;
+        }
+
+        .toc {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 6px;
+        }
+
+        .toc-group + .toc-group {
+          margin-top: 0;
+        }
+      }
+
+      @media (max-width: 720px) {
+        .topbar {
+          height: auto;
+        }
+
+        .topbar-inner {
+          width: min(100% - 24px, 1460px);
+          min-height: 58px;
+        }
+
+        .brand-meta,
+        .progress-text {
+          display: none;
+        }
+
+        .page {
+          width: min(100% - 24px, 1460px);
+          padding-top: 22px;
+          gap: 22px;
+        }
+
+        .flow-strip,
+        .toc {
+          grid-template-columns: 1fr;
+        }
+
+        h1 {
+          font-size: 36px;
+        }
+
+        .lead {
+          font-size: 15px;
+        }
+
+        .section {
+          padding-top: 36px;
+        }
+
+        .section h2 {
+          font-size: 24px;
+        }
+
+        .step-head {
+          grid-template-columns: 40px minmax(0, 1fr);
+          gap: 11px;
+        }
+
+        .step-index {
+          width: 40px;
+          height: 40px;
+        }
+
+        .step-check-label {
+          grid-column: 2;
+          justify-self: start;
+        }
+
+        .step-body {
+          padding: 12px;
+        }
+
+        .lightbox {
+          padding: 10px;
+        }
+
+        .lightbox-figure {
+          max-height: calc(100vh - 20px);
+        }
+
+        .back-top {
+          right: 14px;
+          bottom: 14px;
+        }
+      }
+
+      @media print {
+        body {
+          background: #fff;
+        }
+
+        .topbar,
+        .sidebar,
+        .back-top,
+        .step-check-label,
+        .finish-actions {
+          display: none !important;
+        }
+
+        .page {
+          width: 100%;
+          display: block;
+          padding: 0;
+        }
+
+        .intro {
+          padding-top: 0;
+        }
+
+        .step {
+          box-shadow: none;
+          break-inside: avoid;
+        }
+
+        .section {
+          break-before: page;
+        }
+
+        .section:first-of-type {
+          break-before: auto;
+        }
+
+        .shot-button {
+          border-color: #aab2bf;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">SOP</div>
+          <div class="brand-copy">
+            <p class="brand-title">抢单模式操作指南</p>
+            <p class="brand-meta">旺店通导出 → 创建生产计划 → 员工抢单</p>
+          </div>
+        </div>
+        <div class="top-actions">
+          <span class="progress-text" id="headerProgress">已完成 0 / 16</span>
+          <button class="print-button" type="button" id="printButton">打印教程</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="page">
+      <aside class="sidebar" aria-label="教程导航">
+        <div class="sidebar-panel">
+          <div class="sidebar-head">
+            <p class="sidebar-kicker">操作进度</p>
+            <h2 class="sidebar-title">共 3 个阶段 · 16 个步骤</h2>
+            <div class="sidebar-progress">
+              <div
+                class="progress-track"
+                role="progressbar"
+                aria-valuemin="0"
+                aria-valuemax="16"
+                aria-valuenow="0"
+                aria-label="教程完成进度"
+              >
+                <div class="progress-bar" id="progressBar"></div>
+              </div>
+              <div class="progress-detail" id="progressDetail">尚未标记完成步骤</div>
+            </div>
+          </div>
+          <nav class="toc">
+            <div class="toc-group">
+              <a class="toc-link active" href="#export-orders" data-section="export-orders">
+                <span class="toc-index">01</span>
+                <span class="toc-copy">
+                  <span class="toc-name">旺店通导出订单</span>
+                  <span class="toc-range">步骤 1–3</span>
+                </span>
+              </a>
+            </div>
+            <div class="toc-group">
+              <a class="toc-link" href="#create-plan" data-section="create-plan">
+                <span class="toc-index">02</span>
+                <span class="toc-copy">
+                  <span class="toc-name">管理员创建计划</span>
+                  <span class="toc-range">步骤 4–10</span>
+                </span>
+              </a>
+            </div>
+            <div class="toc-group">
+              <a class="toc-link" href="#employee-pick" data-section="employee-pick">
+                <span class="toc-index">03</span>
+                <span class="toc-copy">
+                  <span class="toc-name">员工抢单与进度</span>
+                  <span class="toc-range">步骤 11–16</span>
+                </span>
+              </a>
+            </div>
+          </nav>
+        </div>
+      </aside>
+
+      <div class="content">
+        <section class="intro" id="top">
+          <p class="eyebrow">供应链管理协同系统 · 标准操作流程</p>
+          <h1>抢单模式，从订单导出到计划完成</h1>
+          <p class="lead">
+            本教程按照实际业务顺序，演示如何从旺店通导出订单，在慧定制系统中创建生产计划，
+            再由员工进入计划抢单并完成订单。建议首次操作时按步骤逐项核对。
+          </p>
+
+          <div class="flow-strip" aria-label="操作流程概览">
+            <div class="flow-item">
+              <span class="flow-label">阶段 01</span>
+              <span class="flow-title">准备订单文件</span>
+              <div class="flow-summary">筛选订单、选择模板、导出 Excel</div>
+            </div>
+            <div class="flow-item">
+              <span class="flow-label">阶段 02</span>
+              <span class="flow-title">创建生产计划</span>
+              <div class="flow-summary">管理员导入订单并完成计划创建</div>
+            </div>
+            <div class="flow-item">
+              <span class="flow-label">阶段 03</span>
+              <span class="flow-title">员工领取任务</span>
+              <div class="flow-summary">抢下一单、处理订单、查看进度</div>
+            </div>
+          </div>
+
+          <div class="preflight">
+            <h2>开始前请确认</h2>
+            <ul class="preflight-list">
+              <li>已具备旺店通订单导出权限，以及慧定制系统管理员或员工账号。</li>
+              <li>导出时使用指定模板，避免列名、字段顺序与系统导入要求不一致。</li>
+              <li>创建计划前确认生产日期、抢单数量和导入文件均无误。</li>
+            </ul>
+          </div>
+        </section>
+
+        <section class="section" id="export-orders" data-observe-section>
+          <div class="section-head">
+            <div class="section-number">01</div>
+            <div>
+              <h2>在旺店通导出订单</h2>
+              <p class="section-desc">先获得格式正确的 Excel 订单文件，作为创建生产计划的数据来源。</p>
+            </div>
+          </div>
+
+          <div class="steps">
+            <article class="step" id="step-1" data-step="1">
+              <header class="step-head">
+                <div class="step-index">01</div>
+                <div>
+                  <h3 class="step-title">进入订单导出页面</h3>
+                  <p class="step-subtitle">打开旺店通订单列表，并筛选本次需要处理的订单。</p>
+                </div>
+                <label class="step-check-label">
+                  <input class="step-check" type="checkbox" data-check="1" />
+                  已完成
+                </label>
+              </header>
+              <div class="step-body">
+                <p class="instruction">
+                  在旺店通中进入订单列表，按业务条件筛选订单并勾选目标记录，然后点击订单列表上方的导出入口。
+                </p>
+                <div class="path" aria-label="操作路径">
+                  <span>订单列表</span><span>筛选订单</span><span>勾选记录</span><span>导出</span>
+                </div>
+                <figure class="shot">
+                  <button
+                    class="shot-button"
+                    type="button"
+                    data-full-image="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-01-ef906abfbf.png"
+                    data-caption="旺店通订单列表：筛选并勾选本次需要导出的订单。"
+                    aria-label="放大查看旺店通订单列表截图"
+                  >
+                    <img
+                      src="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-01-ef906abfbf.png"
+                      alt="旺店通订单列表页面，已勾选待导出的订单"
+                      loading="eager"
+                    />
+                  </button>
+                  <figcaption class="shot-caption">图 1：订单列表与导出入口。</figcaption>
+                </figure>
+                <div class="result">完成标志：需要导出的订单已被勾选，导出面板可以正常打开。</div>
+              </div>
+            </article>
+
+            <article class="step" id="step-2" data-step="2">
+              <header class="step-head">
+                <div class="step-index">02</div>
+                <div>
+                  <h3 class="step-title">选择指定导出模板</h3>
+                  <p class="step-subtitle">在导出面板中选择系统导入需要的字段模板。</p>
+                </div>
+                <label class="step-check-label">
+                  <input class="step-check" type="checkbox" data-check="2" />
+                  已完成
+                </label>
+              </header>
+              <div class="step-body">
+                <p class="instruction">
+                  打开“导出下载”面板后，在“导出字段模板”处选择对应模板，并检查右侧已选字段。
+                  字段关系到后续导入，请勿随意删改。
+                </p>
+                <figure class="shot">
+                  <button
+                    class="shot-button"
+                    type="button"
+                    data-full-image="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-02-97df6bfce8.png"
+                    data-caption="导出下载面板：选择指定导出模板并确认字段。"
+                    aria-label="放大查看导出模板选择截图"
+                  >
+                    <img
+                      src="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-02-97df6bfce8.png"
+                      alt="旺店通导出下载面板，导出字段模板位置被标记"
+                      loading="lazy"
+                    />
+                  </button>
+                  <figcaption class="shot-caption">图 2：导出模板与字段确认。</figcaption>
+                </figure>
+                <div class="result">完成标志：导出模板已选定，右侧字段列表与模板要求一致。</div>
+              </div>
+            </article>
+
+            <article class="step" id="step-3" data-step="3">
+              <header class="step-head">
+                <div class="step-index">03</div>
+                <div>
+                  <h3 class="step-title">导出并保存 Excel</h3>
+                  <p class="step-subtitle">下载订单文件，并确认表格中已经包含订单数据。</p>
+                </div>
+                <label class="step-check-label">
+                  <input class="step-check" type="checkbox" data-check="3" />
+                  已完成
+                </label>
+              </header>
+              <div class="step-body">
+                <p class="instruction">
+                  点击导出确认按钮，下载 Excel 文件。打开文件后检查订单编号、货品信息、收件人、数量等字段是否正常。
+                </p>
+                <figure class="shot">
+                  <button
+                    class="shot-button"
+                    type="button"
+                    data-full-image="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-03-093c0f6b13.png"
+                    data-caption="导出的订单 Excel：确认订单数据和主要字段已经完整写入。"
+                    aria-label="放大查看导出订单 Excel 截图"
+                  >
+                    <img
+                      src="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-03-093c0f6b13.png"
+                      alt="导出的订单 Excel 文件，包含订单编号、商品名称、数量等数据"
+                      loading="lazy"
+                    />
+                  </button>
+                  <figcaption class="shot-caption">图 3：导出的订单 Excel 示例。</figcaption>
+                </figure>
+                <div class="result">完成标志：Excel 可以打开，订单行和关键字段均有内容。</div>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="section" id="create-plan" data-observe-section>
+          <div class="section-head">
+            <div class="section-number">02</div>
+            <div>
+              <h2>管理员创建生产计划</h2>
+              <p class="section-desc">登录慧定制系统，建立计划并导入刚才从旺店通导出的订单。</p>
+            </div>
+          </div>
+
+          <div class="steps">
+            <article class="step" id="step-4" data-step="4">
+              <header class="step-head">
+                <div class="step-index">04</div>
+                <div>
+                  <h3 class="step-title">登录管理员账号</h3>
+                  <p class="step-subtitle">使用管理员账号进入供应链管理协同系统。</p>
+                </div>
+                <label class="step-check-label">
+                  <input class="step-check" type="checkbox" data-check="4" />
+                  已完成
+                </label>
+              </header>
+              <div class="step-body">
+                <p class="instruction">在登录页输入管理员用户名和密码，完成登录。</p>
+                <figure class="shot">
+                  <button
+                    class="shot-button"
+                    type="button"
+                    data-full-image="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-04-4da4bdf928.png"
+                    data-caption="供应链管理协同系统管理员登录页。"
+                    aria-label="放大查看管理员登录截图"
+                  >
+                    <img
+                      src="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-04-4da4bdf928.png"
+                      alt="供应链管理协同系统登录页面"
+                      loading="lazy"
+                    />
+                  </button>
+                  <figcaption class="shot-caption">图 4：管理员登录入口。</figcaption>
+                </figure>
+              </div>
+            </article>
+
+            <article class="step" id="step-5" data-step="5">
+              <header class="step-head">
+                <div class="step-index">05</div>
+                <div>
+                  <h3 class="step-title">进入“生产计划”菜单</h3>
+                  <p class="step-subtitle">从左侧生产模块进入计划列表。</p>
+                </div>
+                <label class="step-check-label">
+                  <input class="step-check" type="checkbox" data-check="5" />
+                  已完成
+                </label>
+              </header>
+              <div class="step-body">
+                <p class="instruction">
+                  登录后，在左侧导航中展开“生产”，点击“生产计划”，进入计划查询与创建页面。
+                </p>
+                <div class="path" aria-label="操作路径">
+                  <span>生产</span><span>生产计划</span>
+                </div>
+                <figure class="shot">
+                  <button
+                    class="shot-button"
+                    type="button"
+                    data-full-image="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-05-c014bc364f.png"
+                    data-caption="生产计划列表页：右上角提供创建生产计划入口。"
+                    aria-label="放大查看生产计划列表截图"
+                  >
+                    <img
+                      src="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-05-c014bc364f.png"
+                      alt="慧定制系统生产计划列表页面"
+                      loading="lazy"
+                    />
+                  </button>
+                  <figcaption class="shot-caption">图 5：生产计划列表与创建入口。</figcaption>
+                </figure>
+              </div>
+            </article>
+
+            <article class="step" id="step-6" data-step="6">
+              <header class="step-head">
+                <div class="step-index">06</div>
+                <div>
+                  <h3 class="step-title">填写计划基础信息</h3>
+                  <p class="step-subtitle">设置计划名称、生产日期和抢单数量。</p>
+                </div>
+                <label class="step-check-label">
+                  <input class="step-check" type="checkbox" data-check="6" />
+                  已完成
+                </label>
+              </header>
+              <div class="step-body">
+                <p class="instruction">
+                  点击“创建生产计划”，填写计划名称并选择生产日期，按实际安排设置抢单数量，然后进入下一步。
+                </p>
+                <figure class="shot">
+                  <button
+                    class="shot-button"
+                    type="button"
+                    data-full-image="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-06-37a0cdcbba.png"
+                    data-caption="创建计划：填写计划名称、生产日期和抢单数量。"
+                    aria-label="放大查看创建计划基础信息截图"
+                  >
+                    <img
+                      src="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-06-37a0cdcbba.png"
+                      alt="创建计划弹窗，包含计划名称、生产日期和抢单数量"
+                      loading="lazy"
+                    />
+                  </button>
+                  <figcaption class="shot-caption">图 6：创建计划基础信息。</figcaption>
+                </figure>
+                <div class="result">完成标志：计划名称、日期和抢单数量均已填写，能够点击“下一步”。</div>
+              </div>
+            </article>
+
+            <article class="step" id="step-7" data-step="7">
+              <header class="step-head">
+                <div class="step-index">07</div>
+                <div>
+                  <h3 class="step-title">选择“导入订单（抢单模式）”</h3>
+                  <p class="step-subtitle">进入导入订单页，并使用抢单模式导入入口。</p>
+                </div>
+                <label class="step-check-label">
+                  <input class="step-check" type="checkbox" data-check="7" />
+                  已完成
+                </label>
+              </header>
+              <div class="step-body">
+                <p class="instruction">
+                  切换到“导入订单”页签，点击“导入订单（抢单模式）”，准备选择旺店通导出的 Excel 文件。
+                </p>
+                <figure class="shot">
+                  <button
+                    class="shot-button"
+                    type="button"
+                    data-full-image="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-07-d81f5107a1.png"
+                    data-caption="导入订单页面：选择“导入订单（抢单模式）”。"
+                    aria-label="放大查看抢单模式导入入口截图"
+                  >
+                    <img
+                      src="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-07-d81f5107a1.png"
+                      alt="创建计划导入订单页面，抢单模式导入按钮被标记"
+                      loading="lazy"
+                    />
+                  </button>
+                  <figcaption class="shot-caption">图 7：抢单模式导入按钮。</figcaption>
+                </figure>
+              </div>
+            </article>
+
+            <article class="step" id="step-8" data-step="8">
+              <header class="step-head">
+                <div class="step-index">08</div>
+                <div>
+                  <h3 class="step-title">选择旺店通订单文件</h3>
+                  <p class="step-subtitle">从本地选择刚才导出的 Excel。</p>
+                </div>
+                <label class="step-check-label">
+                  <input class="step-check" type="checkbox" data-check="8" />
+                  已完成
+                </label>
+              </header>
+              <div class="step-body">
+                <p class="instruction">
+                  在文件选择窗口中找到旺店通导出的订单 Excel，确认文件名和时间无误后打开。
+                </p>
+                <figure class="shot">
+                  <button
+                    class="shot-button"
+                    type="button"
+                    data-full-image="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-08-fa3489416f.png"
+                    data-caption="本地文件选择：选择旺店通导出的订单 Excel。"
+                    aria-label="放大查看订单文件选择截图"
+                  >
+                    <img
+                      src="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-08-fa3489416f.png"
+                      alt="Windows 文件选择窗口，订单 Excel 文件被选中"
+                      loading="lazy"
+                    />
+                  </button>
+                  <figcaption class="shot-caption">图 8：选择导出的订单文件。</figcaption>
+                </figure>
+              </div>
+            </article>
+
+            <article class="step" id="step-9" data-step="9">
+              <header class="step-head">
+                <div class="step-index">09</div>
+                <div>
+                  <h3 class="step-title">核对订单并完成发布</h3>
+                  <p class="step-subtitle">检查导入结果，确认无误后完成计划发布。</p>
+                </div>
+                <label class="step-check-label">
+                  <input class="step-check" type="checkbox" data-check="9" />
+                  已完成
+                </label>
+              </header>
+              <div class="step-body">
+                <p class="instruction">
+                  文件导入后，逐行检查订单编号、货品、规格和数量。确认订单已正确识别，再点击页面底部的完成发布按钮。
+                </p>
+                <figure class="shot">
+                  <button
+                    class="shot-button"
+                    type="button"
+                    data-full-image="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-09-5016537b8c.png"
+                    data-caption="订单导入结果：检查订单行后点击完成发布。"
+                    aria-label="放大查看订单导入结果截图"
+                  >
+                    <img
+                      src="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-09-5016537b8c.png"
+                      alt="订单导入结果列表，底部完成发布按钮被标记"
+                      loading="lazy"
+                    />
+                  </button>
+                  <figcaption class="shot-caption">图 9：导入结果与完成发布。</figcaption>
+                </figure>
+                <div class="result">完成标志：订单明细全部显示，页面没有未处理的导入错误。</div>
+              </div>
+            </article>
+
+            <article class="step" id="step-10" data-step="10">
+              <header class="step-head">
+                <div class="step-index">10</div>
+                <div>
+                  <h3 class="step-title">确认计划创建完成</h3>
+                  <p class="step-subtitle">返回计划列表，检查新计划的状态和进度。</p>
+                </div>
+                <label class="step-check-label">
+                  <input class="step-check" type="checkbox" data-check="10" />
+                  已完成
+                </label>
+              </header>
+              <div class="step-body">
+                <p class="instruction">
+                  发布完成后返回生产计划列表。新建计划应显示在列表中，并处于可执行状态。
+                </p>
+                <figure class="shot">
+                  <button
+                    class="shot-button"
+                    type="button"
+                    data-full-image="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-10-49823b318e.png"
+                    data-caption="生产计划列表：新计划已创建并显示进度。"
+                    aria-label="放大查看计划创建完成截图"
+                  >
+                    <img
+                      src="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-10-49823b318e.png"
+                      alt="生产计划列表，新建计划和计划进度被标记"
+                      loading="lazy"
+                    />
+                  </button>
+                  <figcaption class="shot-caption">图 10：计划创建完成。</figcaption>
+                </figure>
+                <div class="result">完成标志：计划列表中出现本次计划，状态和计划进度可以查看。</div>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="section" id="employee-pick" data-observe-section>
+          <div class="section-head">
+            <div class="section-number">03</div>
+            <div>
+              <h2>员工抢单与管理员查看进度</h2>
+              <p class="section-desc">员工进入计划领取订单，处理完成后继续抢下一单，管理员同步查看执行进度。</p>
+            </div>
+          </div>
+
+          <div class="steps">
+            <article class="step" id="step-11" data-step="11">
+              <header class="step-head">
+                <div class="step-index">11</div>
+                <div>
+                  <h3 class="step-title">登录员工账号</h3>
+                  <p class="step-subtitle">员工使用自己的账号进入系统。</p>
+                </div>
+                <label class="step-check-label">
+                  <input class="step-check" type="checkbox" data-check="11" />
+                  已完成
+                </label>
+              </header>
+              <div class="step-body">
+                <p class="instruction">
+                  退出管理员账号或打开新的浏览器窗口，使用员工账号登录供应链管理协同系统。
+                </p>
+                <figure class="shot">
+                  <button
+                    class="shot-button"
+                    type="button"
+                    data-full-image="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-11-678f7b428c.png"
+                    data-caption="供应链管理协同系统员工登录页。"
+                    aria-label="放大查看员工登录截图"
+                  >
+                    <img
+                      src="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-11-678f7b428c.png"
+                      alt="供应链管理协同系统登录页面，输入员工账号"
+                      loading="lazy"
+                    />
+                  </button>
+                  <figcaption class="shot-caption">图 11：员工账号登录。</figcaption>
+                </figure>
+              </div>
+            </article>
+
+            <article class="step" id="step-12" data-step="12">
+              <header class="step-head">
+                <div class="step-index">12</div>
+                <div>
+                  <h3 class="step-title">进入可执行的生产计划</h3>
+                  <p class="step-subtitle">在员工订单页面找到本次计划并进入。</p>
+                </div>
+                <label class="step-check-label">
+                  <input class="step-check" type="checkbox" data-check="12" />
+                  已完成
+                </label>
+              </header>
+              <div class="step-body">
+                <p class="instruction">
+                  在员工侧进入生产订单页面，找到当前可执行计划，点击右侧“进入计划”。
+                </p>
+                <figure class="shot">
+                  <button
+                    class="shot-button"
+                    type="button"
+                    data-full-image="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-12-39a40e8cab.png"
+                    data-caption="员工生产计划列表：点击“进入计划”。"
+                    aria-label="放大查看员工进入计划截图"
+                  >
+                    <img
+                      src="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-12-39a40e8cab.png"
+                      alt="员工生产计划列表，进入计划按钮被标记"
+                      loading="lazy"
+                    />
+                  </button>
+                  <figcaption class="shot-caption">图 12：进入员工生产计划。</figcaption>
+                </figure>
+              </div>
+            </article>
+
+            <article class="step" id="step-13" data-step="13">
+              <header class="step-head">
+                <div class="step-index">13</div>
+                <div>
+                  <h3 class="step-title">点击“抢下一单”</h3>
+                  <p class="step-subtitle">从当前计划中领取一条待处理订单。</p>
+                </div>
+                <label class="step-check-label">
+                  <input class="step-check" type="checkbox" data-check="13" />
+                  已完成
+                </label>
+              </header>
+              <div class="step-body">
+                <p class="instruction">
+                  进入计划详情后，点击页面右上角“抢下一单”。系统会按计划规则分配订单。
+                </p>
+                <figure class="shot">
+                  <button
+                    class="shot-button"
+                    type="button"
+                    data-full-image="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-13-e4dd7f3051.png"
+                    data-caption="计划详情页：点击右上角“抢下一单”。"
+                    aria-label="放大查看抢下一单截图"
+                  >
+                    <img
+                      src="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-13-e4dd7f3051.png"
+                      alt="员工计划详情页，抢下一单按钮被标记"
+                      loading="lazy"
+                    />
+                  </button>
+                  <figcaption class="shot-caption">图 13：领取下一条订单。</figcaption>
+                </figure>
+                <div class="result">完成标志：页面进入已分配订单的详情，订单状态开始处理。</div>
+              </div>
+            </article>
+
+            <article class="step" id="step-14" data-step="14">
+              <header class="step-head">
+                <div class="step-index">14</div>
+                <div>
+                  <h3 class="step-title">处理订单并点击“完成”</h3>
+                  <p class="step-subtitle">核对订单信息，完成实际作业后提交完成状态。</p>
+                </div>
+                <label class="step-check-label">
+                  <input class="step-check" type="checkbox" data-check="14" />
+                  已完成
+                </label>
+              </header>
+              <div class="step-body">
+                <p class="instruction">
+                  在订单详情页按订单信息完成作业。确认无误后点击右上角“完成”，并在确认弹窗中提交。
+                </p>
+                <figure class="shot">
+                  <button
+                    class="shot-button"
+                    type="button"
+                    data-full-image="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-14-f7a2ffb144.png"
+                    data-caption="订单详情页：完成作业后提交完成确认。"
+                    aria-label="放大查看订单完成确认截图"
+                  >
+                    <img
+                      src="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-14-f7a2ffb144.png"
+                      alt="员工订单详情页，完成按钮和完成确认弹窗"
+                      loading="lazy"
+                    />
+                  </button>
+                  <figcaption class="shot-caption">图 14：订单完成确认。</figcaption>
+                </figure>
+                <div class="result">完成标志：当前订单状态更新为已完成，并返回计划订单列表。</div>
+              </div>
+            </article>
+
+            <article class="step" id="step-15" data-step="15">
+              <header class="step-head">
+                <div class="step-index">15</div>
+                <div>
+                  <h3 class="step-title">继续抢单直到计划完成</h3>
+                  <p class="step-subtitle">重复领取与完成流程，直至系统提示计划结束。</p>
+                </div>
+                <label class="step-check-label">
+                  <input class="step-check" type="checkbox" data-check="15" />
+                  已完成
+                </label>
+              </header>
+              <div class="step-body">
+                <p class="instruction">
+                  完成当前订单后继续点击“抢下一单”。当计划中的订单全部处理完毕，系统会给出计划完成提示。
+                </p>
+                <figure class="shot">
+                  <button
+                    class="shot-button"
+                    type="button"
+                    data-full-image="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-15-86bb23a8f8.png"
+                    data-caption="计划完成：系统提示全部订单已完成。"
+                    aria-label="放大查看计划完成截图"
+                  >
+                    <img
+                      src="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-15-86bb23a8f8.png"
+                      alt="员工计划页面，显示生产已完成并指向抢下一单按钮"
+                      loading="lazy"
+                    />
+                  </button>
+                  <figcaption class="shot-caption">图 15：计划全部订单完成。</figcaption>
+                </figure>
+              </div>
+            </article>
+
+            <article class="step" id="step-16" data-step="16">
+              <header class="step-head">
+                <div class="step-index">16</div>
+                <div>
+                  <h3 class="step-title">管理员查看计划进度</h3>
+                  <p class="step-subtitle">管理员可随时在生产计划列表查看整体执行情况。</p>
+                </div>
+                <label class="step-check-label">
+                  <input class="step-check" type="checkbox" data-check="16" />
+                  已完成
+                </label>
+              </header>
+              <div class="step-body">
+                <p class="instruction">
+                  管理员重新进入“生产计划”列表，通过“计划进度”列查看进行中和已完成计划的百分比。
+                </p>
+                <figure class="shot">
+                  <button
+                    class="shot-button"
+                    type="button"
+                    data-full-image="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-16-c0de6c3f04.png"
+                    data-caption="管理员生产计划列表：通过进度条查看计划整体完成情况。"
+                    aria-label="放大查看管理员计划进度截图"
+                  >
+                    <img
+                      src="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/guides/order-grabbing-mode/2026-07-31/step-16-c0de6c3f04.png"
+                      alt="管理员生产计划列表，计划进度列被标记"
+                      loading="lazy"
+                    />
+                  </button>
+                  <figcaption class="shot-caption">图 16：管理员查看计划总进度。</figcaption>
+                </figure>
+                <div class="result">完成标志：计划进度与员工实际完成情况同步，完成计划显示 100%。</div>
+              </div>
+            </article>
+          </div>
+
+          <div class="callout">
+            <strong>异常处理建议</strong>
+            <p>
+              如果导入后订单为空，先检查是否选择了正确的 Excel 和抢单模式入口；如果员工看不到计划，
+              检查计划是否已完成发布、生产日期是否正确，以及员工账号是否具备对应菜单权限。
+            </p>
+          </div>
+        </section>
+
+        <section class="finish">
+          <h2>流程完成</h2>
+          <p>当计划进度达到 100%，本轮从订单导出、计划创建到员工抢单的完整流程即执行完毕。</p>
+          <div class="finish-actions">
+            <button class="finish-button primary" type="button" id="markAllButton">全部标记完成</button>
+            <button class="finish-button" type="button" id="resetButton">清空完成记录</button>
+            <button class="finish-button" type="button" id="backTopButton">返回顶部</button>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="截图放大预览">
+      <button class="lightbox-close" type="button" id="lightboxClose" aria-label="关闭预览">×</button>
+      <figure class="lightbox-figure">
+        <img class="lightbox-image" id="lightboxImage" src="" alt="" />
+        <figcaption class="lightbox-caption" id="lightboxCaption"></figcaption>
+      </figure>
+    </div>
+
+    <button class="back-top" id="floatingBackTop" type="button" aria-label="返回顶部" title="返回顶部">
+      ↑
+    </button>
+
+    <script>
+      const STORAGE_KEY = "order-grabbing-guide-progress-v1";
+      const checks = Array.from(document.querySelectorAll("[data-check]"));
+      const steps = Array.from(document.querySelectorAll("[data-step]"));
+      const totalSteps = checks.length;
+      const progressBar = document.getElementById("progressBar");
+      const progressDetail = document.getElementById("progressDetail");
+      const headerProgress = document.getElementById("headerProgress");
+      const progressTrack = document.querySelector(".progress-track");
+      const lightbox = document.getElementById("lightbox");
+      const lightboxImage = document.getElementById("lightboxImage");
+      const lightboxCaption = document.getElementById("lightboxCaption");
+      const lightboxClose = document.getElementById("lightboxClose");
+      const floatingBackTop = document.getElementById("floatingBackTop");
+
+      function readProgress() {
+        try {
+          const value = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+          return Array.isArray(value) ? value.map(String) : [];
+        } catch {
+          return [];
+        }
+      }
+
+      function writeProgress() {
+        const completed = checks.filter((check) => check.checked).map((check) => check.dataset.check);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(completed));
+      }
+
+      function renderProgress() {
+        const completed = checks.filter((check) => check.checked).length;
+        const percent = totalSteps ? Math.round((completed / totalSteps) * 100) : 0;
+        progressBar.style.width = `${percent}%`;
+        progressTrack.setAttribute("aria-valuenow", String(completed));
+        progressDetail.textContent =
+          completed === totalSteps ? "全部步骤已完成" : `已完成 ${completed} 步，剩余 ${totalSteps - completed} 步`;
+        headerProgress.textContent = `已完成 ${completed} / ${totalSteps}`;
+        steps.forEach((step) => {
+          const check = step.querySelector(".step-check");
+          step.classList.toggle("completed", Boolean(check?.checked));
+        });
+      }
+
+      const saved = new Set(readProgress());
+      checks.forEach((check) => {
+        check.checked = saved.has(check.dataset.check);
+        check.addEventListener("change", () => {
+          writeProgress();
+          renderProgress();
+        });
+      });
+      renderProgress();
+
+      document.getElementById("markAllButton").addEventListener("click", () => {
+        checks.forEach((check) => {
+          check.checked = true;
+        });
+        writeProgress();
+        renderProgress();
+      });
+
+      document.getElementById("resetButton").addEventListener("click", () => {
+        checks.forEach((check) => {
+          check.checked = false;
+        });
+        writeProgress();
+        renderProgress();
+      });
+
+      function scrollTop() {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+
+      document.getElementById("backTopButton").addEventListener("click", scrollTop);
+      floatingBackTop.addEventListener("click", scrollTop);
+      document.getElementById("printButton").addEventListener("click", () => window.print());
+
+      document.querySelectorAll("[data-full-image]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const image = button.querySelector("img");
+          lightboxImage.src = button.dataset.fullImage;
+          lightboxImage.alt = image?.alt || "操作截图";
+          lightboxCaption.textContent = button.dataset.caption || "";
+          lightbox.classList.add("open");
+          document.body.style.overflow = "hidden";
+          lightboxClose.focus();
+        });
+      });
+
+      function closeLightbox() {
+        lightbox.classList.remove("open");
+        lightboxImage.src = "";
+        document.body.style.overflow = "";
+      }
+
+      lightboxClose.addEventListener("click", closeLightbox);
+      lightbox.addEventListener("click", (event) => {
+        if (event.target === lightbox) closeLightbox();
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && lightbox.classList.contains("open")) closeLightbox();
+      });
+
+      const tocLinks = Array.from(document.querySelectorAll("[data-section]"));
+      const sectionObserver = new IntersectionObserver(
+        (entries) => {
+          const visible = entries
+            .filter((entry) => entry.isIntersecting)
+            .sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0];
+          if (!visible) return;
+          tocLinks.forEach((link) => {
+            link.classList.toggle("active", link.dataset.section === visible.target.id);
+          });
+        },
+        { rootMargin: "-20% 0px -65% 0px", threshold: [0.05, 0.3, 0.6] },
+      );
+
+      document.querySelectorAll("[data-observe-section]").forEach((section) => {
+        sectionObserver.observe(section);
+      });
+
+      window.addEventListener(
+        "scroll",
+        () => {
+          floatingBackTop.classList.toggle("visible", window.scrollY > 720);
+        },
+        { passive: true },
+      );
+    </script>
+  </body>
+</html>

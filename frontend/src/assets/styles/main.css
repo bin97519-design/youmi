@@ -842,10 +842,6 @@ input::placeholder {
      设为 none 让盒子对鼠标透明，空白区域事件直接穿透到 stage → 框选正常。 */
   pointer-events: none;
 }
-/* 平移时跳过视口外图层渲染，降低 GPU 合成开销 */
-.stage.is-panning .canvas-layer {
-  content-visibility: auto;
-}
 .canvas-layer:active {
   cursor: grabbing;
 }
@@ -1373,8 +1369,13 @@ input::placeholder {
 /* 元素框默认可见（detection-visible 是关键状态） */
 .detected-elements-overlay.detection-visible .detected-element-box {
   border-color: rgba(99, 102, 241, 0.85);
-  pointer-events: auto;
+  pointer-events: none;
   cursor: pointer;
+}
+
+.detected-elements-overlay.detection-visible.annotate-mode .detected-element-box,
+.detected-elements-overlay.detection-visible.ctrl-mode .detected-element-box {
+  pointer-events: auto;
 }
 
 .detected-elements-overlay.detection-visible .detected-element-box:hover {
@@ -2054,6 +2055,41 @@ input::placeholder {
 .layers-panel button.active {
   border-color: var(--color-brand-500);
   background: rgba(8, 145, 178, 0.08);
+}
+.layers-panel button[draggable='true'] {
+  cursor: grab;
+  position: relative;
+}
+.layers-panel button[data-layer-id] {
+  position: relative;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.layers-panel button[data-layer-id]:active,
+.layers-panel button[data-layer-id].is-layer-dragging {
+  cursor: grabbing;
+}
+.layers-panel button[draggable='true']:active,
+.layers-panel button.is-layer-dragging {
+  cursor: grabbing;
+  opacity: 0.58;
+}
+.layers-panel button.drop-before::before,
+.layers-panel button.drop-after::after {
+  position: absolute;
+  right: 8px;
+  left: 8px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--color-brand-500);
+  content: '';
+}
+.layers-panel button.drop-before::before {
+  top: -5px;
+}
+.layers-panel button.drop-after::after {
+  bottom: -5px;
 }
 .layers-panel img {
   width: 42px;
@@ -5073,6 +5109,31 @@ body {
   color: #fff;
   background: transparent;
   font-size: 20px;
+}
+
+.yh-cli-download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.yh-cli-download i {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.yh-cli-download i.is-loading {
+  animation: cliDownloadSpin 1s linear infinite;
+}
+
+@keyframes cliDownloadSpin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .yh-avatar-mini {
@@ -11404,6 +11465,7 @@ body {
   cursor: move;
 }
 .uc-image-node-inner {
+  position: relative;
   width: 100%;
   flex: 1;
   background: rgba(10, 12, 20, 0.92);
@@ -11421,6 +11483,73 @@ body {
   object-fit: contain;
   border-radius: 8px;
   display: block;
+}
+
+.canvas-layer.is-horizontal-slice .uc-image-node-inner {
+  height: 100%;
+  min-height: 0;
+}
+
+.canvas-layer.is-horizontal-slice .uc-image-node-inner img {
+  width: 100%;
+  height: 100%;
+}
+
+.uc-horizontal-cut-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 12;
+  cursor: crosshair;
+  background: rgba(18, 142, 255, 0.035);
+  border: 1px solid rgba(65, 178, 255, 0.72);
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+
+.uc-horizontal-cut-overlay.is-processing {
+  cursor: wait;
+}
+
+.uc-horizontal-cut-line {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  transform: translateY(-50%);
+  background: transparent;
+  color: #111827;
+  cursor: pointer;
+}
+
+.uc-horizontal-cut-line::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 7px;
+  border-top: 4px dashed #ef4444;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.7));
+}
+
+.uc-horizontal-cut-line span {
+  position: absolute;
+  right: 8px;
+  top: -13px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.uc-horizontal-cut-line:hover span {
+  opacity: 1;
 }
 
 /* ========== 上传图片/视频的隐藏 input ========== */
@@ -14694,6 +14823,356 @@ body {
 }
 .uc-context-menu-item--danger:hover {
   background: rgba(255, 107, 107, 0.12);
+}
+
+/* ========== 多图拼接 ========== */
+.uc-image-stitch-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9920;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(4, 7, 12, 0.72);
+  backdrop-filter: blur(4px);
+  animation: fadeIn 0.15s ease;
+}
+
+.uc-image-stitch-panel {
+  display: flex;
+  width: min(820px, 100%);
+  max-height: min(780px, calc(100vh - 40px));
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--canvas-text);
+  background: var(--canvas-panel);
+  border: 1px solid var(--canvas-border);
+  border-radius: 10px;
+  box-shadow: var(--canvas-panel-shadow);
+  animation: scaleIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.uc-image-stitch-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 20px 16px;
+  border-bottom: 1px solid var(--canvas-border);
+}
+
+.uc-image-stitch-head h2 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0;
+  color: var(--canvas-text);
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.uc-image-stitch-head h2 i {
+  color: var(--canvas-accent);
+  font-size: 19px;
+}
+
+.uc-image-stitch-head p {
+  margin: 5px 0 0;
+  color: var(--canvas-text-muted);
+  font-size: 12px;
+}
+
+.uc-image-stitch-head > button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  padding: 0;
+  color: var(--canvas-text-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 20px;
+}
+
+.uc-image-stitch-head > button:hover {
+  color: var(--canvas-text);
+  background: var(--canvas-surface-hover);
+}
+
+.uc-image-stitch-head > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.uc-image-stitch-body {
+  min-height: 0;
+  padding: 18px 20px 20px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.uc-image-stitch-direction {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  margin-bottom: 18px;
+  padding: 4px;
+  background: var(--canvas-input);
+  border: 1px solid var(--canvas-border);
+  border-radius: 8px;
+}
+
+.uc-image-stitch-direction button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 14px;
+  color: var(--canvas-text-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.uc-image-stitch-direction button:hover {
+  color: var(--canvas-text);
+  background: var(--canvas-surface-hover);
+}
+
+.uc-image-stitch-direction button.active {
+  color: var(--canvas-accent-contrast, #10141a);
+  background: var(--canvas-accent);
+  box-shadow: 0 2px 8px var(--canvas-accent-soft);
+}
+
+.uc-image-stitch-direction button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.uc-image-stitch-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.uc-image-stitch-section-head strong {
+  color: var(--canvas-text);
+  font-size: 13px;
+}
+
+.uc-image-stitch-section-head span {
+  color: var(--canvas-text-subtle);
+  font-size: 11px;
+}
+
+.uc-image-stitch-slots {
+  display: flex;
+  gap: 8px;
+  min-height: 150px;
+  padding: 12px;
+  overflow: auto;
+  background: var(--canvas-input);
+  border: 1px dashed var(--canvas-border-strong, var(--canvas-border));
+  border-radius: 8px;
+  overscroll-behavior: contain;
+}
+
+.uc-image-stitch-slots.is-horizontal {
+  align-items: stretch;
+  flex-direction: row;
+}
+
+.uc-image-stitch-slots.is-vertical {
+  max-height: 430px;
+  flex-direction: column;
+}
+
+.uc-image-stitch-slot {
+  position: relative;
+  display: grid;
+  align-items: center;
+  gap: 10px;
+  color: var(--canvas-text);
+  background: var(--canvas-surface);
+  border: 1px solid var(--canvas-border);
+  border-radius: 7px;
+  cursor: grab;
+  user-select: none;
+  transition: border-color 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+}
+
+.uc-image-stitch-slot:hover {
+  background: var(--canvas-surface-hover);
+  border-color: var(--canvas-accent-border);
+}
+
+.uc-image-stitch-slot:active {
+  cursor: grabbing;
+}
+
+.uc-image-stitch-slot.dragging {
+  opacity: 0.45;
+  border-color: var(--canvas-accent);
+}
+
+.uc-image-stitch-slots.is-horizontal .uc-image-stitch-slot {
+  grid-template-rows: minmax(120px, 1fr) auto;
+  width: 142px;
+  min-width: 142px;
+  padding: 8px;
+}
+
+.uc-image-stitch-slots.is-vertical .uc-image-stitch-slot {
+  grid-template-columns: 88px minmax(0, 1fr) 24px;
+  min-height: 88px;
+  padding: 8px 10px;
+}
+
+.uc-image-stitch-slot img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  object-fit: contain;
+  background: #fff;
+  border-radius: 5px;
+}
+
+.uc-image-stitch-slots.is-horizontal .uc-image-stitch-slot img {
+  height: 120px;
+}
+
+.uc-image-stitch-slots.is-vertical .uc-image-stitch-slot img {
+  width: 88px;
+  height: 72px;
+}
+
+.uc-image-stitch-order {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 5px;
+  color: #fff;
+  background: var(--canvas-accent);
+  border: 2px solid var(--canvas-panel);
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.uc-image-stitch-slot-name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uc-image-stitch-slots.is-horizontal .uc-image-stitch-slot-name {
+  text-align: center;
+}
+
+.uc-image-stitch-slot > i {
+  color: var(--canvas-text-subtle);
+  font-size: 18px;
+}
+
+.uc-image-stitch-slots.is-horizontal .uc-image-stitch-slot > i {
+  display: none;
+}
+
+.uc-image-stitch-error {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 12px 0 0;
+  color: #ff7c82;
+  font-size: 12px;
+}
+
+.uc-image-stitch-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--canvas-border);
+}
+
+.uc-image-stitch-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 88px;
+  height: 38px;
+  padding: 0 15px;
+  color: var(--canvas-text);
+  background: var(--canvas-surface);
+  border: 1px solid var(--canvas-border);
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.uc-image-stitch-btn:hover {
+  background: var(--canvas-surface-hover);
+  border-color: var(--canvas-accent-border);
+}
+
+.uc-image-stitch-btn.primary {
+  color: var(--canvas-accent-contrast, #10141a);
+  background: var(--canvas-accent);
+  border-color: var(--canvas-accent);
+}
+
+.uc-image-stitch-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.uc-stitch-direction-submenu {
+  min-width: 142px;
+}
+
+@media (max-width: 640px) {
+  .uc-image-stitch-backdrop {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .uc-image-stitch-panel {
+    width: 100%;
+    max-height: 90vh;
+    border-right: 0;
+    border-bottom: 0;
+    border-left: 0;
+    border-radius: 10px 10px 0 0;
+  }
+
+  .uc-image-stitch-head,
+  .uc-image-stitch-body,
+  .uc-image-stitch-actions {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
 }
 
 /* ========== 图片复制到其他画布 ========== */

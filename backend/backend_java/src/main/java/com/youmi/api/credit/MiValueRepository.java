@@ -7,11 +7,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 /**
- * 米值账本的数据访问层。所有余额变更都通过原子 SQL 完成，保证并发安全。
- *
- * <p>关键不变式：余额数字只存在于 {@code ym_sys_user.mi_value}；
- * {@code ym_mi_value_log} 仅记录流水（含前后余额快照）用于审计，扣减成功后的
- * commit/rollback 只改流水状态，不再触碰余额，从而保证「扣减与流水一致」。
+ * 米值消费流水的数据访问层。有效消费以 {@code ym_mi_value_log} 中 SUCCESS 状态为准。
  */
 @Repository
 public class MiValueRepository {
@@ -23,16 +19,12 @@ public class MiValueRepository {
     this.userRepository = userRepository;
   }
 
-  /** 查询用户当前余额；用户不存在返回 0 */
+  /** 旧余额字段兼容查询，不参与当前消费统计。 */
   public int getBalance(Long userId) {
     return userRepository.findById(userId).map(UserAccount::miValue).orElse(0);
   }
 
-  /**
-   * 原子扣减：仅当 {@code mi_value >= price} 时才扣减。
-   *
-   * @return 受影响行数；0 表示余额不足或并发竞争失败（另一个请求已抢先扣光）
-   */
+  /** 旧余额账户兼容方法，当前业务流程不再调用。 */
   public int deductAtomic(Long userId, int price) {
     return jdbcTemplate.update(
         "UPDATE ym_sys_user SET mi_value = mi_value - ? WHERE id = ? AND mi_value >= ?",
@@ -90,17 +82,22 @@ public class MiValueRepository {
   public int settle(long logId, int settledPrice, int refundAmount) {
     return jdbcTemplate.update(
         "UPDATE ym_mi_value_log"
-            + " SET price = ?, after_balance = after_balance + ?, status = 'SUCCESS',"
+            + " SET price = ?, before_balance = 0, after_balance = 0, status = 'SUCCESS',"
             + " updated_at = CURRENT_TIMESTAMP"
             + " WHERE id = ? AND status = 'PENDING'",
-        settledPrice, refundAmount, logId);
+        settledPrice, logId);
   }
 
-  /**
-   * 回滚守卫：仅当流水处于 PENDING 或 SUCCESS 时才置为 ROLLBACK。
-   *
-   * @return 受影响行数；0 表示已回滚过（幂等，避免重复退款）
-   */
+  /** Total successful consumption for a user. Failed and rolled-back tasks are excluded. */
+  public int getConsumedMi(Long userId) {
+    Integer total = jdbcTemplate.queryForObject(
+        "SELECT COALESCE(SUM(price), 0) FROM ym_mi_value_log"
+            + " WHERE user_id = ? AND status = 'SUCCESS' AND biz_type IN ('IMAGE', 'VIDEO')",
+        Integer.class, userId);
+    return total == null ? 0 : total;
+  }
+
+  /** 回滚守卫：仅当流水处于 PENDING 或 SUCCESS 时才置为 ROLLBACK。 */
   public int markRollback(long logId) {
     return jdbcTemplate.update(
         "UPDATE ym_mi_value_log SET status = 'ROLLBACK', updated_at = CURRENT_TIMESTAMP"
@@ -146,14 +143,14 @@ public class MiValueRepository {
         rs.getString("biz_type")), logId).stream().findFirst();
   }
 
-  /** 退回米值到用户余额 */
+  /** 旧余额账户兼容方法，当前业务流程不再调用。 */
   public void refund(Long userId, int price) {
     jdbcTemplate.update(
         "UPDATE ym_sys_user SET mi_value = mi_value + ? WHERE id = ?",
         price, userId);
   }
 
-  /** 管理后台调账：不允许产生负余额 */
+  /** 旧余额账户兼容方法，当前业务流程不再调用。 */
   public void adminAdjust(Long userId, int delta) {
     jdbcTemplate.update(
         "UPDATE ym_sys_user SET mi_value = GREATEST(0, mi_value + ?) WHERE id = ?",

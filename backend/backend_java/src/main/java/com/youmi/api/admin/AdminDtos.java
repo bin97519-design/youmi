@@ -1,5 +1,6 @@
 package com.youmi.api.admin;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
@@ -14,7 +15,8 @@ public final class AdminDtos {
       String phone,
       String nickname,
       String status,
-      Integer miValue,
+      @JsonIgnore Integer miValue,
+      Integer consumedMi,
       String planName,
       Long shopId,
       String shopName,

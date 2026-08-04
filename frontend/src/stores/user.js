@@ -119,19 +119,9 @@ export const useUserStore = defineStore('user', {
       }
     },
 
-    /** 公开接口：拉取 ACTIVE 店铺列表（id/name/code），供注册页下拉 */
+    /** 公开接口：拉取 ACTIVE 店铺列表（保留给非注册业务复用）。 */
     async fetchShops() {
       return requestApi('/api/shops');
-    },
-
-    /** 注册并自动登录：shopId 由后台管理员后续分配，注册时无需关联 */
-    async register({ account, password }) {
-      const data = await requestApi('/api/auth/register', {
-        method: 'POST',
-        body: JSON.stringify({ account, password }),
-      });
-      this.saveSession(data.token, data.user);
-      return data.user;
     },
 
     async logout() {

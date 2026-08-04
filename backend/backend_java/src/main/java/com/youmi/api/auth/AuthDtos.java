@@ -1,5 +1,6 @@
 package com.youmi.api.auth;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.util.List;
 
 public final class AuthDtos {
@@ -25,7 +26,7 @@ public final class AuthDtos {
       String name,
       String status,
       List<String> roles,
-      Integer miValue,
+      @JsonIgnore Integer miValue,
       String plan,
       Long shopId,
       String shopName

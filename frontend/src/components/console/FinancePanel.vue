@@ -30,6 +30,7 @@ const dateFrom = ref(formatDate(new Date(now.getFullYear(), now.getMonth(), 1)))
 const dateTo = ref(formatDate(now))
 const datePickerArea = ref(null)
 const openDatePicker = ref('')
+const rangeSelecting = ref('from')
 const calendarCursor = ref(new Date(now.getFullYear(), now.getMonth(), 1))
 const weekDays = ['日', '一', '二', '三', '四', '五', '六']
 
@@ -44,8 +45,6 @@ const calendarDays = computed(() => {
   const firstDay = new Date(year, month, 1)
   const gridStart = new Date(year, month, 1 - firstDay.getDay())
   const today = formatDate(new Date())
-  const selected = openDatePicker.value === 'from' ? dateFrom.value : dateTo.value
-
   return Array.from({ length: 42 }, (_, index) => {
     const date = new Date(
       gridStart.getFullYear(),
@@ -58,7 +57,9 @@ const calendarDays = computed(() => {
       label: date.getDate(),
       currentMonth: date.getMonth() === month,
       today: value === today,
-      selected: value === selected,
+      rangeStart: value === dateFrom.value,
+      rangeEnd: value === dateTo.value,
+      inRange: Boolean(dateFrom.value && dateTo.value && value > dateFrom.value && value < dateTo.value),
       disabled: isCalendarDateDisabled(value),
     }
   })
@@ -75,14 +76,15 @@ function displayDate(value) {
   return matched ? `${matched[1]}年${matched[2]}月${matched[3]}日` : '请选择日期'
 }
 
-function openCalendar(target) {
-  if (openDatePicker.value === target) {
+function openCalendar() {
+  if (openDatePicker.value === 'range') {
     openDatePicker.value = ''
     return
   }
-  const current = parseDate(target === 'from' ? dateFrom.value : dateTo.value) || new Date()
+  rangeSelecting.value = 'from'
+  const current = parseDate(dateFrom.value) || new Date()
   calendarCursor.value = new Date(current.getFullYear(), current.getMonth(), 1)
-  openDatePicker.value = target
+  openDatePicker.value = 'range'
 }
 
 function moveCalendarMonth(offset) {
@@ -94,22 +96,30 @@ function moveCalendarMonth(offset) {
 }
 
 function isCalendarDateDisabled(value) {
-  if (openDatePicker.value === 'from' && dateTo.value && value > dateTo.value) return true
-  if (openDatePicker.value === 'to' && dateFrom.value && value < dateFrom.value) return true
+  const today = formatDate(new Date())
+  if (value > today) return true
+  if (rangeSelecting.value === 'to' && dateFrom.value && value < dateFrom.value) return true
   return false
 }
 
 function selectCalendarDate(day) {
   if (day.disabled) return
-  if (openDatePicker.value === 'from') dateFrom.value = day.value
-  if (openDatePicker.value === 'to') dateTo.value = day.value
+  if (rangeSelecting.value === 'from') {
+    dateFrom.value = day.value
+    dateTo.value = ''
+    rangeSelecting.value = 'to'
+    return
+  }
+  dateTo.value = day.value
   openDatePicker.value = ''
 }
 
 function selectToday() {
   const value = formatDate(new Date())
-  if (isCalendarDateDisabled(value)) return
-  selectCalendarDate({ value, disabled: false })
+  dateFrom.value = value
+  dateTo.value = value
+  rangeSelecting.value = 'from'
+  openDatePicker.value = ''
 }
 
 function closeDatePicker(event) {
@@ -307,7 +317,88 @@ onBeforeUnmount(() => {
         <button type="button" @click="applyRange(30)">近30天</button>
         <button type="button" @click="applyRange('month')">本月</button>
       </div>
-      <div ref="datePickerArea" class="finance-date-range">
+      <div ref="datePickerArea" class="finance-date-range finance-date-range--single">
+        <div class="finance-date-field">
+          <span class="finance-filter-label">统计日期范围</span>
+          <button
+            type="button"
+            class="finance-date-trigger"
+            :class="{ active: openDatePicker === 'range' }"
+            aria-haspopup="dialog"
+            :aria-expanded="openDatePicker === 'range'"
+            @click.stop="openCalendar"
+          >
+            <i class="ri-calendar-event-line" aria-hidden="true"></i>
+            <span v-if="dateFrom && dateTo">{{ displayDate(dateFrom) }} - {{ displayDate(dateTo) }}</span>
+            <span v-else>请选择日期范围</span>
+            <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
+          </button>
+          <section
+            v-if="openDatePicker === 'range'"
+            class="finance-calendar finance-calendar--range"
+            role="dialog"
+            aria-label="选择日期范围"
+            @pointerdown.stop
+          >
+            <header>
+              <button type="button" title="上个月" aria-label="上个月" @click="moveCalendarMonth(-1)">
+                <i class="ri-arrow-left-s-line" aria-hidden="true"></i>
+              </button>
+              <strong>{{ calendarTitle }}</strong>
+              <button type="button" title="下个月" aria-label="下个月" @click="moveCalendarMonth(1)">
+                <i class="ri-arrow-right-s-line" aria-hidden="true"></i>
+              </button>
+            </header>
+            <div class="finance-calendar-range-status">
+              <button
+                type="button"
+                :class="{ active: rangeSelecting === 'from' }"
+                @click="rangeSelecting = 'from'"
+              >
+                <span>开始日期</span>
+                <b>{{ dateFrom ? displayDate(dateFrom) : '请选择' }}</b>
+              </button>
+              <span>至</span>
+              <button
+                type="button"
+                :class="{ active: rangeSelecting === 'to' }"
+                :disabled="!dateFrom"
+                @click="rangeSelecting = 'to'"
+              >
+                <span>结束日期</span>
+                <b>{{ dateTo ? displayDate(dateTo) : '请选择' }}</b>
+              </button>
+            </div>
+            <div class="finance-calendar-week">
+              <span v-for="weekday in weekDays" :key="weekday">{{ weekday }}</span>
+            </div>
+            <div class="finance-calendar-days">
+              <button
+                v-for="day in calendarDays"
+                :key="day.value"
+                type="button"
+                :class="{
+                  muted: !day.currentMonth,
+                  today: day.today,
+                  selected: day.rangeStart || day.rangeEnd,
+                  'range-start': day.rangeStart,
+                  'range-end': day.rangeEnd,
+                  'in-range': day.inRange,
+                }"
+                :disabled="day.disabled"
+                :aria-label="day.value"
+                @click="selectCalendarDate(day)"
+              >
+                {{ day.label }}
+              </button>
+            </div>
+            <footer>
+              <button type="button" @click="selectToday">今天</button>
+            </footer>
+          </section>
+        </div>
+      </div>
+      <div v-if="false" ref="datePickerArea" class="finance-date-range">
         <div class="finance-date-field">
           <span class="finance-filter-label">开始日期</span>
           <button
@@ -722,6 +813,10 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 
+.finance-date-range--single .finance-date-field {
+  min-width: 304px;
+}
+
 .finance-date-field {
   position: relative;
   display: grid;
@@ -879,6 +974,70 @@ onBeforeUnmount(() => {
   color: #fff;
   background: var(--yq-primary);
   font-weight: 700;
+}
+
+.finance-calendar-days button.in-range {
+  color: #dbeafe;
+  background: color-mix(in srgb, var(--yq-primary) 18%, transparent);
+  border-radius: 0;
+}
+
+.finance-calendar-days button.range-start,
+.finance-calendar-days button.range-end {
+  position: relative;
+  z-index: 1;
+  border-radius: 6px;
+}
+
+.finance-calendar-range-status {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.finance-calendar-range-status > span {
+  color: #64748b;
+  font-size: 12px;
+  text-align: center;
+}
+
+.finance-calendar-range-status button {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: #94a3b8;
+  background: rgba(30, 41, 59, 0.72);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.finance-calendar-range-status button.active {
+  border-color: var(--yq-primary);
+  color: #e2e8f0;
+  background: color-mix(in srgb, var(--yq-primary) 12%, transparent);
+}
+
+.finance-calendar-range-status button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.finance-calendar-range-status button span {
+  font-size: 10px;
+}
+
+.finance-calendar-range-status button b {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .finance-calendar-days button:disabled {
@@ -1166,6 +1325,10 @@ td small {
 
   .finance-date-range {
     flex-direction: column;
+  }
+
+  .finance-date-range--single .finance-date-field {
+    min-width: 0;
   }
 
   .finance-calendar {

@@ -1,6 +1,7 @@
 <script setup>
 import { nextTick, onBeforeUnmount, watch } from 'vue'
 import { versionHistory } from '../../data/versionHistory'
+import { resolveVersionHistoryImageUrl } from '../../utils/versionHistoryImages'
 
 const props = defineProps({
   open: {
@@ -21,7 +22,7 @@ function closeDialog() {
 }
 
 function versionImageUrl(filename) {
-  return `/version-log/assets/${filename}`
+  return resolveVersionHistoryImageUrl(filename)
 }
 
 function onKeydown(event) {

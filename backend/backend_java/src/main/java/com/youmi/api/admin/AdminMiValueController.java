@@ -14,9 +14,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * 管理后台：查询 / 调整用户米值。所有接口需 ADMIN 权限（复用 {@link AdminAuthService#requireAdmin}）。
- */
+/** 管理后台米值消费查询兼容接口。 */
 @RestController
 @RequestMapping("/api/admin/user")
 public class AdminMiValueController {
@@ -33,29 +31,25 @@ public class AdminMiValueController {
     this.miValueService = miValueService;
   }
 
-  /** 查询指定用户的米值余额与套餐名 */
+  /** 查询指定用户的累计米值消费与套餐名。 */
   @GetMapping("/{id}/mi-value")
-  public ApiResponse<MiValueDtos.MiValueAdminView> getMiValue(
+  public ApiResponse<MiValueDtos.MiValueConsumptionView> getMiValue(
       @RequestHeader(value = "Authorization", required = false) String authorization,
       @PathVariable Long id) {
     adminAuthService.requireAdmin(authorization);
     UserAccount user = userRepository.findById(id)
         .orElseThrow(() -> new ApiException(404, "用户不存在"));
-    return ApiResponse.ok(new MiValueDtos.MiValueAdminView(
-        user.miValue() != null ? user.miValue() : 0, user.planName()));
+    return ApiResponse.ok(new MiValueDtos.MiValueConsumptionView(
+        miValueService.getConsumedMi(id), user.planName()));
   }
 
-  /** 调整指定用户的米值（正为充值，负为扣减；不允许负余额），返回最新余额 */
+  /** 旧调账接口已停用。 */
   @PostMapping("/{id}/mi-value")
-  public ApiResponse<MiValueDtos.MiValueAdminView> adjustMiValue(
+  public ApiResponse<MiValueDtos.MiValueConsumptionView> adjustMiValue(
       @RequestHeader(value = "Authorization", required = false) String authorization,
       @PathVariable Long id,
       @RequestBody MiValueDtos.MiValueAdjustRequest body) {
     adminAuthService.requireAdmin(authorization);
-    miValueService.adjustByAdmin(id, body.delta(), body.reason());
-    UserAccount user = userRepository.findById(id)
-        .orElseThrow(() -> new ApiException(404, "用户不存在"));
-    return ApiResponse.ok(new MiValueDtos.MiValueAdminView(
-        user.miValue() != null ? user.miValue() : 0, user.planName()));
+    throw new ApiException(410, "米值余额账户已取消，仅记录实际消费");
   }
 }

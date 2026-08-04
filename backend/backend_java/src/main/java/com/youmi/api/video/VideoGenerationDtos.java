@@ -1,6 +1,7 @@
 package com.youmi.api.video;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.util.ArrayList;
@@ -47,6 +48,7 @@ public class VideoGenerationDtos {
     private List<String> videoUrls = new ArrayList<>();
     private JsonNode raw;
     private int consumedMi = 0;
+    @JsonIgnore
     private int balance = 0;
 
     public String getProvider() {

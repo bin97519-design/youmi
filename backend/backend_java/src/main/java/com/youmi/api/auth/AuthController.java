@@ -1,6 +1,7 @@
 package com.youmi.api.auth;
 
 import com.youmi.api.common.ApiResponse;
+import com.youmi.api.common.ApiException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -33,7 +34,7 @@ public class AuthController {
 
   @PostMapping("/auth/register")
   public ApiResponse<AuthDtos.LoginResponse> register(@RequestBody AuthDtos.RegisterRequest request) {
-    return ApiResponse.ok("注册成功", authService.register(request));
+    throw new ApiException(403, "开放注册已关闭，请联系管理员创建账号");
   }
 
   @GetMapping("/auth/me")

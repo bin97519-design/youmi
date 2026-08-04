@@ -13,38 +13,6 @@ const form = ref({
   password: '',
 })
 
-/* ── 注册页签状态 ── */
-const mode = ref('login')
-const regForm = ref({ account: '', password: '' })
-const regPending = ref(false)
-const regError = ref('')
-
-async function switchRegister() {
-  mode.value = 'register'
-  regError.value = ''
-}
-
-function switchLogin() {
-  mode.value = 'login'
-  errorText.value = ''
-}
-
-async function submitRegister() {
-  regError.value = ''
-  regPending.value = true
-  try {
-    await userStore.register({
-      account: regForm.value.account.trim(),
-      password: regForm.value.password,
-    })
-    regForm.value = { account: '', password: '' }
-  } catch (error) {
-    regError.value = error.message || '注册失败，请稍后重试'
-  } finally {
-    regPending.value = false
-  }
-}
-
 async function submitLogin() {
   errorText.value = ''
   pending.value = true
@@ -100,7 +68,7 @@ async function submitLogin() {
           </div>
         </div>
 
-        <form class="yh-login-right" @submit.prevent="mode === 'login' ? submitLogin() : submitRegister()">
+        <form class="yh-login-right" @submit.prevent="submitLogin()">
           <svg class="yh-login-logo" viewBox="0 0 122 34" aria-label="YOUMI">
             <path class="logo-stroke" d="M8 9.5c4.2 8 8 12 12.6 12.2 5.1.2 8.2-4.8 8.2-10.8" />
             <path class="logo-stroke" d="M20.3 21.6c-1.7 4.5-4.6 7.2-9.4 7.2" />
@@ -120,15 +88,9 @@ async function submitLogin() {
           <h3>有米AI · 专为电商而生</h3>
 
           <div class="yh-auth-tabs">
-            <button type="button" :class="{ active: mode === 'login' }" @click="switchLogin()">
-              登录
-            </button>
-            <button type="button" :class="{ active: mode === 'register' }" @click="switchRegister()">
-              注册账号
-            </button>
+            <button type="button" class="active">账号登录</button>
           </div>
 
-          <template v-if="mode === 'login'">
             <label>
               <span>账号</span>
               <input
@@ -160,41 +122,8 @@ async function submitLogin() {
             <div class="yh-login-links">
               <button type="button">密码登录</button>
               <button type="button">短信登录</button>
-              <button type="button" @click="switchRegister()">注册账号</button>
               <button type="button">忘记密码</button>
             </div>
-          </template>
-
-          <template v-else>
-            <label>
-              <span>账号</span>
-              <input
-                v-model.trim="regForm.account"
-                type="text"
-                autocomplete="username"
-                placeholder="登录账号"
-              />
-            </label>
-
-            <label>
-              <span>密码</span>
-              <input
-                v-model="regForm.password"
-                type="password"
-                autocomplete="new-password"
-                placeholder="请设置登录密码"
-              />
-            </label>
-
-            <p v-if="regError" class="yh-login-error">{{ regError }}</p>
-            <button
-              class="yh-login-submit"
-              type="submit"
-              :disabled="regPending"
-            >
-              {{ regPending ? '注册中...' : '立即注册' }}
-            </button>
-          </template>
 
           <p class="yh-login-agreement">
             登录即表示阅读并同意《服务条款》《隐私政策》《AI 功能使用须知》

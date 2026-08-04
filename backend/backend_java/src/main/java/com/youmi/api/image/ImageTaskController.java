@@ -121,7 +121,7 @@ public class ImageTaskController {
           + " error=" + e.getClass().getSimpleName() + ": " + e.getMessage());
       e.printStackTrace();
       // 前端展示信息：保留异常链信息帮助用户反馈定位
-      String errorMsg = "生成服务异常，米值已退回";
+      String errorMsg = "生成服务异常，失败任务不计入米值消耗";
       if (e.getMessage() != null) {
         errorMsg += ": " + e.getMessage();
       }

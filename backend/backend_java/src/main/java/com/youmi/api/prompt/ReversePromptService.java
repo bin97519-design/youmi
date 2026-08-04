@@ -8,11 +8,15 @@ import com.youmi.api.ai.XfyunVisionClient;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 @Service
 public class ReversePromptService {
+  private static final Logger log = LoggerFactory.getLogger(ReversePromptService.class);
   private final ObjectMapper objectMapper;
   private final DashScopeClient dashScopeClient;
   private final XfyunVisionClient xfyunVisionClient;
@@ -48,27 +52,13 @@ public class ReversePromptService {
 
     String systemPrompt =
         "你是电商图片视觉解析与生图提示词专家。必须严格输出合法 JSON，不输出 Markdown，不解释过程。";
-    String provider;
-    String model;
-    String raw;
-    if (xfyunVisionClient.isConfigured()) {
-      provider = "xfyun";
-      model = xfyunVisionClient.model();
-      raw = xfyunVisionClient.analyzeImage(
-          systemPrompt,
-          template.systemPrompt(),
-          images.get(0));
-    } else {
-      AiChatDtos.CompletionResult result = dashScopeClient.completeVision(
-          systemPrompt,
-          template.systemPrompt(),
-          images.stream().limit(1).toList(),
-          0.15,
-          4096);
-      provider = result.provider();
-      model = result.model();
-      raw = result.content();
-    }
+    AiChatDtos.CompletionResult visionResult = analyzeWithFallback(
+        systemPrompt,
+        template.systemPrompt(),
+        images.get(0));
+    String provider = visionResult.provider();
+    String model = visionResult.model();
+    String raw = visionResult.content();
     raw = raw == null ? "" : raw.trim();
     JsonNode promptJson = parseJson(raw);
     String promptText = buildPromptText(promptJson, template.fieldLabels());
@@ -82,6 +72,71 @@ public class ReversePromptService {
         template.groups(),
         template.fieldLabels(),
         raw);
+  }
+
+  private AiChatDtos.CompletionResult analyzeWithFallback(
+      String systemPrompt,
+      String prompt,
+      String imageUrl) throws Exception {
+    if (!xfyunVisionClient.isConfigured()) {
+      return analyzeWithDashScope(systemPrompt, prompt, imageUrl);
+    }
+
+    try {
+      String content = xfyunVisionClient.analyzeImage(systemPrompt, prompt, imageUrl);
+      return new AiChatDtos.CompletionResult("xfyun", xfyunVisionClient.model(), content);
+    } catch (InterruptedException exception) {
+      Thread.currentThread().interrupt();
+      throw exception;
+    } catch (Exception exception) {
+      if (!isTransientVisionFailure(exception)) throw exception;
+      if (!dashScopeClient.isConfigured()) {
+        throw new IllegalStateException("讯飞视觉服务繁忙，请稍后重试", exception);
+      }
+      log.warn(
+          "Xfyun vision is temporarily unavailable; falling back to DashScope model {}",
+          dashScopeClient.model());
+      try {
+        return analyzeWithDashScope(systemPrompt, prompt, imageUrl);
+      } catch (Exception fallbackException) {
+        fallbackException.addSuppressed(exception);
+        throw fallbackException;
+      }
+    }
+  }
+
+  private AiChatDtos.CompletionResult analyzeWithDashScope(
+      String systemPrompt,
+      String prompt,
+      String imageUrl) throws Exception {
+    return dashScopeClient.completeVision(
+        systemPrompt,
+        prompt,
+        List.of(imageUrl),
+        0.15,
+        4096);
+  }
+
+  private boolean isTransientVisionFailure(Exception exception) {
+    Throwable current = exception;
+    while (current != null) {
+      String message = String.valueOf(current.getMessage()).toLowerCase(Locale.ROOT);
+      if (message.contains("transient")
+          || message.contains("system is busy")
+          || message.contains("10310")
+          || message.contains("timeout")
+          || message.contains("timed out")
+          || message.contains("connection")
+          || message.contains(" 429")
+          || message.contains(" 500")
+          || message.contains(" 502")
+          || message.contains(" 503")
+          || message.contains(" 504")) {
+        return true;
+      }
+      current = current.getCause();
+    }
+    return false;
   }
 
   private String buildPromptText(JsonNode promptJson, Map<String, String> fieldLabels) {
