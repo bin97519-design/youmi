@@ -1,8 +1,13 @@
 package com.youmi.api.canvas;
 
+import com.fasterxml.jackson.annotation.JsonAnyGetter;
+import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.JsonNode;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class CanvasPayload {
@@ -47,6 +52,19 @@ public class CanvasPayload {
     public String statusText;
     public String previewUrl;
     public CanvasLayerDetection detection;  // 视觉框自动识别结果（持久化到画布文档）
+
+    // Preserve feature-specific layer metadata such as reverse prompts and generation settings.
+    private final Map<String, JsonNode> extensionFields = new LinkedHashMap<>();
+
+    @JsonAnySetter
+    public void putExtensionField(String name, JsonNode value) {
+      extensionFields.put(name, value);
+    }
+
+    @JsonAnyGetter
+    public Map<String, JsonNode> extensionFields() {
+      return extensionFields;
+    }
   }
 
   /** 单个图层的视觉框检测结果。检测由前端在图层 onLoad 时自动触发，结果存到后端以便刷新/重启恢复。 */

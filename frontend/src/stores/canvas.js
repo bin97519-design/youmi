@@ -451,6 +451,18 @@ export const useCanvasStore = defineStore('canvas', {
               if (!ll || !ll.id) continue;
               const existing = _layerMap.get(ll.id);
               if (existing) {
+                const localHasReversePrompt = Boolean(
+                  ll.reversePromptText ||
+                    (ll.reversePromptJson && Object.keys(ll.reversePromptJson).length),
+                );
+                const serverHasReversePrompt = Boolean(
+                  existing.reversePromptText ||
+                    (existing.reversePromptJson && Object.keys(existing.reversePromptJson).length),
+                );
+                if (localHasReversePrompt && !serverHasReversePrompt) {
+                  // Migrate prompts cached before the backend preserved layer extension fields.
+                  docsToFlush.add(localDoc.id);
+                }
                 // 同 id 图层：本地优先，但保留 detection 缓存（本地有 done 而服务器没有 → 保留本地的 detection）
                 const merged = { ...ll };
                 if (existing.detection && !ll.detection) {

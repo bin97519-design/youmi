@@ -101,9 +101,9 @@ function runMainImages() {
       imageUrls: [product.value.url, reference.url],
       sourceIds: [product.value.id, reference.id],
       previewUrl: product.value.url,
-      aspectWidth: product.value.naturalWidth || product.value.width,
-      aspectHeight: product.value.naturalHeight || product.value.height,
-      ratio: ratioOf(product.value),
+      aspectWidth: reference.naturalWidth || reference.width,
+      aspectHeight: reference.naturalHeight || reference.height,
+      ratio: ratioOf(reference),
       model: props.model,
       resolution: props.resolution,
     })),
@@ -203,7 +203,7 @@ async function planDetail() {
         count: Number(detailCount.value) || 6,
         platform: '淘宝/天猫',
         style: detailStyle.value.trim(),
-        ratio: '9:16',
+        ratio: references.value.length ? '对应参考图原始比例' : ratioOf(product.value),
         cloneStrength: detailStrength.value,
       }),
     })
@@ -228,6 +228,7 @@ async function planDetail() {
         style: detailStyle.value.trim(),
         strength: detailStrength.value,
         referenceCount: references.value.length,
+        ratio: references.value.length ? '对应参考图原始比例' : ratioOf(product.value),
       })
       detailNotice.value = '规划服务暂不可用，已按内置详情页结构生成可编辑分屏。'
     }
@@ -246,6 +247,7 @@ function runDetail() {
         Number.isInteger(screen.referenceIndex) && screen.referenceIndex >= 0
           ? references.value[screen.referenceIndex]
           : null
+      const aspectSource = reference || product.value
       return {
         name: `详情页 ${screen.index} · ${screen.title}`,
         prompt: [
@@ -259,9 +261,9 @@ function runDetail() {
         imageUrls: [product.value.url, reference?.url].filter(Boolean),
         sourceIds: [product.value.id, reference?.id].filter(Boolean),
         previewUrl: product.value.url,
-        aspectWidth: 9,
-        aspectHeight: 16,
-        ratio: '9:16',
+        aspectWidth: aspectSource.naturalWidth || aspectSource.width,
+        aspectHeight: aspectSource.naturalHeight || aspectSource.height,
+        ratio: ratioOf(aspectSource),
         model: props.model,
         resolution: props.resolution,
       }

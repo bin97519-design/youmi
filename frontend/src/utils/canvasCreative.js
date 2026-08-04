@@ -14,7 +14,7 @@ const MAIN_PRESETS = {
     '必须用图1产品替换图2中的原商品或视觉主体。图1产品应占据画面核心区域约45%至70%，完整、清晰、无遮挡，不得只生成图2场景。',
     PRODUCT_GUARD,
     '图2只作为版式与视觉结构参考，不得复制其中的品牌、商品名称、价格、销量、促销、证书、型号、专属卖点或水印。',
-    '输出一张干净、真实、层次明确、可直接用于电商展示的图片，画幅比例与图1一致，只输出最终图片。',
+    '输出一张干净、真实、层次明确、可直接用于电商展示的图片，画幅比例与图2参考图一致，只输出最终图片。',
   ].join('\n'),
   style: [
     '共有两张参考图：图1是需要保持真实外观的产品图，图2是视觉风格参考图。',
@@ -23,7 +23,7 @@ const MAIN_PRESETS = {
     PRODUCT_GUARD,
     '只迁移图2的配色与色温、光线方向与软硬、背景场景、构图节奏、信息层级、字体气质、质感和整体氛围。',
     '图2不得向结果带入品牌、商品名称、价格、销量、促销、证书、型号、专属卖点或水印。',
-    '输出一张完成度高、可直接用于电商展示的图片，画幅比例与图1一致，只输出最终图片。',
+    '输出一张完成度高、可直接用于电商展示的图片，画幅比例与图2参考图一致，只输出最终图片。',
   ].join('\n'),
 }
 
@@ -199,6 +199,7 @@ export function createDetailFallback({
   style,
   strength,
   referenceCount,
+  ratio,
 }) {
   const total = Math.max(3, Math.min(12, Number(count) || 6))
   return DETAIL_SEEDS.slice(0, total).map((seed, index) => {
@@ -206,7 +207,7 @@ export function createDetailFallback({
     const referenceIndex = referenceCount ? index % referenceCount : null
     const referenceRule = referenceIndex == null
       ? '图1是产品图，也是本屏商品外观的唯一来源。'
-      : `图1是产品图，图2是本屏参考图。参考强度为${strength || 'balanced'}；图2只提供布局、构图、色彩、光影和信息节奏，不得复制其商品、品牌、文字、价格、销量、证书或水印。`
+      : `图1是产品图，图2是本屏参考图。参考强度为${strength || 'balanced'}；最终画幅比例与图2一致，图2同时提供布局、构图、色彩、光影和信息节奏，不得复制其商品、品牌、文字、价格、销量、证书或水印。`
     const imagePrompt = [
       referenceRule,
       PRODUCT_GUARD,
@@ -216,7 +217,7 @@ export function createDetailFallback({
       `画面文案：${copy}`,
       `视觉方向：${visual}`,
       `证明重点：${proof}`,
-      `生成完整的9:16竖版电商详情页单屏，整体风格为${style || '真实、清晰、有品质感'}。移动端阅读顺畅，只输出最终图片。`,
+      `生成完整的${ratio || '产品图原始比例'}画幅电商详情页单屏，整体风格为${style || '真实、清晰、有品质感'}。移动端阅读顺畅，只输出最终图片。`,
     ].join('\n')
     return {
       id: `fallback-detail-${index + 1}`,
