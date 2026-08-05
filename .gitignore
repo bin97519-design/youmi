@@ -10,6 +10,7 @@ build/
 coverage/
 .vite/
 .output/
+/release/
 *.local
 
 # 前端环境 / 密钥（绝不入库）

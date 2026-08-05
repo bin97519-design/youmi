@@ -31,12 +31,12 @@ const userStore = useUserStore()
 const tab = ref('main')
 const mode = ref('layout')
 const extra = ref('')
-const mainCategory = ref('mattress')
+const mainCategory = ref('general')
 const mainCategories = ref([
+  { value: 'general', label: '通用' },
   { value: 'mattress', label: '床垫' },
   { value: 'curtain', label: '窗帘' },
   { value: 'solid_wood_bed', label: '实木床' },
-  { value: 'general', label: '通用' },
 ])
 const mainCategoriesLoaded = ref(false)
 const mainAnalyzing = ref(false)
@@ -85,9 +85,11 @@ const availableResolutionOptions = computed(() => {
   const options = props.resolutionOptions.map((item) => String(item || '').trim()).filter(Boolean)
   return options.length ? options : ['2K']
 })
-const sourceRatioLabel = computed(() =>
-  tab.value !== 'demand' && references.value.length ? '跟随参考图' : '跟随产品图',
-)
+const sourceRatioLabel = computed(() => {
+  if (tab.value === 'main') return '跟随参考图'
+  if (tab.value === 'detail' && references.value.length) return '跟随参考图'
+  return '跟随产品图'
+})
 const selectedRatioLabel = computed(() =>
   selectedRatio.value === 'source' ? sourceRatioLabel.value : selectedRatio.value,
 )
@@ -173,8 +175,7 @@ watch(
       resetLayerDrag()
       mainAnalysisError.value = ''
       mainAnalysisStatus.value = ''
-      const productCategory = String(product.value?.reversePromptCategory || '').trim()
-      if (productCategory && productCategory !== 'general') mainCategory.value = productCategory
+      mainCategory.value = 'general'
       void loadMainCategories()
       return
     }
@@ -228,10 +229,15 @@ async function loadMainCategories() {
     if (!response.ok || payload.code) return
     const categories = Array.isArray(payload.data) ? payload.data : []
     if (categories.length) {
-      mainCategories.value = categories.map((item) => ({
+      const normalized = categories.map((item) => ({
         value: String(item.value || 'general'),
         label: String(item.label || item.value || '通用'),
       }))
+      const general = normalized.find((item) => item.value === 'general') || {
+        value: 'general',
+        label: '通用',
+      }
+      mainCategories.value = [general, ...normalized.filter((item) => item.value !== 'general')]
     }
     mainCategoriesLoaded.value = true
   } catch {

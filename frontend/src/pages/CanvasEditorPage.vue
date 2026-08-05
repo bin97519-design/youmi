@@ -175,6 +175,7 @@ const reversePromptCard = reactive({ x: null, y: null, width: 380, height: 240, 
 const reversePromptConnectors = ref([])
 const selectedLayerId = ref('')
 const selectedLayerIds = ref([])
+const expandedLayerToolbarId = ref('')
 const marqueeSelectionIds = ref([])
 // 画布内部复制缓冲区，支持多图并保留相对位置和智能分层数据。
 const clipboardLayers = ref([])
@@ -353,6 +354,10 @@ function selectSingleLayer(layer) {
   selectedLayerIds.value = [layer.id]
 }
 
+function toggleLayerToolbarMore(layerId) {
+  expandedLayerToolbarId.value = expandedLayerToolbarId.value === layerId ? '' : layerId
+}
+
 // 右侧图层列表排序：列表从上到下代表 z-index 从高到低。
 function onLayerListDragStart(event, layer) {
   layerListDrag.sourceId = layer.id
@@ -441,7 +446,11 @@ function onLayerListPointerMove(event) {
   const target = document
     .elementFromPoint(event.clientX, event.clientY)
     ?.closest('section.layers-panel > button')
-  if (!target || !target.dataset.layerId || target.dataset.layerId === layerListPointerDrag.sourceId) {
+  if (
+    !target ||
+    !target.dataset.layerId ||
+    target.dataset.layerId === layerListPointerDrag.sourceId
+  ) {
     layerListDrag.targetId = ''
     layerListDrag.position = ''
     return
@@ -581,6 +590,107 @@ const chatHistoryRef = ref(null)
 const chatText = ref('')
 const chatReferenceImages = ref([])
 const activeChatReferenceId = ref('')
+const inlineDialogModification = reactive({
+  layerId: '',
+  text: '',
+  submitting: false,
+  model: '',
+  ratio: '',
+  resolution: '',
+  generationCount: 1,
+  references: [],
+  selectOpen: '',
+})
+const inlineDialogReferenceSourceOpen = ref(false)
+const inlineDialogUploading = ref(false)
+const inlineDialogFloating = reactive({
+  left: 0,
+  top: 0,
+  dragging: false,
+  pointerId: null,
+  grabX: 0,
+  grabY: 0,
+  width: 0,
+  height: 0,
+})
+const INLINE_DIALOG_MARGIN = 12
+const INLINE_DIALOG_WIDTH = 460
+
+function placeInlineDialogInViewport() {
+  const width = Math.min(INLINE_DIALOG_WIDTH, window.innerWidth - INLINE_DIALOG_MARGIN * 2)
+  inlineDialogFloating.left = Math.max(
+    INLINE_DIALOG_MARGIN,
+    Math.round((window.innerWidth - width) / 2),
+  )
+  inlineDialogFloating.top = Math.max(
+    INLINE_DIALOG_MARGIN,
+    Math.round((window.innerHeight - Math.min(420, window.innerHeight - 24)) / 2),
+  )
+}
+
+function constrainInlineDialogToViewport(panel) {
+  if (!panel) return
+  inlineDialogFloating.left = Math.max(
+    INLINE_DIALOG_MARGIN,
+    Math.min(
+      window.innerWidth - panel.offsetWidth - INLINE_DIALOG_MARGIN,
+      inlineDialogFloating.left,
+    ),
+  )
+  inlineDialogFloating.top = Math.max(
+    INLINE_DIALOG_MARGIN,
+    Math.min(
+      window.innerHeight - panel.offsetHeight - INLINE_DIALOG_MARGIN,
+      inlineDialogFloating.top,
+    ),
+  )
+}
+
+function startInlineDialogDrag(event) {
+  if (event.button !== 0) return
+  const panel = event.currentTarget.closest('.uc-inline-dialog-edit')
+  if (!panel) return
+  const rect = panel.getBoundingClientRect()
+  inlineDialogFloating.dragging = true
+  inlineDialogFloating.pointerId = event.pointerId
+  inlineDialogFloating.grabX = event.clientX - rect.left
+  inlineDialogFloating.grabY = event.clientY - rect.top
+  inlineDialogFloating.width = panel.offsetWidth
+  inlineDialogFloating.height = panel.offsetHeight
+  inlineDialogModification.selectOpen = ''
+  event.currentTarget.setPointerCapture?.(event.pointerId)
+  window.addEventListener('pointermove', moveInlineDialog)
+  window.addEventListener('pointerup', stopInlineDialogDrag)
+  window.addEventListener('pointercancel', stopInlineDialogDrag)
+  event.preventDefault()
+}
+
+function moveInlineDialog(event) {
+  if (!inlineDialogFloating.dragging || inlineDialogFloating.pointerId !== event.pointerId) return
+  inlineDialogFloating.left = Math.max(
+    INLINE_DIALOG_MARGIN,
+    Math.min(
+      window.innerWidth - inlineDialogFloating.width - INLINE_DIALOG_MARGIN,
+      event.clientX - inlineDialogFloating.grabX,
+    ),
+  )
+  inlineDialogFloating.top = Math.max(
+    INLINE_DIALOG_MARGIN,
+    Math.min(
+      window.innerHeight - inlineDialogFloating.height - INLINE_DIALOG_MARGIN,
+      event.clientY - inlineDialogFloating.grabY,
+    ),
+  )
+}
+
+function stopInlineDialogDrag(event) {
+  if (inlineDialogFloating.pointerId !== event.pointerId) return
+  inlineDialogFloating.dragging = false
+  inlineDialogFloating.pointerId = null
+  window.removeEventListener('pointermove', moveInlineDialog)
+  window.removeEventListener('pointerup', stopInlineDialogDrag)
+  window.removeEventListener('pointercancel', stopInlineDialogDrag)
+}
 const chatUploading = ref(false)
 const uploadProgress = ref(null) // { fileName, loaded, total, percent } | null
 const canvasFileDragActive = ref(false)
@@ -589,6 +699,7 @@ let canvasFileDragDepth = 0
 let chatFileDragDepth = 0
 const activeChatTaskCount = ref(0)
 const chatGenerating = computed(() => activeChatTaskCount.value > 0)
+const regeneratingLayerIds = reactive(new Set())
 const chatSelectOpen = ref(null) // 'model' | 'ratio' | 'resolution' | null
 
 function toggleChatSelect(name) {
@@ -604,6 +715,96 @@ function selectChatOption(name, value) {
   if (name === 'ratio') chatRatio.value = value
   if (name === 'resolution') chatResolution.value = value
   closeChatSelect()
+}
+
+function toggleInlineDialogSelect(name) {
+  if (inlineDialogModification.submitting) return
+  inlineDialogModification.selectOpen = inlineDialogModification.selectOpen === name ? '' : name
+}
+
+function selectInlineDialogOption(name, value) {
+  inlineDialogModification[name] = value
+  inlineDialogModification.selectOpen = ''
+}
+
+function openInlineDialogMaterialPicker() {
+  if (!userStore.requireLogin() || !inlineDialogModification.layerId) return
+  inlineDialogModification.selectOpen = ''
+  inlineDialogReferenceSourceOpen.value = false
+  materialPickerMode.value = 'inline-dialog'
+  myMaterialsOpen.value = true
+  toolbarAddOpen.value = false
+  historyPanelOpen.value = false
+}
+
+function toggleInlineDialogReferenceSource() {
+  if (inlineDialogUploading.value || inlineDialogModification.submitting) return
+  inlineDialogReferenceSourceOpen.value = !inlineDialogReferenceSourceOpen.value
+  inlineDialogModification.selectOpen = ''
+}
+
+function openInlineDialogLocalUpload() {
+  if (!userStore.requireLogin() || !inlineDialogModification.layerId) return
+  inlineDialogReferenceSourceOpen.value = false
+  openImageUpload('inline-dialog')
+}
+
+async function addLocalImagesToInlineDialog(fileList) {
+  if (!userStore.requireLogin() || !inlineDialogModification.layerId) return 0
+
+  const candidates = [...(fileList || [])].filter((file) => isImageFile(file))
+  const oversized = candidates.filter(
+    (file) => Number(file.size || 0) > MAX_IMAGE_UPLOAD_BYTES,
+  )
+  const files = candidates.filter((file) => !oversized.includes(file))
+  if (oversized.length) {
+    const prefix = oversized.length === 1 ? oversized[0].name : `${oversized.length} 张图片`
+    showCopyPasteToast(`${prefix} 超过 20MB，已跳过`)
+  }
+  if (!files.length) {
+    return 0
+  }
+
+  inlineDialogUploading.value = true
+  let uploadedCount = 0
+  try {
+    for (const file of files) {
+      const localUrl = URL.createObjectURL(file)
+      const reference = {
+        id: `inline-local-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        url: localUrl,
+        localUrl,
+        name: file.name || '本地图片',
+        uploading: true,
+        isSource: false,
+      }
+      inlineDialogModification.references.push(reference)
+      try {
+        const url = await uploadFile(file)
+        reference.url = url
+        reference.uploading = false
+        uploadedCount += 1
+      } catch (error) {
+        inlineDialogModification.references = inlineDialogModification.references.filter(
+          (item) => item.id !== reference.id,
+        )
+        showCopyPasteToast(`${file.name || '图片'} 上传失败：${error.message || '请稍后重试'}`)
+      } finally {
+        URL.revokeObjectURL(localUrl)
+        reference.localUrl = ''
+      }
+    }
+    if (uploadedCount) showCopyPasteToast(`已添加 ${uploadedCount} 张本地参考图`)
+  } finally {
+    inlineDialogUploading.value = false
+  }
+  return uploadedCount
+}
+
+function removeInlineDialogReference(referenceId) {
+  inlineDialogModification.references = inlineDialogModification.references.filter(
+    (reference) => reference.id !== referenceId || reference.isSource,
+  )
 }
 
 function openCameraAnglePanel(layer = selectedLayer.value) {
@@ -649,6 +850,113 @@ async function insertCameraAnglePrompt({ prompt }) {
   }
   cameraAnglePanelOpen.value = false
   showCopyPasteToast('角度提示词和参考图已填入对话框')
+}
+
+async function openLayerDialogModification(layer) {
+  if (!isRealImageLayer(layer) || !layer.url) {
+    showCopyPasteToast('只有有效图片可以进行对话修改')
+    return
+  }
+
+  selectedLayerId.value = layer.id
+  selectedLayerIds.value = [layer.id]
+  expandedLayerToolbarId.value = ''
+
+  if (inlineDialogModification.layerId === layer.id) {
+    if (inlineDialogUploading.value) {
+      showCopyPasteToast('参考图正在上传，请稍候')
+      return
+    }
+    inlineDialogModification.layerId = ''
+    inlineDialogModification.text = ''
+    inlineDialogModification.references = []
+    inlineDialogModification.selectOpen = ''
+    return
+  }
+
+  const replay = getLayerGenerationReplay(layer)
+  inlineDialogModification.layerId = layer.id
+  inlineDialogModification.text = ''
+  inlineDialogModification.model = chatModelOptions.includes(replay?.model)
+    ? replay.model
+    : chatModel.value
+  inlineDialogModification.ratio = chatRatioOptions.includes(replay?.ratio)
+    ? replay.ratio
+    : chatRatio.value
+  inlineDialogModification.resolution = chatResolutionOptions.includes(replay?.resolution)
+    ? replay.resolution
+    : chatResolution.value
+  inlineDialogModification.generationCount = 1
+  inlineDialogModification.references = [
+    {
+      id: `inline-source-${layer.id}`,
+      url: layer.url,
+      name: layer.name || '当前图片',
+      layerId: layer.id,
+      isSource: true,
+    },
+  ]
+  inlineDialogModification.selectOpen = ''
+  inlineDialogReferenceSourceOpen.value = false
+  placeInlineDialogInViewport()
+
+  await nextTick()
+  const panel = [...document.querySelectorAll('[data-inline-dialog-layer-id]')].find(
+    (element) => element.dataset.inlineDialogLayerId === layer.id,
+  )
+  constrainInlineDialogToViewport(panel)
+  const input = panel?.querySelector('textarea')
+  input?.focus()
+}
+
+function closeInlineLayerDialogModification() {
+  if (inlineDialogModification.submitting || inlineDialogUploading.value) return
+  inlineDialogModification.layerId = ''
+  inlineDialogModification.text = ''
+  inlineDialogModification.references = []
+  inlineDialogModification.selectOpen = ''
+  inlineDialogReferenceSourceOpen.value = false
+}
+
+async function submitInlineLayerDialogModification(layer) {
+  const instruction = inlineDialogModification.text.trim()
+  if (!instruction || inlineDialogModification.submitting || inlineDialogUploading.value) return
+  if (!isRealImageLayer(layer) || !layer.url) {
+    showCopyPasteToast('当前图片已失效，请重新选择')
+    closeInlineLayerDialogModification()
+    return
+  }
+  if (!userStore.requireLogin()) return
+
+  inlineDialogModification.submitting = true
+  try {
+    const references = inlineDialogModification.references.filter((reference) => reference.url)
+    const referenceImageUrls = references.length
+      ? references.map((reference) => reference.url)
+      : [layer.url]
+    const submitted = await sendChat({
+      displayText: instruction,
+      selectedElements: [],
+      referenceImageUrls,
+      messageReferenceImages: referenceImageUrls.map((url) => ({ url })),
+      targetLayerId: layer.id,
+      generationCount: inlineDialogModification.generationCount,
+      taskConfig: {
+        model: inlineDialogModification.model || chatModel.value,
+        ratio: inlineDialogModification.ratio || chatRatio.value,
+        resolution: inlineDialogModification.resolution || chatResolution.value,
+      },
+    })
+    if (!submitted?.placeholderIds?.length) return
+
+    inlineDialogModification.layerId = ''
+    inlineDialogModification.text = ''
+    inlineDialogModification.references = []
+    inlineDialogModification.selectOpen = ''
+    showCopyPasteToast('修改任务已提交')
+  } finally {
+    inlineDialogModification.submitting = false
+  }
 }
 
 async function generateFromCameraAngle(payload) {
@@ -809,6 +1117,7 @@ const visibleReferenceImages = computed(() => {
 })
 const activeTool = ref('select')
 const spacePanHeld = ref(false)
+const DRAG_LAYER_Z_BASE = 2147483000
 const canvasTools = [
   { key: 'select', label: '选择', shortcut: 'V', icon: 'ri-cursor-line' },
   { key: 'hand', label: '抓手（拖动画布）', shortcut: 'H', icon: 'ri-hand' },
@@ -990,8 +1299,7 @@ async function analyzeCanvasReversePrompt(payload) {
 }
 
 async function reversePromptTransferImageUrl(payload) {
-  const imageBase64 =
-    typeof payload?.imageBase64 === 'string' ? payload.imageBase64.trim() : ''
+  const imageBase64 = typeof payload?.imageBase64 === 'string' ? payload.imageBase64.trim() : ''
   const directValue = [
     payload?.imageUrl,
     payload?.thumbnailUrl,
@@ -1001,8 +1309,7 @@ async function reversePromptTransferImageUrl(payload) {
   const source = imageBase64 || String(directValue || '').trim()
   if (!source) return ''
 
-  const looksLikeRawBase64 =
-    source.length > 256 && /^[a-zA-Z0-9+/=\s]+$/.test(source)
+  const looksLikeRawBase64 = source.length > 256 && /^[a-zA-Z0-9+/=\s]+$/.test(source)
   if (source.startsWith('data:') || imageBase64 || looksLikeRawBase64) {
     return uploadBase64ImageDirect(source, {
       dir: 'youmi/reverse-prompt',
@@ -1904,6 +2211,7 @@ async function pollImageTaskUntilDone(taskId, placeholderId, assistantId, prompt
         imageUrl: url,
         persistStatus,
         referenceImageUrls: refUrls,
+        creationType: meta.creationType || '',
         createdAt: Date.now(),
       })
       if (assistantId) {
@@ -1957,7 +2265,9 @@ function isPermanentOwnOssUrl(value) {
 }
 
 function persistenceTaskCreatedAt(taskId, layerId) {
-  const match = `${taskId || ''} ${layerId || ''}`.match(/(?:wudi-channel-|placeholder-|layer-)(\d{13})/)
+  const match = `${taskId || ''} ${layerId || ''}`.match(
+    /(?:wudi-channel-|placeholder-|layer-)(\d{13})/,
+  )
   const timestamp = Number(match?.[1])
   return Number.isFinite(timestamp) ? timestamp : 0
 }
@@ -1997,9 +2307,7 @@ function applyImagePersistenceState({
       ? {
           ...record,
           imageUrl:
-            normalizedStatus === 'DONE'
-              ? finalUrl || record.imageUrl
-              : record.imageUrl || finalUrl,
+            normalizedStatus === 'DONE' ? finalUrl || record.imageUrl : record.imageUrl || finalUrl,
           persistStatus: normalizedStatus,
           persistError: persistError || undefined,
         }
@@ -2141,11 +2449,7 @@ function resumePersistingImageLayers() {
   const recovered = []
   for (const layer of doc.value?.payload?.layers || []) {
     const persistStatus = String(layer.persistStatus || '').toUpperCase()
-    if (
-      layer.type !== 'image' ||
-      !layer.taskId ||
-      ['DONE', 'FAILED'].includes(persistStatus)
-    ) {
+    if (layer.type !== 'image' || !layer.taskId || ['DONE', 'FAILED'].includes(persistStatus)) {
       continue
     }
     const temporaryUrl = layer.temporaryUrl || layer.url
@@ -2934,6 +3238,7 @@ function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '',
           ? genMeta.referenceImageUrls
           : [],
         creationType: genMeta.creationType || '',
+        sourceLayerIds: Array.isArray(genMeta.sourceLayerIds) ? genMeta.sourceLayerIds : [],
       },
       // 关联的聊天消息 id：刷新后恢复轮询完成时用来更新聊天卡片文案（否则 assistantId 为空，
       // pollImageTaskUntilDone 会跳过所有 chatMessage 更新，卡片永远停在"正在恢复..."）。
@@ -3012,6 +3317,16 @@ async function runCanvasCreation({ type, sourceIds, jobs }) {
           model: job.model || chatModel.value,
           ratio: job.ratio || 'auto',
           resolution: job.resolution || chatResolution.value,
+          generationRequest: {
+            prompt: job.prompt,
+            displayText: job.name || job.prompt,
+            referenceImageUrls: [...(job.imageUrls || [])],
+            model: job.model || chatModel.value,
+            ratio: job.ratio || 'auto',
+            resolution: job.resolution || chatResolution.value,
+            targetLayerId: sourceId,
+            creationType: type || '',
+          },
           createdAt: Date.now() + index,
         },
       ])
@@ -3027,6 +3342,7 @@ async function runCanvasCreation({ type, sourceIds, jobs }) {
           aspectWidth: job.aspectWidth,
           aspectHeight: job.aspectHeight,
           creationType: type || '',
+          sourceLayerIds: job.sourceIds || sourceIds || [],
         },
         messageId,
         {
@@ -3180,6 +3496,9 @@ function openImageUpload(mode = 'canvas') {
   fileInputMode.value = mode
   addOpen.value = false
   chatReferenceSourceOpen.value = false
+  if (fileInput.value) {
+    fileInput.value.accept = mode === 'canvas' ? 'image/*,video/*' : 'image/*'
+  }
   fileInput.value?.click()
 }
 
@@ -4134,8 +4453,8 @@ function buildGridImportPlan(displaySizes, anchor) {
       .reduce((max, size) => Math.max(max, size.height), 0),
   )
   const totalWidth = columns * CANVAS_IMAGE_WIDTH + Math.max(0, columns - 1) * gap
-  const totalHeight = rowHeights.reduce((sum, height) => sum + height, 0) +
-    Math.max(0, rowCount - 1) * gap
+  const totalHeight =
+    rowHeights.reduce((sum, height) => sum + height, 0) + Math.max(0, rowCount - 1) * gap
   const startX = anchor.x - totalWidth / 2
   let rowTop = anchor.y - totalHeight / 2
   const positions = []
@@ -4232,7 +4551,8 @@ async function addFiles(fileList, options = {}) {
 
       if (isVideo) {
         // 视频文件：创建视频图层，按真实比例适配
-        const size = gridNaturalSizes[fileIndex] ||
+        const size =
+          gridNaturalSizes[fileIndex] ||
           (await videoSize(url).catch(() => ({ width: 16, height: 9 })))
         const displaySize = gridDisplaySizes[fileIndex] || fitImportedImage(size)
         const layerW = displaySize.width
@@ -4523,16 +4843,22 @@ async function onFileChange(event) {
     return
   }
   addOpen.value = false
-  const isChatUpload = fileInputMode.value === 'chat'
+  const uploadMode = fileInputMode.value
+  const isChatUpload = uploadMode === 'chat'
+  const isInlineDialogUpload = uploadMode === 'inline-dialog'
   if (isChatUpload) chatUploading.value = true
   try {
-    await addFiles(event.target.files || [], {
-      addChatNotice: isChatUpload,
-      addToChatDeck: isChatUpload,
-      layout: 'grid',
-      selectBatch: true,
-      anchor: viewportCenterWorld(),
-    })
+    if (isInlineDialogUpload) {
+      await addLocalImagesToInlineDialog(event.target.files || [])
+    } else {
+      await addFiles(event.target.files || [], {
+        addChatNotice: isChatUpload,
+        addToChatDeck: isChatUpload,
+        layout: 'grid',
+        selectBatch: true,
+        anchor: viewportCenterWorld(),
+      })
+    }
   } catch (error) {
     window.alert(error.message || '图片上传失败')
   } finally {
@@ -4555,6 +4881,10 @@ function removeLayer(id) {
   if (!userStore.requireLogin()) return
   // 如果正在播放该视频，清理播放状态
   if (playingVideoLayerId.value === id) playingVideoLayerId.value = null
+  if (inlineDialogModification.layerId === id) {
+    inlineDialogModification.layerId = ''
+    inlineDialogModification.text = ''
+  }
   pushUndo()
   // 删除关联的连接线
   connections.value = connections.value.filter((c) => c.fromLayerId !== id && c.toLayerId !== id)
@@ -4644,6 +4974,65 @@ function onStageLayerPointerDown(event) {
   if (layer) startLayerDrag(event, layer)
 }
 
+function findCanvasLayerNode(layerId) {
+  return [...document.querySelectorAll('.canvas-layer')].find(
+    (node) => node.dataset.layerId === layerId,
+  )
+}
+
+function applyDraggingLayerForeground(state) {
+  state.dragNodeSnapshots = state.ids.map((id) => {
+    const node = findCanvasLayerNode(id)
+    if (!node) return { id, node: null }
+    const snapshot = {
+      id,
+      node,
+      zIndex: node.style.getPropertyValue('z-index'),
+      zIndexPriority: node.style.getPropertyPriority('z-index'),
+      dragZIndex: node.style.getPropertyValue('--drag-z-index'),
+      dragZIndexPriority: node.style.getPropertyPriority('--drag-z-index'),
+    }
+    return snapshot
+  })
+  enforceDraggingLayerForeground(state)
+}
+
+function enforceDraggingLayerForeground(state) {
+  for (const id of state?.ids || []) {
+    const node = findCanvasLayerNode(id)
+    if (!node) continue
+    const dragZIndex = String(state.dragZById[id])
+    node.classList.add('is-dragging')
+    node.style.setProperty('--drag-z-index', dragZIndex)
+    node.style.setProperty('z-index', dragZIndex, 'important')
+  }
+}
+
+function restoreDraggingLayerForeground(state) {
+  for (const snapshot of state?.dragNodeSnapshots || []) {
+    const node = snapshot.node?.isConnected ? snapshot.node : findCanvasLayerNode(snapshot.id)
+    if (!node) continue
+    const currentLayer = layers.value.find((item) => item.id === snapshot.id)
+    node.classList.remove('is-dragging')
+    if (currentLayer) {
+      node.style.setProperty('z-index', String(Number(currentLayer.zIndex) || 10))
+    } else if (snapshot.zIndex) {
+      node.style.setProperty('z-index', snapshot.zIndex, snapshot.zIndexPriority)
+    } else {
+      node.style.removeProperty('z-index')
+    }
+    if (snapshot.dragZIndex) {
+      node.style.setProperty(
+        '--drag-z-index',
+        snapshot.dragZIndex,
+        snapshot.dragZIndexPriority,
+      )
+    } else {
+      node.style.removeProperty('--drag-z-index')
+    }
+  }
+}
+
 function startLayerDrag(event, layer) {
   if (dragState.value) return
   // 按住空格时，图层不响应自身拖拽，让事件冒泡给 stage 临时平移画布。
@@ -4653,7 +5042,8 @@ function startLayerDrag(event, layer) {
     isHorizontalCutTarget(layer) &&
     event.target instanceof Element &&
     event.target.closest('.uc-horizontal-cut-overlay')
-  ) return
+  )
+    return
 
   // 【Bug修复】占位图优先选中：当点击的图层不是占位图时，检查该位置是否有占位图重叠，
   // 如果有，将选中目标切换为占位图（确保占位图在重叠时始终被优先选中）。
@@ -4674,7 +5064,7 @@ function startLayerDrag(event, layer) {
   if (
     event.target instanceof Element &&
     event.target.closest(
-        '.layer-toolbar, .resize-dot, .uc-connection-port, .uc-node-close, .right-panel, .top-tools, .bottom-tools, input, textarea, select, [contenteditable="true"], button, a',
+      '.layer-toolbar, .resize-dot, .uc-connection-port, .uc-node-close, .uc-inline-prompt-result, .right-panel, .top-tools, .bottom-tools, input, textarea, select, [contenteditable="true"], button, a',
     )
   ) {
     return
@@ -4693,9 +5083,7 @@ function startLayerDrag(event, layer) {
     if (nextIds.has(layer.id)) nextIds.delete(layer.id)
     else nextIds.add(layer.id)
     selectedLayerIds.value = [...nextIds]
-    selectedLayerId.value = nextIds.has(layer.id)
-      ? layer.id
-      : selectedLayerIds.value.at(-1) || ''
+    selectedLayerId.value = nextIds.has(layer.id) ? layer.id : selectedLayerIds.value.at(-1) || ''
     return
   }
   if (event.ctrlKey || event.metaKey) return // Ctrl+拖拽由 stage 的 startMarquee 处理
@@ -4722,33 +5110,37 @@ function startLayerDrag(event, layer) {
     marqueeSelectionIds.value = []
     selectedLayerId.value = layer.id
     selectedLayerIds.value = [layer.id]
+  } else {
+    selectedLayerId.value = layer.id
   }
   const ids = draggingGroup ? [...selectedLayerIds.value] : [layer.id]
 
   // 拖动时将整组选中图层提到前景，避免组内只有当前图层置顶而其他图层被遮挡。
-  // 按原 zIndex 保留组内前后关系；占位图沿用原有层级规则。
+  // 组内保留原顺序，但鼠标实际抓住的图片始终位于整组最上层。
   const layerOrder = new Map(layers.value.map((item, index) => [item.id, index]))
-  const foregroundLayers = layers.value
-    .filter((item) => ids.includes(item.id) && item.type !== 'placeholder')
-    .sort(
+  const sortDraggedLayers = (items) => {
+    const ordered = [...items].sort(
       (a, b) =>
         (Number(a.zIndex) || 0) - (Number(b.zIndex) || 0) ||
         (layerOrder.get(a.id) || 0) - (layerOrder.get(b.id) || 0),
     )
+    const primaryIndex = ordered.findIndex((item) => item.id === layer.id)
+    if (primaryIndex >= 0) ordered.push(...ordered.splice(primaryIndex, 1))
+    return ordered
+  }
+  const foregroundLayers = sortDraggedLayers(
+    layers.value.filter((item) => ids.includes(item.id)),
+  )
   const foregroundIds = new Set(foregroundLayers.map((item) => item.id))
   const highestBackgroundZ = layers.value.reduce(
-    (max, item) =>
-      foregroundIds.has(item.id) ? max : Math.max(max, Number(item.zIndex) || 0),
+    (max, item) => (foregroundIds.has(item.id) ? max : Math.max(max, Number(item.zIndex) || 0)),
     0,
   )
   const alreadyInFront = foregroundLayers.every(
     (item) => (Number(item.zIndex) || 0) > highestBackgroundZ,
   )
   if (foregroundLayers.length && !alreadyInFront) {
-    const maxZ = layers.value.reduce(
-      (max, item) => Math.max(max, Number(item.zIndex) || 0),
-      0,
-    )
+    const maxZ = layers.value.reduce((max, item) => Math.max(max, Number(item.zIndex) || 0), 0)
     canvas.updateDocument(props.id, (draft) => {
       foregroundLayers.forEach((item, index) => {
         const target = draft.payload.layers.find((candidate) => candidate.id === item.id)
@@ -4758,15 +5150,9 @@ function startLayerDrag(event, layer) {
     })
   }
 
-  const dragLayerOrder = layers.value
-    .filter((item) => ids.includes(item.id))
-    .sort(
-      (a, b) =>
-        (Number(a.zIndex) || 0) - (Number(b.zIndex) || 0) ||
-        (layerOrder.get(a.id) || 0) - (layerOrder.get(b.id) || 0),
-    )
+  const dragLayerOrder = sortDraggedLayers(layers.value.filter((item) => ids.includes(item.id)))
   const dragZById = Object.fromEntries(
-    dragLayerOrder.map((item, index) => [item.id, 200001 + index]),
+    dragLayerOrder.map((item, index) => [item.id, DRAG_LAYER_Z_BASE + index]),
   )
 
   dragState.value = {
@@ -4781,6 +5167,11 @@ function startLayerDrag(event, layer) {
       .filter((item) => ids.includes(item.id))
       .map((item) => ({ id: item.id, x: item.x, y: item.y })),
   }
+  applyDraggingLayerForeground(dragState.value)
+  const activeDragState = dragState.value
+  nextTick(() => {
+    if (dragState.value === activeDragState) enforceDraggingLayerForeground(activeDragState)
+  })
 
   if (!_layerDragListenersAttached) {
     window.addEventListener('pointermove', moveLayer, true)
@@ -4796,10 +5187,8 @@ function openLayerFromSecondPointerDown(event, layer) {
   if (event.type !== 'pointerdown' || event.button !== 0) return false
   const now = Date.now()
   const closeInTime = now - layerClickMemory.at <= 450
-  const closeInSpace = Math.hypot(
-    event.clientX - layerClickMemory.x,
-    event.clientY - layerClickMemory.y,
-  ) <= 8
+  const closeInSpace =
+    Math.hypot(event.clientX - layerClickMemory.x, event.clientY - layerClickMemory.y) <= 8
   if (layerClickMemory.layerId !== layer.id || !closeInTime || !closeInSpace) return false
 
   layerClickMemory.layerId = ''
@@ -4819,6 +5208,7 @@ function moveLayer(event) {
   const dy = (event.clientY - dragState.value.startY) / scale
 
   const ds = dragState.value
+  enforceDraggingLayerForeground(ds)
   ds._rawDx = dx
   ds._rawDy = dy
 
@@ -4847,6 +5237,10 @@ function moveLayer(event) {
       }
       ds._lastDx = finalDx
       ds._lastDy = finalDy
+      enforceDraggingLayerForeground(ds)
+      nextTick(() => {
+        if (dragState.value === ds) enforceDraggingLayerForeground(ds)
+      })
     })
   }
 }
@@ -4901,6 +5295,7 @@ function stopLayerDrag(event) {
   if (ds.pointerId != null && captureEl?.hasPointerCapture?.(ds.pointerId)) {
     captureEl.releasePointerCapture(ds.pointerId)
   }
+  restoreDraggingLayerForeground(ds)
   dragState.value = null
   snapGuides.value = []
   nextTick(() => refreshConnections())
@@ -5403,6 +5798,144 @@ function getChatGenerationReplay(messageId) {
   }
 
   return replay
+}
+
+function normalizeLayerReplayUrls(values) {
+  return [
+    ...new Set(
+      (Array.isArray(values) ? values : [])
+        .map((value) => (typeof value === 'string' ? value : value?.url))
+        .map((value) => String(value || '').trim())
+        .filter((value) => value && !value.startsWith('blob:')),
+    ),
+  ]
+}
+
+function getLayerGenerationReplay(layer) {
+  if (!isRealImageLayer(layer)) return null
+
+  const history = generationHistory.value || []
+  const record =
+    [...history]
+      .reverse()
+      .find(
+        (item) =>
+          (layer.taskId && item.taskId === layer.taskId) ||
+          item.imageUrl === layer.url ||
+          item.imageUrl === layer.temporaryUrl,
+      ) || null
+  const chat = doc.value?.payload?.chat || []
+  const assistantMessage =
+    chat.find((message) => message.id === layer.chatMessageId) ||
+    chat.find(
+      (message) =>
+        message.role === 'assistant' &&
+        ((layer.taskId && message.taskId === layer.taskId) || message.imageUrl === layer.url),
+    ) ||
+    null
+  const messageReplay = assistantMessage ? getChatGenerationReplay(assistantMessage.id) : null
+  const meta = layer.genMeta && typeof layer.genMeta === 'object' ? layer.genMeta : {}
+  const isGeneratedLayer = Boolean(
+    layer.taskId || record || meta.prompt || layer.source === 'AI生成图片',
+  )
+  const prompt = String(
+    record?.prompt || messageReplay?.prompt || meta.prompt || layer.prompt || '',
+  ).trim()
+  if (!isGeneratedLayer || !prompt) return null
+
+  const referenceImageUrls =
+    normalizeLayerReplayUrls(record?.referenceImageUrls).length > 0
+      ? normalizeLayerReplayUrls(record.referenceImageUrls)
+      : normalizeLayerReplayUrls(messageReplay?.referenceImageUrls).length > 0
+        ? normalizeLayerReplayUrls(messageReplay.referenceImageUrls)
+        : normalizeLayerReplayUrls(meta.referenceImageUrls)
+  const incomingSourceIds = connections.value
+    .filter((connection) => connection.toLayerId === layer.id)
+    .map((connection) => connection.fromLayerId)
+    .filter(Boolean)
+  const sourceLayerIds = [
+    ...new Set(
+      (Array.isArray(meta.sourceLayerIds) && meta.sourceLayerIds.length
+        ? meta.sourceLayerIds
+        : incomingSourceIds
+      ).filter((id) => layers.value.some((item) => item.id === id)),
+    ),
+  ]
+  const creationType = record?.creationType || meta.creationType || ''
+  const requiresReferenceImage = Boolean(
+    messageReplay?.requiresReferenceImage || creationType || sourceLayerIds.length,
+  )
+
+  return {
+    prompt,
+    displayText: messageReplay?.displayText || prompt,
+    referenceImageUrls,
+    messageElements: messageReplay?.messageElements || [],
+    messageReferenceImages:
+      messageReplay?.messageReferenceImages?.length > 0
+        ? messageReplay.messageReferenceImages
+        : referenceImageUrls.map((url) => ({ url })),
+    model: record?.model || messageReplay?.model || meta.model || chatModel.value,
+    ratio: record?.ratio || messageReplay?.ratio || meta.ratio || chatRatio.value,
+    resolution:
+      record?.resolution || messageReplay?.resolution || meta.resolution || chatResolution.value,
+    creationType,
+    sourceLayerIds,
+    missingRequiredReference: requiresReferenceImage && !referenceImageUrls.length,
+  }
+}
+
+function canRegenerateCanvasLayer(layer) {
+  return Boolean(getLayerGenerationReplay(layer))
+}
+
+async function regenerateCanvasLayer(layer) {
+  if (regeneratingLayerIds.has(layer.id)) return
+  if (!userStore.requireLogin()) return
+
+  const replay = getLayerGenerationReplay(layer)
+  if (!replay) {
+    showCopyPasteToast('该图片没有可用的原始生图参数，无法重新生成')
+    return
+  }
+  if (replay.missingRequiredReference) {
+    showCopyPasteToast('原参考图已缺失，已阻止错误重新生成')
+    return
+  }
+
+  regeneratingLayerIds.add(layer.id)
+  try {
+    selectedLayerId.value = layer.id
+    selectedLayerIds.value = [layer.id]
+    rightPanelVisible.value = true
+    rightTab.value = 'chat'
+    const submitted = await sendChat({
+      fullPrompt: replay.prompt,
+      displayText: replay.displayText,
+      selectedElements: [],
+      referenceImageUrls: replay.referenceImageUrls,
+      messageElements: replay.messageElements,
+      messageReferenceImages: replay.messageReferenceImages,
+      targetLayerId: layer.id,
+      generationCount: 1,
+      preserveComposer: true,
+      hideUserMessage: true,
+      taskConfig: {
+        model: replay.model,
+        ratio: replay.ratio,
+        resolution: replay.resolution,
+      },
+    })
+    const connectionSources = replay.sourceLayerIds.length ? replay.sourceLayerIds : [layer.id]
+    for (const placeholderId of submitted?.placeholderIds || []) {
+      connectCreationSources(connectionSources, placeholderId)
+    }
+    if (submitted?.placeholderId) showCopyPasteToast('已按原参数提交重新生成')
+  } catch (error) {
+    showCopyPasteToast(error?.message || '重新生成提交失败')
+  } finally {
+    regeneratingLayerIds.delete(layer.id)
+  }
 }
 
 async function replayChatGeneration(messageId, { retryFailure = false, button } = {}) {
@@ -6503,6 +7036,7 @@ async function sendChat(options = {}) {
   if (!hasContent) return
   if (!userStore.requireLogin()) return
 
+  const targetLayerId = sendOptions.targetLayerId || selectedLayerId.value
   const createdAt = Date.now()
   const generationCount = normalizeChatGenerationCount(
     sendOptions.generationCount ?? (sendOptions.fullPrompt ? 1 : chatGenerationCount.value),
@@ -6535,6 +7069,13 @@ async function sendChat(options = {}) {
         ),
       ]
     : [...new Set([...chatImageUrls, ...refImageUrls])]
+  const generationReferenceSnapshot = hasReferenceOverride
+    ? imageUrls.map((url, index) => ({
+        id: `generation-ref-${createdAt}-${index}`,
+        url,
+        name: `参考图 ${index + 1}`,
+      }))
+    : chatReferenceSnapshot
   const elementTargets = buildElementLocationHint(selectedElements, imageUrls)
   const fullPrompt =
     String(sendOptions.fullPrompt || '').trim() ||
@@ -6576,7 +7117,7 @@ async function sendChat(options = {}) {
     model: taskConfig.model,
     ratio: taskConfig.ratio,
     resolution: taskConfig.resolution,
-    targetLayerId: sendOptions.targetLayerId || selectedLayerId.value,
+    targetLayerId,
   }
 
   const assistantMessages = Array.from({ length: generationCount }, (_, index) => ({
@@ -6597,49 +7138,51 @@ async function sendChat(options = {}) {
     generationRequest,
   }))
 
-  addChatMessages([
-    {
-      id: `msg-${createdAt}`,
-      role: 'user',
-      text,
-      targetLayerId: sendOptions.targetLayerId || selectedLayerId.value,
-      createdAt,
-      elements: messageElements,
-      generationCount,
-      referenceImages: messageReferenceImages,
-    },
-    ...assistantMessages,
-  ])
-  // 清空编辑器（pill + 文字）
-  const editorEl = document.querySelector('.chat-editor')
-  if (editorEl) editorEl.innerHTML = ''
-  // 清空后把焦点移回输入框，并把光标归位到开头（避免浏览器自动插入的 <br> 把光标推到第二行）
-  if (editorEl) {
-    editorEl.focus()
-    const sel = window.getSelection()
-    if (sel) {
-      const range = document.createRange()
-      range.selectNodeContents(editorEl)
-      range.collapse(true) // true = 折叠到开头
-      sel.removeAllRanges()
-      sel.addRange(range)
-    }
+  const userMessage = {
+    id: `msg-${createdAt}`,
+    role: 'user',
+    text,
+    targetLayerId,
+    createdAt,
+    elements: messageElements,
+    generationCount,
+    referenceImages: messageReferenceImages,
   }
-  chatText.value = ''
-  chatReferenceImages.value.forEach((image) => {
-    if (image.localUrl?.startsWith('blob:')) URL.revokeObjectURL(image.localUrl)
-  })
-  chatReferenceImages.value = []
-  activeChatReferenceId.value = ''
-  selectedDetectedElements.value = new Set()
-  elementClickPositions.value = {}
+  addChatMessages(
+    sendOptions.hideUserMessage ? assistantMessages : [userMessage, ...assistantMessages],
+  )
+  if (!sendOptions.preserveComposer) {
+    // 清空编辑器（pill + 文字）
+    const editorEl = document.querySelector('.chat-editor')
+    if (editorEl) editorEl.innerHTML = ''
+    // 清空后把焦点移回输入框，并把光标归位到开头（避免浏览器自动插入的 <br> 把光标推到第二行）
+    if (editorEl) {
+      editorEl.focus()
+      const sel = window.getSelection()
+      if (sel) {
+        const range = document.createRange()
+        range.selectNodeContents(editorEl)
+        range.collapse(true) // true = 折叠到开头
+        sel.removeAllRanges()
+        sel.addRange(range)
+      }
+    }
+    chatText.value = ''
+    chatReferenceImages.value.forEach((image) => {
+      if (image.localUrl?.startsWith('blob:')) URL.revokeObjectURL(image.localUrl)
+    })
+    chatReferenceImages.value = []
+    activeChatReferenceId.value = ''
+    selectedDetectedElements.value = new Set()
+    elementClickPositions.value = {}
+  }
   const batchTasks = assistantMessages.map((message, index) => {
     const placeholderId = addGeneratingPlaceholderLayer(
       fullPrompt,
       {
         ...taskConfig,
         referenceImageUrls: imageUrls,
-        referenceImages: chatReferenceSnapshot,
+        referenceImages: generationReferenceSnapshot,
         batchIndex: index + 1,
         batchCount: generationCount,
       },
@@ -6653,6 +7196,10 @@ async function sendChat(options = {}) {
     )
     return { placeholderId, assistantId: message.id, batchIndex: index + 1 }
   })
+  const targetLayer = layers.value.find((layer) => layer.id === targetLayerId)
+  if (targetLayer?.url && imageUrls.includes(targetLayer.url)) {
+    for (const task of batchTasks) connectCreationSources([targetLayerId], task.placeholderId)
+  }
   void canvas.flushNow?.(props.id)
 
   for (const batchTask of batchTasks) {
@@ -6766,9 +7313,7 @@ function selectCanvasTool(tool) {
 function isAutoArrangeImageLayer(layer) {
   if (!layer || layer.type === 'text' || layer.type === 'video') return false
   return (
-    isRealImageLayer(layer) ||
-    layer.type === 'placeholder' ||
-    layer.type === 'image-placeholder'
+    isRealImageLayer(layer) || layer.type === 'placeholder' || layer.type === 'image-placeholder'
   )
 }
 
@@ -7445,8 +7990,7 @@ function onGlobalKeydown(event) {
       pushUndo()
 
       const deleteSet = new Set(idsToDelete)
-      const nextSelectedLayerId =
-        layers.value.find((layer) => !deleteSet.has(layer.id))?.id || ''
+      const nextSelectedLayerId = layers.value.find((layer) => !deleteSet.has(layer.id))?.id || ''
       if (playingVideoLayerId.value && deleteSet.has(playingVideoLayerId.value)) {
         playingVideoLayerId.value = null
       }
@@ -7761,6 +8305,7 @@ onMounted(() => {
     helpMenuOpen.value = false
     chatSelectOpen.value = null
     chatReferenceSourceOpen.value = false
+    expandedLayerToolbarId.value = ''
     // 关闭右键菜单
     if (contextMenu.visible) contextMenu.visible = false
     // 点击历史面板外部关闭（面板内 click.stop 已阻止冒泡，这里捕获不到）
@@ -7806,6 +8351,7 @@ onBeforeUnmount(() => {
     window.removeEventListener('mouseup', stopLayerDrag, true)
     _layerDragListenersAttached = false
   }
+  restoreDraggingLayerForeground(dragState.value)
   dragState.value = null
   // 暂停所有正在播放的视频
   document.querySelectorAll('video.uc-video-node-video').forEach((v) => {
@@ -7895,8 +8441,47 @@ function toggleMaterialChatReference(mat) {
   chatReferenceImages.value.push(referenceImage)
   activeChatReferenceId.value = referenceImage.id
 }
+
+function isMaterialSelectedForInlineDialog(mat) {
+  return inlineDialogModification.references.some((reference) => reference.url === mat?.url)
+}
+
+function toggleMaterialInlineDialogReference(mat) {
+  if (!mat?.url) return
+  const existing = inlineDialogModification.references.find(
+    (reference) => reference.url === mat.url,
+  )
+  if (existing) {
+    if (!existing.isSource) removeInlineDialogReference(existing.id)
+    return
+  }
+  inlineDialogModification.references.push({
+    id: `inline-material-${Date.now()}-${mat.id || Math.random().toString(16).slice(2)}`,
+    url: mat.url,
+    name: mat.name || '我的素材',
+    materialId: mat.id || '',
+    isSource: false,
+  })
+}
+
+function isMaterialSelectedForPicker(mat) {
+  return materialPickerMode.value === 'inline-dialog'
+    ? isMaterialSelectedForInlineDialog(mat)
+    : isMaterialSelectedForChat(mat)
+}
+
+function useMaterialFromPicker(mat) {
+  if (materialPickerMode.value === 'inline-dialog') {
+    toggleMaterialInlineDialogReference(mat)
+  } else if (materialPickerMode.value === 'chat') {
+    toggleMaterialChatReference(mat)
+  } else {
+    addMaterialToCanvas(mat)
+  }
+}
+
 const selectedMaterialReferenceCount = computed(
-  () => myMaterials.value.filter((material) => isMaterialSelectedForChat(material)).length,
+  () => myMaterials.value.filter((material) => isMaterialSelectedForPicker(material)).length,
 )
 function addMaterialToCanvas(mat) {
   const maxZ = layers.value.reduce((max, l) => Math.max(max, l.zIndex || 0), 0)
@@ -7935,7 +8520,9 @@ const filteredCopyTargetDocuments = computed(() => {
   const query = copyToCanvasDialog.targetQuery.trim().toLowerCase()
   if (!query) return copyTargetDocuments.value
   return copyTargetDocuments.value.filter((item) =>
-    String(item.title || '').toLowerCase().includes(query),
+    String(item.title || '')
+      .toLowerCase()
+      .includes(query),
   )
 })
 
@@ -7949,9 +8536,7 @@ function contextMenuImageLayers() {
     selectedLayerIds.value.length > 1 && selectedLayerIds.value.includes(targetId)
       ? [...selectedLayerIds.value]
       : [targetId]
-  return ids
-    .map((id) => layers.value.find((layer) => layer.id === id))
-    .filter(isRealImageLayer)
+  return ids.map((id) => layers.value.find((layer) => layer.id === id)).filter(isRealImageLayer)
 }
 
 function defaultCopiedCanvasTitle() {
@@ -8097,10 +8682,7 @@ async function copyImagesToCanvas(targetId) {
     const sourceLayer = uniqueSourceLayers[index]
     const detected = doc.value.payload?.detectedElements?.[sourceLayer.id]
     if (detected) {
-      copiedDetectedElements.set(
-        copiedLayers[index].id,
-        JSON.parse(JSON.stringify(detected)),
-      )
+      copiedDetectedElements.set(copiedLayers[index].id, JSON.parse(JSON.stringify(detected)))
     }
   }
 
@@ -8132,12 +8714,9 @@ async function copyToSelectedCanvas() {
   copyToCanvasDialog.copying = true
   copyToCanvasDialog.error = ''
   try {
-    copyToCanvasDialog.result = await copyImagesToCanvas(
-      copyToCanvasDialog.selectedTargetId,
-    )
+    copyToCanvasDialog.result = await copyImagesToCanvas(copyToCanvasDialog.selectedTargetId)
   } catch (error) {
-    copyToCanvasDialog.error =
-      error instanceof Error ? error.message : String(error || '复制失败')
+    copyToCanvasDialog.error = error instanceof Error ? error.message : String(error || '复制失败')
   } finally {
     copyToCanvasDialog.copying = false
   }
@@ -8208,6 +8787,25 @@ function closeContextMenu() {
   cropQuickOpen.value = false
   stitchSubmenuOpen.value = false
 }
+
+function contextMenuOpenCanvasCreation() {
+  const layer = contextMenu.layer
+  if (!isRealImageLayer(layer)) {
+    closeContextMenu()
+    showCopyPasteToast('请选择有效图片后再进行画布创作')
+    return
+  }
+
+  if (!selectedLayerIds.value.includes(layer.id)) {
+    selectedLayerId.value = layer.id
+    selectedLayerIds.value = [layer.id]
+    marqueeSelectionIds.value = []
+  }
+
+  closeContextMenu()
+  creationPanelOpen.value = true
+}
+
 function promptSourceTypeForLayer(layer) {
   if (!isRealImageLayer(layer)) return ''
   if (layer.sourceType === 'upload' || layer.sourceType === 'reverse-prompt') {
@@ -8215,11 +8813,7 @@ function promptSourceTypeForLayer(layer) {
   }
 
   const source = String(layer.source || '').toLowerCase()
-  if (
-    source === 'reverse-prompt' ||
-    source === '框选图片' ||
-    source === '反推来源图片'
-  ) {
+  if (source === 'reverse-prompt' || source === '框选图片' || source === '反推来源图片') {
     return 'reverse-prompt'
   }
 
@@ -8679,7 +9273,8 @@ function openImageStitchDialog(direction) {
   }
   const isHorizontal = direction === 'horizontal'
   imageLayers.sort((left, right) => {
-    const primary = Number(isHorizontal ? left.x : left.y) - Number(isHorizontal ? right.x : right.y)
+    const primary =
+      Number(isHorizontal ? left.x : left.y) - Number(isHorizontal ? right.x : right.y)
     if (primary) return primary
     return Number(isHorizontal ? left.y : left.x) - Number(isHorizontal ? right.y : right.x)
   })
@@ -8788,19 +9383,9 @@ async function executeImageStitch() {
     context.imageSmoothingQuality = 'high'
     let offset = 0
     for (const item of drawItems) {
-      const drawX = horizontal
-        ? offset
-        : Math.round((outputWidth - item.drawWidth) / 2)
-      const drawY = horizontal
-        ? Math.round((outputHeight - item.drawHeight) / 2)
-        : offset
-      context.drawImage(
-        item.image,
-        drawX,
-        drawY,
-        item.drawWidth,
-        item.drawHeight,
-      )
+      const drawX = horizontal ? offset : Math.round((outputWidth - item.drawWidth) / 2)
+      const drawY = horizontal ? Math.round((outputHeight - item.drawHeight) / 2) : offset
+      context.drawImage(item.image, drawX, drawY, item.drawWidth, item.drawHeight)
       offset += horizontal ? item.drawWidth : item.drawHeight
     }
 
@@ -8844,9 +9429,7 @@ async function executeImageStitch() {
         fromLayerId: sourceIds.has(connection.fromLayerId)
           ? replacementLayerId
           : connection.fromLayerId,
-        toLayerId: sourceIds.has(connection.toLayerId)
-          ? replacementLayerId
-          : connection.toLayerId,
+        toLayerId: sourceIds.has(connection.toLayerId) ? replacementLayerId : connection.toLayerId,
       }))
       .filter((connection) => {
         if (connection.fromLayerId === connection.toLayerId) return false
@@ -8861,7 +9444,9 @@ async function executeImageStitch() {
       const sourceIndexes = draft.payload.layers
         .map((layer, index) => (sourceIds.has(layer.id) ? index : -1))
         .filter((index) => index >= 0)
-      const insertIndex = sourceIndexes.length ? Math.min(...sourceIndexes) : draft.payload.layers.length
+      const insertIndex = sourceIndexes.length
+        ? Math.min(...sourceIndexes)
+        : draft.payload.layers.length
       const replacementLayer = {
         ...sourceLayers[0],
         id: replacementLayerId,
@@ -8993,9 +9578,8 @@ async function executeHorizontalCut() {
       const start = boundaries[index]
       const end = boundaries[index + 1]
       const sourceTop = Math.round(start * naturalHeight)
-      const sourceBottom = index === boundaries.length - 2
-        ? naturalHeight
-        : Math.round(end * naturalHeight)
+      const sourceBottom =
+        index === boundaries.length - 2 ? naturalHeight : Math.round(end * naturalHeight)
       const sourceHeight = Math.max(1, sourceBottom - sourceTop)
       const cutCanvas = document.createElement('canvas')
       cutCanvas.width = naturalWidth
@@ -9024,9 +9608,10 @@ async function executeHorizontalCut() {
     const timestamp = Date.now().toString(36)
     const newLayers = uploadedSegments.map((segment, index) => {
       const slice = JSON.parse(JSON.stringify(layer))
-      slice.id = index === 0
-        ? layer.id
-        : `horizontal-slice-${timestamp}-${index}-${Math.random().toString(36).slice(2, 7)}`
+      slice.id =
+        index === 0
+          ? layer.id
+          : `horizontal-slice-${timestamp}-${index}-${Math.random().toString(36).slice(2, 7)}`
       slice.name = `${layer.name || '图片'}-${index + 1}`
       slice.url = segment.url
       slice.thumbnailUrl = segment.url
@@ -9625,33 +10210,102 @@ async function loadImageForCrop(layer) {
                 selectedLayerIds.length <= 1
               "
             >
-              <div class="layer-toolbar">
-                <button>✂ 智能抠图</button>
-                <button @click.stop="maybeAutoDetect(selectedLayer, true)">
-                  <template v-if="selectedLayer && detectingLayerIds.has(selectedLayer.id)">
-                    ⏳ 检测中...
-                  </template>
-                  <template v-else>◈ 智能分层</template>
-                </button>
-                <button title="调整相机视角" @click.stop="openCameraAnglePanel(layer)">
-                  <i class="ri-camera-lens-line" aria-hidden="true"></i>
-                  多角度
-                </button>
-                <button>T 编辑文字</button>
-                <button>↔ 扩图</button>
-                <button>☏ 对话修改</button>
-                <button>▧ 尺寸修改</button>
-                <button @click.stop="openCropPicker(0, 0, layer)">⌗ 裁剪</button>
-                <button
-                  :disabled="horizontalCutMode.processing && isHorizontalCutTarget(layer)"
-                  :title="horizontalCutMenuLabel(layer)"
-                  @click.stop="toggleHorizontalCutForLayer(layer)"
+              <div
+                class="layer-toolbar"
+                :class="{ 'is-expanded': expandedLayerToolbarId === layer.id }"
+                @click.stop
+              >
+                <div class="layer-toolbar-row layer-toolbar-primary">
+                  <button @click.stop="maybeAutoDetect(selectedLayer, true)">
+                    <template v-if="selectedLayer && detectingLayerIds.has(selectedLayer.id)">
+                      <i class="ri-loader-4-line uc-spin" aria-hidden="true"></i>
+                      检测中...
+                    </template>
+                    <template v-else>
+                      <i class="ri-stack-line" aria-hidden="true"></i>
+                      智能分层
+                    </template>
+                  </button>
+                  <button title="调整相机视角" @click.stop="openCameraAnglePanel(layer)">
+                    <i class="ri-camera-lens-line" aria-hidden="true"></i>
+                    多角度
+                  </button>
+                  <button
+                    title="在图片下方输入修改要求"
+                    :class="{ active: inlineDialogModification.layerId === layer.id }"
+                    @click.stop="openLayerDialogModification(layer)"
+                  >
+                    <i class="ri-chat-3-line" aria-hidden="true"></i>
+                    对话修改
+                  </button>
+                  <button
+                    v-if="canRegenerateCanvasLayer(layer)"
+                    :disabled="regeneratingLayerIds.has(layer.id)"
+                    :title="
+                      regeneratingLayerIds.has(layer.id)
+                        ? '正在提交重新生成'
+                        : '按原提示词、参考图和模型参数重新生成'
+                    "
+                    @click.stop="regenerateCanvasLayer(layer)"
+                  >
+                    <i class="ri-refresh-line" aria-hidden="true"></i>
+                    {{ regeneratingLayerIds.has(layer.id) ? '提交中...' : '重新生成' }}
+                  </button>
+                  <button
+                    :disabled="horizontalCutMode.processing && isHorizontalCutTarget(layer)"
+                    :title="horizontalCutMenuLabel(layer)"
+                    @click.stop="toggleHorizontalCutForLayer(layer)"
+                  >
+                    <i class="ri-scissors-cut-line" aria-hidden="true"></i>
+                    {{ horizontalCutMenuLabel(layer) }}
+                  </button>
+                  <button @click.stop="downloadFileByUrl(layer.url, layer.name || 'image')">
+                    <i class="ri-download-2-line" aria-hidden="true"></i>
+                    下载
+                  </button>
+                  <button
+                    class="layer-toolbar-more"
+                    :class="{ active: expandedLayerToolbarId === layer.id }"
+                    :aria-expanded="expandedLayerToolbarId === layer.id"
+                    @click.stop="toggleLayerToolbarMore(layer.id)"
+                  >
+                    <i class="ri-more-2-fill" aria-hidden="true"></i>
+                    更多
+                    <i
+                      :class="
+                        expandedLayerToolbarId === layer.id
+                          ? 'ri-arrow-up-s-line'
+                          : 'ri-arrow-down-s-line'
+                      "
+                      aria-hidden="true"
+                    ></i>
+                  </button>
+                </div>
+                <div
+                  v-show="expandedLayerToolbarId === layer.id"
+                  class="layer-toolbar-row layer-toolbar-secondary"
                 >
-                  <i class="ri-scissors-cut-line" aria-hidden="true"></i>
-                  {{ horizontalCutMenuLabel(layer) }}
-                </button>
-                <button>⇩ 下载</button>
-                <button @click.stop="removeLayer(layer.id)">⌫ 删除</button>
+                  <button>
+                    <i class="ri-scissors-line" aria-hidden="true"></i>
+                    智能抠图
+                  </button>
+                  <button>
+                    <i class="ri-text" aria-hidden="true"></i>
+                    编辑文字
+                  </button>
+                  <button>
+                    <i class="ri-expand-diagonal-line" aria-hidden="true"></i>
+                    扩图
+                  </button>
+                  <button>
+                    <i class="ri-aspect-ratio-line" aria-hidden="true"></i>
+                    尺寸修改
+                  </button>
+                  <button class="danger" @click.stop="removeLayer(layer.id)">
+                    <i class="ri-delete-bin-line" aria-hidden="true"></i>
+                    删除
+                  </button>
+                </div>
               </div>
             </template>
             <template v-if="layer.type === 'placeholder'">
@@ -10074,10 +10728,7 @@ async function loadImageForCrop(layer) {
                       </div>
                       <div class="uc-inline-prompt-value">
                         <span
-                          v-if="
-                            line.collapsible &&
-                            !isReversePromptSectionExpanded(layer.id, line)
-                          "
+                          v-if="line.collapsible && !isReversePromptSectionExpanded(layer.id, line)"
                           class="uc-inline-prompt-collapsed-summary"
                         >
                           {{ line.items.length }} 条文案
@@ -10113,15 +10764,277 @@ async function loadImageForCrop(layer) {
                     </div>
                   </div>
                 </div>
-                <div
-                  v-else
-                  class="uc-text-node-hint"
-                  @pointerdown.stop
-                  @click.stop.exact
-                >
+                <div v-else class="uc-text-node-hint" @pointerdown.stop @click.stop.exact>
                   <i class="ri-edit-line"></i>
                   提示词
                 </div>
+                <Teleport to="body">
+                  <div
+                    v-if="inlineDialogModification.layerId === layer.id"
+                    class="uc-inline-dialog-edit"
+                    :class="{ 'is-dragging': inlineDialogFloating.dragging }"
+                    :data-inline-dialog-layer-id="layer.id"
+                    :style="{
+                      left: `${inlineDialogFloating.left}px`,
+                      top: `${inlineDialogFloating.top}px`,
+                    }"
+                    @pointerdown.stop
+                    @click.stop
+                    @dblclick.stop
+                    @wheel.stop
+                  >
+                  <div
+                    class="uc-inline-dialog-edit-head"
+                    title="拖动窗口"
+                    @pointerdown.stop="startInlineDialogDrag"
+                  >
+                    <div class="uc-inline-dialog-edit-title">
+                      <i class="ri-image-edit-line" aria-hidden="true"></i>
+                      <span>
+                        <strong>图片生成/修改</strong>
+                        <small>基于参考素材</small>
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      title="关闭"
+                      aria-label="关闭对话修改"
+                      :disabled="inlineDialogModification.submitting || inlineDialogUploading"
+                      @pointerdown.stop
+                      @click.stop="closeInlineLayerDialogModification"
+                    >
+                      <i class="ri-close-line" aria-hidden="true"></i>
+                    </button>
+                  </div>
+                  <section class="uc-inline-dialog-references">
+                    <header>
+                      <span>
+                        <i class="ri-gallery-line" aria-hidden="true"></i>
+                        参考素材
+                        <b>{{ inlineDialogModification.references.length }} 图</b>
+                      </span>
+                      <button
+                        type="button"
+                        :disabled="inlineDialogUploading || inlineDialogModification.submitting"
+                        :aria-expanded="inlineDialogReferenceSourceOpen"
+                        aria-haspopup="menu"
+                        @click.stop="toggleInlineDialogReferenceSource"
+                      >
+                        <i class="ri-add-line" aria-hidden="true"></i>
+                        {{ inlineDialogUploading ? '上传中' : '添加素材' }}
+                      </button>
+                      <div
+                        v-if="inlineDialogReferenceSourceOpen"
+                        class="uc-inline-dialog-source-menu"
+                        role="menu"
+                        @click.stop
+                      >
+                        <button type="button" role="menuitem" @click="openInlineDialogLocalUpload">
+                          <i class="ri-upload-2-line" aria-hidden="true"></i>
+                          <span>本地上传</span>
+                        </button>
+                        <button type="button" role="menuitem" @click="openInlineDialogMaterialPicker">
+                          <i class="ri-folder-image-line" aria-hidden="true"></i>
+                          <span>我的素材</span>
+                        </button>
+                      </div>
+                    </header>
+                    <div class="uc-inline-dialog-reference-list">
+                      <div
+                        v-for="(reference, referenceIndex) in inlineDialogModification.references"
+                        :key="reference.id"
+                        class="uc-inline-dialog-reference"
+                        :class="{ 'is-uploading': reference.uploading }"
+                      >
+                        <img
+                          :src="reference.url"
+                          :alt="reference.name || `参考素材 ${referenceIndex + 1}`"
+                          loading="lazy"
+                          decoding="async"
+                        />
+                        <i
+                          v-if="reference.uploading"
+                          class="ri-loader-4-line uc-spin uc-inline-dialog-reference-loading"
+                          aria-label="上传中"
+                        ></i>
+                        <button
+                          v-if="!reference.isSource"
+                          type="button"
+                          title="移除参考素材"
+                          :aria-label="`移除${reference.name || '参考素材'}`"
+                          @click.stop="removeInlineDialogReference(reference.id)"
+                        >
+                          <i class="ri-close-line" aria-hidden="true"></i>
+                        </button>
+                        <small>{{ referenceIndex + 1 }}</small>
+                      </div>
+                    </div>
+                  </section>
+                  <div class="uc-inline-dialog-edit-body">
+                    <textarea
+                      v-model="inlineDialogModification.text"
+                      rows="4"
+                      maxlength="2000"
+                      placeholder="描述要生成或修改的画面，例如：保留产品不变，替换为明亮的客厅场景"
+                      aria-label="图片修改要求"
+                      :disabled="inlineDialogModification.submitting"
+                      @keydown.enter.exact.prevent="submitInlineLayerDialogModification(layer)"
+                      @keydown.esc.prevent="closeInlineLayerDialogModification"
+                    ></textarea>
+                  </div>
+                  <footer class="uc-inline-dialog-footer">
+                    <div class="uc-inline-dialog-options" @click.stop>
+                      <div
+                        class="uc-custom-select uc-inline-dialog-option-model"
+                        :class="{ open: inlineDialogModification.selectOpen === 'model' }"
+                      >
+                        <button
+                          type="button"
+                          class="uc-custom-select-trigger"
+                          :title="`模型：${inlineDialogModification.model}`"
+                          :aria-label="`模型 ${inlineDialogModification.model}`"
+                          :disabled="inlineDialogModification.submitting"
+                          @click.stop="toggleInlineDialogSelect('model')"
+                        >
+                          {{ inlineDialogModification.model }}
+                          <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
+                        </button>
+                        <div
+                          v-if="inlineDialogModification.selectOpen === 'model'"
+                          class="uc-custom-select-menu"
+                        >
+                          <button
+                            v-for="option in chatModelOptions"
+                            :key="option"
+                            type="button"
+                            class="uc-custom-select-item"
+                            :class="{ active: inlineDialogModification.model === option }"
+                            @click.stop="selectInlineDialogOption('model', option)"
+                          >
+                            {{ option }}
+                          </button>
+                        </div>
+                      </div>
+                      <div
+                        class="uc-custom-select"
+                        :class="{ open: inlineDialogModification.selectOpen === 'ratio' }"
+                      >
+                        <button
+                          type="button"
+                          class="uc-custom-select-trigger"
+                          :title="`比例：${inlineDialogModification.ratio}`"
+                          :aria-label="`比例 ${inlineDialogModification.ratio}`"
+                          :disabled="inlineDialogModification.submitting"
+                          @click.stop="toggleInlineDialogSelect('ratio')"
+                        >
+                          {{ inlineDialogModification.ratio }}
+                          <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
+                        </button>
+                        <div
+                          v-if="inlineDialogModification.selectOpen === 'ratio'"
+                          class="uc-custom-select-menu"
+                        >
+                          <button
+                            v-for="option in chatRatioOptions"
+                            :key="option"
+                            type="button"
+                            class="uc-custom-select-item"
+                            :class="{ active: inlineDialogModification.ratio === option }"
+                            @click.stop="selectInlineDialogOption('ratio', option)"
+                          >
+                            {{ option }}
+                          </button>
+                        </div>
+                      </div>
+                      <div
+                        class="uc-custom-select"
+                        :class="{ open: inlineDialogModification.selectOpen === 'resolution' }"
+                      >
+                        <button
+                          type="button"
+                          class="uc-custom-select-trigger"
+                          :title="`分辨率：${inlineDialogModification.resolution}`"
+                          :aria-label="`分辨率 ${inlineDialogModification.resolution}`"
+                          :disabled="inlineDialogModification.submitting"
+                          @click.stop="toggleInlineDialogSelect('resolution')"
+                        >
+                          {{ inlineDialogModification.resolution }}
+                          <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
+                        </button>
+                        <div
+                          v-if="inlineDialogModification.selectOpen === 'resolution'"
+                          class="uc-custom-select-menu"
+                        >
+                          <button
+                            v-for="option in chatResolutionOptions"
+                            :key="option"
+                            type="button"
+                            class="uc-custom-select-item"
+                            :class="{ active: inlineDialogModification.resolution === option }"
+                            @click.stop="selectInlineDialogOption('resolution', option)"
+                          >
+                            {{ option }}
+                          </button>
+                        </div>
+                      </div>
+                      <div
+                        class="uc-custom-select"
+                        :class="{ open: inlineDialogModification.selectOpen === 'generationCount' }"
+                      >
+                        <button
+                          type="button"
+                          class="uc-custom-select-trigger"
+                          :title="`数量：${inlineDialogModification.generationCount} 张`"
+                          :aria-label="`数量 ${inlineDialogModification.generationCount} 张`"
+                          :disabled="inlineDialogModification.submitting"
+                          @click.stop="toggleInlineDialogSelect('generationCount')"
+                        >
+                          {{ inlineDialogModification.generationCount }} 张
+                          <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
+                        </button>
+                        <div
+                          v-if="inlineDialogModification.selectOpen === 'generationCount'"
+                          class="uc-custom-select-menu"
+                        >
+                          <button
+                            v-for="option in CHAT_GENERATION_COUNT_MAX"
+                            :key="option"
+                            type="button"
+                            class="uc-custom-select-item"
+                            :class="{ active: inlineDialogModification.generationCount === option }"
+                            @click.stop="selectInlineDialogOption('generationCount', option)"
+                          >
+                            {{ option }} 张
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      class="uc-inline-dialog-send"
+                      :disabled="
+                        !inlineDialogModification.text.trim() ||
+                        inlineDialogModification.submitting ||
+                        inlineDialogUploading
+                      "
+                      :title="inlineDialogModification.submitting ? '正在提交' : '发送修改要求'"
+                      :aria-label="
+                        inlineDialogModification.submitting ? '正在提交' : '发送修改要求'
+                      "
+                      @click.stop="submitInlineLayerDialogModification(layer)"
+                    >
+                      <i
+                        :class="
+                          inlineDialogModification.submitting
+                            ? 'ri-loader-4-line uc-spin'
+                            : 'ri-arrow-up-line'
+                        "
+                        aria-hidden="true"
+                      ></i>
+                    </button>
+                  </footer>
+                  </div>
+                </Teleport>
                 <button
                   class="uc-node-close"
                   type="button"
@@ -10772,6 +11685,12 @@ async function loadImageForCrop(layer) {
                   :class="{
                     'chat-editor-empty': !chatText.trim() && !getSelectedDetectedElements().length,
                   }"
+                  :data-placeholder="
+                    chatReferenceImages.length
+                      ? '请输入对参考图的修改要求'
+                      : '请输入你想生成的画面描述'
+                  "
+                  aria-label="生图提示词"
                   contenteditable="true"
                   @input="handleEditorInput"
                   @click="handleEditorPillClick"
@@ -10910,8 +11829,10 @@ async function loadImageForCrop(layer) {
             :class="{
               active: selectedLayerIds.includes(layer.id),
               'is-layer-dragging': layerListDrag.sourceId === layer.id,
-              'drop-before': layerListDrag.targetId === layer.id && layerListDrag.position === 'before',
-              'drop-after': layerListDrag.targetId === layer.id && layerListDrag.position === 'after',
+              'drop-before':
+                layerListDrag.targetId === layer.id && layerListDrag.position === 'before',
+              'drop-after':
+                layerListDrag.targetId === layer.id && layerListDrag.position === 'after',
             }"
             @click="selectSingleLayer(layer)"
             @pointerdown="onLayerListPointerDown($event, layer)"
@@ -11092,7 +12013,6 @@ async function loadImageForCrop(layer) {
         </div>
       </div>
     </div>
-
   </main>
 
   <!-- + 号菜单：Teleport 到 body，脱离 transform 父级 -->
@@ -11426,6 +12346,15 @@ async function loadImageForCrop(layer) {
       :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
       @click.stop
     >
+      <button
+        type="button"
+        class="uc-context-menu-item uc-context-menu-item--creation"
+        @click="contextMenuOpenCanvasCreation"
+      >
+        <i class="ri-layout-masonry-line"></i>
+        画布创作
+      </button>
+      <div class="uc-context-menu-divider"></div>
       <div
         v-if="canGetPromptFromLayer(contextMenu.layer)"
         class="uc-context-menu-item uc-context-menu-sub"
@@ -11453,10 +12382,7 @@ async function loadImageForCrop(layer) {
           </button>
         </div>
       </div>
-      <div
-        v-if="canGetPromptFromLayer(contextMenu.layer)"
-        class="uc-context-menu-divider"
-      ></div>
+      <div v-if="canGetPromptFromLayer(contextMenu.layer)" class="uc-context-menu-divider"></div>
       <button class="uc-context-menu-item" @click="contextMenuAddToReference">
         <i class="ri-image-add-line"></i>
         添加到参考图
@@ -11609,10 +12535,7 @@ async function loadImageForCrop(layer) {
             </strong>
             <span>{{ stitchDialogLayers.length }} 张 · 按住拖动换位</span>
           </div>
-          <div
-            class="uc-image-stitch-slots"
-            :class="`is-${imageStitchDialog.direction}`"
-          >
+          <div class="uc-image-stitch-slots" :class="`is-${imageStitchDialog.direction}`">
             <article
               v-for="(layer, index) in stitchDialogLayers"
               :key="layer.id"
@@ -11625,7 +12548,10 @@ async function loadImageForCrop(layer) {
               @dragend="finishStitchSlotDrag"
             >
               <span class="uc-image-stitch-order">{{ index + 1 }}</span>
-              <img :src="layer.thumbnailUrl || layer.url" :alt="layer.name || `图片 ${index + 1}`" />
+              <img
+                :src="layer.thumbnailUrl || layer.url"
+                :alt="layer.name || `图片 ${index + 1}`"
+              />
               <span class="uc-image-stitch-slot-name">{{ layer.name || `图片 ${index + 1}` }}</span>
               <i class="ri-drag-move-2-line" aria-hidden="true"></i>
             </article>
@@ -11651,7 +12577,11 @@ async function loadImageForCrop(layer) {
             :disabled="imageStitchDialog.processing || stitchDialogLayers.length < 2"
             @click="executeImageStitch"
           >
-            <i :class="imageStitchDialog.processing ? 'ri-loader-4-line uc-spin' : 'ri-layout-grid-line'"></i>
+            <i
+              :class="
+                imageStitchDialog.processing ? 'ri-loader-4-line uc-spin' : 'ri-layout-grid-line'
+              "
+            ></i>
             {{ imageStitchDialog.processing ? '正在拼接' : '确认拼接' }}
           </button>
         </footer>
@@ -11746,9 +12676,7 @@ async function loadImageForCrop(layer) {
             <i :class="copyTargetDocuments.length ? 'ri-search-line' : 'ri-layout-grid-line'"></i>
             <span>
               {{
-                copyTargetDocuments.length
-                  ? '没有找到匹配的画布'
-                  : '还没有其他画布，可以在下方新建'
+                copyTargetDocuments.length ? '没有找到匹配的画布' : '还没有其他画布，可以在下方新建'
               }}
             </span>
           </div>
@@ -11790,8 +12718,9 @@ async function loadImageForCrop(layer) {
           </span>
           <h3>图片已整理到目标画布</h3>
           <p>
-            已复制 {{ copyToCanvasDialog.result.copiedCount }} 张到
-            “{{ copyToCanvasDialog.result.targetTitle }}”
+            已复制 {{ copyToCanvasDialog.result.copiedCount }} 张到 “{{
+              copyToCanvasDialog.result.targetTitle
+            }}”
           </p>
           <small v-if="copyToCanvasDialog.result.skippedCount">
             {{ copyToCanvasDialog.result.skippedCount }} 张重复图片已自动跳过
@@ -11811,16 +12740,12 @@ async function loadImageForCrop(layer) {
             <button
               type="button"
               class="uc-copy-canvas-btn primary"
-              :disabled="
-                !copyToCanvasDialog.selectedTargetId || copyToCanvasDialog.copying
-              "
+              :disabled="!copyToCanvasDialog.selectedTargetId || copyToCanvasDialog.copying"
               @click="copyToSelectedCanvas"
             >
               <i
                 :class="
-                  copyToCanvasDialog.copying
-                    ? 'ri-loader-4-line uc-spin'
-                    : 'ri-file-copy-2-line'
+                  copyToCanvasDialog.copying ? 'ri-loader-4-line uc-spin' : 'ri-file-copy-2-line'
                 "
               ></i>
               {{ copyToCanvasDialog.copying ? '正在复制' : '复制到所选画布' }}
@@ -11830,11 +12755,7 @@ async function loadImageForCrop(layer) {
             <button type="button" class="uc-copy-canvas-btn" @click="closeCopyToCanvasDialog">
               留在当前画布
             </button>
-            <button
-              type="button"
-              class="uc-copy-canvas-btn primary"
-              @click="visitCopiedCanvas"
-            >
+            <button type="button" class="uc-copy-canvas-btn primary" @click="visitCopiedCanvas">
               前往目标画布
               <i class="ri-arrow-right-line"></i>
             </button>
@@ -11847,11 +12768,14 @@ async function loadImageForCrop(layer) {
   <!-- 我的素材面板 -->
   <Teleport to="body">
     <div v-if="myMaterialsOpen" class="uc-materials-backdrop" @click.self="closeMyMaterials">
-      <div class="uc-materials-panel" :class="{ 'is-chat-picker': materialPickerMode === 'chat' }">
+      <div
+        class="uc-materials-panel"
+        :class="{ 'is-chat-picker': materialPickerMode !== 'canvas' }"
+      >
         <header class="uc-materials-head">
           <h2>
             <i class="ri-folder-image-line"></i>
-            {{ materialPickerMode === 'chat' ? '选择参考图' : '我的素材' }}
+            {{ materialPickerMode === 'canvas' ? '我的素材' : '选择参考图' }}
           </h2>
           <button title="关闭" aria-label="关闭素材面板" @click="closeMyMaterials">
             <i class="ri-close-line"></i>
@@ -11869,18 +12793,13 @@ async function loadImageForCrop(layer) {
               :key="mat.id"
               class="uc-materials-card"
               :class="{
-                'is-selected':
-                  materialPickerMode === 'chat' && isMaterialSelectedForChat(mat),
+                'is-selected': materialPickerMode !== 'canvas' && isMaterialSelectedForPicker(mat),
               }"
-              @click="
-                materialPickerMode === 'chat'
-                  ? toggleMaterialChatReference(mat)
-                  : addMaterialToCanvas(mat)
-              "
+              @click="useMaterialFromPicker(mat)"
             >
               <img :src="mat.url" :alt="mat.name" loading="lazy" decoding="async" />
               <span
-                v-if="materialPickerMode === 'chat' && isMaterialSelectedForChat(mat)"
+                v-if="materialPickerMode !== 'canvas' && isMaterialSelectedForPicker(mat)"
                 class="uc-materials-selected"
                 aria-label="已选"
               >
@@ -11894,7 +12813,7 @@ async function loadImageForCrop(layer) {
                   </span>
                 </div>
                 <button
-                  v-if="materialPickerMode !== 'chat'"
+                  v-if="materialPickerMode === 'canvas'"
                   class="uc-materials-del"
                   title="删除"
                   @click.stop="removeMaterial(mat.id)"
@@ -11905,7 +12824,7 @@ async function loadImageForCrop(layer) {
             </div>
           </div>
         </div>
-        <footer v-if="materialPickerMode === 'chat'" class="uc-materials-picker-footer">
+        <footer v-if="materialPickerMode !== 'canvas'" class="uc-materials-picker-footer">
           <span>已选 {{ selectedMaterialReferenceCount }} 张</span>
           <button type="button" @click="closeMyMaterials">完成</button>
         </footer>
@@ -11988,19 +12907,34 @@ async function loadImageForCrop(layer) {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  border-color: var(--canvas-accent-border);
-  background: var(--canvas-accent-soft);
-  color: var(--canvas-accent);
+  border-color: #22d3ee;
+  background: #171b24;
+  color: #67e8f9;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
 }
 
 .top-tools .uc-top-creation-btn:hover:not(:disabled) {
-  border-color: var(--canvas-accent);
-  background: color-mix(in srgb, var(--canvas-accent-soft) 72%, var(--canvas-surface-hover));
+  border-color: #67e8f9;
+  background: #222a38;
+  color: #a5f3fc;
 }
 
 .top-tools .uc-top-creation-btn:disabled {
   cursor: wait;
   opacity: 0.55;
+}
+
+[data-theme='light'] .top-tools .uc-top-creation-btn {
+  border-color: #0891b2;
+  background: #ffffff;
+  color: #0e7490;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.16);
+}
+
+[data-theme='light'] .top-tools .uc-top-creation-btn:hover:not(:disabled) {
+  border-color: #0e7490;
+  background: #ecfeff;
+  color: #155e75;
 }
 
 .uc-image-broken {
