@@ -527,7 +527,7 @@ onBeforeUnmount(() => {
   border-radius: 4px;
   background: rgba(15, 23, 42, 0.78);
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .cap-image-empty {
@@ -681,7 +681,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 7px;
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .cap-control-head i {
@@ -876,7 +876,7 @@ onBeforeUnmount(() => {
 .cap-extra > span {
   color: var(--canvas-text-muted, #c3c3c3);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .cap-extra textarea,
@@ -951,7 +951,7 @@ onBeforeUnmount(() => {
   padding: 0 16px;
   border-radius: 6px;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .cap-secondary {

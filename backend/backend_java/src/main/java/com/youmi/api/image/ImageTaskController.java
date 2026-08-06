@@ -56,6 +56,17 @@ public class ImageTaskController {
     return ApiResponse.ok(imageGenerationClient.status());
   }
 
+  @GetMapping("/today-global-count")
+  public ApiResponse<Map<String, Object>> todayGlobalCount(
+      @RequestHeader(value = "Authorization", required = false) String authorization) {
+    Long userId = adminAuthService.optionalUserId(authorization);
+    ImageTaskLogService.TodayImageCounts counts = imageTaskLogService.todayImageCounts(userId);
+    Map<String, Object> result = new java.util.LinkedHashMap<>();
+    result.put("totalImages", counts.globalImages());
+    result.put("personalImages", userId == null ? null : counts.personalImages());
+    return ApiResponse.ok(result);
+  }
+
   @PostMapping
   public ApiResponse<ImageGenerationDtos.CreateTaskResponse> create(
       @RequestHeader(value = "Authorization", required = false) String authorization,

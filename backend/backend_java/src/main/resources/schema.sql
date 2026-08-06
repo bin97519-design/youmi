@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS ym_image_task (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   completed_at DATETIME NULL,
   INDEX idx_ym_image_task_user_created (user_id, created_at),
+  INDEX idx_ym_image_task_created (created_at),
   INDEX idx_ym_image_task_status (status),
   INDEX idx_ym_image_task_model (model)
 );
@@ -313,6 +314,10 @@ PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
 -- idx_ym_image_task_client：client_task_id 唯一性查询索引（幂等早返回依赖，必须放在加列之后）
 SET @has_client_idx = (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@db AND table_name='ym_image_task' AND index_name='idx_ym_image_task_client');
 SET @sql = IF(@has_client_idx=0, 'ALTER TABLE ym_image_task ADD INDEX idx_ym_image_task_client (client_task_id)', 'SELECT 1');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+SET @has_image_task_created_idx = (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@db AND table_name='ym_image_task' AND index_name='idx_ym_image_task_created');
+SET @sql = IF(@has_image_task_created_idx=0, 'ALTER TABLE ym_image_task ADD INDEX idx_ym_image_task_created (created_at)', 'SELECT 1');
 PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
 
 -- 幂等自愈：清理历史遗留的 client_task_id 重复数据（TOCTOU 竞态已产生的脏数据）

@@ -102,7 +102,7 @@ function changePageSize(event) {
   gap: 8px;
   margin-top: 14px;
   flex-wrap: wrap;
-  color: #94a3b8;
+  color: var(--console-muted);
   font-size: 13px;
 }
 
@@ -122,10 +122,10 @@ function changePageSize(event) {
   min-width: 34px;
   height: 30px;
   padding: 0 10px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 7px;
-  background: rgba(255, 255, 255, 0.04);
-  color: #e2e8f0;
+  border: 1px solid var(--console-border);
+  border-radius: 6px;
+  background: var(--console-surface-raised);
+  color: var(--console-text);
   font: inherit;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, color 0.15s;
@@ -136,13 +136,13 @@ function changePageSize(event) {
 }
 
 .page-btn:hover:not(:disabled) {
-  border-color: rgba(255, 255, 255, 0.2);
-  background: rgba(255, 255, 255, 0.1);
+  border-color: var(--console-border-strong);
+  background: var(--console-surface-hover);
 }
 
 .page-btn.active {
-  border-color: color-mix(in srgb, var(--yq-primary) 65%, transparent);
-  background: var(--yq-primary);
+  border-color: var(--console-accent);
+  background: var(--console-accent);
   color: #ffffff;
 }
 
@@ -156,47 +156,47 @@ function changePageSize(event) {
   height: 30px;
   box-sizing: border-box;
   padding: 0 26px 0 9px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 7px;
-  background: rgba(255, 255, 255, 0.04);
-  color: #e2e8f0;
+  border: 1px solid var(--console-border);
+  border-radius: 6px;
+  background: var(--console-surface-raised);
+  color: var(--console-text);
   font: inherit;
 }
 
 .page-size option {
-  background: #1e293b;
-  color: #e2e8f0;
+  background: var(--console-surface-raised);
+  color: var(--console-text);
 }
 
 .page-loading {
-  color: #94a3b8;
+  color: var(--console-muted);
   white-space: nowrap;
 }
 
-:global([data-theme='light']) .console-pagination {
-  color: #64748b;
+[data-theme='light'] .console-pagination {
+  color: var(--console-muted);
 }
 
-:global([data-theme='light']) .page-btn,
-:global([data-theme='light']) .page-size {
-  border-color: #e2e8f0;
-  background: #f8fafc;
-  color: #1e293b;
+[data-theme='light'] .page-btn,
+[data-theme='light'] .page-size {
+  border-color: var(--console-border);
+  background: var(--console-surface-raised);
+  color: var(--console-text);
 }
 
-:global([data-theme='light']) .page-btn:hover:not(:disabled) {
-  background: #f1f5f9;
+[data-theme='light'] .page-btn:hover:not(:disabled) {
+  background: var(--console-surface-hover);
 }
 
-:global([data-theme='light']) .page-btn.active {
-  border-color: var(--yq-primary);
-  background: var(--yq-primary);
+[data-theme='light'] .page-btn.active {
+  border-color: var(--console-accent);
+  background: var(--console-accent);
   color: #ffffff;
 }
 
-:global([data-theme='light']) .page-size option {
-  background: #ffffff;
-  color: #1e293b;
+[data-theme='light'] .page-size option {
+  background: var(--console-surface);
+  color: var(--console-text);
 }
 
 @media (max-width: 700px) {

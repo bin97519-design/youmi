@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.sql.Timestamp;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -105,6 +106,31 @@ public class ImageTaskLogService {
         Integer.class, taskId, userId);
     return count != null && count > 0;
   }
+
+  public long todayGlobalImageCount() {
+    return todayImageCounts(null).globalImages();
+  }
+
+  public TodayImageCounts todayImageCounts(Long userId) {
+    LocalDateTime dayStart = LocalDate.now().atStartOfDay();
+    TodayImageCounts counts = jdbcTemplate.queryForObject(
+        """
+        SELECT COALESCE(SUM(image_count), 0) AS global_images,
+               COALESCE(SUM(CASE WHEN user_id = ? THEN image_count ELSE 0 END), 0) AS personal_images
+        FROM ym_image_task
+        WHERE created_at >= ?
+          AND created_at < ?
+        """,
+        (rs, rowNum) -> new TodayImageCounts(
+            Math.max(0L, rs.getLong("global_images")),
+            Math.max(0L, rs.getLong("personal_images"))),
+        userId,
+        Timestamp.valueOf(dayStart),
+        Timestamp.valueOf(dayStart.plusDays(1)));
+    return counts == null ? new TodayImageCounts(0L, 0L) : counts;
+  }
+
+  public record TodayImageCounts(long globalImages, long personalImages) {}
 
   /** 已落库生图任务的轻量快照，用于幂等早返回时构造响应。 */
   public static class ExistingTask {

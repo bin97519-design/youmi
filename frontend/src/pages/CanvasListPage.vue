@@ -615,7 +615,7 @@ main.canvas-list {
   height: 40px;
   padding: 0 14px;
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .back-command {
@@ -655,7 +655,7 @@ main.canvas-list {
   color: var(--canvas-text);
   font-size: 24px;
   line-height: 1.2;
-  font-weight: 750;
+  font-weight: 600;
   letter-spacing: 0;
 }
 
@@ -977,7 +977,7 @@ main.canvas-list {
   background: rgba(19, 25, 36, 0.82);
   backdrop-filter: blur(8px);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .editing-badge {
@@ -1007,7 +1007,7 @@ main.canvas-list {
     opacity 150ms ease,
     transform 150ms ease;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .document-card:hover .open-overlay,
@@ -1034,7 +1034,7 @@ main.canvas-list {
   overflow: hidden;
   color: var(--canvas-text);
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1049,7 +1049,7 @@ main.canvas-list {
   color: var(--canvas-text);
   background: var(--canvas-input);
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .title-action,
@@ -1120,7 +1120,7 @@ main.canvas-list {
   padding: 0 10px;
   color: var(--canvas-text-muted);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .download-command span {
@@ -1217,7 +1217,7 @@ main.canvas-list {
   color: #fff;
   border-color: var(--canvas-accent);
   background: var(--canvas-accent);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .dialog-backdrop {
@@ -1278,7 +1278,7 @@ main.canvas-list {
 .delete-dialog button {
   height: 36px;
   padding: 0 14px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .delete-dialog button:hover:not(:disabled) {

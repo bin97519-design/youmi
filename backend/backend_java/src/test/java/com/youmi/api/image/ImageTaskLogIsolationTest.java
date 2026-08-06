@@ -34,7 +34,8 @@ class ImageTaskLogIsolationTest {
           status VARCHAR(32), progress INT DEFAULT 0, image_count INT DEFAULT 0,
           mi_cost INT DEFAULT 0, money_cost DECIMAL(12, 4), image_urls CLOB,
           result_urls CLOB, persist_status VARCHAR(16) DEFAULT 'PENDING',
-          error_message CLOB, raw_response CLOB, completed_at TIMESTAMP NULL
+          error_message CLOB, raw_response CLOB, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          completed_at TIMESTAMP NULL
         )
         """);
     service = new ImageTaskLogService(jdbcTemplate, new ObjectMapper());
@@ -96,6 +97,23 @@ class ImageTaskLogIsolationTest {
     assertTrue(jdbcTemplate.queryForObject(
         "SELECT result_urls FROM ym_image_task WHERE task_id = 'task-done'", String.class)
         .contains(permanentUrl));
+  }
+
+  @Test
+  void todayGlobalImageCountIncludesEveryUserButOnlyToday() {
+    insert("task-today-a", "client-today-a", 101L, "banana2");
+    insert("task-today-b", "client-today-b", 202L, "gpt-image-2");
+    insert("task-yesterday", "client-yesterday", 303L, "banana-pro");
+    jdbcTemplate.update("UPDATE ym_image_task SET image_count = 2 WHERE task_id = 'task-today-a'");
+    jdbcTemplate.update("UPDATE ym_image_task SET image_count = 3 WHERE task_id = 'task-today-b'");
+    jdbcTemplate.update(
+        "UPDATE ym_image_task SET image_count = 9, created_at = DATEADD('DAY', -1, CURRENT_TIMESTAMP) "
+            + "WHERE task_id = 'task-yesterday'");
+
+    assertEquals(5L, service.todayGlobalImageCount());
+    assertEquals(2L, service.todayImageCounts(101L).personalImages());
+    assertEquals(3L, service.todayImageCounts(202L).personalImages());
+    assertEquals(0L, service.todayImageCounts(999L).personalImages());
   }
 
   private void insert(String taskId, String clientTaskId, Long userId, String model) {

@@ -341,7 +341,7 @@ async function savePlanning() {
   background: #e2e8f0;
   color: #334155;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
 }
 .es-plan-type {
   margin-left: auto;
@@ -442,7 +442,7 @@ async function savePlanning() {
 .es-detail-sections > div > span {
   color: #94a3b8;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
 }
 .es-detail-sections strong {
   font-size: 12px;

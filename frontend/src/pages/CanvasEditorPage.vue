@@ -50,6 +50,37 @@ const {
   markVersionNotified,
 } = useVersionHistory()
 
+const todayGlobalImageCount = ref(null)
+const todayPersonalImageCount = ref(null)
+const todayCountFormatter = new Intl.NumberFormat('zh-CN')
+const todayGlobalImageCountText = computed(() => formatTodayImageCount(todayGlobalImageCount.value))
+const todayPersonalImageCountText = computed(() =>
+  formatTodayImageCount(todayPersonalImageCount.value),
+)
+let todayGlobalImageCountTimer = null
+
+function formatTodayImageCount(value) {
+  return value == null ? '--' : todayCountFormatter.format(value)
+}
+
+async function loadTodayGlobalImageCount() {
+  try {
+    const response = await fetch(apiPath('/api/image-tasks/today-global-count'), {
+      headers: { ...userStore.authHeaders() },
+    })
+    const result = await response.json().catch(() => null)
+    if (!response.ok || result?.code !== 0) return
+    const total = Number(result?.data?.totalImages)
+    const personal = Number(result?.data?.personalImages)
+    if (Number.isFinite(total)) todayGlobalImageCount.value = Math.max(0, Math.floor(total))
+    if (result?.data?.personalImages != null && Number.isFinite(personal)) {
+      todayPersonalImageCount.value = Math.max(0, Math.floor(personal))
+    }
+  } catch {
+    // Keep the last successful aggregate when the lightweight refresh is unavailable.
+  }
+}
+
 const fileInput = ref(null)
 const fileInputMode = ref('canvas')
 const addOpen = ref(false)
@@ -595,6 +626,7 @@ const inlineDialogModification = reactive({
   text: '',
   submitting: false,
   model: '',
+  models: [],
   ratio: '',
   resolution: '',
   generationCount: 1,
@@ -711,7 +743,15 @@ function closeChatSelect() {
 }
 
 function selectChatOption(name, value) {
-  if (name === 'model') chatModel.value = value
+  if (name === 'model') {
+    const current = normalizeChatModelSelection(chatModels.value)
+    chatModels.value = current.includes(value)
+      ? current.length > 1
+        ? current.filter((model) => model !== value)
+        : current
+      : chatModelOptions.filter((model) => [...current, value].includes(model))
+    return
+  }
   if (name === 'ratio') chatRatio.value = value
   if (name === 'resolution') chatResolution.value = value
   closeChatSelect()
@@ -723,6 +763,20 @@ function toggleInlineDialogSelect(name) {
 }
 
 function selectInlineDialogOption(name, value) {
+  if (name === 'model') {
+    const current = normalizeChatModelSelection(
+      inlineDialogModification.models,
+      inlineDialogModification.model || chatModel.value,
+    )
+    const next = current.includes(value)
+      ? current.length > 1
+        ? current.filter((model) => model !== value)
+        : current
+      : chatModelOptions.filter((model) => [...current, value].includes(model))
+    inlineDialogModification.models = next
+    inlineDialogModification.model = next[0]
+    return
+  }
   inlineDialogModification[name] = value
   inlineDialogModification.selectOpen = ''
 }
@@ -753,9 +807,7 @@ async function addLocalImagesToInlineDialog(fileList) {
   if (!userStore.requireLogin() || !inlineDialogModification.layerId) return 0
 
   const candidates = [...(fileList || [])].filter((file) => isImageFile(file))
-  const oversized = candidates.filter(
-    (file) => Number(file.size || 0) > MAX_IMAGE_UPLOAD_BYTES,
-  )
+  const oversized = candidates.filter((file) => Number(file.size || 0) > MAX_IMAGE_UPLOAD_BYTES)
   const files = candidates.filter((file) => !oversized.includes(file))
   if (oversized.length) {
     const prefix = oversized.length === 1 ? oversized[0].name : `${oversized.length} 张图片`
@@ -870,6 +922,7 @@ async function openLayerDialogModification(layer) {
     inlineDialogModification.layerId = ''
     inlineDialogModification.text = ''
     inlineDialogModification.references = []
+    inlineDialogModification.models = []
     inlineDialogModification.selectOpen = ''
     return
   }
@@ -880,6 +933,7 @@ async function openLayerDialogModification(layer) {
   inlineDialogModification.model = chatModelOptions.includes(replay?.model)
     ? replay.model
     : chatModel.value
+  inlineDialogModification.models = [inlineDialogModification.model]
   inlineDialogModification.ratio = chatRatioOptions.includes(replay?.ratio)
     ? replay.ratio
     : chatRatio.value
@@ -914,6 +968,7 @@ function closeInlineLayerDialogModification() {
   inlineDialogModification.layerId = ''
   inlineDialogModification.text = ''
   inlineDialogModification.references = []
+  inlineDialogModification.models = []
   inlineDialogModification.selectOpen = ''
   inlineDialogReferenceSourceOpen.value = false
 }
@@ -943,6 +998,10 @@ async function submitInlineLayerDialogModification(layer) {
       generationCount: inlineDialogModification.generationCount,
       taskConfig: {
         model: inlineDialogModification.model || chatModel.value,
+        models: normalizeChatModelSelection(
+          inlineDialogModification.models,
+          inlineDialogModification.model || chatModel.value,
+        ),
         ratio: inlineDialogModification.ratio || chatRatio.value,
         resolution: inlineDialogModification.resolution || chatResolution.value,
       },
@@ -952,6 +1011,7 @@ async function submitInlineLayerDialogModification(layer) {
     inlineDialogModification.layerId = ''
     inlineDialogModification.text = ''
     inlineDialogModification.references = []
+    inlineDialogModification.models = []
     inlineDialogModification.selectOpen = ''
     showCopyPasteToast('修改任务已提交')
   } finally {
@@ -1007,8 +1067,52 @@ async function recordGenerationToHistory(record) {
   return canvas.flushNow?.(props.id)
 }
 // 对话窗口选中的模型参数也归属文档（payload.chatConfig），未持久化过则保持默认
+// 注意：model 字符串必须和后端 alias 表（ImageGenerationProperties.defaultModelAliases）保持一致
+// 后端会对空格/横线/下划线做归一化容错，但 UI 上用标准写法更专业
+const chatModelOptions = ['banana2', 'banana-pro', 'gpt-image-2', 'agnes-image-2.1-flash']
+const chatRatioOptions = ['auto', '1:1', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
+const chatResolutionOptions = ['1K', '2K', '4K']
 const initialChatConfig = doc.value?.payload?.chatConfig || {}
-const chatModel = ref(initialChatConfig.model || 'banana2')
+
+function normalizeChatModelSelection(value, fallback = 'banana2') {
+  const requested = Array.isArray(value) ? value : [value]
+  const selected = chatModelOptions.filter((model) => requested.includes(model))
+  if (selected.length) return selected
+  return [chatModelOptions.includes(fallback) ? fallback : chatModelOptions[0]]
+}
+
+function formatSelectedModelLabel(models) {
+  const selected = normalizeChatModelSelection(models)
+  return selected.length > 1 ? `${selected[0]} +${selected.length - 1}` : selected[0]
+}
+
+const chatModels = ref(
+  normalizeChatModelSelection(
+    initialChatConfig.models?.length ? initialChatConfig.models : initialChatConfig.model,
+  ),
+)
+const chatModel = computed({
+  get: () => chatModels.value[0] || chatModelOptions[0],
+  set: (value) => {
+    chatModels.value = normalizeChatModelSelection(value)
+  },
+})
+const chatModelLabel = computed(() => formatSelectedModelLabel(chatModels.value))
+const chatModelTitle = computed(() => normalizeChatModelSelection(chatModels.value).join('、'))
+const inlineDialogModelLabel = computed(() =>
+  formatSelectedModelLabel(
+    inlineDialogModification.models.length
+      ? inlineDialogModification.models
+      : inlineDialogModification.model,
+  ),
+)
+const inlineDialogModelTitle = computed(() =>
+  normalizeChatModelSelection(
+    inlineDialogModification.models.length
+      ? inlineDialogModification.models
+      : inlineDialogModification.model,
+  ).join('、'),
+)
 const chatRatio = ref(initialChatConfig.ratio || '9:16')
 const chatResolution = ref(initialChatConfig.resolution || '2K')
 const CHAT_GENERATION_COUNT_MIN = 1
@@ -1021,24 +1125,23 @@ function normalizeChatGenerationCount(value) {
 }
 
 const chatGenerationCount = ref(normalizeChatGenerationCount(initialChatConfig.count))
-const chatEstimatedMiCost = computed(() => chatGenerationCount.value * CHAT_IMAGE_MI_COST)
+const chatEstimatedMiCost = computed(
+  () => chatGenerationCount.value * chatModels.value.length * CHAT_IMAGE_MI_COST,
+)
+const chatTotalGenerationCount = computed(() => chatGenerationCount.value * chatModels.value.length)
 
 function adjustChatGenerationCount(delta) {
   chatGenerationCount.value = normalizeChatGenerationCount(chatGenerationCount.value + delta)
 }
-// 注意：model 字符串必须和后端 alias 表（ImageGenerationProperties.defaultModelAliases）保持一致
-// 后端会对空格/横线/下划线做归一化容错，但 UI 上用标准写法更专业
-const chatModelOptions = ['banana2', 'banana-pro', 'gpt-image-2', 'agnes-image-2.1-flash']
-const chatRatioOptions = ['auto', '1:1', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
-const chatResolutionOptions = ['1K', '2K', '4K']
 const TASK_POLL_INTERVAL = 2500
 const TASK_RESULT_SYNC_ATTEMPTS = 60
 const TASK_RESULT_STALE_AFTER_MS = 24 * 60 * 60 * 1000
 // 对话窗口选中的模型参数变化时，落库到按文档隔离的 payload.chatConfig
-watch([chatModel, chatRatio, chatResolution, chatGenerationCount], () => {
+watch([chatModels, chatRatio, chatResolution, chatGenerationCount], () => {
   canvas.updateDocument(props.id, (draft) => {
     draft.payload.chatConfig = {
       model: chatModel.value,
+      models: [...chatModels.value],
       ratio: chatRatio.value,
       resolution: chatResolution.value,
       count: chatGenerationCount.value,
@@ -1056,7 +1159,7 @@ watch(
     connections.value = [...(doc.value?.payload?.connections || [])]
     generationHistory.value = [...(doc.value?.payload?.generationHistory || [])]
     const cfg = doc.value?.payload?.chatConfig || {}
-    chatModel.value = cfg.model || 'banana2'
+    chatModels.value = normalizeChatModelSelection(cfg.models?.length ? cfg.models : cfg.model)
     chatRatio.value = cfg.ratio || '9:16'
     chatResolution.value = cfg.resolution || '2K'
     chatGenerationCount.value = normalizeChatGenerationCount(cfg.count)
@@ -3352,6 +3455,9 @@ async function runCanvasCreation({ type, sourceIds, jobs }) {
           skipFlush: true,
         },
       )
+      // 画布创作与聊天生图共用恢复扫描。任务提交完成前先占住占位图，
+      // 避免图层 watch 把刚创建的任务误判成“刷新后待恢复任务”并并发重提。
+      _submittingPlaceholderIds.add(placeholderId)
 
       const source = layers.value.find((item) => item.id === sourceId)
       const placeholder = layers.value.find((item) => item.id === placeholderId)
@@ -3410,6 +3516,10 @@ async function runCanvasCreation({ type, sourceIds, jobs }) {
           text: `${job.name || '图片'}提交失败：${friendly}`,
           generating: false,
         })
+      } finally {
+        // startImagePoll 会先同步登记 taskId，再返回轮询 Promise；此时释放占位图保护，
+        // 后续恢复扫描会由 taskId 级别的幂等守卫继续接管。
+        _submittingPlaceholderIds.delete(placeholderId)
       }
     }
 
@@ -4884,6 +4994,7 @@ function removeLayer(id) {
   if (inlineDialogModification.layerId === id) {
     inlineDialogModification.layerId = ''
     inlineDialogModification.text = ''
+    inlineDialogModification.models = []
   }
   pushUndo()
   // 删除关联的连接线
@@ -5022,11 +5133,7 @@ function restoreDraggingLayerForeground(state) {
       node.style.removeProperty('z-index')
     }
     if (snapshot.dragZIndex) {
-      node.style.setProperty(
-        '--drag-z-index',
-        snapshot.dragZIndex,
-        snapshot.dragZIndexPriority,
-      )
+      node.style.setProperty('--drag-z-index', snapshot.dragZIndex, snapshot.dragZIndexPriority)
     } else {
       node.style.removeProperty('--drag-z-index')
     }
@@ -5128,9 +5235,7 @@ function startLayerDrag(event, layer) {
     if (primaryIndex >= 0) ordered.push(...ordered.splice(primaryIndex, 1))
     return ordered
   }
-  const foregroundLayers = sortDraggedLayers(
-    layers.value.filter((item) => ids.includes(item.id)),
-  )
+  const foregroundLayers = sortDraggedLayers(layers.value.filter((item) => ids.includes(item.id)))
   const foregroundIds = new Set(foregroundLayers.map((item) => item.id))
   const highestBackgroundZ = layers.value.reduce(
     (max, item) => (foregroundIds.has(item.id) ? max : Math.max(max, Number(item.zIndex) || 0)),
@@ -7105,38 +7210,51 @@ async function sendChat(options = {}) {
     : chatReferenceImages.value
         .filter((img) => !img.uploading && !img.error && img.url)
         .map((img) => ({ url: img.url }))
+  const requestedModels = normalizeChatModelSelection(
+    sendOptions.taskConfig?.models?.length
+      ? sendOptions.taskConfig.models
+      : sendOptions.taskConfig?.model
+        ? [sendOptions.taskConfig.model]
+        : chatModels.value,
+    sendOptions.taskConfig?.model || chatModel.value,
+  )
   const taskConfig = {
-    model: sendOptions.taskConfig?.model || chatModel.value,
     ratio: sendOptions.taskConfig?.ratio || chatRatio.value,
     resolution: sendOptions.taskConfig?.resolution || chatResolution.value,
   }
-  const generationRequest = {
-    prompt: fullPrompt,
-    displayText: text,
-    referenceImageUrls: [...imageUrls],
-    model: taskConfig.model,
-    ratio: taskConfig.ratio,
-    resolution: taskConfig.resolution,
-    targetLayerId,
-  }
+  const generationPlans = Array.from({ length: generationCount }, (_, countIndex) =>
+    requestedModels.map((model) => ({ model, countIndex })),
+  ).flat()
+  const totalGenerationCount = generationPlans.length
 
-  const assistantMessages = Array.from({ length: generationCount }, (_, index) => ({
-    id: `msg-${createdAt}-assistant-${index + 1}`,
-    role: 'assistant',
-    text:
-      generationCount > 1
-        ? `已提交 ${generationCount} 张图片，第 ${index + 1} 张正在排队生成。`
-        : '已提交对话生图任务，请等待生成结果（生成完成后会显示在画布中）。',
-    model: taskConfig.model,
-    ratio: taskConfig.ratio,
-    resolution: taskConfig.resolution,
-    batchIndex: index + 1,
-    batchCount: generationCount,
-    createdAt: createdAt + index + 1,
-    generating: true,
-    failed: false,
-    generationRequest,
-  }))
+  const assistantMessages = generationPlans.map((plan, index) => {
+    const generationRequest = {
+      prompt: fullPrompt,
+      displayText: text,
+      referenceImageUrls: [...imageUrls],
+      model: plan.model,
+      ratio: taskConfig.ratio,
+      resolution: taskConfig.resolution,
+      targetLayerId,
+    }
+    return {
+      id: `msg-${createdAt}-assistant-${index + 1}`,
+      role: 'assistant',
+      text:
+        totalGenerationCount > 1
+          ? `已提交 ${totalGenerationCount} 张图片，第 ${index + 1} 张（${plan.model}）正在排队生成。`
+          : '已提交对话生图任务，请等待生成结果（生成完成后会显示在画布中）。',
+      model: plan.model,
+      ratio: taskConfig.ratio,
+      resolution: taskConfig.resolution,
+      batchIndex: index + 1,
+      batchCount: totalGenerationCount,
+      createdAt: createdAt + index + 1,
+      generating: true,
+      failed: false,
+      generationRequest,
+    }
+  })
 
   const userMessage = {
     id: `msg-${createdAt}`,
@@ -7145,7 +7263,7 @@ async function sendChat(options = {}) {
     targetLayerId,
     createdAt,
     elements: messageElements,
-    generationCount,
+    generationCount: totalGenerationCount,
     referenceImages: messageReferenceImages,
   }
   addChatMessages(
@@ -7177,24 +7295,33 @@ async function sendChat(options = {}) {
     elementClickPositions.value = {}
   }
   const batchTasks = assistantMessages.map((message, index) => {
+    const messageTaskConfig = {
+      ...taskConfig,
+      model: message.model,
+    }
     const placeholderId = addGeneratingPlaceholderLayer(
       fullPrompt,
       {
-        ...taskConfig,
+        ...messageTaskConfig,
         referenceImageUrls: imageUrls,
         referenceImages: generationReferenceSnapshot,
         batchIndex: index + 1,
-        batchCount: generationCount,
+        batchCount: totalGenerationCount,
       },
       message.id,
       {
         batchIndex: index,
-        batchCount: generationCount,
+        batchCount: totalGenerationCount,
         skipUndo: index > 0,
         skipFlush: true,
       },
     )
-    return { placeholderId, assistantId: message.id, batchIndex: index + 1 }
+    return {
+      placeholderId,
+      assistantId: message.id,
+      batchIndex: index + 1,
+      model: message.model,
+    }
   })
   const targetLayer = layers.value.find((layer) => layer.id === targetLayerId)
   if (targetLayer?.url && imageUrls.includes(targetLayer.url)) {
@@ -7203,7 +7330,7 @@ async function sendChat(options = {}) {
   void canvas.flushNow?.(props.id)
 
   for (const batchTask of batchTasks) {
-    const { placeholderId, assistantId, batchIndex } = batchTask
+    const { placeholderId, assistantId, batchIndex, model } = batchTask
     // 每张图拥有独立幂等键、占位图和轮询，刷新后可分别恢复，也不会重复扣费。
     _submittingPlaceholderIds.add(placeholderId)
     activeChatTaskCount.value += 1
@@ -7216,14 +7343,14 @@ async function sendChat(options = {}) {
           prompt: fullPrompt,
           imageUrls,
           clientTaskId: ph?.clientTaskId || '',
-          model: taskConfig.model,
+          model,
           size: taskConfig.ratio,
           resolution: taskConfig.resolution,
         })
         submitted = true
         updateChatMessage(assistantId, {
           taskId,
-          text: `${generationCount > 1 ? `第 ${batchIndex}/${generationCount} 张｜` : ''}任务已提交，模型 ${taskConfig.model}｜${taskConfig.ratio}｜${taskConfig.resolution}，正在生成...`,
+          text: `${totalGenerationCount > 1 ? `第 ${batchIndex}/${totalGenerationCount} 张｜` : ''}任务已提交，模型 ${model}｜${taskConfig.ratio}｜${taskConfig.resolution}，正在生成...`,
         })
         updateGeneratingPlaceholder(placeholderId, { taskId, progress: 8, status: 'processing' })
 
@@ -8205,6 +8332,8 @@ onMounted(() => {
   window.addEventListener('blur', disarmInternalClipboard)
   window.addEventListener('blur', resetTemporaryPanShortcut)
   window.addEventListener('copy', handleNativeCopy, true)
+  loadTodayGlobalImageCount()
+  todayGlobalImageCountTimer = window.setInterval(loadTodayGlobalImageCount, 60_000)
   loadUILayout()
   if (shouldNotifyVersion.value) {
     const versionNoticeTimer = window.setTimeout(() => {
@@ -8343,6 +8472,10 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   _mounted.value = false
+  if (todayGlobalImageCountTimer) {
+    window.clearInterval(todayGlobalImageCountTimer)
+    todayGlobalImageCountTimer = null
+  }
   if (_layerDragListenersAttached) {
     window.removeEventListener('pointermove', moveLayer, true)
     window.removeEventListener('pointerup', stopLayerDrag, true)
@@ -9994,6 +10127,24 @@ async function loadImageForCrop(layer) {
         <button>✎ {{ doc.title }}</button>
         <em>已保存 · 刚刚</em>
       </div>
+      <div
+        class="canvas-today-image-stat"
+        title="全站与当前账号今日生成的图片数量，每分钟自动更新"
+        aria-live="polite"
+      >
+        <div class="canvas-today-stat-item global">
+          <i class="ri-image-ai-line" aria-hidden="true"></i>
+          <span>全站今日</span>
+          <strong>{{ todayGlobalImageCountText }}</strong>
+          <small>张</small>
+        </div>
+        <div class="canvas-today-stat-item personal">
+          <i class="ri-user-3-line" aria-hidden="true"></i>
+          <span>我的今日</span>
+          <strong>{{ todayPersonalImageCountText }}</strong>
+          <small>张</small>
+        </div>
+      </div>
       <div class="head-actions">
         <button
           class="panel-visibility-btn"
@@ -10783,256 +10934,278 @@ async function loadImageForCrop(layer) {
                     @dblclick.stop
                     @wheel.stop
                   >
-                  <div
-                    class="uc-inline-dialog-edit-head"
-                    title="拖动窗口"
-                    @pointerdown.stop="startInlineDialogDrag"
-                  >
-                    <div class="uc-inline-dialog-edit-title">
-                      <i class="ri-image-edit-line" aria-hidden="true"></i>
-                      <span>
-                        <strong>图片生成/修改</strong>
-                        <small>基于参考素材</small>
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      title="关闭"
-                      aria-label="关闭对话修改"
-                      :disabled="inlineDialogModification.submitting || inlineDialogUploading"
-                      @pointerdown.stop
-                      @click.stop="closeInlineLayerDialogModification"
+                    <div
+                      class="uc-inline-dialog-edit-head"
+                      title="拖动窗口"
+                      @pointerdown.stop="startInlineDialogDrag"
                     >
-                      <i class="ri-close-line" aria-hidden="true"></i>
-                    </button>
-                  </div>
-                  <section class="uc-inline-dialog-references">
-                    <header>
-                      <span>
-                        <i class="ri-gallery-line" aria-hidden="true"></i>
-                        参考素材
-                        <b>{{ inlineDialogModification.references.length }} 图</b>
-                      </span>
+                      <div class="uc-inline-dialog-edit-title">
+                        <i class="ri-image-edit-line" aria-hidden="true"></i>
+                        <span>
+                          <strong>图片生成/修改</strong>
+                          <small>基于参考素材</small>
+                        </span>
+                      </div>
                       <button
                         type="button"
-                        :disabled="inlineDialogUploading || inlineDialogModification.submitting"
-                        :aria-expanded="inlineDialogReferenceSourceOpen"
-                        aria-haspopup="menu"
-                        @click.stop="toggleInlineDialogReferenceSource"
+                        title="关闭"
+                        aria-label="关闭对话修改"
+                        :disabled="inlineDialogModification.submitting || inlineDialogUploading"
+                        @pointerdown.stop
+                        @click.stop="closeInlineLayerDialogModification"
                       >
-                        <i class="ri-add-line" aria-hidden="true"></i>
-                        {{ inlineDialogUploading ? '上传中' : '添加素材' }}
+                        <i class="ri-close-line" aria-hidden="true"></i>
                       </button>
-                      <div
-                        v-if="inlineDialogReferenceSourceOpen"
-                        class="uc-inline-dialog-source-menu"
-                        role="menu"
-                        @click.stop
-                      >
-                        <button type="button" role="menuitem" @click="openInlineDialogLocalUpload">
-                          <i class="ri-upload-2-line" aria-hidden="true"></i>
-                          <span>本地上传</span>
-                        </button>
-                        <button type="button" role="menuitem" @click="openInlineDialogMaterialPicker">
-                          <i class="ri-folder-image-line" aria-hidden="true"></i>
-                          <span>我的素材</span>
-                        </button>
-                      </div>
-                    </header>
-                    <div class="uc-inline-dialog-reference-list">
-                      <div
-                        v-for="(reference, referenceIndex) in inlineDialogModification.references"
-                        :key="reference.id"
-                        class="uc-inline-dialog-reference"
-                        :class="{ 'is-uploading': reference.uploading }"
-                      >
-                        <img
-                          :src="reference.url"
-                          :alt="reference.name || `参考素材 ${referenceIndex + 1}`"
-                          loading="lazy"
-                          decoding="async"
-                        />
-                        <i
-                          v-if="reference.uploading"
-                          class="ri-loader-4-line uc-spin uc-inline-dialog-reference-loading"
-                          aria-label="上传中"
-                        ></i>
-                        <button
-                          v-if="!reference.isSource"
-                          type="button"
-                          title="移除参考素材"
-                          :aria-label="`移除${reference.name || '参考素材'}`"
-                          @click.stop="removeInlineDialogReference(reference.id)"
-                        >
-                          <i class="ri-close-line" aria-hidden="true"></i>
-                        </button>
-                        <small>{{ referenceIndex + 1 }}</small>
-                      </div>
                     </div>
-                  </section>
-                  <div class="uc-inline-dialog-edit-body">
-                    <textarea
-                      v-model="inlineDialogModification.text"
-                      rows="4"
-                      maxlength="2000"
-                      placeholder="描述要生成或修改的画面，例如：保留产品不变，替换为明亮的客厅场景"
-                      aria-label="图片修改要求"
-                      :disabled="inlineDialogModification.submitting"
-                      @keydown.enter.exact.prevent="submitInlineLayerDialogModification(layer)"
-                      @keydown.esc.prevent="closeInlineLayerDialogModification"
-                    ></textarea>
-                  </div>
-                  <footer class="uc-inline-dialog-footer">
-                    <div class="uc-inline-dialog-options" @click.stop>
-                      <div
-                        class="uc-custom-select uc-inline-dialog-option-model"
-                        :class="{ open: inlineDialogModification.selectOpen === 'model' }"
-                      >
+                    <section class="uc-inline-dialog-references">
+                      <header>
+                        <span>
+                          <i class="ri-gallery-line" aria-hidden="true"></i>
+                          参考素材
+                          <b>{{ inlineDialogModification.references.length }} 图</b>
+                        </span>
                         <button
                           type="button"
-                          class="uc-custom-select-trigger"
-                          :title="`模型：${inlineDialogModification.model}`"
-                          :aria-label="`模型 ${inlineDialogModification.model}`"
-                          :disabled="inlineDialogModification.submitting"
-                          @click.stop="toggleInlineDialogSelect('model')"
+                          :disabled="inlineDialogUploading || inlineDialogModification.submitting"
+                          :aria-expanded="inlineDialogReferenceSourceOpen"
+                          aria-haspopup="menu"
+                          @click.stop="toggleInlineDialogReferenceSource"
                         >
-                          {{ inlineDialogModification.model }}
-                          <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
+                          <i class="ri-add-line" aria-hidden="true"></i>
+                          {{ inlineDialogUploading ? '上传中' : '添加素材' }}
                         </button>
                         <div
-                          v-if="inlineDialogModification.selectOpen === 'model'"
-                          class="uc-custom-select-menu"
+                          v-if="inlineDialogReferenceSourceOpen"
+                          class="uc-inline-dialog-source-menu"
+                          role="menu"
+                          @click.stop
                         >
                           <button
-                            v-for="option in chatModelOptions"
-                            :key="option"
                             type="button"
-                            class="uc-custom-select-item"
-                            :class="{ active: inlineDialogModification.model === option }"
-                            @click.stop="selectInlineDialogOption('model', option)"
+                            role="menuitem"
+                            @click="openInlineDialogLocalUpload"
                           >
-                            {{ option }}
+                            <i class="ri-upload-2-line" aria-hidden="true"></i>
+                            <span>本地上传</span>
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            @click="openInlineDialogMaterialPicker"
+                          >
+                            <i class="ri-folder-image-line" aria-hidden="true"></i>
+                            <span>我的素材</span>
                           </button>
                         </div>
-                      </div>
-                      <div
-                        class="uc-custom-select"
-                        :class="{ open: inlineDialogModification.selectOpen === 'ratio' }"
-                      >
-                        <button
-                          type="button"
-                          class="uc-custom-select-trigger"
-                          :title="`比例：${inlineDialogModification.ratio}`"
-                          :aria-label="`比例 ${inlineDialogModification.ratio}`"
-                          :disabled="inlineDialogModification.submitting"
-                          @click.stop="toggleInlineDialogSelect('ratio')"
-                        >
-                          {{ inlineDialogModification.ratio }}
-                          <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
-                        </button>
+                      </header>
+                      <div class="uc-inline-dialog-reference-list">
                         <div
-                          v-if="inlineDialogModification.selectOpen === 'ratio'"
-                          class="uc-custom-select-menu"
+                          v-for="(reference, referenceIndex) in inlineDialogModification.references"
+                          :key="reference.id"
+                          class="uc-inline-dialog-reference"
+                          :class="{ 'is-uploading': reference.uploading }"
                         >
+                          <img
+                            :src="reference.url"
+                            :alt="reference.name || `参考素材 ${referenceIndex + 1}`"
+                            loading="lazy"
+                            decoding="async"
+                          />
+                          <i
+                            v-if="reference.uploading"
+                            class="ri-loader-4-line uc-spin uc-inline-dialog-reference-loading"
+                            aria-label="上传中"
+                          ></i>
                           <button
-                            v-for="option in chatRatioOptions"
-                            :key="option"
+                            v-if="!reference.isSource"
                             type="button"
-                            class="uc-custom-select-item"
-                            :class="{ active: inlineDialogModification.ratio === option }"
-                            @click.stop="selectInlineDialogOption('ratio', option)"
+                            title="移除参考素材"
+                            :aria-label="`移除${reference.name || '参考素材'}`"
+                            @click.stop="removeInlineDialogReference(reference.id)"
                           >
-                            {{ option }}
+                            <i class="ri-close-line" aria-hidden="true"></i>
                           </button>
+                          <small>{{ referenceIndex + 1 }}</small>
                         </div>
                       </div>
-                      <div
-                        class="uc-custom-select"
-                        :class="{ open: inlineDialogModification.selectOpen === 'resolution' }"
-                      >
-                        <button
-                          type="button"
-                          class="uc-custom-select-trigger"
-                          :title="`分辨率：${inlineDialogModification.resolution}`"
-                          :aria-label="`分辨率 ${inlineDialogModification.resolution}`"
-                          :disabled="inlineDialogModification.submitting"
-                          @click.stop="toggleInlineDialogSelect('resolution')"
-                        >
-                          {{ inlineDialogModification.resolution }}
-                          <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
-                        </button>
-                        <div
-                          v-if="inlineDialogModification.selectOpen === 'resolution'"
-                          class="uc-custom-select-menu"
-                        >
-                          <button
-                            v-for="option in chatResolutionOptions"
-                            :key="option"
-                            type="button"
-                            class="uc-custom-select-item"
-                            :class="{ active: inlineDialogModification.resolution === option }"
-                            @click.stop="selectInlineDialogOption('resolution', option)"
-                          >
-                            {{ option }}
-                          </button>
-                        </div>
-                      </div>
-                      <div
-                        class="uc-custom-select"
-                        :class="{ open: inlineDialogModification.selectOpen === 'generationCount' }"
-                      >
-                        <button
-                          type="button"
-                          class="uc-custom-select-trigger"
-                          :title="`数量：${inlineDialogModification.generationCount} 张`"
-                          :aria-label="`数量 ${inlineDialogModification.generationCount} 张`"
-                          :disabled="inlineDialogModification.submitting"
-                          @click.stop="toggleInlineDialogSelect('generationCount')"
-                        >
-                          {{ inlineDialogModification.generationCount }} 张
-                          <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
-                        </button>
-                        <div
-                          v-if="inlineDialogModification.selectOpen === 'generationCount'"
-                          class="uc-custom-select-menu"
-                        >
-                          <button
-                            v-for="option in CHAT_GENERATION_COUNT_MAX"
-                            :key="option"
-                            type="button"
-                            class="uc-custom-select-item"
-                            :class="{ active: inlineDialogModification.generationCount === option }"
-                            @click.stop="selectInlineDialogOption('generationCount', option)"
-                          >
-                            {{ option }} 张
-                          </button>
-                        </div>
-                      </div>
+                    </section>
+                    <div class="uc-inline-dialog-edit-body">
+                      <textarea
+                        v-model="inlineDialogModification.text"
+                        rows="4"
+                        maxlength="2000"
+                        placeholder="描述要生成或修改的画面，例如：保留产品不变，替换为明亮的客厅场景"
+                        aria-label="图片修改要求"
+                        :disabled="inlineDialogModification.submitting"
+                        @keydown.enter.exact.prevent="submitInlineLayerDialogModification(layer)"
+                        @keydown.esc.prevent="closeInlineLayerDialogModification"
+                      ></textarea>
                     </div>
-                    <button
-                      type="button"
-                      class="uc-inline-dialog-send"
-                      :disabled="
-                        !inlineDialogModification.text.trim() ||
-                        inlineDialogModification.submitting ||
-                        inlineDialogUploading
-                      "
-                      :title="inlineDialogModification.submitting ? '正在提交' : '发送修改要求'"
-                      :aria-label="
-                        inlineDialogModification.submitting ? '正在提交' : '发送修改要求'
-                      "
-                      @click.stop="submitInlineLayerDialogModification(layer)"
-                    >
-                      <i
-                        :class="
-                          inlineDialogModification.submitting
-                            ? 'ri-loader-4-line uc-spin'
-                            : 'ri-arrow-up-line'
+                    <footer class="uc-inline-dialog-footer">
+                      <div class="uc-inline-dialog-options" @click.stop>
+                        <div
+                          class="uc-custom-select uc-inline-dialog-option-model"
+                          :class="{ open: inlineDialogModification.selectOpen === 'model' }"
+                        >
+                          <button
+                            type="button"
+                            class="uc-custom-select-trigger"
+                            :title="`模型：${inlineDialogModelTitle}`"
+                            :aria-label="`模型 ${inlineDialogModelTitle}`"
+                            :disabled="inlineDialogModification.submitting"
+                            @click.stop="toggleInlineDialogSelect('model')"
+                          >
+                            {{ inlineDialogModelLabel }}
+                            <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
+                          </button>
+                          <div
+                            v-if="inlineDialogModification.selectOpen === 'model'"
+                            class="uc-custom-select-menu"
+                            role="listbox"
+                            aria-multiselectable="true"
+                          >
+                            <button
+                              v-for="option in chatModelOptions"
+                              :key="option"
+                              type="button"
+                              class="uc-custom-select-item uc-model-option"
+                              :class="{ active: inlineDialogModification.models.includes(option) }"
+                              role="option"
+                              :aria-selected="inlineDialogModification.models.includes(option)"
+                              @click.stop="selectInlineDialogOption('model', option)"
+                            >
+                              <span class="uc-model-option-check" aria-hidden="true">
+                                <i
+                                  v-if="inlineDialogModification.models.includes(option)"
+                                  class="ri-check-line"
+                                ></i>
+                              </span>
+                              <span>{{ option }}</span>
+                            </button>
+                          </div>
+                        </div>
+                        <div
+                          class="uc-custom-select"
+                          :class="{ open: inlineDialogModification.selectOpen === 'ratio' }"
+                        >
+                          <button
+                            type="button"
+                            class="uc-custom-select-trigger"
+                            :title="`比例：${inlineDialogModification.ratio}`"
+                            :aria-label="`比例 ${inlineDialogModification.ratio}`"
+                            :disabled="inlineDialogModification.submitting"
+                            @click.stop="toggleInlineDialogSelect('ratio')"
+                          >
+                            {{ inlineDialogModification.ratio }}
+                            <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
+                          </button>
+                          <div
+                            v-if="inlineDialogModification.selectOpen === 'ratio'"
+                            class="uc-custom-select-menu"
+                          >
+                            <button
+                              v-for="option in chatRatioOptions"
+                              :key="option"
+                              type="button"
+                              class="uc-custom-select-item"
+                              :class="{ active: inlineDialogModification.ratio === option }"
+                              @click.stop="selectInlineDialogOption('ratio', option)"
+                            >
+                              {{ option }}
+                            </button>
+                          </div>
+                        </div>
+                        <div
+                          class="uc-custom-select"
+                          :class="{ open: inlineDialogModification.selectOpen === 'resolution' }"
+                        >
+                          <button
+                            type="button"
+                            class="uc-custom-select-trigger"
+                            :title="`分辨率：${inlineDialogModification.resolution}`"
+                            :aria-label="`分辨率 ${inlineDialogModification.resolution}`"
+                            :disabled="inlineDialogModification.submitting"
+                            @click.stop="toggleInlineDialogSelect('resolution')"
+                          >
+                            {{ inlineDialogModification.resolution }}
+                            <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
+                          </button>
+                          <div
+                            v-if="inlineDialogModification.selectOpen === 'resolution'"
+                            class="uc-custom-select-menu"
+                          >
+                            <button
+                              v-for="option in chatResolutionOptions"
+                              :key="option"
+                              type="button"
+                              class="uc-custom-select-item"
+                              :class="{ active: inlineDialogModification.resolution === option }"
+                              @click.stop="selectInlineDialogOption('resolution', option)"
+                            >
+                              {{ option }}
+                            </button>
+                          </div>
+                        </div>
+                        <div
+                          class="uc-custom-select"
+                          :class="{
+                            open: inlineDialogModification.selectOpen === 'generationCount',
+                          }"
+                        >
+                          <button
+                            type="button"
+                            class="uc-custom-select-trigger"
+                            :title="`数量：${inlineDialogModification.generationCount} 张`"
+                            :aria-label="`数量 ${inlineDialogModification.generationCount} 张`"
+                            :disabled="inlineDialogModification.submitting"
+                            @click.stop="toggleInlineDialogSelect('generationCount')"
+                          >
+                            {{ inlineDialogModification.generationCount }} 张
+                            <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
+                          </button>
+                          <div
+                            v-if="inlineDialogModification.selectOpen === 'generationCount'"
+                            class="uc-custom-select-menu"
+                          >
+                            <button
+                              v-for="option in CHAT_GENERATION_COUNT_MAX"
+                              :key="option"
+                              type="button"
+                              class="uc-custom-select-item"
+                              :class="{
+                                active: inlineDialogModification.generationCount === option,
+                              }"
+                              @click.stop="selectInlineDialogOption('generationCount', option)"
+                            >
+                              {{ option }} 张
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        class="uc-inline-dialog-send"
+                        :disabled="
+                          !inlineDialogModification.text.trim() ||
+                          inlineDialogModification.submitting ||
+                          inlineDialogUploading
                         "
-                        aria-hidden="true"
-                      ></i>
-                    </button>
-                  </footer>
+                        :title="inlineDialogModification.submitting ? '正在提交' : '发送修改要求'"
+                        :aria-label="
+                          inlineDialogModification.submitting ? '正在提交' : '发送修改要求'
+                        "
+                        @click.stop="submitInlineLayerDialogModification(layer)"
+                      >
+                        <i
+                          :class="
+                            inlineDialogModification.submitting
+                              ? 'ri-loader-4-line uc-spin'
+                              : 'ri-arrow-up-line'
+                          "
+                          aria-hidden="true"
+                        ></i>
+                      </button>
+                    </footer>
                   </div>
                 </Teleport>
                 <button
@@ -11708,22 +11881,33 @@ async function loadImageForCrop(layer) {
                     <button
                       type="button"
                       class="uc-custom-select-trigger"
-                      :title="chatModel"
+                      :title="chatModelTitle"
+                      :aria-label="`模型 ${chatModelTitle}`"
                       @click.stop="toggleChatSelect('model')"
                     >
-                      {{ chatModel }}
+                      {{ chatModelLabel }}
                       <i class="ri-arrow-down-s-line"></i>
                     </button>
-                    <div v-if="chatSelectOpen === 'model'" class="uc-custom-select-menu">
+                    <div
+                      v-if="chatSelectOpen === 'model'"
+                      class="uc-custom-select-menu"
+                      role="listbox"
+                      aria-multiselectable="true"
+                    >
                       <button
                         v-for="model in chatModelOptions"
                         :key="model"
                         type="button"
-                        class="uc-custom-select-item"
-                        :class="{ active: chatModel === model }"
+                        class="uc-custom-select-item uc-model-option"
+                        :class="{ active: chatModels.includes(model) }"
+                        role="option"
+                        :aria-selected="chatModels.includes(model)"
                         @click.stop="selectChatOption('model', model)"
                       >
-                        {{ model }}
+                        <span class="uc-model-option-check" aria-hidden="true">
+                          <i v-if="chatModels.includes(model)" class="ri-check-line"></i>
+                        </span>
+                        <span>{{ model }}</span>
                       </button>
                     </div>
                   </div>
@@ -11804,7 +11988,7 @@ async function loadImageForCrop(layer) {
                 </label>
               </div>
               <footer class="uc-bottom-toolbar">
-                <span>{{ chatGenerationCount }} 张 · 预计 {{ chatEstimatedMiCost }} 米值</span>
+                <span>{{ chatTotalGenerationCount }} 张 · 预计 {{ chatEstimatedMiCost }} 米值</span>
                 <button
                   :disabled="!chatText.trim() && !getSelectedDetectedElements().length"
                   @click="sendChat"

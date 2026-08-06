@@ -235,7 +235,7 @@ onBeforeUnmount(() => {
 .version-history-kicker {
   color: var(--vh-accent);
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .version-history-head h2 {
@@ -356,7 +356,7 @@ onBeforeUnmount(() => {
   border: 1px solid color-mix(in srgb, var(--vh-accent) 46%, transparent);
   border-radius: 5px;
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 

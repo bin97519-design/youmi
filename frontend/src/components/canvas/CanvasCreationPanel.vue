@@ -63,7 +63,7 @@ const productLayerCount = ref(0)
 const draggedLayerIndex = ref(-1)
 const dragTargetIndex = ref(-1)
 const activeLayerDropZone = ref('')
-const selectedModel = ref(props.model || 'banana2')
+const selectedModels = ref([props.model || 'banana2'])
 const selectedRatio = ref('source')
 const selectedResolution = ref(props.resolution || '2K')
 const generationSelectOpen = ref('')
@@ -72,6 +72,19 @@ const availableModelOptions = computed(() => {
   const options = props.modelOptions.map((item) => String(item || '').trim()).filter(Boolean)
   return options.length ? options : ['banana2']
 })
+const normalizedSelectedModels = computed(() => {
+  const selected = selectedModels.value.filter((model) =>
+    availableModelOptions.value.includes(model),
+  )
+  return selected.length ? selected : [availableModelOptions.value[0]]
+})
+const selectedModel = computed(() => normalizedSelectedModels.value[0])
+const selectedModelLabel = computed(() =>
+  normalizedSelectedModels.value.length > 1
+    ? `${selectedModel.value} +${normalizedSelectedModels.value.length - 1}`
+    : selectedModel.value,
+)
+const selectedModelTitle = computed(() => normalizedSelectedModels.value.join('、'))
 const availableRatioOptions = computed(() => [
   'source',
   ...props.ratioOptions
@@ -98,7 +111,10 @@ const generationSelectConfigs = computed(() => [
   {
     key: 'model',
     label: '模型',
-    value: selectedModel.value,
+    value: normalizedSelectedModels.value,
+    displayValue: selectedModelLabel.value,
+    title: selectedModelTitle.value,
+    multiple: true,
     options: availableModelOptions.value.map((value) => ({ value, label: value })),
   },
   {
@@ -163,9 +179,11 @@ watch(
   () => props.open,
   (open) => {
     if (open) {
-      selectedModel.value = availableModelOptions.value.includes(props.model)
-        ? props.model
-        : availableModelOptions.value[0]
+      selectedModels.value = [
+        availableModelOptions.value.includes(props.model)
+          ? props.model
+          : availableModelOptions.value[0],
+      ]
       selectedRatio.value = 'source'
       selectedResolution.value = availableResolutionOptions.value.includes(props.resolution)
         ? props.resolution
@@ -196,10 +214,33 @@ function toggleGenerationSelect(key) {
 }
 
 function selectGenerationOption(key, value) {
-  if (key === 'model') selectedModel.value = value
+  if (key === 'model') {
+    const current = normalizedSelectedModels.value
+    selectedModels.value = current.includes(value)
+      ? current.length > 1
+        ? current.filter((model) => model !== value)
+        : current
+      : availableModelOptions.value.filter((model) => [...current, value].includes(model))
+    return
+  }
   if (key === 'ratio') selectedRatio.value = value
   if (key === 'resolution') selectedResolution.value = value
   generationSelectOpen.value = ''
+}
+
+function isGenerationOptionSelected(select, value) {
+  return select.multiple ? select.value.includes(value) : select.value === value
+}
+
+function expandJobsBySelectedModels(jobs) {
+  const models = normalizedSelectedModels.value
+  return jobs.flatMap((job) =>
+    models.map((model) => ({
+      ...job,
+      name: models.length > 1 ? `${job.name} · ${model}` : job.name,
+      model,
+    })),
+  )
 }
 
 watch([mode, mainCategory, references], () => {
@@ -403,23 +444,24 @@ async function runMainImages() {
     emit('run', {
       type: 'main-image',
       sourceIds: selectedProducts.map((item) => item.id),
-      jobs: selectedReferences.map((reference, index) => {
-        const aspect = outputAspect(reference)
-        return {
-          name: `${selectedMode === 'layout' ? '主图复刻' : '风格迁移'} ${index + 1}`,
-          prompt: buildCompetitorStyleClonePrompt({
-            mode: selectedMode,
-            stylePrompt: analyses[index].stylePrompt,
-            extra: extra.value,
-          }),
-          imageUrls: selectedProducts.map((item) => item.url),
-          sourceIds: [...selectedProducts.map((item) => item.id), reference.id],
-          previewUrl: selectedProduct.url,
-          ...aspect,
-          model: selectedModel.value,
-          resolution: selectedResolution.value,
-        }
-      }),
+      jobs: expandJobsBySelectedModels(
+        selectedReferences.map((reference, index) => {
+          const aspect = outputAspect(reference)
+          return {
+            name: `${selectedMode === 'layout' ? '主图复刻' : '风格迁移'} ${index + 1}`,
+            prompt: buildCompetitorStyleClonePrompt({
+              mode: selectedMode,
+              stylePrompt: analyses[index].stylePrompt,
+              extra: extra.value,
+            }),
+            imageUrls: selectedProducts.map((item) => item.url),
+            sourceIds: [...selectedProducts.map((item) => item.id), reference.id],
+            previewUrl: selectedProduct.url,
+            ...aspect,
+            resolution: selectedResolution.value,
+          }
+        }),
+      ),
     })
   } catch (error) {
     mainAnalysisError.value = String(error?.message || error || '竞品风格反推失败')
@@ -482,23 +524,24 @@ function runDemands() {
   emit('run', {
     type: 'demand',
     sourceIds: products.value.map((item) => item.id),
-    jobs: selectedDemandCards.value.map((card) => ({
-      name: `${card.dimension || '需求'} · ${card.title || card.index}`,
-      prompt: [
-        card.imagePrompt,
-        `最终创意标题：${card.title || ''}`,
-        `最终画面文案：${card.copy || ''}`,
-        `最终视觉方向：${card.visualDirection || ''}`,
-      ]
-        .filter(Boolean)
-        .join('\n'),
-      imageUrls: products.value.map((item) => item.url),
-      sourceIds: products.value.map((item) => item.id),
-      previewUrl: product.value.url,
-      ...aspect,
-      model: selectedModel.value,
-      resolution: selectedResolution.value,
-    })),
+    jobs: expandJobsBySelectedModels(
+      selectedDemandCards.value.map((card) => ({
+        name: `${card.dimension || '需求'} · ${card.title || card.index}`,
+        prompt: [
+          card.imagePrompt,
+          `最终创意标题：${card.title || ''}`,
+          `最终画面文案：${card.copy || ''}`,
+          `最终视觉方向：${card.visualDirection || ''}`,
+        ]
+          .filter(Boolean)
+          .join('\n'),
+        imageUrls: products.value.map((item) => item.url),
+        sourceIds: products.value.map((item) => item.id),
+        previewUrl: product.value.url,
+        ...aspect,
+        resolution: selectedResolution.value,
+      })),
+    ),
   })
 }
 
@@ -560,31 +603,32 @@ function runDetail() {
   emit('run', {
     type: 'detail',
     sourceIds: products.value.map((item) => item.id),
-    jobs: selectedDetailScreens.value.map((screen) => {
-      const reference =
-        Number.isInteger(screen.referenceIndex) && screen.referenceIndex >= 0
-          ? references.value[screen.referenceIndex]
-          : null
-      const aspectSource = reference || product.value
-      const aspect = outputAspect(aspectSource)
-      return {
-        name: `详情页 ${screen.index} · ${screen.title}`,
-        prompt: [
-          screen.imagePrompt,
-          `最终分屏标题：${screen.title || ''}`,
-          `最终画面文案：${screen.copy || ''}`,
-          `最终视觉方向：${screen.visual || ''}`,
-        ]
-          .filter(Boolean)
-          .join('\n'),
-        imageUrls: [...products.value.map((item) => item.url), reference?.url].filter(Boolean),
-        sourceIds: [...products.value.map((item) => item.id), reference?.id].filter(Boolean),
-        previewUrl: product.value.url,
-        ...aspect,
-        model: selectedModel.value,
-        resolution: selectedResolution.value,
-      }
-    }),
+    jobs: expandJobsBySelectedModels(
+      selectedDetailScreens.value.map((screen) => {
+        const reference =
+          Number.isInteger(screen.referenceIndex) && screen.referenceIndex >= 0
+            ? references.value[screen.referenceIndex]
+            : null
+        const aspectSource = reference || product.value
+        const aspect = outputAspect(aspectSource)
+        return {
+          name: `详情页 ${screen.index} · ${screen.title}`,
+          prompt: [
+            screen.imagePrompt,
+            `最终分屏标题：${screen.title || ''}`,
+            `最终画面文案：${screen.copy || ''}`,
+            `最终视觉方向：${screen.visual || ''}`,
+          ]
+            .filter(Boolean)
+            .join('\n'),
+          imageUrls: [...products.value.map((item) => item.url), reference?.url].filter(Boolean),
+          sourceIds: [...products.value.map((item) => item.id), reference?.id].filter(Boolean),
+          previewUrl: product.value.url,
+          ...aspect,
+          resolution: selectedResolution.value,
+        }
+      }),
+    ),
   })
 }
 </script>
@@ -633,6 +677,7 @@ function runDetail() {
                 type="button"
                 class="ccp-custom-select-trigger"
                 :disabled="generationSelectDisabled"
+                :title="select.title || select.displayValue || select.value"
                 :aria-expanded="generationSelectOpen === select.key"
                 @click.stop="toggleGenerationSelect(select.key)"
                 @keydown.esc.stop="generationSelectOpen = ''"
@@ -644,6 +689,7 @@ function runDetail() {
                 v-if="generationSelectOpen === select.key"
                 class="ccp-custom-select-menu"
                 role="listbox"
+                :aria-multiselectable="select.multiple ? 'true' : undefined"
                 @click.stop
               >
                 <button
@@ -651,13 +697,23 @@ function runDetail() {
                   :key="option.value"
                   type="button"
                   class="ccp-custom-select-option"
-                  :class="{ active: select.value === option.value }"
+                  :class="{ active: isGenerationOptionSelected(select, option.value) }"
                   role="option"
-                  :aria-selected="select.value === option.value"
+                  :aria-selected="isGenerationOptionSelected(select, option.value)"
                   @click="selectGenerationOption(select.key, option.value)"
                 >
+                  <span v-if="select.multiple" class="ccp-model-check" aria-hidden="true">
+                    <i
+                      v-if="isGenerationOptionSelected(select, option.value)"
+                      class="ri-check-line"
+                    ></i>
+                  </span>
                   <span>{{ option.label }}</span>
-                  <i v-if="select.value === option.value" class="ri-check-line" aria-hidden="true"></i>
+                  <i
+                    v-if="!select.multiple && isGenerationOptionSelected(select, option.value)"
+                    class="ri-check-line"
+                    aria-hidden="true"
+                  ></i>
                 </button>
               </div>
             </div>
@@ -1036,16 +1092,16 @@ function runDetail() {
             {{
               mainAnalyzing
                 ? mainAnalysisStatus
-                : `${selectedModel} · ${selectedRatioLabel} · ${selectedResolution} · ${references.length || 0} 张结果`
+                : `${selectedModelLabel} · ${selectedRatioLabel} · ${selectedResolution} · ${(references.length || 0) * normalizedSelectedModels.length} 张结果`
             }}
           </span>
           <span v-else-if="tab === 'demand'">
-            {{ selectedModel }} · {{ selectedRatioLabel }} · {{ selectedResolution }} · 已选择
-            {{ selectedDemandCards.length }} 个方向
+            {{ selectedModelLabel }} · {{ selectedRatioLabel }} · {{ selectedResolution }} · 共
+            {{ selectedDemandCards.length * normalizedSelectedModels.length }} 张
           </span>
           <span v-else>
-            {{ selectedModel }} · {{ selectedRatioLabel }} · {{ selectedResolution }} · 已选择
-            {{ selectedDetailScreens.length }} 屏
+            {{ selectedModelLabel }} · {{ selectedRatioLabel }} · {{ selectedResolution }} · 共
+            {{ selectedDetailScreens.length * normalizedSelectedModels.length }} 张
           </span>
           <button type="button" class="secondary" @click="emit('close')">取消</button>
           <button
@@ -1064,10 +1120,18 @@ function runDetail() {
             :disabled="!canRunDemands"
             @click="runDemands"
           >
-            {{ busy ? '正在提交…' : `生成 ${selectedDemandCards.length} 张创意` }}
+            {{
+              busy
+                ? '正在提交…'
+                : `生成 ${selectedDemandCards.length * normalizedSelectedModels.length} 张创意`
+            }}
           </button>
           <button v-else type="button" class="primary" :disabled="!canRunDetail" @click="runDetail">
-            {{ busy ? '正在提交…' : `生成 ${selectedDetailScreens.length} 屏详情页` }}
+            {{
+              busy
+                ? '正在提交…'
+                : `生成 ${selectedDetailScreens.length * normalizedSelectedModels.length} 张详情页`
+            }}
           </button>
         </footer>
       </section>
@@ -1144,7 +1208,7 @@ function runDetail() {
   background: transparent;
   color: var(--canvas-text-muted);
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
   cursor: pointer;
 }
 .ccp-tabs button.active {
@@ -1169,7 +1233,7 @@ function runDetail() {
 .ccp-generation-settings span {
   color: var(--canvas-text-muted);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
 }
 .ccp-custom-select {
   position: relative;
@@ -1274,11 +1338,31 @@ function runDetail() {
 .ccp-custom-select-option.active {
   background: var(--canvas-accent-soft);
   color: var(--canvas-accent);
-  font-weight: 700;
+  font-weight: 600;
 }
 .ccp-custom-select-option i {
   color: currentColor;
   font-size: 15px;
+}
+.ccp-custom-select-option .ccp-model-check {
+  display: grid;
+  flex: 0 0 17px;
+  place-items: center;
+  width: 17px;
+  min-width: 17px;
+  height: 17px;
+  overflow: visible;
+  border: 1px solid var(--canvas-border-strong);
+  border-radius: 5px;
+  background: var(--canvas-input);
+}
+.ccp-custom-select-option.active .ccp-model-check {
+  border-color: var(--canvas-accent);
+  background: var(--canvas-accent);
+  color: var(--color-text-inverse);
+}
+.ccp-custom-select-option .ccp-model-check + span {
+  flex: 1 1 auto;
 }
 .ccp-mode-grid {
   display: grid;
@@ -1338,7 +1422,7 @@ function runDetail() {
 .ccp-analysis-settings label > span {
   color: var(--canvas-text-muted);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
 }
 .ccp-analysis-settings select {
   height: 30px;
@@ -1405,7 +1489,7 @@ function runDetail() {
   margin-bottom: 9px;
   color: var(--canvas-text-muted);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
 }
 .ccp-product-list,
 .ccp-reference-list {
@@ -1525,7 +1609,7 @@ function runDetail() {
   margin-bottom: 7px;
   color: var(--canvas-text-muted);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
 }
 .ccp-product-thumb figure {
   position: relative;
@@ -1578,7 +1662,7 @@ function runDetail() {
   margin-top: 14px;
   color: var(--canvas-text-muted);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
 }
 .ccp-mini-references {
   display: flex;
@@ -1652,7 +1736,7 @@ function runDetail() {
   background: var(--canvas-surface);
   color: var(--canvas-accent);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
   cursor: pointer;
 }
 .ccp-demand-fields button:hover:not(:disabled) {
@@ -1714,12 +1798,12 @@ function runDetail() {
   background: var(--canvas-accent-soft);
   color: var(--canvas-accent);
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
 }
 .ccp-card-title {
   height: 34px;
   padding: 0 9px;
-  font-weight: 700;
+  font-weight: 600;
 }
 .ccp-demand-card small {
   overflow: hidden;
@@ -1786,7 +1870,7 @@ function runDetail() {
   background: color-mix(in srgb, var(--color-success) 14%, transparent);
   color: var(--color-success);
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
 }
 .ccp-demand-empty {
   display: flex;
@@ -1835,7 +1919,7 @@ function runDetail() {
   border: 1px solid var(--canvas-accent);
   background: var(--canvas-accent);
   color: var(--color-text-inverse);
-  font-weight: 700;
+  font-weight: 600;
 }
 .ccp-panel footer button:disabled {
   cursor: not-allowed;

@@ -17,7 +17,7 @@
 </head>
 <body>
   <header class="hero">
-    <small>YOUMI RELEASES · v2.0.4</small>
+    <small>YOUMI RELEASES · v2.0.5</small>
     <h1>有米 AI 更新历程</h1>
     <p>记录每一次功能更新和体验改进，最新内容始终排在最前面。</p>
     <nav class="actions">
@@ -26,12 +26,52 @@
     </nav>
   </header>
   <main><div class="timeline">
-      <div class="date"><span>2026-08-05</span><i></i></div>
+      <div class="date"><span>2026-08-06</span><i></i></div>
       <article class="release latest">
-        <div class="meta"><b>v2.0.4</b><small>最新版本</small></div>
-        <h2>画布创作与图片编辑体验升级</h2>
-        <p>完善画布创作、对话修改和重新生成流程，并集中修复图片拖动、裁图与主题显示问题。</p>
+        <div class="meta"><b>v2.0.5</b><small>最新版本</small></div>
+        <h2>控制台与生图统计体验升级</h2>
+        <p>统一优化控制台和画布的深浅主题，支持多模型同时生成，并补齐全站与个人今日生图统计。</p>
         <div class="visuals">
+        <figure class="wide">
+          <div class="visual-media">
+            <img src="/version-log/assets/v2.0.5-console-dashboard.jpg" alt="有米控制台中的生图任务、模型用量、成功率和趋势统计" loading="lazy">
+          </div>
+          <figcaption>
+            <strong>运营数据更清晰</strong>
+            <span>账号、角色、财务与生图统计统一视觉层级，筛选、图表和任务列表在深浅主题下均保持清晰。</span>
+          </figcaption>
+        </figure>
+        <figure class="">
+          <div class="visual-media">
+            <img src="/version-log/assets/v2.0.5-canvas-today-stats.jpg" alt="有米万能画布中的图片创作与生图数量统计" loading="lazy">
+          </div>
+          <figcaption>
+            <strong>生图进度随时可见</strong>
+            <span>画布顶部同时展示全站与当前账号的今日生图数量，并用高对比色快速区分。</span>
+          </figcaption>
+        </figure></div>
+        <div class="sections">
+        <section class="release-section">
+          <h3>控制台体验</h3>
+          <ul><li>统一优化账号管理、角色管理、财务统计和生图统计页面，减少过粗文字、重复边框与拥挤布局。</li><li>重新整理近 14 天趋势、用户与模型筛选、日期范围、耗时和分页控件，完整适配开灯与关灯主题。</li><li>优化模型用量、通道成功率、指标卡和最近任务列表的层级、留白与信息密度。</li></ul>
+        </section>
+        <section class="release-section">
+          <h3>生图能力</h3>
+          <ul><li>普通生图、画布创作和对话修改支持多选模型，同一次提交可并行输出多个模型的结果。</li><li>优化画布创作任务的状态判断，避免中转站已经出图时短暂显示失败后又恢复。</li><li>完善模型、比例、分辨率与数量选择在各生成入口中的展示和主题样式。</li></ul>
+        </section>
+        <section class="release-section">
+          <h3>今日统计</h3>
+          <ul><li>画布顶部新增全站今日生图数量与当前账号今日生图数量，每分钟自动刷新。</li><li>全站与个人数据使用不同的高对比色展示，并分别适配深色和浅色主题。</li><li>后端按当天时间范围和登录账号准确汇总图片数量，并补充查询索引与数据隔离测试。</li></ul>
+        </section></div>
+      </article>
+    <div class="date"><span>2026-08-05</span><i></i></div>
+    <details class="release">
+      <summary>
+        <b>v2.0.4</b>
+        <span><strong>画布创作与图片编辑体验升级</strong><small>完善画布创作、对话修改和重新生成流程，并集中修复图片拖动、裁图与主题显示问题。</small></span>
+        <em>查看更多</em>
+      </summary>
+      <div class="visuals">
         <figure class="wide">
           <div class="visual-media">
             <img src="https://huami-canvas.oss-cn-shanghai.aliyuncs.com/version-log/assets/2.0.3/canvas-overview.png" alt="有米万能画布中的图片、提示词和画布工具" loading="lazy">
@@ -50,7 +90,7 @@
             <span>画布创作和对话修改均可选择模型、比例、分辨率与生成数量。</span>
           </figcaption>
         </figure></div>
-        <div class="sections">
+      <div class="sections">
         <section class="release-section">
           <h3>画布创作</h3>
           <ul><li>图片右键菜单新增画布创作入口，与画布顶部入口共用同一套创作面板。</li><li>画布创作补齐模型、比例和分辨率选择，并根据主图、详情页和需求生成场景正确提示跟随参考图或产品图。</li><li>产品类目默认显示通用，顶部画布创作按钮适配深色与浅色主题，图片经过下方时仍清晰可见。</li></ul>
@@ -63,7 +103,7 @@
           <h3>画布操作</h3>
           <ul><li>单张或多张图片拖动时临时置于其他图层上方，连续拖动也不会再次被遮挡。</li><li>提示词和文本展开区域支持滚动、选择与复制，同时保持抓手和空格键拖动画布的操作逻辑。</li><li>修复图片导入、尺寸排列和多选删除等细节问题，保持既有画布数据与操作方式不受影响。</li></ul>
         </section></div>
-      </article>
+    </details>
     <div class="date"><span>2026-07-29</span><i></i></div>
     <details class="release">
       <summary>
@@ -211,6 +251,6 @@
           <ul><li>建立用户、登录、数据隔离、米值和生图任务管理。</li><li>上线运营控制台，提供任务、模型、用户、用量和趋势统计。</li><li>完成深色、浅色主题以及主要页面的响应式适配。</li></ul>
         </section></div>
     </details></div></main>
-  <footer>有米 AI · 当前版本 v2.0.4</footer>
+  <footer>有米 AI · 当前版本 v2.0.5</footer>
 </body>
 </html>

@@ -2,6 +2,7 @@
   color: var(--color-text-1);
   background: var(--color-bg-0);
   font-family: Inter, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  font-weight: 400;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 }
@@ -17,7 +18,8 @@ body {
 }
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 button,
@@ -65,7 +67,7 @@ a {
 .brand span {
   color: #fff;
   font-size: 12px;
-  font-weight: 900;
+  font-weight: 600;
 }
 .rail-menu {
   overflow: auto;
@@ -96,7 +98,7 @@ a {
   border-radius: var(--radius-xl);
   color: var(--color-text-2);
   font-size: 15px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .rail-main.active {
@@ -182,7 +184,7 @@ a {
 }
 .user-mini span {
   flex: 1;
-  font-weight: 900;
+  font-weight: 600;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -225,7 +227,7 @@ a {
   border: 0;
   border-radius: 9px;
   color: #0a0f1f;
-  font-weight: 900;
+  font-weight: 600;
   background: #fff1a6;
 }
 .user-card div button {
@@ -309,7 +311,7 @@ textarea {
 textarea::placeholder,
 input::placeholder {
   color: #91a2ba;
-  font-weight: 700;
+  font-weight: 400;
 }
 .prompt-card footer {
   display: flex;
@@ -331,7 +333,7 @@ input::placeholder {
   border: 1px solid #5b78a6;
   border-radius: 8px;
   color: #fff;
-  font-weight: 900;
+  font-weight: 600;
   background: #25354f;
 }
 .prompt-card footer button:disabled {
@@ -405,7 +407,7 @@ input::placeholder {
 }
 .case-grid span {
   margin-top: 8px;
-  font-weight: 800;
+  font-weight: 600;
 }
 .case-2 {
   color: #fff !important;
@@ -479,7 +481,7 @@ input::placeholder {
   padding: 0 15px;
   border-radius: 10px;
   color: #e7efff;
-  font-weight: 900;
+  font-weight: 600;
   background: #182339;
   box-shadow: inset 0 0 0 1px rgba(134, 157, 198, 0.2);
 }
@@ -639,7 +641,7 @@ input::placeholder {
 .head-left button {
   border: 0;
   color: #fff;
-  font-weight: 900;
+  font-weight: 600;
   background: transparent;
 }
 .head-left em {
@@ -661,7 +663,7 @@ input::placeholder {
   border: 0;
   border-radius: 8px;
   color: #b6c6df;
-  font-weight: 900;
+  font-weight: 600;
   background: #172238;
 }
 .head-actions strong {
@@ -692,7 +694,7 @@ input::placeholder {
   border: 0;
   border-radius: 10px;
   color: #dce8fb;
-  font-weight: 900;
+  font-weight: 600;
   background: var(--color-bg-1);
   box-shadow: inset 0 0 0 1px rgba(139, 108, 255, 0.38);
 }
@@ -811,7 +813,7 @@ input::placeholder {
 }
 .start-card dd {
   margin: 0;
-  font-weight: 900;
+  font-weight: 600;
   color: var(--color-text-2);
 }
 .canvas-layer {
@@ -958,7 +960,7 @@ input::placeholder {
   border-radius: 5px;
   color: #fff;
   font-size: 12px;
-  font-weight: 900;
+  font-weight: 600;
   background: rgba(15, 23, 41, 0.78);
 }
 .layer-toolbar {
@@ -984,7 +986,7 @@ input::placeholder {
   border-radius: 6px;
   color: #d5e2f6;
   font-size: 13px;
-  font-weight: 900;
+  font-weight: 600;
   white-space: nowrap;
   background: transparent;
 }
@@ -1080,7 +1082,7 @@ input::placeholder {
   border-radius: 50%;
   color: #16a34a;
   font-size: 11px;
-  font-weight: 900;
+  font-weight: 600;
   line-height: 1;
   background: #ffffff;
 }
@@ -1108,7 +1110,7 @@ input::placeholder {
   border-radius: 50%;
   color: #ffffff;
   font-size: 10px;
-  font-weight: 900;
+  font-weight: 600;
   line-height: 1;
   background: #22c55e;
   box-shadow: 0 2px 6px rgba(34, 197, 94, 0.6);
@@ -1223,7 +1225,7 @@ input::placeholder {
   background: #22c55e;
   color: #ffffff;
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 600;
   line-height: 1;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
   user-select: none;
@@ -1602,14 +1604,14 @@ input::placeholder {
 .canvas-minimap strong {
   font-size: 12px;
   line-height: 18px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .canvas-minimap span {
   color: var(--canvas-text-subtle);
   font-size: 10px;
   line-height: 16px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .canvas-minimap-plane {
@@ -1858,7 +1860,7 @@ input::placeholder {
   border: 0;
   border-radius: 8px;
   color: #d6e2f7;
-  font-weight: 900;
+  font-weight: 600;
   background: transparent;
 }
 .bottom-tools .active {
@@ -1903,7 +1905,7 @@ input::placeholder {
   border: 0;
   border-radius: 8px;
   color: #aabbd5;
-  font-weight: 900;
+  font-weight: 600;
   background: transparent;
 }
 .right-panel header .active {
@@ -2027,7 +2029,7 @@ input::placeholder {
   border: 0;
   border-radius: 9px;
   color: #fff;
-  font-weight: 900;
+  font-weight: 600;
   background: #fff1a6;
 }
 .chat-box footer button:disabled {
@@ -2218,7 +2220,7 @@ input::placeholder {
   border-radius: 11px;
   color: var(--yq-text);
   background: var(--yq-bg-card);
-  font-weight: 900;
+  font-weight: 600;
   cursor: pointer;
   transition: all 0.2s;
 }
@@ -2433,7 +2435,7 @@ input::placeholder {
   gap: 7px;
   color: var(--yq-muted);
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .console-form-row {
@@ -2614,7 +2616,7 @@ input::placeholder {
   color: #ccd8ff;
   background: rgba(99, 102, 241, 0.15);
   font-size: 12px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .status-pill.COMPLETED,
@@ -2676,18 +2678,19 @@ input::placeholder {
   margin-top: 2px;
 }
 .console-legend-name {
-  font-weight: 800;
+  font-weight: 500;
   font-size: 13px;
   color: var(--yq-text);
 }
 .console-legend-value {
-  font-weight: 700;
+  font-weight: 500;
   font-size: 13px;
   color: var(--yq-text);
 }
 .console-legend-sub {
   grid-column: 2 / -1;
   font-size: 12px;
+  font-weight: 400;
   color: var(--yq-muted);
 }
 
@@ -2708,6 +2711,7 @@ input::placeholder {
   margin: 0;
   color: var(--yq-text);
   font-size: 14px;
+  font-weight: 600;
 }
 .console-provider-rates-head span {
   color: var(--yq-muted);
@@ -2726,6 +2730,7 @@ input::placeholder {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 500;
 }
 .console-provider-rate-row b,
 .console-provider-rate-count {
@@ -2734,6 +2739,11 @@ input::placeholder {
 }
 .console-provider-rate-count {
   color: var(--yq-muted);
+  font-weight: 400;
+}
+
+.console-provider-rate-row b {
+  font-weight: 600;
 }
 .console-provider-rate-track {
   height: 7px;
@@ -2785,7 +2795,7 @@ input::placeholder {
 }
 .console-trend-tooltip span {
   font-size: 14px;
-  font-weight: 800;
+  font-weight: 600;
   color: var(--yq-text);
 }
 
@@ -3033,6 +3043,26 @@ input::placeholder {
 
 /* youqian-ai style pass */
 :root {
+  --console-bg: #101317;
+  --console-surface: #171b20;
+  --console-surface-raised: #1d2228;
+  --console-surface-hover: #242b32;
+  --console-input: #12161a;
+  --console-border: #2d353d;
+  --console-border-strong: #3b4650;
+  --console-text: #edf2f5;
+  --console-muted: #9aa5ae;
+  --console-subtle: #707c86;
+  --console-accent: #18a8b8;
+  --console-accent-strong: #0f8f9f;
+  --console-accent-soft: rgba(24, 168, 184, 0.14);
+  --console-success: #27c58d;
+  --console-success-soft: rgba(39, 197, 141, 0.13);
+  --console-warning: #e2a63a;
+  --console-warning-soft: rgba(226, 166, 58, 0.13);
+  --console-danger: #ed6974;
+  --console-danger-soft: rgba(237, 105, 116, 0.13);
+  --console-shadow: 0 10px 28px rgba(0, 0, 0, 0.2);
   --yq-sidebar-width: 72px;
   --yq-primary: #6366f1;
   --yq-primary-light: #818cf8;
@@ -3047,6 +3077,29 @@ input::placeholder {
   --yq-text: #f1f5f9;
   --yq-muted: #94a3b8;
   --yq-dim: #64748b;
+}
+
+[data-theme='light'] {
+  --console-bg: #f3f5f7;
+  --console-surface: #ffffff;
+  --console-surface-raised: #f8fafb;
+  --console-surface-hover: #eef2f4;
+  --console-input: #ffffff;
+  --console-border: #d8e0e5;
+  --console-border-strong: #bcc8cf;
+  --console-text: #1d252c;
+  --console-muted: #5f6c76;
+  --console-subtle: #83909a;
+  --console-accent: #087f8c;
+  --console-accent-strong: #066b76;
+  --console-accent-soft: rgba(8, 127, 140, 0.1);
+  --console-success: #07875c;
+  --console-success-soft: rgba(7, 135, 92, 0.1);
+  --console-warning: #a96c0a;
+  --console-warning-soft: rgba(169, 108, 10, 0.1);
+  --console-danger: #c53d4b;
+  --console-danger-soft: rgba(197, 61, 75, 0.09);
+  --console-shadow: 0 8px 22px rgba(31, 42, 51, 0.07);
 }
 
 body {
@@ -3641,7 +3694,7 @@ body {
 .home-hero-title {
   margin: 0 0 8px;
   font-size: 44px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .home-hero-subtitle {
@@ -4006,7 +4059,7 @@ body {
 .clone-logo span {
   color: #fff;
   font-size: 10px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .clone-nav {
@@ -4060,7 +4113,7 @@ body {
 
 .clone-rail.expanded .clone-nav-btn span {
   font-size: 15px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .clone-rail.expanded .clone-nav-btn em {
@@ -4232,7 +4285,7 @@ body {
   border-radius: 999px;
   color: #fff;
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 600;
   background: linear-gradient(90deg, #ffb347, #ff6d1f);
 }
 
@@ -4376,7 +4429,7 @@ body {
   border: 1px solid #3b3f48;
   border-radius: 8px;
   color: #fff;
-  font-weight: 900;
+  font-weight: 600;
   background: #151b24;
 }
 
@@ -4761,7 +4814,7 @@ body {
   margin-top: 1px;
   color: #fff;
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 600;
   letter-spacing: 0;
 }
 
@@ -5035,7 +5088,7 @@ body {
   color: #ffffff;
   background: #fff1a6;
   font-size: 10px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-sub-status {
@@ -5488,7 +5541,7 @@ body {
   color: #ffffff;
   background: var(--color-bg-1);
   font-size: 11px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-remove-image {
@@ -5530,12 +5583,12 @@ body {
   color: #fff;
   background: rgba(0, 0, 0, 0.42);
   font-size: 12px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-uploading {
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .yh-upload-input {
@@ -5673,7 +5726,7 @@ body {
   color: var(--color-text-3);
   background: transparent;
   font-size: 14px;
-  font-weight: 750;
+  font-weight: 600;
   text-align: left;
 }
 
@@ -5748,7 +5801,7 @@ body {
   color: #ffffff;
   background: #ff6b1a;
   font-size: 10px;
-  font-weight: 900;
+  font-weight: 600;
   white-space: nowrap;
 }
 
@@ -5855,7 +5908,7 @@ body {
     opacity 220ms ease 120ms,
     transform 300ms ease 80ms;
   font-size: 15px;
-  font-weight: 900;
+  font-weight: 600;
   text-shadow: 0 1px 12px rgba(0, 0, 0, 0.28);
 }
 
@@ -5896,7 +5949,7 @@ body {
   color: #f0f2f6;
   font-size: 14px;
   line-height: 18px;
-  font-weight: 900;
+  font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5907,7 +5960,7 @@ body {
   color: #777d89;
   font-size: 12px;
   line-height: 16px;
-  font-weight: 650;
+  font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6268,13 +6321,13 @@ body {
   align-items: center;
   color: var(--color-text-1);
   background: var(--color-bg-1);
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-login-left p {
   margin: 58px 0 18px;
   color: #52627c;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-platforms {
@@ -6285,7 +6338,7 @@ body {
   gap: 14px 24px;
   color: rgba(255, 255, 255, 0.26);
   font-size: 16px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-login-right {
@@ -6328,7 +6381,7 @@ body {
   display: block;
   color: #ffffff;
   font-size: 14px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-login-right label > span {
@@ -6385,7 +6438,7 @@ body {
   margin: 10px 0 0;
   color: #ff7b7b;
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .yh-login-links {
@@ -6487,7 +6540,7 @@ body {
   color: #ffffff;
   font-size: 18px;
   line-height: 28px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .yh-detail-config-head button {
@@ -6500,7 +6553,7 @@ body {
   color: #60a5fa;
   font-size: 17px;
   line-height: 24px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .yh-config-close {
@@ -6637,7 +6690,7 @@ body {
   color: #ffffff;
   font-size: 15px;
   line-height: 22px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .yh-config-help {
@@ -6680,7 +6733,7 @@ body {
   color: #8d95a4;
   border-style: dashed;
   font-size: 22px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-config-add-thumb span {
@@ -6729,7 +6782,7 @@ body {
 .yh-config-upload-copy {
   color: #d8d8d8;
   font-size: 15px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .yh-config-upload small,
@@ -6771,7 +6824,7 @@ body {
   color: #dcd8ff;
   background: #282258;
   font-size: 12px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-config-segment {
@@ -6791,7 +6844,7 @@ body {
   color: #ffffff;
   background: rgba(255, 255, 255, 0.04);
   font-size: 14px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .yh-config-segment button.active {
@@ -6823,7 +6876,7 @@ body {
   color: #ffffff;
   background: rgba(255, 255, 255, 0.04);
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .yh-config-switch.compact {
@@ -6876,7 +6929,7 @@ body {
   color: #111111;
   background: #ffffff;
   font-size: 16px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .yh-config-submit > button:first-child:disabled {
@@ -6894,7 +6947,7 @@ body {
   color: #dcd8ff;
   background: #231f4d;
   font-size: 13px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-config-submit p {
@@ -6935,7 +6988,7 @@ body {
   color: var(--color-text-1);
   background: var(--color-bg-1);
   font-size: 14px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-workspace-switch {
@@ -7151,7 +7204,7 @@ body {
   margin: 0;
   color: #655eff;
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .yh-result-image {
@@ -7289,7 +7342,7 @@ body {
   color: #ffffff;
   font-size: 18px;
   line-height: 28px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-copycat-head > button {
@@ -7335,7 +7388,7 @@ body {
   color: #ffffff;
   font-size: 14px;
   line-height: 16px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-copycat-label button {
@@ -7346,7 +7399,7 @@ body {
   color: var(--color-text-2);
   background: var(--color-bg-2);
   font-size: 12px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-copycat-source-tabs,
@@ -7375,7 +7428,7 @@ body {
   color: var(--color-text-3);
   background: transparent;
   font-size: 13px;
-  font-weight: 900;
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -7419,7 +7472,7 @@ body {
   color: var(--color-text-2);
   font-size: 14px;
   line-height: 20px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-copycat-upload small,
@@ -7468,7 +7521,7 @@ body {
   color: #ffffff;
   background: rgba(0, 0, 0, 0.66);
   font-size: 11px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-copycat-thumbs span {
@@ -7518,7 +7571,7 @@ body {
   color: var(--color-text-1);
   background: var(--color-bg-2);
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .yh-copycat-url-row button,
@@ -7529,7 +7582,7 @@ body {
   color: #101828;
   background: #dbe8f8;
   font-size: 13px;
-  font-weight: 900;
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -7570,7 +7623,7 @@ body {
 .yh-copycat-web-strip > span {
   color: #7f8897;
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 600;
   white-space: nowrap;
 }
 
@@ -7604,7 +7657,7 @@ body {
   font-size: 9px;
   line-height: 14px;
   text-align: center;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-copycat-preview-rail {
@@ -7635,7 +7688,7 @@ body {
 .yh-copycat-preview-rail strong {
   color: var(--color-text-1);
   font-size: 14px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-copycat-preview-rail header div {
@@ -7647,7 +7700,7 @@ body {
 .yh-copycat-preview-rail header span {
   color: var(--color-text-3);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .yh-copycat-preview-rail label {
@@ -7684,7 +7737,7 @@ body {
   color: var(--color-text-2);
   background: var(--color-bg-2);
   font-size: 12px;
-  font-weight: 900;
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -7876,7 +7929,7 @@ body {
   color: #ffffff;
   background: rgba(255, 45, 85, 0.9);
   font-size: 10px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-copycat-cut-line i {
@@ -7893,7 +7946,7 @@ body {
   font-size: 14px;
   line-height: 1;
   font-style: normal;
-  font-weight: 900;
+  font-weight: 600;
   opacity: 0;
   transform: scale(0.86);
   transition:
@@ -7925,7 +7978,7 @@ body {
   font-size: 11px;
   line-height: 22px;
   text-align: center;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-copycat-preview-list figure > em {
@@ -7941,7 +7994,7 @@ body {
   background: rgba(15, 23, 42, 0.82);
   font-size: 11px;
   font-style: normal;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-copycat-preview-delete {
@@ -7959,7 +8012,7 @@ body {
   background: rgba(15, 23, 42, 0.82);
   font-size: 16px;
   line-height: 1;
-  font-weight: 900;
+  font-weight: 600;
   opacity: 0;
   transform: scale(0.86);
   transition:
@@ -7988,7 +8041,7 @@ body {
   padding: 18px;
   color: var(--color-text-3);
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 600;
   text-align: center;
 }
 
@@ -8008,7 +8061,7 @@ body {
   color: var(--color-text-3);
   background: var(--color-bg-2);
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .yh-copycat-link-btn {
@@ -8044,7 +8097,7 @@ body {
   color: var(--color-text-3);
   background: transparent;
   font-size: 11px;
-  font-weight: 900;
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -8086,7 +8139,7 @@ body {
   margin: 12px 0 5px;
   color: var(--color-text-1);
   font-size: 13px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-copycat-info-preview h4:first-child {
@@ -8112,7 +8165,7 @@ body {
 
 .yh-copycat-info-preview .empty {
   color: var(--color-text-3);
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .yh-copycat-info-optimize {
@@ -8126,7 +8179,7 @@ body {
   color: #cfdcff;
   background: #2a2942;
   font-size: 12px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-copycat-select-field {
@@ -8138,7 +8191,7 @@ body {
 .yh-copycat-switch-field em {
   color: var(--color-text-3);
   font-style: normal;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .yh-copycat-select-field select {
@@ -8151,7 +8204,7 @@ body {
   color: var(--color-text-1);
   background: var(--color-bg-2);
   font-size: 14px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .yh-copycat-switch-field {
@@ -8182,7 +8235,7 @@ body {
   color: var(--color-text-3);
   font-size: 12px;
   line-height: 18px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .yh-copycat-prompt-head button {
@@ -8193,7 +8246,7 @@ body {
   color: var(--color-text-inverse);
   background: var(--color-brand-300);
   font-size: 12px;
-  font-weight: 900;
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -8236,7 +8289,7 @@ body {
 .yh-copycat-prompt-fields label > span {
   color: var(--color-text-3);
   font-size: 12px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-copycat-prompt-fields input,
@@ -8296,13 +8349,13 @@ body {
   color: var(--color-text-inverse);
   background: var(--color-brand-300);
   font-size: 11px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-copycat-prompt-image > span {
   color: var(--color-text-3);
   font-size: 12px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-copycat-prompt-list header {
@@ -8321,7 +8374,7 @@ body {
   color: var(--color-text-inverse);
   background: var(--color-brand-300);
   font-size: 12px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-copycat-prompt-list header span {
@@ -8329,7 +8382,7 @@ body {
   overflow: hidden;
   color: var(--color-text-2);
   font-size: 12px;
-  font-weight: 900;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -8344,7 +8397,7 @@ body {
   color: var(--color-text-3);
   background: var(--color-bg-2);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 600;
   text-align: center;
 }
 
@@ -8355,7 +8408,7 @@ body {
   width: fit-content;
   color: var(--color-text-2);
   font-size: 13px;
-  font-weight: 900;
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -8418,7 +8471,7 @@ body {
   color: var(--color-text-inverse);
   background: var(--color-brand-300);
   font-size: 15px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-copycat-foot.yh-detail-modal-foot > button.primary:disabled {
@@ -8439,7 +8492,7 @@ body {
 .yh-copycat-foot.yh-detail-modal-foot strong {
   color: inherit;
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .yh-detail-modal-head,
@@ -8476,7 +8529,7 @@ body {
   margin-bottom: 10px;
   color: #ffffff;
   font-size: 14px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-detail-field em {
@@ -8521,7 +8574,7 @@ body {
   border-radius: 9px;
   color: #d7d7ff;
   background: #1b1b1b;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-detail-methods button.active {
@@ -8665,7 +8718,7 @@ body {
   background: rgba(0, 0, 0, 0.62);
   font-size: 12px;
   font-style: normal;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-clone-image span {
@@ -8775,7 +8828,7 @@ body {
   border-radius: 10px;
   color: var(--color-text-1);
   background: transparent;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-detail-modal-foot {
@@ -8866,7 +8919,7 @@ body {
   border-radius: 7px;
   color: var(--color-text-3);
   background: transparent;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-split-tabs button.active {
@@ -8905,7 +8958,7 @@ body {
   border-radius: 12px;
   color: var(--color-text-1);
   font-size: 15px;
-  font-weight: 900;
+  font-weight: 600;
   background: var(--color-bg-1);
 }
 
@@ -8937,7 +8990,7 @@ body {
   color: var(--color-text-3);
   font-size: 13px;
   line-height: 1.6;
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .yh-split-row dl {
@@ -8966,7 +9019,7 @@ body {
 
 .yh-split-row dd {
   color: #e7e7e7;
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .yh-split-row small {
@@ -8974,7 +9027,7 @@ body {
   display: block;
   color: #8f83ff;
   font-size: 12px;
-  font-weight: 750;
+  font-weight: 600;
 }
 
 .yh-split-row .yh-prompt-provider {
@@ -9112,7 +9165,7 @@ body {
 .yh-plan-card header button {
   border: 0;
   background: transparent;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .yh-plan-row {
@@ -9123,7 +9176,7 @@ body {
   display: block;
   margin-bottom: 8px;
   color: #777;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-plan-row p {
@@ -9141,7 +9194,7 @@ body {
   border-radius: 9px;
   color: #7ca3ff;
   background: transparent;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-plan-bottom {
@@ -9272,7 +9325,7 @@ body {
   color: #ffffff;
   background: rgba(38, 38, 38, 0.9);
   font-size: 14px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-detail-preview-strip i {
@@ -9361,7 +9414,7 @@ body {
   color: #d4d4d8;
   font-size: 14px;
   line-height: 22px;
-  font-weight: 750;
+  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -9435,7 +9488,7 @@ body {
 
 .yh-detail-rendering-card span {
   font-size: 13px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .yh-detail-rendering-card p {
@@ -9456,7 +9509,7 @@ body {
   gap: 28px;
   color: #303030;
   font-size: 18px;
-  font-weight: 900;
+  font-weight: 600;
   transform: translateX(-50%);
 }
 
@@ -9546,7 +9599,7 @@ body {
   color: var(--canvas-text);
   background: var(--canvas-panel);
   box-shadow: none;
-  font-weight: 900;
+  font-weight: 600;
   transition:
     color 150ms ease,
     background-color 150ms ease,
@@ -9808,6 +9861,7 @@ body {
 }
 
 .editor-head {
+  position: relative;
   height: 60px;
   padding: 0 16px;
   color: var(--canvas-text);
@@ -9817,6 +9871,88 @@ body {
   transition:
     background 0.3s ease,
     color 0.3s ease;
+}
+
+.canvas-today-image-stat {
+  --canvas-today-global: #f2b84b;
+  --canvas-today-personal: var(--canvas-accent);
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--canvas-border-strong);
+  border-radius: 7px;
+  background: var(--canvas-surface);
+  line-height: 1;
+  white-space: nowrap;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.canvas-today-stat-item {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  border-radius: 6px;
+}
+
+.canvas-today-stat-item.global {
+  color: var(--canvas-today-global);
+  background: color-mix(in srgb, var(--canvas-today-global) 14%, transparent);
+}
+
+.canvas-today-stat-item.personal {
+  color: var(--canvas-today-personal);
+  background: color-mix(in srgb, var(--canvas-today-personal) 14%, transparent);
+}
+
+[data-theme='light'] .canvas-today-image-stat {
+  --canvas-today-global: #b65d08;
+  --canvas-today-personal: #087f8c;
+}
+
+.canvas-today-stat-item i {
+  font-size: 15px;
+}
+
+.canvas-today-stat-item span {
+  color: currentColor;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.canvas-today-stat-item strong {
+  color: currentColor;
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.canvas-today-stat-item small {
+  color: currentColor;
+  font-size: 11px;
+}
+
+@media (max-width: 1100px) {
+  .canvas-today-stat-item span {
+    display: none;
+  }
+
+  .canvas-today-stat-item {
+    padding: 0 7px;
+  }
+}
+
+@media (max-width: 760px) {
+  .canvas-today-image-stat {
+    display: none;
+  }
 }
 
 .editor-head .logo {
@@ -10010,7 +10146,7 @@ body {
   background: var(--canvas-panel);
   box-shadow: none;
   font-size: 14px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .top-tools button:hover {
@@ -10064,7 +10200,7 @@ body {
   gap: 5px;
   color: var(--canvas-text-muted);
   font-size: 11px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .reverse-prompt-card-toolbar select {
@@ -10075,7 +10211,7 @@ body {
   color: var(--canvas-text);
   background: var(--canvas-input);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 600;
   outline: none;
 }
 
@@ -10089,7 +10225,7 @@ body {
   background: var(--canvas-surface);
   box-shadow: none;
   font-size: 12px;
-  font-weight: 900;
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -10131,7 +10267,7 @@ body {
     0 6px 18px rgba(47, 109, 255, 0.5);
   font-size: 24px;
   line-height: 1;
-  font-weight: 800;
+  font-weight: 600;
   cursor: crosshair;
   transform: translateY(-50%);
 }
@@ -10300,7 +10436,7 @@ body {
   color: var(--canvas-text);
   font-size: 12px;
   line-height: 18px;
-  font-weight: 900;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -10309,7 +10445,7 @@ body {
   color: var(--canvas-text-subtle);
   font-size: 10px;
   line-height: 16px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .reverse-prompt-form-field {
@@ -10325,7 +10461,7 @@ body {
   color: var(--canvas-text);
   font-size: 12px;
   line-height: 17px;
-  font-weight: 900;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -10402,14 +10538,14 @@ body {
 .reverse-prompt-reference-slots header span {
   color: var(--canvas-text);
   font-size: 12px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .reverse-prompt-reference-slots header small {
   color: var(--canvas-text-subtle);
   font-size: 10px;
   line-height: 12px;
-  font-weight: 800;
+  font-weight: 600;
   text-align: center;
 }
 
@@ -10462,7 +10598,7 @@ body {
   color: #111111;
   background: #ffffff;
   font-size: 10px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .reverse-prompt-connector {
@@ -10530,7 +10666,7 @@ body {
     0 10px 24px rgba(0, 0, 0, 0.28),
     0 0 0 5px rgba(248, 113, 113, 0.12);
   font-size: 24px;
-  font-weight: 800;
+  font-weight: 600;
   line-height: 1;
   cursor: pointer;
   transform: translate(-50%, -50%);
@@ -10564,7 +10700,7 @@ body {
     0 6px 18px rgba(47, 109, 255, 0.5);
   font-size: 24px;
   line-height: 1;
-  font-weight: 800;
+  font-weight: 600;
   cursor: crosshair;
   transform: translateY(-50%) scale(var(--canvas-inverse-scale, 1));
   transform-origin: center;
@@ -11621,7 +11757,7 @@ body {
   margin-bottom: 6px;
   color: var(--canvas-accent);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 600;
 }
 .uc-inline-prompt-head > span {
   display: inline-flex;
@@ -11737,7 +11873,7 @@ body {
 .uc-inline-prompt-expanded strong {
   align-self: start;
   color: var(--canvas-accent);
-  font-weight: 800;
+  font-weight: 600;
   line-height: 1.7;
 }
 .uc-inline-prompt-expanded strong::after {
@@ -12234,7 +12370,7 @@ body {
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   font-size: 18px;
-  font-weight: 900;
+  font-weight: 600;
   line-height: 1;
   cursor: pointer;
   pointer-events: auto;
@@ -12524,7 +12660,7 @@ body {
   border-radius: 4px 0 4px 4px;
   color: #ffffff;
   font-size: 10px;
-  font-weight: 800;
+  font-weight: 600;
   white-space: nowrap;
   background: #22c55e;
   pointer-events: none;
@@ -12575,7 +12711,7 @@ body {
 }
 .annotate-banner-text strong {
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 600;
   color: var(--color-text-1);
 }
 .annotate-banner-text span {
@@ -12856,7 +12992,7 @@ body {
   border-radius: 8px;
   color: var(--canvas-text-muted);
   background: transparent;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .right-panel header .active {
@@ -13584,7 +13720,7 @@ body {
 .uc-chat-generate-options span {
   color: var(--color-text-3);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 500;
   line-height: 12px;
 }
 
@@ -13628,7 +13764,7 @@ body {
   min-width: 0;
   color: var(--color-text-1);
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 600;
   line-height: 32px;
   text-align: center;
   font-variant-numeric: tabular-nums;
@@ -13653,7 +13789,7 @@ body {
   color: var(--color-text-1);
   background: var(--color-bg-2);
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 500;
   text-align: left;
   white-space: nowrap;
   overflow: hidden;
@@ -13738,7 +13874,31 @@ body {
 .uc-custom-select-item.active {
   background: rgba(8, 145, 178, 0.12);
   color: #0891b2;
-  font-weight: 700;
+  font-weight: 600;
+}
+.uc-custom-select-item.uc-model-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.uc-model-option-check {
+  display: grid;
+  flex: 0 0 17px;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border: 1px solid var(--canvas-border-strong);
+  border-radius: 5px;
+  background: var(--canvas-input);
+  color: var(--color-text-inverse);
+}
+.uc-custom-select-item.active .uc-model-option-check {
+  border-color: var(--canvas-accent);
+  background: var(--canvas-accent);
+}
+.uc-model-option-check i {
+  font-size: 13px;
+  line-height: 1;
 }
 
 .chat-box.uc-ref-panel textarea::placeholder {
@@ -13833,7 +13993,7 @@ body {
   border-radius: 50%;
   color: #ffffff;
   font-size: 10px;
-  font-weight: 900;
+  font-weight: 600;
   line-height: 1;
   background: #22c55e;
   flex-shrink: 0;
@@ -14113,7 +14273,7 @@ body {
   border-radius: 8px;
   color: #f8fafc;
   background: #26334b;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .yh-reverse-head button {
@@ -14521,7 +14681,7 @@ body {
   background: #22c55e;
   color: #ffffff;
   font-size: 11px;
-  font-weight: 900;
+  font-weight: 600;
   flex-shrink: 0;
   line-height: 1;
 }
@@ -15430,7 +15590,7 @@ body {
   border-radius: 6px;
   cursor: pointer;
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .uc-image-stitch-direction button:hover {
@@ -15567,7 +15727,7 @@ body {
   border: 2px solid var(--canvas-panel);
   border-radius: 50%;
   font-size: 11px;
-  font-weight: 750;
+  font-weight: 600;
 }
 
 .uc-image-stitch-slot-name {
@@ -15623,7 +15783,7 @@ body {
   border-radius: 7px;
   cursor: pointer;
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .uc-image-stitch-btn:hover {
@@ -15770,7 +15930,7 @@ body {
 .uc-copy-canvas-section-head strong {
   color: var(--canvas-text);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .uc-copy-canvas-section-head span {

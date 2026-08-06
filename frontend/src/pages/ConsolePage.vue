@@ -5,12 +5,14 @@ import ConsolePagination from '../components/console/ConsolePagination.vue'
 import FinancePanel from '../components/console/FinancePanel.vue'
 import ImageViewer from '../components/ImageViewer.vue'
 import { useUserStore } from '../stores/user'
+import { useTheme } from '../composables/useTheme'
 import { apiPath } from '../utils/apiBase'
 import { writeTextToClipboard } from '../utils/clipboard'
 import { buildDailyTopSeries } from '../utils/consoleTrend'
 import { subscribeImageTaskPersistence } from '../utils/imageTaskSync'
 
 const userStore = useUserStore()
+const { cycle: cycleTheme, isDark } = useTheme()
 const activeTab = ref('stats')
 const loading = ref(false)
 const saving = ref(false)
@@ -550,11 +552,11 @@ const searchedTaskUserOptions = computed(() => {
 const tabs = computed(() => {
   const list = []
   if (isAdmin.value) {
-    list.push({ key: 'accounts', label: '账号管理' })
-    list.push({ key: 'roles', label: '角色管理' })
-    list.push({ key: 'finance', label: '财务统计' })
+    list.push({ key: 'accounts', label: '账号管理', icon: 'ri-user-settings-line' })
+    list.push({ key: 'roles', label: '角色管理', icon: 'ri-shield-user-line' })
+    list.push({ key: 'finance', label: '财务统计', icon: 'ri-funds-line' })
   }
-  list.push({ key: 'stats', label: '生图统计' })
+  list.push({ key: 'stats', label: '生图统计', icon: 'ri-bar-chart-box-line' })
   return list
 })
 
@@ -1190,18 +1192,18 @@ const trendDropdownOpen = ref(false)
 const trendDropdownMaxHeight = ref(240)
 const trendTooltip = reactive({ show: false, x: 0, y: 0, label: '', items: [] })
 const trendPalette = [
-  '#818cf8',
-  '#22d3ee',
-  '#f59e0b',
-  '#34d399',
-  '#f472b6',
-  '#fb7185',
-  '#a78bfa',
-  '#2dd4bf',
-  '#facc15',
-  '#60a5fa',
-  '#c084fc',
-  '#4ade80',
+  '#18a8b8',
+  '#27c58d',
+  '#e2a63a',
+  '#4e8fd5',
+  '#ed6974',
+  '#8b7dd3',
+  '#d77d43',
+  '#58b8a7',
+  '#a8b03d',
+  '#5c7fc4',
+  '#c06e9a',
+  '#72a85a',
 ]
 const trendTabs = [
   { key: 'total', label: '总量' },
@@ -1426,8 +1428,8 @@ function drawTrendChart() {
 
   if (series.length === 1 && !trendVisibleSeries.value[0]?.dailyTopOnly) {
     const grad = ctx.createLinearGradient(0, padT, 0, padT + chartH)
-    grad.addColorStop(0, isLight ? 'rgba(99,102,241,0.18)' : 'rgba(99,102,241,0.25)')
-    grad.addColorStop(1, isLight ? 'rgba(99,102,241,0.01)' : 'rgba(99,102,241,0.02)')
+    grad.addColorStop(0, isLight ? 'rgba(8,127,140,0.16)' : 'rgba(24,168,184,0.24)')
+    grad.addColorStop(1, isLight ? 'rgba(8,127,140,0.01)' : 'rgba(24,168,184,0.02)')
     ctx.beginPath()
     series[0].values.forEach((value, i) => {
       const x = padL + stepX * i
@@ -1471,7 +1473,7 @@ function drawTrendChart() {
       ctx.arc(x, y, series.length > 2 ? 2.5 : 3.5, 0, Math.PI * 2)
       ctx.fillStyle = item.color
       ctx.fill()
-      ctx.strokeStyle = isLight ? '#fff' : '#0f172a'
+      ctx.strokeStyle = isLight ? '#fff' : '#171b20'
       ctx.lineWidth = 1.25
       ctx.stroke()
     })
@@ -1544,14 +1546,14 @@ function drawDonutChart() {
   const total = models.reduce((s, m) => s + (m.tasks || 0), 0) || 1
   const isLight = document.documentElement.getAttribute('data-theme') === 'light'
   const palette = [
-    '#6366f1',
-    '#06b6d4',
-    '#f59e0b',
-    '#10b981',
-    '#ef4444',
-    '#8b5cf6',
-    '#ec4899',
-    '#14b8a6',
+    '#18a8b8',
+    '#27c58d',
+    '#e2a63a',
+    '#4e8fd5',
+    '#ed6974',
+    '#8b7dd3',
+    '#d77d43',
+    '#58b8a7',
   ]
 
   let angle = -Math.PI / 2
@@ -1567,12 +1569,12 @@ function drawDonutChart() {
   })
 
   /* center text */
-  ctx.fillStyle = isLight ? '#1e293b' : '#f1f5f9'
-  ctx.font = 'bold 22px Inter, system-ui'
+  ctx.fillStyle = isLight ? '#1d252c' : '#edf2f5'
+  ctx.font = '600 22px Inter, system-ui'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
   ctx.fillText(total, cx, cy - 6)
-  ctx.fillStyle = isLight ? '#64748b' : '#94a3b8'
+  ctx.fillStyle = isLight ? '#5f6c76' : '#9aa5ae'
   ctx.font = '11px Inter, system-ui'
   ctx.fillText('总任务', cx, cy + 12)
 }
@@ -1646,25 +1648,25 @@ onUnmounted(() => {
         </svg>
         返回首页
       </RouterLink>
-      <div>
+      <div class="console-head-copy">
         <h1>控制台</h1>
         <p v-if="isAdmin">账号、角色、生图用量和费用统一管理。</p>
       </div>
-      <button class="console-refresh" type="button" :disabled="loading" @click="loadConsole">
-        <svg
-          v-if="loading"
-          class="console-spin"
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2.5"
+      <div class="console-head-actions">
+        <button
+          class="console-theme-toggle"
+          type="button"
+          :title="isDark() ? '切换到开灯主题' : '切换到关灯主题'"
+          @click="cycleTheme"
         >
-          <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-        </svg>
-        {{ loading ? '刷新中...' : '刷新数据' }}
-      </button>
+          <i :class="isDark() ? 'ri-sun-line' : 'ri-moon-line'" aria-hidden="true"></i>
+          <span>{{ isDark() ? '开灯' : '关灯' }}</span>
+        </button>
+        <button class="console-refresh" type="button" :disabled="loading" @click="loadConsole">
+          <i :class="loading ? 'ri-loader-4-line console-spin' : 'ri-refresh-line'" aria-hidden="true"></i>
+          {{ loading ? '刷新中...' : '刷新数据' }}
+        </button>
+      </div>
     </header>
 
     <section class="console-tabs" aria-label="控制台菜单">
@@ -1675,7 +1677,8 @@ onUnmounted(() => {
         type="button"
         @click="activeTab = tab.key"
       >
-        {{ tab.label }}
+        <i :class="tab.icon" aria-hidden="true"></i>
+        <span>{{ tab.label }}</span>
       </button>
     </section>
 
@@ -1691,27 +1694,32 @@ onUnmounted(() => {
         </article>
       </template>
       <template v-else>
-        <article v-if="isAdmin">
+        <article v-if="isAdmin" class="console-metric-card metric-accounts">
+          <i class="ri-user-3-line console-metric-icon" aria-hidden="true"></i>
           <span>账号数</span>
           <strong>{{ users.length }}</strong>
           <small>当前系统用户</small>
         </article>
-        <article v-if="isAdmin">
+        <article v-if="isAdmin" class="console-metric-card metric-roles">
+          <i class="ri-shield-keyhole-line console-metric-icon" aria-hidden="true"></i>
           <span>角色数</span>
           <strong>{{ roles.length }}</strong>
           <small>含管理员与业务角色</small>
         </article>
-        <article>
+        <article class="console-metric-card metric-tasks">
+          <i class="ri-image-ai-line console-metric-icon" aria-hidden="true"></i>
           <span>生图任务</span>
           <strong>{{ summary.totalTasks || 0 }}</strong>
           <small>完成 {{ summary.completedTasks || 0 }} 个</small>
         </article>
-        <article>
+        <article class="console-metric-card metric-cost">
+          <i class="ri-coins-line console-metric-icon" aria-hidden="true"></i>
           <span>米值消耗</span>
           <strong>{{ summary.totalMiCost || 0 }}</strong>
           <small>生成 {{ summary.totalImages || 0 }} 张图</small>
         </article>
-        <article>
+        <article class="console-metric-card metric-success">
+          <i class="ri-checkbox-circle-line console-metric-icon" aria-hidden="true"></i>
           <span>整体生图成功率</span>
           <strong class="console-success-rate">{{ overallSuccessRate }}</strong>
           <small>成功 {{ summary.completedTasks || 0 }} / 已结束 {{ finishedTaskCount }}</small>
@@ -1722,7 +1730,10 @@ onUnmounted(() => {
     <!-- Accounts Tab -->
     <section v-if="activeTab === 'accounts'" class="console-grid">
       <form class="console-card console-form" @submit.prevent="createUser">
-        <h2>新增账号</h2>
+        <div class="console-form-head">
+          <i class="ri-user-add-line" aria-hidden="true"></i>
+          <h2>新增账号</h2>
+        </div>
         <label>
           <span>账号</span>
           <input v-model.trim="userForm.account" placeholder="例如 operator01" required />
@@ -1812,7 +1823,10 @@ onUnmounted(() => {
             </div>
           </label>
         </div>
-        <button class="console-primary" type="submit" :disabled="saving">创建账号</button>
+        <button class="console-primary" type="submit" :disabled="saving">
+          <i class="ri-add-line" aria-hidden="true"></i>
+          创建账号
+        </button>
       </form>
 
       <section class="console-card console-table-card">
@@ -1895,8 +1909,8 @@ onUnmounted(() => {
             <span class="console-shop-cell">{{ user.shopName || '未绑定' }}<em v-if="user.shopPlatform" class="shop-platform-tag">[{{ user.shopPlatform }}]</em></span>
             <span class="console-platform-cell">{{ user.shopPlatform || '-' }}</span>
             <span class="console-actions">
-              <button type="button" @click="openDrawer(user)">编辑</button>
-              <button type="button" @click="saveUser(user)">保存</button>
+              <button type="button" @click="openDrawer(user)"><i class="ri-edit-line"></i>编辑</button>
+              <button type="button" @click="saveUser(user)"><i class="ri-save-3-line"></i>保存</button>
               <button
                 type="button"
                 class="console-password-reset-btn"
@@ -1907,7 +1921,7 @@ onUnmounted(() => {
                 <span>重置密码</span>
               </button>
               <button type="button" class="console-btn-danger" @click="deleteUser(user)">
-                删除
+                <i class="ri-delete-bin-line"></i>删除
               </button>
             </span>
           </div>
@@ -2092,7 +2106,10 @@ onUnmounted(() => {
     <!-- Roles Tab -->
     <section v-if="activeTab === 'roles'" class="console-grid">
       <form class="console-card console-form" @submit.prevent="createRole">
-        <h2>新增角色</h2>
+        <div class="console-form-head">
+          <i class="ri-shield-user-line" aria-hidden="true"></i>
+          <h2>新增角色</h2>
+        </div>
         <label>
           <span>角色编码</span>
           <input v-model.trim="roleForm.code" placeholder="如 OPERATOR" required />
@@ -2109,7 +2126,10 @@ onUnmounted(() => {
             placeholder="多个权限用逗号或换行分隔"
           ></textarea>
         </label>
-        <button class="console-primary" type="submit" :disabled="saving">创建角色</button>
+        <button class="console-primary" type="submit" :disabled="saving">
+          <i class="ri-add-line" aria-hidden="true"></i>
+          创建角色
+        </button>
       </form>
 
       <section class="console-card console-table-card">
@@ -2147,9 +2167,9 @@ onUnmounted(() => {
             <textarea v-model="role.permissionsDraft" rows="2"></textarea>
             <span>{{ role.userCount || 0 }}</span>
             <span class="console-row-actions">
-              <button type="button" @click="saveRole(role)">保存</button>
+              <button type="button" @click="saveRole(role)"><i class="ri-save-3-line"></i>保存</button>
               <button type="button" class="console-btn-danger" @click="deleteRole(role)">
-                删除
+                <i class="ri-delete-bin-line"></i>删除
               </button>
             </span>
           </div>
@@ -2187,14 +2207,14 @@ onUnmounted(() => {
                 class="console-legend-dot"
                 :style="{
                   background: [
-                    '#6366f1',
-                    '#06b6d4',
-                    '#f59e0b',
-                    '#10b981',
-                    '#ef4444',
-                    '#8b5cf6',
-                    '#ec4899',
-                    '#14b8a6',
+                    '#18a8b8',
+                    '#27c58d',
+                    '#e2a63a',
+                    '#4e8fd5',
+                    '#ed6974',
+                    '#8b7dd3',
+                    '#d77d43',
+                    '#58b8a7',
                   ][i % 8],
                 }"
               ></span>
@@ -2674,7 +2694,7 @@ onUnmounted(() => {
 .task-summary .task-prompt {
   color: var(--yq-text);
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 400;
   line-height: 1.35;
 }
 .task-summary .task-id {
@@ -2742,6 +2762,7 @@ onUnmounted(() => {
   margin: 0;
   color: #f8fafc;
   font-size: 13px;
+  font-weight: 400;
   line-height: 1.65;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
@@ -2785,7 +2806,7 @@ onUnmounted(() => {
   color: #64748b;
 }
 [data-theme='light'] .task-duration.live {
-  color: #4f46e5;
+  color: var(--console-accent);
 }
 [data-theme='light'] .persist-status.pending {
   color: #92400e;
@@ -2815,7 +2836,8 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .task-duration.live {
-  color: #818cf8;
+  color: var(--console-accent);
+  font-weight: 500;
 }
 .task-status-cell {
   display: flex;
@@ -3775,7 +3797,7 @@ onUnmounted(() => {
 
 .console-trend-head p {
   margin: 0;
-  color: var(--yq-muted);
+  color: var(--console-muted);
   font-size: 11px;
 }
 
@@ -3791,9 +3813,9 @@ onUnmounted(() => {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 3px;
   padding: 3px;
-  border: 1px solid var(--yq-border);
+  border: 1px solid var(--console-border);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--yq-bg-main) 78%, transparent);
+  background: var(--console-surface-raised);
 }
 
 .console-trend-tabs button {
@@ -3803,20 +3825,21 @@ onUnmounted(() => {
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: var(--yq-muted);
+  color: var(--console-muted);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 500;
   cursor: pointer;
 }
 
 .console-trend-tabs button:hover {
-  color: var(--yq-text);
+  color: var(--console-text);
+  background: var(--console-surface-hover);
 }
 
 .console-trend-tabs button.active {
-  background: var(--yq-primary);
-  color: #ffffff;
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--yq-primary) 28%, transparent);
+  color: var(--console-accent);
+  background: var(--console-accent-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--console-accent) 22%, transparent);
 }
 
 .console-trend-filter-row {
@@ -3840,10 +3863,10 @@ onUnmounted(() => {
   align-items: center;
   gap: 7px;
   padding: 0 9px;
-  border: 1px solid var(--yq-border);
+  border: 1px solid var(--console-border);
   border-radius: 7px;
-  background: var(--yq-bg-main);
-  color: var(--yq-muted);
+  background: var(--console-input);
+  color: var(--console-muted);
 }
 
 .console-trend-search small {
@@ -3854,16 +3877,16 @@ onUnmounted(() => {
   justify-content: center;
   padding: 0 5px;
   border-radius: 9px;
-  background: color-mix(in srgb, var(--yq-primary) 15%, transparent);
-  color: var(--yq-primary);
+  background: var(--console-accent-soft);
+  color: var(--console-accent);
   font-size: 10px;
-  font-weight: 800;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 
 .console-trend-search:focus-within {
-  border-color: var(--yq-primary);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--yq-primary) 16%, transparent);
+  border-color: var(--console-accent);
+  box-shadow: 0 0 0 2px var(--console-accent-soft);
 }
 
 .console-trend-search input {
@@ -3872,13 +3895,13 @@ onUnmounted(() => {
   border: 0;
   outline: 0;
   background: transparent;
-  color: var(--yq-text);
+  color: var(--console-text);
   font: inherit;
   font-size: 12px;
 }
 
 .console-trend-search input::placeholder {
-  color: var(--yq-muted);
+  color: var(--console-muted);
 }
 
 .console-trend-search button {
@@ -3891,13 +3914,13 @@ onUnmounted(() => {
   border: 0;
   border-radius: 4px;
   background: transparent;
-  color: var(--yq-muted);
+  color: var(--console-muted);
   cursor: pointer;
 }
 
 .console-trend-search button:hover {
-  background: color-mix(in srgb, var(--yq-border) 70%, transparent);
-  color: var(--yq-text);
+  background: var(--console-surface-hover);
+  color: var(--console-text);
 }
 
 .console-trend-dropdown-toggle {
@@ -3913,11 +3936,12 @@ onUnmounted(() => {
   overflow-x: hidden;
   overflow-y: auto;
   padding: 5px;
-  border: 1px solid var(--yq-border);
+  border: 1px solid var(--console-border);
   border-radius: 8px;
-  background: var(--yq-bg-card);
-  box-shadow: 0 14px 30px rgba(2, 6, 23, 0.42);
+  background: var(--console-surface-raised);
+  box-shadow: var(--console-shadow);
   scrollbar-width: thin;
+  scrollbar-color: var(--console-border-strong) transparent;
 }
 
 .console-trend-dropdown-option {
@@ -3931,14 +3955,18 @@ onUnmounted(() => {
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: var(--yq-text);
+  color: var(--console-text);
   text-align: left;
   cursor: pointer;
 }
 
-.console-trend-dropdown-option:hover,
+.console-trend-dropdown-option:hover {
+  background: var(--console-surface-hover);
+}
+
 .console-trend-dropdown-option.active {
-  background: color-mix(in srgb, var(--yq-primary) 14%, transparent);
+  color: var(--console-accent);
+  background: var(--console-accent-soft);
 }
 
 .console-trend-dropdown-option > span {
@@ -3946,18 +3974,18 @@ onUnmounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .console-trend-dropdown-option > small {
-  color: var(--yq-muted);
+  color: var(--console-muted);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
 .console-trend-dropdown-option > i {
-  color: var(--yq-primary);
+  color: var(--console-accent);
   font-size: 14px;
 }
 
@@ -3968,7 +3996,7 @@ onUnmounted(() => {
 .console-trend-dropdown-empty {
   margin: 0;
   padding: 14px 10px;
-  color: var(--yq-muted);
+  color: var(--console-muted);
   font-size: 11px;
   text-align: center;
 }
@@ -3990,7 +4018,7 @@ onUnmounted(() => {
   min-width: 0;
   align-items: center;
   gap: 5px;
-  color: var(--yq-text);
+  color: var(--console-text);
   font-size: 11px;
 }
 
@@ -4003,6 +4031,7 @@ onUnmounted(() => {
 }
 
 .console-trend-legend b {
+  font-weight: 500;
   max-width: 110px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4010,7 +4039,8 @@ onUnmounted(() => {
 }
 
 .console-trend-legend small {
-  color: var(--yq-muted);
+  color: var(--console-muted);
+  font-weight: 400;
   font-variant-numeric: tabular-nums;
 }
 
@@ -4042,7 +4072,7 @@ onUnmounted(() => {
 }
 
 .console-trend-tooltip-item em {
-  color: var(--yq-muted);
+  color: var(--console-muted);
   font-style: normal;
   font-variant-numeric: tabular-nums;
 }
@@ -4073,6 +4103,860 @@ onUnmounted(() => {
 
   .console-trend-card .console-trend-wrap {
     height: 220px;
+  }
+}
+
+/* ── Console workspace refinement ── */
+.console-page {
+  min-height: 100vh;
+  padding: 28px clamp(20px, 3vw, 48px) 56px;
+  color: var(--console-text);
+  background: var(--console-bg);
+}
+
+.console-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: center;
+  min-height: 56px;
+}
+
+.console-head-copy h1 {
+  color: var(--console-text);
+  font-size: 28px;
+  line-height: 1.15;
+}
+
+.console-head-copy p {
+  margin-top: 5px;
+  color: var(--console-muted);
+  font-size: 13px;
+}
+
+.console-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.console-back,
+.console-refresh,
+.console-theme-toggle {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  box-sizing: border-box;
+  padding: 0 13px;
+  border: 1px solid var(--console-border);
+  border-radius: 7px;
+  color: var(--console-text);
+  background: var(--console-surface-raised);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+}
+
+.console-back:hover,
+.console-refresh:hover:not(:disabled),
+.console-theme-toggle:hover {
+  border-color: var(--console-border-strong);
+  background: var(--console-surface-hover);
+}
+
+.console-theme-toggle i,
+.console-refresh i,
+.console-back svg {
+  color: var(--console-accent);
+  font-size: 16px;
+}
+
+.console-refresh:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.console-tabs {
+  display: inline-flex;
+  gap: 3px;
+  margin-top: 22px;
+  padding: 3px;
+  border: 1px solid var(--console-border);
+  border-radius: 8px;
+  background: var(--console-surface);
+}
+
+.console-tabs button {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--console-muted);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.console-tabs button i {
+  font-size: 16px;
+}
+
+.console-tabs button:hover {
+  color: var(--console-text);
+  background: var(--console-surface-hover);
+}
+
+.console-tabs button.active,
+[data-theme='light'] .console-tabs button.active {
+  border-color: transparent;
+  color: var(--console-accent);
+  background: var(--console-accent-soft);
+  box-shadow: none;
+}
+
+.console-error {
+  margin-top: 16px;
+  padding: 10px 12px;
+  border-color: color-mix(in srgb, var(--console-danger) 35%, transparent);
+  border-radius: 7px;
+  color: var(--console-danger);
+  background: var(--console-danger-soft);
+}
+
+.console-metrics {
+  grid-template-columns: repeat(5, minmax(150px, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.console-metrics article,
+.console-skeleton-metric,
+.console-card,
+[data-theme='light'] .console-metrics article,
+[data-theme='light'] .console-card {
+  border: 1px solid var(--console-border);
+  border-radius: 8px;
+  background: var(--console-surface);
+  box-shadow: var(--console-shadow);
+  backdrop-filter: none;
+}
+
+.console-metrics article,
+.console-skeleton-metric {
+  position: relative;
+  min-height: 106px;
+  padding: 16px;
+  overflow: hidden;
+  align-content: center;
+  gap: 6px;
+}
+
+.console-metrics article:hover,
+[data-theme='light'] .console-metrics article:hover {
+  transform: none;
+  border-color: var(--console-border-strong);
+  box-shadow: var(--console-shadow);
+}
+
+.console-metric-icon {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 7px;
+  color: var(--console-accent);
+  background: var(--console-accent-soft);
+  font-size: 17px;
+}
+
+.metric-cost .console-metric-icon {
+  color: var(--console-warning);
+  background: var(--console-warning-soft);
+}
+
+.metric-success .console-metric-icon {
+  color: var(--console-success);
+  background: var(--console-success-soft);
+}
+
+.console-metrics span,
+.console-card h2,
+[data-theme='light'] .console-metrics span,
+[data-theme='light'] .console-card h2 {
+  color: var(--console-text);
+}
+
+.console-metrics span {
+  padding-right: 36px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.console-metrics strong {
+  color: var(--console-text);
+  font-size: 30px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.console-metrics .console-success-rate,
+[data-theme='light'] .console-metrics .console-success-rate {
+  color: var(--console-success);
+}
+
+.console-card h2 {
+  font-weight: 600;
+}
+
+.console-metrics small,
+.console-row small,
+.console-empty,
+[data-theme='light'] .console-metrics small,
+[data-theme='light'] .console-row small,
+[data-theme='light'] .console-empty {
+  color: var(--console-muted);
+}
+
+.console-skeleton-bar,
+[data-theme='light'] .console-skeleton-bar {
+  background: var(--console-surface-hover);
+}
+
+.console-grid {
+  grid-template-columns: 330px minmax(0, 1fr);
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.console-stats {
+  grid-template-columns: minmax(420px, 1.03fr) minmax(500px, 1.2fr);
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.console-card {
+  padding: 16px;
+}
+
+.console-form {
+  position: sticky;
+  top: 16px;
+  gap: 11px;
+}
+
+.console-form-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding-bottom: 13px;
+  border-bottom: 1px solid var(--console-border);
+}
+
+.console-form-head > i {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 7px;
+  color: var(--console-accent);
+  background: var(--console-accent-soft);
+  font-size: 17px;
+}
+
+.console-form-head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.console-form label,
+[data-theme='light'] .console-form label {
+  color: var(--console-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.console-page input,
+.console-page select,
+.console-page textarea,
+.custom-select-trigger,
+[data-theme='light'] .console-page input,
+[data-theme='light'] .console-page select,
+[data-theme='light'] .console-page textarea,
+[data-theme='light'] .custom-select-trigger {
+  border-color: var(--console-border);
+  border-radius: 7px;
+  color: var(--console-text);
+  background: var(--console-input);
+}
+
+.console-page input:focus,
+.console-page select:focus,
+.console-page textarea:focus,
+.custom-select-trigger.open {
+  border-color: var(--console-accent);
+  box-shadow: 0 0 0 2px var(--console-accent-soft);
+}
+
+.custom-select-trigger,
+.console-page input,
+.console-page select {
+  min-height: 38px;
+}
+
+.custom-select-trigger:hover,
+[data-theme='light'] .custom-select-trigger:hover {
+  background: var(--console-surface-hover);
+}
+
+.custom-select-dropdown,
+.date-picker-dropdown,
+[data-theme='light'] .custom-select-dropdown {
+  border-color: var(--console-border);
+  border-radius: 8px;
+  background: var(--console-surface-raised);
+  box-shadow: var(--console-shadow);
+  backdrop-filter: none;
+}
+
+.custom-select-dropdown > div,
+[data-theme='light'] .custom-select-dropdown > div {
+  color: var(--console-text);
+}
+
+.custom-select-dropdown > div:hover,
+.custom-select-dropdown > div.active,
+[data-theme='light'] .custom-select-dropdown > div:hover,
+[data-theme='light'] .custom-select-dropdown > div.active {
+  color: var(--console-text);
+  background: var(--console-surface-hover);
+}
+
+.custom-select-dropdown > div.active,
+[data-theme='light'] .custom-select-dropdown > div.active {
+  color: var(--console-accent);
+  background: var(--console-accent-soft);
+}
+
+.console-primary {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid var(--console-accent);
+  border-radius: 7px;
+  color: #fff;
+  background: var(--console-accent);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.console-primary:hover:not(:disabled),
+[data-theme='light'] .console-primary:hover:not(:disabled) {
+  border-color: var(--console-accent-strong);
+  background: var(--console-accent-strong);
+}
+
+.console-primary:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.console-card-head {
+  gap: 10px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--console-border);
+}
+
+.console-card-head h2 {
+  font-size: 16px;
+}
+
+.console-search-box,
+.console-task-search,
+[data-theme='light'] .console-search-box {
+  height: 34px;
+  border-color: var(--console-border);
+  border-radius: 7px;
+  color: var(--console-muted);
+  background: var(--console-input);
+}
+
+.console-search-box:focus-within,
+.console-task-search:focus-within {
+  border-color: var(--console-accent);
+  box-shadow: 0 0 0 2px var(--console-accent-soft);
+}
+
+.console-search-box input,
+.console-task-search input,
+[data-theme='light'] .console-search-box input {
+  color: var(--console-text);
+  box-shadow: none;
+}
+
+.console-trend-search input,
+[data-theme='light'] .console-trend-search input {
+  width: auto;
+  min-height: 0;
+  height: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: var(--console-text);
+  background: transparent;
+  box-shadow: none;
+}
+
+.console-trend-search input:focus,
+[data-theme='light'] .console-trend-search input:focus {
+  border: 0;
+  box-shadow: none;
+}
+
+.console-table {
+  gap: 0;
+  border: 1px solid var(--console-border);
+  border-radius: 7px;
+}
+
+.console-row,
+[data-theme='light'] .console-row {
+  min-height: 48px;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--console-border);
+  border-radius: 0;
+  background: transparent;
+}
+
+.console-row:last-child {
+  border-bottom: 0;
+}
+
+.console-row:hover,
+[data-theme='light'] .console-row:hover {
+  background: var(--console-surface-hover);
+}
+
+.console-row-head,
+.console-row-head:hover,
+[data-theme='light'] .console-row-head,
+[data-theme='light'] .console-row-head:hover {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  min-height: 38px;
+  color: var(--console-muted);
+  background: var(--console-surface-raised);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.console-actions,
+.console-row-actions {
+  flex-wrap: wrap;
+}
+
+.console-row button,
+.console-btn-ghost,
+[data-theme='light'] .console-row button,
+[data-theme='light'] .console-btn-ghost {
+  display: inline-flex;
+  min-width: 0;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid var(--console-border);
+  border-radius: 6px;
+  color: var(--console-text);
+  background: var(--console-surface-raised);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.console-row button:hover,
+[data-theme='light'] .console-row button:hover {
+  border-color: var(--console-border-strong);
+  background: var(--console-surface-hover);
+}
+
+.console-btn-danger,
+[data-theme='light'] .console-btn-danger {
+  border-color: color-mix(in srgb, var(--console-danger) 28%, var(--console-border)) !important;
+  color: var(--console-danger) !important;
+  background: var(--console-danger-soft) !important;
+}
+
+.status-pill {
+  min-height: 24px;
+  padding: 0 8px;
+  color: var(--console-accent);
+  background: var(--console-accent-soft);
+  font-weight: 500;
+}
+
+.status-pill.COMPLETED,
+.status-pill.completed,
+.status-pill.succeeded,
+.status-pill.success,
+.status-pill.done,
+[data-theme='light'] .status-pill.COMPLETED,
+[data-theme='light'] .status-pill.completed {
+  color: var(--console-success);
+  background: var(--console-success-soft);
+}
+
+.status-pill.FAILED,
+.status-pill.failed,
+.status-pill.error,
+.status-pill.cancelled,
+.status-pill.canceled,
+[data-theme='light'] .status-pill.FAILED,
+[data-theme='light'] .status-pill.failed {
+  color: var(--console-danger);
+  background: var(--console-danger-soft);
+}
+
+.console-success-rate,
+.money,
+.persist-status.done {
+  color: var(--console-success) !important;
+}
+
+.persist-status.pending {
+  color: var(--console-warning);
+}
+
+.persist-status.failed {
+  color: var(--console-danger);
+}
+
+.console-models-viz {
+  gap: 16px;
+}
+
+.console-model-legend-item {
+  padding: 2px 0;
+}
+
+.console-provider-rates {
+  border-color: var(--console-border);
+}
+
+.console-provider-rate-track {
+  height: 6px;
+  background: var(--console-surface-hover);
+}
+
+.console-provider-rate-track span {
+  background: var(--console-success);
+}
+
+.console-trend-card .console-trend-wrap {
+  height: 270px;
+}
+
+.console-trend-tooltip,
+[data-theme='light'] .console-trend-tooltip {
+  border-color: var(--console-border);
+  border-radius: 7px;
+  color: var(--console-text);
+  background: var(--console-surface-raised);
+  box-shadow: var(--console-shadow);
+}
+
+.console-trend-tooltip strong,
+.console-trend-tooltip-item em,
+[data-theme='light'] .console-trend-tooltip strong {
+  color: var(--console-muted);
+}
+
+.console-trend-tooltip span,
+[data-theme='light'] .console-trend-tooltip span {
+  color: var(--console-text);
+}
+
+.console-toast,
+[data-theme='light'] .console-toast {
+  border-color: var(--console-border);
+  border-radius: 7px;
+  color: var(--console-text);
+  background: var(--console-surface-raised);
+  box-shadow: var(--console-shadow);
+  backdrop-filter: none;
+}
+
+.console-toast.success {
+  border-color: color-mix(in srgb, var(--console-success) 40%, var(--console-border));
+}
+
+.console-toast.error {
+  border-color: color-mix(in srgb, var(--console-danger) 40%, var(--console-border));
+}
+
+.console-drawer,
+.console-password-dialog,
+[data-theme='light'] .console-drawer,
+[data-theme='light'] .console-password-dialog {
+  border-color: var(--console-border);
+  color: var(--console-text);
+  background: var(--console-surface);
+  box-shadow: var(--console-shadow);
+}
+
+.console-drawer-head,
+.console-drawer-foot,
+.console-password-dialog header,
+.console-password-dialog footer,
+[data-theme='light'] .console-drawer-head,
+[data-theme='light'] .console-drawer-foot,
+[data-theme='light'] .console-password-dialog header,
+[data-theme='light'] .console-password-dialog footer {
+  border-color: var(--console-border);
+}
+
+.console-drawer-head h3,
+.console-password-dialog header h3,
+[data-theme='light'] .console-drawer-head h3,
+[data-theme='light'] .console-password-dialog header h3 {
+  color: var(--console-text);
+}
+
+.console-drawer-body label,
+.console-password-dialog label,
+.console-password-dialog header p,
+[data-theme='light'] .console-drawer-body label,
+[data-theme='light'] .console-password-dialog label,
+[data-theme='light'] .console-password-dialog header p {
+  color: var(--console-muted);
+}
+
+.console-drawer-body label input,
+.console-drawer-body label select,
+.console-password-dialog input,
+[data-theme='light'] .console-drawer-body label input,
+[data-theme='light'] .console-drawer-body label select,
+[data-theme='light'] .console-password-dialog input {
+  border-color: var(--console-border);
+  border-radius: 7px;
+  color: var(--console-text);
+  background: var(--console-input);
+}
+
+.date-range-picker .custom-select-trigger,
+[data-theme='light'] .date-range-picker .custom-select-trigger {
+  border-color: var(--console-border);
+  color: var(--console-text);
+  background: var(--console-input);
+}
+
+.date-picker-dropdown,
+[data-theme='light'] .date-picker-dropdown {
+  border-color: var(--console-border);
+  color: var(--console-text);
+  background: var(--console-surface-raised);
+  box-shadow: var(--console-shadow);
+  backdrop-filter: none;
+}
+
+.date-shortcuts button,
+[data-theme='light'] .date-shortcuts button {
+  border-color: var(--console-border);
+  color: var(--console-muted);
+  background: transparent;
+}
+
+.date-shortcuts button:hover,
+[data-theme='light'] .date-shortcuts button:hover {
+  color: var(--console-text);
+  background: var(--console-surface-hover);
+}
+
+.date-shortcuts button.active,
+[data-theme='light'] .date-shortcuts button.active {
+  border-color: color-mix(in srgb, var(--console-accent) 38%, var(--console-border));
+  color: var(--console-accent);
+  background: var(--console-accent-soft);
+}
+
+.task-date-range-status > span,
+.task-date-calendar-week span,
+[data-theme='light'] .task-date-range-status > span,
+[data-theme='light'] .task-date-calendar-week span {
+  color: var(--console-subtle);
+}
+
+.task-date-range-status button,
+[data-theme='light'] .task-date-range-status button {
+  border-color: var(--console-border);
+  color: var(--console-muted);
+  background: var(--console-input);
+}
+
+.task-date-range-status button.active,
+[data-theme='light'] .task-date-range-status button.active {
+  border-color: var(--console-accent);
+  color: var(--console-text);
+  background: var(--console-accent-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--console-accent) 12%, transparent);
+}
+
+.task-date-calendar-head strong,
+[data-theme='light'] .task-date-calendar-head strong {
+  color: var(--console-text);
+  font-weight: 600;
+}
+
+.task-date-calendar-head button,
+.task-date-calendar-days button,
+[data-theme='light'] .task-date-calendar-head button,
+[data-theme='light'] .task-date-calendar-days button {
+  color: var(--console-text);
+}
+
+.task-date-calendar-head button:hover,
+.task-date-calendar-days button:hover:not(:disabled):not(.selected),
+[data-theme='light'] .task-date-calendar-head button:hover,
+[data-theme='light'] .task-date-calendar-days button:hover:not(:disabled):not(.selected) {
+  color: var(--console-text);
+  background: var(--console-surface-hover);
+}
+
+.task-date-calendar-days button.muted,
+[data-theme='light'] .task-date-calendar-days button.muted {
+  color: var(--console-subtle);
+  opacity: 0.48;
+}
+
+.task-date-calendar-days button.today,
+[data-theme='light'] .task-date-calendar-days button.today {
+  outline-color: var(--console-accent);
+}
+
+.task-date-calendar-days button.in-range,
+[data-theme='light'] .task-date-calendar-days button.in-range {
+  color: var(--console-accent);
+  background: var(--console-accent-soft);
+}
+
+.task-date-calendar-days button.selected,
+[data-theme='light'] .task-date-calendar-days button.selected {
+  color: #fff;
+  background: var(--console-accent);
+  font-weight: 600;
+}
+
+.task-date-calendar-days button:disabled,
+[data-theme='light'] .task-date-calendar-days button:disabled {
+  color: var(--console-subtle);
+  opacity: 0.42;
+}
+
+.task-user-search,
+.custom-select.console-filter-select .task-user-search,
+[data-theme='light'] .custom-select.console-filter-select .task-user-search {
+  border-color: var(--console-border);
+  background: var(--console-surface-raised);
+}
+
+.task-user-search input,
+[data-theme='light'] .task-user-search input {
+  color: var(--console-text);
+}
+
+.task-prompt-tooltip,
+[data-theme='light'] .task-prompt-tooltip {
+  border-color: var(--console-border);
+  color: var(--console-text);
+  background: color-mix(in srgb, var(--console-surface-raised) 94%, transparent);
+  box-shadow: var(--console-shadow);
+}
+
+@media (max-width: 1240px) {
+  .console-metrics {
+    grid-template-columns: repeat(3, minmax(160px, 1fr));
+  }
+
+  .console-stats {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .console-page {
+    padding: 20px 16px 40px;
+  }
+
+  .console-head {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .console-head-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+  }
+
+  .console-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .console-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .console-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .console-form {
+    position: static;
+  }
+}
+
+@media (max-width: 560px) {
+  .console-head-copy h1 {
+    font-size: 23px;
+  }
+
+  .console-theme-toggle span,
+  .console-refresh {
+    font-size: 12px;
+  }
+
+  .console-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .console-card-head,
+  .console-accounts-filters,
+  .console-filters {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .console-search-box,
+  .console-task-search,
+  .console-filter-select,
+  .task-user-filter {
+    width: 100% !important;
   }
 }
 </style>

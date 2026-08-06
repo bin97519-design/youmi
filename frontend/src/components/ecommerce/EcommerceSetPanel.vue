@@ -121,7 +121,7 @@ const store = useEcommerceSetStore()
 
 .es-new-badge {
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
   padding: 1px 6px;
   border-radius: 4px;
   background: #ecfdf5;
