@@ -341,6 +341,8 @@ public class ImageGenerationClient {
     }
     body.put("output_format", request.outputFormat() != null && !request.outputFormat().isBlank()
         ? request.outputFormat() : "png");
+    putIfPresent(body, "background", request.background());
+    putIfPresent(body, "input_fidelity", request.inputFidelity());
     body.put("n", count);
 
     // 图生图：需要先上传参考图到 OSS，然后传 image_objects
@@ -397,6 +399,9 @@ public class ImageGenerationClient {
     body.put("resolution", resolution);
     body.put("n", count);
     putIfPresent(body, "image_urls", request.normalizedImageUrls());
+    putIfPresent(body, "background", request.background());
+    putIfPresent(body, "output_format", request.outputFormat());
+    putIfPresent(body, "input_fidelity", request.inputFidelity());
     System.out.println("[apimart-direct] size=" + size + " resolution=" + resolution
         + " request.size()=" + request.size() + " request.ratio()=" + request.ratio()
         + " n=" + count + " body=" + body);

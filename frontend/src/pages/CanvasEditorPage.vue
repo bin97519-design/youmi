@@ -731,15 +731,55 @@ let canvasFileDragDepth = 0
 let chatFileDragDepth = 0
 const activeChatTaskCount = ref(0)
 const chatGenerating = computed(() => activeChatTaskCount.value > 0)
+const agentPlanning = ref(false)
+let agentRequestController = null
+const agentEnhancingPrompt = ref(false)
+let agentEnhanceRequestController = null
+const LEGACY_AGENT_CONVERSATION_ID = 'agent-legacy'
+
+function cancelAgentPromptEnhancement() {
+  if (agentEnhanceRequestController) {
+    agentEnhanceRequestController.abort()
+    agentEnhanceRequestController = null
+  }
+  agentEnhancingPrompt.value = false
+}
+
+function createAgentConversationId() {
+  return `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function resolveAgentConversationId(payload = {}) {
+  const savedId = String(payload.activeAgentConversationId || '').trim()
+  if (savedId) return savedId
+  const records = Array.isArray(payload.agentConversations) ? payload.agentConversations : []
+  if (records[0]?.id) return records[0].id
+  const hasLegacyMessages = (payload.chat || []).some(
+    (message) => message?.agent && !message.agentConversationId,
+  )
+  return hasLegacyMessages ? LEGACY_AGENT_CONVERSATION_ID : createAgentConversationId()
+}
+
+const activeAgentConversationId = ref(resolveAgentConversationId(doc.value?.payload || {}))
+const agentConversationHistoryOpen = ref(false)
+const agentConversationSearch = ref('')
 const regeneratingLayerIds = reactive(new Set())
+const smartCutoutLayerIds = reactive(new Set())
 const chatSelectOpen = ref(null) // 'model' | 'ratio' | 'resolution' | null
+const chatModeMenuOpen = ref(false)
 
 function toggleChatSelect(name) {
+  chatModeMenuOpen.value = false
   chatSelectOpen.value = chatSelectOpen.value === name ? null : name
 }
 
 function closeChatSelect() {
   chatSelectOpen.value = null
+}
+
+function toggleChatModeMenu() {
+  chatModeMenuOpen.value = !chatModeMenuOpen.value
+  closeChatSelect()
 }
 
 function selectChatOption(name, value) {
@@ -993,7 +1033,11 @@ async function submitInlineLayerDialogModification(layer) {
       displayText: instruction,
       selectedElements: [],
       referenceImageUrls,
-      messageReferenceImages: referenceImageUrls.map((url) => ({ url })),
+      referenceLayerIds: references.map((reference) => reference.layerId).filter(Boolean),
+      messageReferenceImages: references.map((reference) => ({
+        url: reference.url,
+        layerId: reference.layerId || '',
+      })),
       targetLayerId: layer.id,
       generationCount: inlineDialogModification.generationCount,
       taskConfig: {
@@ -1035,7 +1079,8 @@ async function generateFromCameraAngle(payload) {
     displayText: payload.displayText,
     selectedElements: [],
     referenceImageUrls: [source.url],
-    messageReferenceImages: [{ url: source.url }],
+    messageReferenceImages: [{ url: source.url, layerId: sourceId }],
+    referenceLayerIds: [sourceId],
     targetLayerId: sourceId,
     generationCount: 1,
     taskConfig: {
@@ -1070,9 +1115,37 @@ async function recordGenerationToHistory(record) {
 // 注意：model 字符串必须和后端 alias 表（ImageGenerationProperties.defaultModelAliases）保持一致
 // 后端会对空格/横线/下划线做归一化容错，但 UI 上用标准写法更专业
 const chatModelOptions = ['banana2', 'banana-pro', 'gpt-image-2', 'agnes-image-2.1-flash']
-const chatRatioOptions = ['auto', '1:1', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
+const chatRatioOptions = [
+  'auto',
+  '1:1',
+  '2:3',
+  '3:2',
+  '3:4',
+  '4:3',
+  '4:5',
+  '5:4',
+  '9:16',
+  '16:9',
+  '21:9',
+]
 const chatResolutionOptions = ['1K', '2K', '4K']
 const initialChatConfig = doc.value?.payload?.chatConfig || {}
+const chatModeOptions = [
+  { value: 'agent', label: 'Agent', icon: 'ri-ai-generate-2-line' },
+  { value: 'image', label: '图像', icon: 'ri-image-line' },
+]
+const chatMode = ref(initialChatConfig.mode === 'agent' ? 'agent' : 'image')
+const chatModeLabel = computed(
+  () => chatModeOptions.find((option) => option.value === chatMode.value)?.label || '图像',
+)
+
+function selectChatMode(mode) {
+  if (!chatModeOptions.some((option) => option.value === mode)) return
+  if (mode !== 'agent') cancelAgentPromptEnhancement()
+  chatMode.value = mode
+  chatModeMenuOpen.value = false
+  agentConversationHistoryOpen.value = false
+}
 
 function normalizeChatModelSelection(value, fallback = 'banana2') {
   const requested = Array.isArray(value) ? value : [value]
@@ -1137,7 +1210,7 @@ const TASK_POLL_INTERVAL = 2500
 const TASK_RESULT_SYNC_ATTEMPTS = 60
 const TASK_RESULT_STALE_AFTER_MS = 24 * 60 * 60 * 1000
 // 对话窗口选中的模型参数变化时，落库到按文档隔离的 payload.chatConfig
-watch([chatModels, chatRatio, chatResolution, chatGenerationCount], () => {
+watch([chatModels, chatRatio, chatResolution, chatGenerationCount, chatMode], () => {
   canvas.updateDocument(props.id, (draft) => {
     draft.payload.chatConfig = {
       model: chatModel.value,
@@ -1145,6 +1218,7 @@ watch([chatModels, chatRatio, chatResolution, chatGenerationCount], () => {
       ratio: chatRatio.value,
       resolution: chatResolution.value,
       count: chatGenerationCount.value,
+      mode: chatMode.value,
     }
     return draft
   })
@@ -1163,6 +1237,10 @@ watch(
     chatRatio.value = cfg.ratio || '9:16'
     chatResolution.value = cfg.resolution || '2K'
     chatGenerationCount.value = normalizeChatGenerationCount(cfg.count)
+    chatMode.value = cfg.mode === 'agent' ? 'agent' : 'image'
+    activeAgentConversationId.value = resolveAgentConversationId(doc.value?.payload || {})
+    agentConversationSearch.value = ''
+    agentConversationHistoryOpen.value = false
     initDocState()
   },
 )
@@ -1282,6 +1360,9 @@ const cropMode = reactive({
   rows: 3,
   cols: 3,
   selectedCells: new Set(),
+  processing: false,
+  progress: 0,
+  statusText: '',
 })
 const cropPickerOpen = ref(false) // 宫格选择器弹窗
 const cropPickerRef = ref(null)
@@ -1895,16 +1976,83 @@ const demoChatMessages = [
   { id: 'demo-user-2', role: 'user', text: '（仅图片）' },
   { id: 'demo-assistant-2', role: 'assistant', text: '已添加 2 张参考图到画布。' },
 ]
+
+function agentConversationTitle(value, fallback = '新对话') {
+  const title = String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!title) return fallback
+  return title.length > 24 ? `${title.slice(0, 24)}...` : title
+}
+
+function messageBelongsToAgentConversation(message, conversationId) {
+  if (!message) return false
+  if (message.agentConversationId) return message.agentConversationId === conversationId
+  return conversationId === LEGACY_AGENT_CONVERSATION_ID && Boolean(message.agent)
+}
+
+const agentConversations = computed(() => {
+  const payload = doc.value?.payload || {}
+  const messages = payload.chat || []
+  const records = (Array.isArray(payload.agentConversations) ? payload.agentConversations : [])
+    .filter((record) => record?.id)
+    .map((record) => ({
+      id: String(record.id),
+      title: agentConversationTitle(record.title),
+      createdAt: Number(record.createdAt) || 0,
+      updatedAt: Number(record.updatedAt) || Number(record.createdAt) || 0,
+    }))
+    .filter((record) =>
+      messages.some((message) => messageBelongsToAgentConversation(message, record.id)),
+    )
+
+  const hasLegacyMessages = messages.some(
+    (message) => message?.agent && !message.agentConversationId,
+  )
+  if (hasLegacyMessages && !records.some((record) => record.id === LEGACY_AGENT_CONVERSATION_ID)) {
+    const firstLegacyUserMessage = messages.find(
+      (message) => message?.agent && !message.agentConversationId && message.role === 'user',
+    )
+    records.push({
+      id: LEGACY_AGENT_CONVERSATION_ID,
+      title: agentConversationTitle(firstLegacyUserMessage?.text, '历史对话'),
+      createdAt: Number(firstLegacyUserMessage?.createdAt) || 0,
+      updatedAt: Number(firstLegacyUserMessage?.createdAt) || 0,
+    })
+  }
+
+  return records.sort((left, right) => right.updatedAt - left.updatedAt)
+})
+
+const activeAgentConversationTitle = computed(
+  () =>
+    agentConversations.value.find((record) => record.id === activeAgentConversationId.value)
+      ?.title || '新对话',
+)
+
+const filteredAgentConversations = computed(() => {
+  const keyword = agentConversationSearch.value.trim().toLowerCase()
+  if (!keyword) return agentConversations.value
+  return agentConversations.value.filter((record) => record.title.toLowerCase().includes(keyword))
+})
+
 const chatMessages = computed(() => {
   const messages = doc.value.payload.chat || []
   const isSeedDemo =
     props.id === '1904' &&
     messages.some((message) => String(message.id || '').startsWith('seed-chat-'))
-  if (!isSeedDemo) return messages
-  const userMessages = messages.filter(
-    (message) => !String(message.id || '').startsWith('seed-chat-'),
-  )
-  return [...demoChatMessages, ...userMessages]
+  const resolvedMessages = isSeedDemo
+    ? [
+        ...demoChatMessages,
+        ...messages.filter((message) => !String(message.id || '').startsWith('seed-chat-')),
+      ]
+    : messages
+  if (chatMode.value === 'agent') {
+    return resolvedMessages.filter((message) =>
+      messageBelongsToAgentConversation(message, activeAgentConversationId.value),
+    )
+  }
+  return resolvedMessages.filter((message) => !message.agent && !message.agentConversationId)
 })
 const marqueeStyle = computed(() => {
   if (!marquee.active) return {}
@@ -2176,7 +2324,17 @@ async function readApiResponse(response) {
   return result.data
 }
 
-async function submitImageTask({ prompt, imageUrls, model, size, resolution, clientTaskId }) {
+async function submitImageTask({
+  prompt,
+  imageUrls,
+  model,
+  size,
+  resolution,
+  clientTaskId,
+  background,
+  outputFormat,
+  inputFidelity,
+}) {
   console.log('[submitImageTask] 开始提交', {
     model: model || chatModel.value,
     size: size || chatRatio.value,
@@ -2196,6 +2354,9 @@ async function submitImageTask({ prompt, imageUrls, model, size, resolution, cli
   if (imageUrls?.length) {
     body.image_urls = imageUrls
   }
+  if (background) body.background = background
+  if (outputFormat) body.output_format = outputFormat
+  if (inputFidelity) body.input_fidelity = inputFidelity
   // 客户端幂等键：落盘到后端，供刷新重提时按它命中已有任务、跳过重复扣费+外部调用。
   if (clientTaskId) body.client_task_id = clientTaskId
 
@@ -2754,6 +2915,9 @@ async function resumeInterruptedNoTaskId(layer) {
       model: layer.genMeta?.model,
       size: layer.genMeta?.ratio,
       resolution: layer.genMeta?.resolution,
+      background: layer.genMeta?.generationOptions?.background,
+      outputFormat: layer.genMeta?.generationOptions?.outputFormat,
+      inputFidelity: layer.genMeta?.generationOptions?.inputFidelity,
     })
     _pollingTasks.add(taskId) // 提前占住，避免 watch 重扫重复拉起轮询
     // 成功拿到 taskId：清除上一次失败残留的报错/网络标记，避免陈旧 e 字段一直挂在图层上
@@ -3342,6 +3506,10 @@ function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '',
           : [],
         creationType: genMeta.creationType || '',
         sourceLayerIds: Array.isArray(genMeta.sourceLayerIds) ? genMeta.sourceLayerIds : [],
+        generationOptions:
+          genMeta.generationOptions && typeof genMeta.generationOptions === 'object'
+            ? { ...genMeta.generationOptions }
+            : {},
       },
       // 关联的聊天消息 id：刷新后恢复轮询完成时用来更新聊天卡片文案（否则 assistantId 为空，
       // pollImageTaskUntilDone 会跳过所有 chatMessage 更新，卡片永远停在"正在恢复..."）。
@@ -3376,6 +3544,7 @@ function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '',
 
 function connectCreationSources(sourceIds, targetId) {
   const existing = new Set(connections.value.map((item) => `${item.fromLayerId}:${item.toLayerId}`))
+  let changed = false
   for (const sourceId of sourceIds || []) {
     const key = `${sourceId}:${targetId}`
     if (!sourceId || existing.has(key)) continue
@@ -3387,8 +3556,42 @@ function connectCreationSources(sourceIds, targetId) {
       toPort: 'left',
     })
     existing.add(key)
+    changed = true
   }
-  persistConnections()
+  if (changed) persistConnections()
+}
+
+function resolveGenerationSourceLayerIds({
+  referenceImages = [],
+  referenceImageUrls = [],
+  referenceLayerIds = [],
+  selectedElements = [],
+  targetLayerId = '',
+} = {}) {
+  const usedUrls = new Set(referenceImageUrls.filter(Boolean))
+  const sourceIds = new Set()
+  const addLayer = (layerId) => {
+    const layer = layers.value.find((item) => item.id === layerId)
+    if (layer && isRealImageLayer(layer)) sourceIds.add(layer.id)
+  }
+
+  referenceLayerIds.forEach(addLayer)
+  referenceImages.forEach((reference) => {
+    if (reference?.layerId) {
+      addLayer(reference.layerId)
+      return
+    }
+    const matchingLayer = layers.value.find(
+      (layer) => isRealImageLayer(layer) && layer.url && layer.url === reference?.url,
+    )
+    if (matchingLayer) addLayer(matchingLayer.id)
+  })
+  selectedElements.forEach((element) => addLayer(element?.layerId))
+
+  const targetLayer = layers.value.find((layer) => layer.id === targetLayerId)
+  if (targetLayer?.url && usedUrls.has(targetLayer.url)) addLayer(targetLayer.id)
+
+  return [...sourceIds]
 }
 
 async function runCanvasCreation({ type, sourceIds, jobs }) {
@@ -5075,6 +5278,8 @@ function onStageLayerPointerDown(event) {
   if (dragState.value) return
   const target = event.target
   if (!(target instanceof Element)) return
+  // 宫格覆盖层拥有自己的格子选择交互，不能让下方图层先抢走 pointer capture。
+  if (cropMode.active && target.closest('.crop-grid-overlay')) return
   const hitElements = [target]
   if (document.elementsFromPoint) {
     hitElements.push(...document.elementsFromPoint(event.clientX, event.clientY))
@@ -5830,10 +6035,15 @@ function renderMessageContent(message) {
       `<button class="chat-gen-action-btn chat-gen-action--dislike" data-msg-id="${mid}" title="点踩">👎</button>` +
       `</div>` +
       `</div>`
-  } else if (message.generating && !/^(生成|生图)失败/.test(String(message.text || '').trim())) {
+  } else if (
+    message.generating &&
+    !message.agent &&
+    !/^(生成|生图)失败/.test(String(message.text || '').trim())
+  ) {
     html += `<div class="chat-gen-preview chat-gen-preview--loading"><div class="chat-gen-skeleton"></div></div>`
   } else if (
     message.role === 'assistant' &&
+    !message.agent &&
     (message.failed || /(?:生成|生图)失败/.test(String(message.text || '')))
   ) {
     const mid = escHtml(message.id || '')
@@ -5994,6 +6204,116 @@ function canRegenerateCanvasLayer(layer) {
   return Boolean(getLayerGenerationReplay(layer))
 }
 
+const SMART_CUTOUT_PROMPT =
+  'Remove only the background from this exact image. Preserve every foreground subject, product, person, visible text, logo, layout, color, proportion and detail exactly. Do not redraw, restyle, crop or add anything. Return a PNG with a fully transparent background and clean natural edges.'
+
+function closestImageRatio(layer) {
+  const width = Math.max(1, Number(layer?.naturalWidth || layer?.width) || 1)
+  const height = Math.max(1, Number(layer?.naturalHeight || layer?.height) || 1)
+  const target = width / height
+  const candidates = chatRatioOptions
+    .filter((option) => option !== 'auto')
+    .map((option) => {
+      const [ratioWidth, ratioHeight] = option.split(':').map(Number)
+      return { option, value: ratioWidth / ratioHeight }
+    })
+  return candidates.reduce((best, candidate) =>
+    Math.abs(Math.log(candidate.value / target)) < Math.abs(Math.log(best.value / target))
+      ? candidate
+      : best,
+  ).option
+}
+
+async function smartCutoutLayer(layer) {
+  if (!isRealImageLayer(layer) || smartCutoutLayerIds.has(layer.id)) return
+  if (!userStore.requireLogin()) return
+
+  const sourceWidth = Math.max(1, Number(layer.naturalWidth || layer.width) || 1)
+  const sourceHeight = Math.max(1, Number(layer.naturalHeight || layer.height) || 1)
+  const ratio = closestImageRatio(layer)
+  const generationOptions = {
+    background: 'transparent',
+    outputFormat: 'png',
+    inputFidelity: 'high',
+  }
+
+  smartCutoutLayerIds.add(layer.id)
+  expandedLayerToolbarId.value = ''
+  selectedLayerId.value = layer.id
+  selectedLayerIds.value = [layer.id]
+  pushUndo()
+
+  const placeholderId = addGeneratingPlaceholderLayer(
+    SMART_CUTOUT_PROMPT,
+    {
+      model: 'gpt-image-2',
+      ratio,
+      resolution: '2K',
+      referenceImageUrls: [layer.url],
+      referenceImages: [
+        {
+          url: layer.url,
+          naturalWidth: sourceWidth,
+          naturalHeight: sourceHeight,
+        },
+      ],
+      previewUrl: layer.url,
+      aspectWidth: sourceWidth,
+      aspectHeight: sourceHeight,
+      creationType: 'smart-cutout',
+      sourceLayerIds: [layer.id],
+      generationOptions,
+    },
+    '',
+    { skipUndo: true, skipFlush: true },
+  )
+  const placeholder = layers.value.find((item) => item.id === placeholderId)
+  if (placeholder) {
+    updateLayer(placeholderId, {
+      name: `${layer.name || '图片'} 抠图`,
+      x: Number(layer.x || 0) + Number(layer.width || 0) + 48,
+      y: Number(layer.y || 0),
+      statusText: '正在智能抠图…',
+    })
+  }
+  connectCreationSources([layer.id], placeholderId)
+  _submittingPlaceholderIds.add(placeholderId)
+  void canvas.flushNow?.(props.id)
+
+  try {
+    const pendingLayer = layers.value.find((item) => item.id === placeholderId)
+    const taskId = await submitImageTask({
+      prompt: SMART_CUTOUT_PROMPT,
+      imageUrls: [layer.url],
+      model: 'gpt-image-2',
+      size: ratio,
+      resolution: '2K',
+      clientTaskId: pendingLayer?.clientTaskId || '',
+      ...generationOptions,
+    })
+    updateGeneratingPlaceholder(placeholderId, {
+      taskId,
+      progress: 8,
+      status: 'processing',
+      statusText: '正在识别主体并移除背景…',
+    })
+    showCopyPasteToast('智能抠图任务已提交')
+    await startImagePoll(taskId, placeholderId, '', SMART_CUTOUT_PROMPT)
+  } catch (error) {
+    const friendly = friendlyImageError(error?.message || error)
+    updateGeneratingPlaceholder(placeholderId, {
+      progress: 1,
+      status: 'failed',
+      statusText: friendly,
+      lastError: String(error?.message || error),
+    })
+    showCopyPasteToast(`智能抠图失败：${friendly}`)
+  } finally {
+    _submittingPlaceholderIds.delete(placeholderId)
+    smartCutoutLayerIds.delete(layer.id)
+  }
+}
+
 async function regenerateCanvasLayer(layer) {
   if (regeneratingLayerIds.has(layer.id)) return
   if (!userStore.requireLogin()) return
@@ -6019,6 +6339,7 @@ async function regenerateCanvasLayer(layer) {
       displayText: replay.displayText,
       selectedElements: [],
       referenceImageUrls: replay.referenceImageUrls,
+      referenceLayerIds: replay.sourceLayerIds,
       messageElements: replay.messageElements,
       messageReferenceImages: replay.messageReferenceImages,
       targetLayerId: layer.id,
@@ -6074,6 +6395,7 @@ async function replayChatGeneration(messageId, { retryFailure = false, button } 
       displayText: replay.displayText,
       selectedElements: [],
       referenceImageUrls: replay.referenceImageUrls,
+      referenceLayerIds: replay.sourceLayerIds,
       messageElements: replay.messageElements,
       messageReferenceImages: replay.messageReferenceImages,
       targetLayerId: replay.targetLayerId,
@@ -6429,6 +6751,40 @@ function updateChatTextFromEditor() {
 // 构建含元素名称的结构化提示词: [元素1] 修改文字1 [元素2] 修改文字2
 function getEditorPrompt() {
   return extractChatEditorText({ includePills: true })
+}
+
+function replaceChatEditorText(value) {
+  const editor = document.querySelector('.chat-editor')
+  const text = String(value || '')
+    .replace(/\r\n?/g, '\n')
+    .trim()
+  if (!editor) {
+    chatText.value = text
+    return
+  }
+
+  const fragment = document.createDocumentFragment()
+  const lines = text.split('\n')
+  lines.forEach((line, index) => {
+    if (index > 0) fragment.appendChild(document.createElement('br'))
+    if (line) fragment.appendChild(document.createTextNode(line))
+  })
+  editor.replaceChildren(fragment)
+  chatText.value = text
+
+  // 当前选中的元素仍然是参考对象，重新挂回输入框中的引用标记。
+  syncPillsToEditor()
+  requestAnimationFrame(() => {
+    if (!editor.isConnected) return
+    editor.focus()
+    const selection = window.getSelection()
+    if (!selection) return
+    const range = document.createRange()
+    range.selectNodeContents(editor)
+    range.collapse(false)
+    selection.removeAllRanges()
+    selection.addRange(range)
+  })
 }
 
 // 同步：editor 里被 Backspace 删除的 pill → 取消画布选中
@@ -7130,6 +7486,634 @@ function getElementClickStyle(key) {
   }
 }
 
+function clearChatComposer() {
+  const editorEl = document.querySelector('.chat-editor')
+  if (editorEl) editorEl.innerHTML = ''
+  if (editorEl) {
+    editorEl.focus()
+    const selection = window.getSelection()
+    if (selection) {
+      const range = document.createRange()
+      range.selectNodeContents(editorEl)
+      range.collapse(true)
+      selection.removeAllRanges()
+      selection.addRange(range)
+    }
+  }
+  chatText.value = ''
+  chatReferenceImages.value.forEach((image) => {
+    if (image.localUrl?.startsWith('blob:')) URL.revokeObjectURL(image.localUrl)
+  })
+  chatReferenceImages.value = []
+  activeChatReferenceId.value = ''
+  selectedDetectedElements.value = new Set()
+  elementClickPositions.value = {}
+}
+
+function startNewAgentConversation() {
+  cancelAgentPromptEnhancement()
+  if (agentRequestController) {
+    agentRequestController.abort()
+    agentRequestController = null
+  }
+  agentPlanning.value = false
+  const newConversationId = createAgentConversationId()
+  const now = Date.now()
+  canvas.updateDocument(props.id, (draft) => {
+    const records = Array.isArray(draft.payload.agentConversations)
+      ? [...draft.payload.agentConversations]
+      : []
+    if (
+      !records.some((record) => record?.id === activeAgentConversationId.value) &&
+      (draft.payload.chat || []).some((message) =>
+        messageBelongsToAgentConversation(message, activeAgentConversationId.value),
+      )
+    ) {
+      const firstUserMessage = (draft.payload.chat || []).find(
+        (message) =>
+          message.role === 'user' &&
+          messageBelongsToAgentConversation(message, activeAgentConversationId.value),
+      )
+      records.push({
+        id: activeAgentConversationId.value,
+        title: agentConversationTitle(firstUserMessage?.text, '历史对话'),
+        createdAt: Number(firstUserMessage?.createdAt) || now,
+        updatedAt: now,
+      })
+    }
+    draft.payload.agentConversations = records.slice(0, 50)
+    draft.payload.activeAgentConversationId = newConversationId
+    return draft
+  })
+  activeAgentConversationId.value = newConversationId
+  clearChatComposer()
+  chatModeMenuOpen.value = false
+  chatReferenceSourceOpen.value = false
+  closeChatSelect()
+  agentConversationSearch.value = ''
+  agentConversationHistoryOpen.value = true
+  showCopyPasteToast('已新建 Agent 对话')
+}
+
+function touchAgentConversation(title) {
+  const conversationId = activeAgentConversationId.value
+  const now = Date.now()
+  canvas.updateDocument(props.id, (draft) => {
+    const records = Array.isArray(draft.payload.agentConversations)
+      ? [...draft.payload.agentConversations]
+      : []
+    const index = records.findIndex((record) => record?.id === conversationId)
+    if (index >= 0) {
+      const current = records[index]
+      records[index] = {
+        ...current,
+        title:
+          !current.title || current.title === '新对话'
+            ? agentConversationTitle(title)
+            : current.title,
+        updatedAt: now,
+      }
+    } else {
+      records.unshift({
+        id: conversationId,
+        title: agentConversationTitle(title),
+        createdAt: now,
+        updatedAt: now,
+      })
+    }
+    draft.payload.agentConversations = records.slice(0, 50)
+    draft.payload.activeAgentConversationId = conversationId
+    return draft
+  })
+}
+
+function switchAgentConversation(conversationId) {
+  if (!conversationId || conversationId === activeAgentConversationId.value) {
+    agentConversationHistoryOpen.value = false
+    return
+  }
+  if (agentRequestController) {
+    agentRequestController.abort()
+    agentRequestController = null
+  }
+  agentPlanning.value = false
+  activeAgentConversationId.value = conversationId
+  canvas.updateDocument(props.id, (draft) => {
+    draft.payload.activeAgentConversationId = conversationId
+    return draft
+  })
+  clearChatComposer()
+  agentConversationSearch.value = ''
+  agentConversationHistoryOpen.value = false
+  scrollChatToBottom()
+}
+
+async function deleteAgentConversation(conversationId) {
+  if (!conversationId) return
+  if (conversationId === activeAgentConversationId.value && agentRequestController) {
+    agentRequestController.abort()
+    agentRequestController = null
+    agentPlanning.value = false
+  }
+
+  let nextConversationId = activeAgentConversationId.value
+  canvas.updateDocument(props.id, (draft) => {
+    const remainingMessages = (draft.payload.chat || []).filter(
+      (message) => !messageBelongsToAgentConversation(message, conversationId),
+    )
+    let remainingRecords = (Array.isArray(draft.payload.agentConversations)
+      ? draft.payload.agentConversations
+      : []
+    ).filter(
+      (record) =>
+        record?.id &&
+        String(record.id) !== conversationId &&
+        remainingMessages.some((message) =>
+          messageBelongsToAgentConversation(message, String(record.id)),
+        ),
+    )
+
+    if (conversationId === activeAgentConversationId.value) {
+      const hasLegacyMessages = remainingMessages.some(
+        (message) => message?.agent && !message.agentConversationId,
+      )
+      const candidates = [
+        ...remainingRecords
+          .map((record) => ({
+            id: String(record.id),
+            updatedAt: Number(record.updatedAt) || Number(record.createdAt) || 0,
+          }))
+          .sort((left, right) => right.updatedAt - left.updatedAt),
+        ...(hasLegacyMessages
+          ? [{ id: LEGACY_AGENT_CONVERSATION_ID, updatedAt: Number.MAX_SAFE_INTEGER }]
+          : []),
+      ]
+      nextConversationId = candidates[0]?.id || createAgentConversationId()
+    }
+
+    draft.payload.chat = remainingMessages
+    draft.payload.agentConversations = remainingRecords.slice(0, 50)
+    draft.payload.activeAgentConversationId = nextConversationId
+    return draft
+  })
+
+  activeAgentConversationId.value = nextConversationId
+  agentConversationSearch.value = ''
+  clearChatComposer()
+  const saved = await canvas.flushNow(props.id)
+  showCopyPasteToast(saved ? '对话已删除' : '对话已从本地删除，服务器稍后自动同步')
+  scrollChatToBottom()
+}
+
+function buildCanvasAgentContext() {
+  const layerContexts = layers.value.slice(0, 80).map((layer, index) => ({
+    id: layer.id,
+    name: layer.name || layerName(index),
+    type: layer.type || 'image',
+    url: String(layer.url || layer.thumbnailUrl || '').startsWith('blob:')
+      ? ''
+      : layer.url || layer.thumbnailUrl || '',
+    width: Number(layer.width) || 0,
+    height: Number(layer.height) || 0,
+    x: Number(layer.x) || 0,
+    y: Number(layer.y) || 0,
+  }))
+  const referenceLookup = new Map(
+    layers.value.map((layer, index) => [
+      layer.id,
+      {
+        id: layer.id,
+        layerId: layer.id,
+        name: layer.name || layerName(index),
+        url: layer.url || layer.thumbnailUrl || '',
+      },
+    ]),
+  )
+  const referenceLayerIds = new Set()
+
+  for (const image of chatReferenceImages.value) {
+    if (image.uploading || image.error || !image.url) continue
+    const matchedLayer = layers.value.find(
+      (layer) =>
+        layer.id === image.layerId || layer.url === image.url || layer.thumbnailUrl === image.url,
+    )
+    if (matchedLayer) {
+      referenceLayerIds.add(matchedLayer.id)
+      continue
+    }
+    const contextId = `chat-ref-${image.id}`
+    referenceLayerIds.add(contextId)
+    referenceLookup.set(contextId, {
+      id: contextId,
+      layerId: '',
+      name: image.name || '外部参考图',
+      url: image.url,
+    })
+    layerContexts.push({
+      id: contextId,
+      name: image.name || '外部参考图',
+      type: 'image',
+      url: String(image.url).startsWith('blob:') ? '' : image.url,
+      width: 0,
+      height: 0,
+      x: 0,
+      y: 0,
+    })
+  }
+
+  return {
+    layers: layerContexts.slice(0, 80),
+    selectedLayerIds: selectedLayerIds.value.filter((id) => referenceLookup.has(id)),
+    referenceLayerIds: [...referenceLayerIds].filter((id) => referenceLookup.has(id)),
+    referenceLookup,
+  }
+}
+
+function buildCanvasAgentHistory() {
+  return chatMessages.value
+    .filter((message) => message.agent && !message.generating)
+    .slice(-12)
+    .map((message) => {
+      const draftPrompts = agentDraftItems(message.agentDraft)
+        .map((item, index) => `方案${index + 1}：${item.prompt}`)
+        .join('\n')
+      const content = [
+        String(message.text || '').trim(),
+        draftPrompts && `提示词草稿：\n${draftPrompts}`,
+      ]
+        .filter(Boolean)
+        .join('\n')
+      return { role: message.role, content }
+    })
+    .filter((message) => message.content)
+}
+
+function splitAgentDraftPrompt(value) {
+  const text = String(value || '')
+    .replace(/\\r\\n|\\n|\\r/g, '\n')
+    .replace(/\r\n?/g, '\n')
+    .trim()
+  if (!text) return []
+
+  const markerPattern = /(?:^|\n)\s*(?=(?:第\s*\d+\s*(?:张|条|个|版|组|款|套)?|(?:方案|提示词)\s*\d+|\d+\s*[.、）)]\s*)\s*[:：.]?)/g
+  const markerIndexes = []
+  for (const match of text.matchAll(markerPattern)) {
+    const markerIndex = Number(match.index) + String(match[0] || '').length
+    if (!markerIndexes.includes(markerIndex)) markerIndexes.push(markerIndex)
+  }
+  if (markerIndexes.length < 2) return [text]
+
+  const commonPrefix = text.slice(0, markerIndexes[0]).trim()
+  return markerIndexes
+    .map((start, index) => {
+      const end = markerIndexes[index + 1] ?? text.length
+      const section = text.slice(start, end).trim()
+      return [commonPrefix, section].filter(Boolean).join('\n\n')
+    })
+    .filter(Boolean)
+}
+
+function normalizeAgentDraftPrompts(values) {
+  const prompts = (Array.isArray(values) ? values : [values])
+    .flatMap((value) => splitAgentDraftPrompt(value))
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+  return [...new Set(prompts)].slice(0, 10)
+}
+
+function agentDraftItems(draft) {
+  if (!draft) return []
+  const storedItems = Array.isArray(draft.items) ? draft.items : []
+  if (storedItems.length) {
+    return storedItems
+      .map((item, index) => ({
+        id: item?.id || `agent-draft-${index}`,
+        prompt: String(item?.prompt || '').trim(),
+        status: item?.status || 'ready',
+      }))
+      .filter((item) => item.prompt)
+  }
+  const prompts = normalizeAgentDraftPrompts(draft.prompts?.length ? draft.prompts : draft.prompt)
+  return prompts.map((prompt, index) => ({
+      id: `agent-draft-${index}`,
+      prompt,
+      status: prompts.length > 1 ? 'ready' : draft.status || 'ready',
+    }),
+  )
+}
+
+function agentDraftActiveIndex(draft) {
+  const items = agentDraftItems(draft)
+  if (!items.length) return 0
+  return Math.min(Math.max(Number(draft?.activeIndex) || 0, 0), items.length - 1)
+}
+
+function agentDraftActiveItem(draft) {
+  const items = agentDraftItems(draft)
+  return items[agentDraftActiveIndex(draft)] || null
+}
+
+function agentDraftPromptParagraphs(value) {
+  const text = String(value || '')
+    .replace(/\\r\\n|\\n|\\r/g, '\n')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+    .replace(
+      /\s*(?=(?:主体与元素|场景与空间|构图与镜头|光线与色彩|材质与细节|文案与排版|视觉风格|避免出现|负面要求)[：:])/g,
+      '\n',
+    )
+    .trim()
+  if (!text) return []
+
+  const paragraphs = []
+  for (const line of text.split(/\n+/).map((item) => item.trim()).filter(Boolean)) {
+    const sentences = line.match(/[^。！？!?；;]+[。！？!?；;]?/g) || [line]
+    let current = ''
+    let sentenceCount = 0
+    for (const sentence of sentences) {
+      const cleaned = sentence.trim()
+      if (!cleaned) continue
+      current += cleaned
+      sentenceCount += 1
+      if (sentenceCount >= 2 || current.length >= 72) {
+        paragraphs.push(current)
+        current = ''
+        sentenceCount = 0
+      }
+    }
+    if (current) paragraphs.push(current)
+  }
+
+  return paragraphs.length ? paragraphs : [text]
+}
+
+function selectAgentDraft(message, index) {
+  const items = agentDraftItems(message?.agentDraft)
+  if (!items.length) return
+  const activeIndex = Math.min(Math.max(Number(index) || 0, 0), items.length - 1)
+  updateChatMessage(message.id, {
+    agentDraft: {
+      ...message.agentDraft,
+      items,
+      prompt: items[activeIndex].prompt,
+      activeIndex,
+    },
+  })
+}
+
+function moveAgentDraft(message, offset) {
+  const items = agentDraftItems(message?.agentDraft)
+  if (items.length < 2) return
+  const nextIndex = (agentDraftActiveIndex(message.agentDraft) + offset + items.length) % items.length
+  selectAgentDraft(message, nextIndex)
+}
+
+function updateAgentDraftItemStatus(messageId, itemId, status) {
+  canvas.updateDocument(props.id, (draftDocument) => {
+    draftDocument.payload.chat = (draftDocument.payload.chat || []).map((message) => {
+      if (message.id !== messageId || !message.agentDraft) return message
+      const items = agentDraftItems(message.agentDraft).map((item) =>
+        item.id === itemId ? { ...item, status } : item,
+      )
+      const activeIndex = Math.min(
+        agentDraftActiveIndex(message.agentDraft),
+        Math.max(items.length - 1, 0),
+      )
+      return {
+        ...message,
+        agentDraft: {
+          ...message.agentDraft,
+          items,
+          prompt: items[activeIndex]?.prompt || message.agentDraft.prompt,
+          activeIndex,
+        },
+      }
+    })
+    return draftDocument
+  })
+}
+
+async function runCanvasAgent() {
+  if (agentPlanning.value) return
+  const instruction = getEditorPrompt().trim()
+  if (!instruction) return
+  if (!userStore.requireLogin()) return
+
+  const context = buildCanvasAgentContext()
+  const history = buildCanvasAgentHistory()
+  const createdAt = Date.now()
+  const conversationId = activeAgentConversationId.value
+  touchAgentConversation(instruction)
+  const userMessage = {
+    id: `msg-${createdAt}-agent-user`,
+    role: 'user',
+    text: instruction,
+    agent: true,
+    agentConversationId: conversationId,
+    createdAt,
+    referenceImages: context.referenceLayerIds
+      .map((id) => context.referenceLookup.get(id))
+      .filter((reference) => reference?.url)
+      .map((reference) => ({ url: reference.url, layerId: reference.layerId || '' })),
+  }
+  const assistantId = `msg-${createdAt}-agent`
+  addChatMessages([
+    userMessage,
+    {
+      id: assistantId,
+      role: 'assistant',
+      text: context.referenceLayerIds.length
+        ? 'Agent 正在识别参考图并整理你的需求...'
+        : 'Agent 正在整理你的需求...',
+      agent: true,
+      agentConversationId: conversationId,
+      generating: true,
+      createdAt: createdAt + 1,
+    },
+  ])
+  clearChatComposer()
+  agentPlanning.value = true
+  const requestController = new AbortController()
+  if (agentRequestController) agentRequestController.abort()
+  agentRequestController = requestController
+
+  try {
+    const response = await readApiResponse(
+      await fetch(apiPath('/api/ai/canvas-agent/chat'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...userStore.authHeaders(),
+        },
+        signal: requestController.signal,
+        body: JSON.stringify({
+          canvasId: props.id,
+          instruction,
+          history,
+          layers: context.layers,
+          selectedLayerIds: context.selectedLayerIds,
+          referenceLayerIds: context.referenceLayerIds,
+          model: chatModel.value,
+          ratio: chatRatio.value,
+          resolution: chatResolution.value,
+          count: chatGenerationCount.value,
+        }),
+      }),
+    )
+    const draftPrompts = normalizeAgentDraftPrompts(
+      Array.isArray(response?.draftPrompts) && response.draftPrompts.length
+        ? response.draftPrompts
+        : response?.draftPrompt,
+    )
+    const references = (response?.referenceLayerIds || [])
+      .map((id) => context.referenceLookup.get(id))
+      .filter((reference) => reference?.url)
+    updateChatMessage(assistantId, {
+      text: String(
+        response?.reply ||
+          (context.referenceLayerIds.length
+            ? '我已经结合参考图看过你的要求，可以继续告诉我怎么调整。'
+            : '我已经看过你的文字要求，可以继续告诉我怎么调整。'),
+      ),
+      generating: false,
+      failed: false,
+      agentDraft: draftPrompts.length
+        ? {
+            prompt: draftPrompts[0],
+            prompts: draftPrompts,
+            items: draftPrompts.map((prompt, index) => ({
+              id: `${assistantId}-draft-${index}`,
+              prompt,
+              status: 'ready',
+            })),
+            activeIndex: 0,
+            referenceImages: references.map((reference) => ({
+              url: reference.url,
+              layerId: reference.layerId || '',
+            })),
+            model: response?.imageModel || chatModel.value,
+            ratio: response?.ratio || chatRatio.value,
+            resolution: response?.resolution || chatResolution.value,
+            count: normalizeChatGenerationCount(response?.count || chatGenerationCount.value),
+            ready: true,
+            status: 'ready',
+          }
+        : null,
+    })
+  } catch (error) {
+    if (error?.name === 'AbortError') return
+    const message = error?.message || 'Agent 暂时无法回复，请稍后重试。'
+    updateChatMessage(assistantId, {
+      text: `Agent 回复失败：${message}`,
+      generating: false,
+      failed: true,
+    })
+    showCopyPasteToast(message)
+  } finally {
+    if (agentRequestController === requestController) {
+      agentRequestController = null
+      agentPlanning.value = false
+    }
+  }
+}
+
+async function copyAgentDraftPrompt(message) {
+  const prompt = String(agentDraftActiveItem(message?.agentDraft)?.prompt || '').trim()
+  if (!prompt) return
+  try {
+    await writeTextToClipboard(prompt)
+    showCopyPasteToast('提示词已复制')
+  } catch {
+    showCopyPasteToast('复制失败，请手动选择文字复制')
+  }
+}
+
+async function confirmAgentGeneration(message) {
+  const draft = message?.agentDraft
+  const items = agentDraftItems(draft)
+  const activeIndex = agentDraftActiveIndex(draft)
+  const activeItem = items[activeIndex]
+  if (!activeItem?.prompt || ['submitting', 'submitted'].includes(activeItem.status)) return
+  if (!userStore.requireLogin()) return
+
+  updateAgentDraftItemStatus(message.id, activeItem.id, 'submitting')
+  try {
+    const referenceImages = Array.isArray(draft.referenceImages)
+      ? draft.referenceImages.filter((reference) => reference?.url)
+      : []
+    await sendChat({
+      displayText: '',
+      fullPrompt: String(activeItem.prompt).trim(),
+      selectedElements: [],
+      referenceImageUrls: referenceImages.map((reference) => reference.url),
+      referenceLayerIds: referenceImages.map((reference) => reference.layerId).filter(Boolean),
+      messageReferenceImages: referenceImages,
+      targetLayerId: referenceImages.find((reference) => reference.layerId)?.layerId || '',
+      generationCount: draft.count || 1,
+      taskConfig: {
+        models: [draft.model || chatModel.value],
+        model: draft.model || chatModel.value,
+        ratio: draft.ratio || chatRatio.value,
+        resolution: draft.resolution || chatResolution.value,
+      },
+      hideUserMessage: true,
+      preserveComposer: true,
+      agentConversationId:
+        message.agentConversationId || activeAgentConversationId.value,
+    })
+    updateAgentDraftItemStatus(message.id, activeItem.id, 'submitted')
+  } catch (error) {
+    updateAgentDraftItemStatus(message.id, activeItem.id, 'ready')
+    showCopyPasteToast(error?.message || '提交生图失败，请稍后重试')
+  }
+}
+
+function handleComposerSubmit() {
+  return chatMode.value === 'agent' ? runCanvasAgent() : sendChat()
+}
+
+async function enhanceAgentPrompt() {
+  if (agentEnhancingPrompt.value) return
+  const prompt = extractChatEditorText().trim()
+  if (!prompt) {
+    showCopyPasteToast('请先输入需要增强的提示词')
+    return
+  }
+  if (!userStore.requireLogin()) return
+
+  if (agentEnhanceRequestController) agentEnhanceRequestController.abort()
+  const requestController = new AbortController()
+  agentEnhanceRequestController = requestController
+  agentEnhancingPrompt.value = true
+
+  try {
+    const response = await readApiResponse(
+      await fetch(apiPath('/api/ai/canvas-agent/enhance-prompt'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...userStore.authHeaders(),
+        },
+        body: JSON.stringify({ prompt }),
+        signal: requestController.signal,
+      }),
+    )
+    const enhancedPrompt = String(response?.prompt || '').trim()
+    if (!enhancedPrompt) throw new Error('没有返回可用的增强提示词')
+    replaceChatEditorText(enhancedPrompt)
+    showCopyPasteToast('提示词已增强，可继续修改后发送')
+  } catch (error) {
+    if (error?.name !== 'AbortError') {
+      showCopyPasteToast(error?.message || '提示词增强失败，请稍后重试')
+    }
+  } finally {
+    if (agentEnhanceRequestController === requestController) {
+      agentEnhanceRequestController = null
+      agentEnhancingPrompt.value = false
+    }
+  }
+}
+
 async function sendChat(options = {}) {
   const sendOptions = options?.currentTarget ? {} : options || {}
   const editorText = getEditorPrompt()
@@ -7181,6 +8165,15 @@ async function sendChat(options = {}) {
         name: `参考图 ${index + 1}`,
       }))
     : chatReferenceSnapshot
+  const generationSourceLayerIds = resolveGenerationSourceLayerIds({
+    referenceImages: generationReferenceSnapshot,
+    referenceImageUrls: imageUrls,
+    referenceLayerIds: Array.isArray(sendOptions.referenceLayerIds)
+      ? sendOptions.referenceLayerIds
+      : [],
+    selectedElements,
+    targetLayerId,
+  })
   const elementTargets = buildElementLocationHint(selectedElements, imageUrls)
   const fullPrompt =
     String(sendOptions.fullPrompt || '').trim() ||
@@ -7205,11 +8198,15 @@ async function sendChat(options = {}) {
       })
   const messageReferenceImages = Array.isArray(sendOptions.messageReferenceImages)
     ? sendOptions.messageReferenceImages
-        .map((image) => ({ url: typeof image === 'string' ? image : image?.url }))
+        .map((image) => ({
+          url: typeof image === 'string' ? image : image?.url,
+          layerId: typeof image === 'string' ? '' : image?.layerId || '',
+        }))
         .filter((image) => image.url)
     : chatReferenceImages.value
         .filter((img) => !img.uploading && !img.error && img.url)
-        .map((img) => ({ url: img.url }))
+        .map((img) => ({ url: img.url, layerId: img.layerId || '' }))
+  const agentConversationId = String(sendOptions.agentConversationId || '').trim()
   const requestedModels = normalizeChatModelSelection(
     sendOptions.taskConfig?.models?.length
       ? sendOptions.taskConfig.models
@@ -7236,6 +8233,7 @@ async function sendChat(options = {}) {
       ratio: taskConfig.ratio,
       resolution: taskConfig.resolution,
       targetLayerId,
+      sourceLayerIds: [...generationSourceLayerIds],
     }
     return {
       id: `msg-${createdAt}-assistant-${index + 1}`,
@@ -7252,6 +8250,7 @@ async function sendChat(options = {}) {
       createdAt: createdAt + index + 1,
       generating: true,
       failed: false,
+      ...(agentConversationId ? { agentConversationId } : {}),
       generationRequest,
     }
   })
@@ -7265,34 +8264,14 @@ async function sendChat(options = {}) {
     elements: messageElements,
     generationCount: totalGenerationCount,
     referenceImages: messageReferenceImages,
+    sourceLayerIds: [...generationSourceLayerIds],
+    ...(agentConversationId ? { agentConversationId } : {}),
   }
   addChatMessages(
     sendOptions.hideUserMessage ? assistantMessages : [userMessage, ...assistantMessages],
   )
   if (!sendOptions.preserveComposer) {
-    // 清空编辑器（pill + 文字）
-    const editorEl = document.querySelector('.chat-editor')
-    if (editorEl) editorEl.innerHTML = ''
-    // 清空后把焦点移回输入框，并把光标归位到开头（避免浏览器自动插入的 <br> 把光标推到第二行）
-    if (editorEl) {
-      editorEl.focus()
-      const sel = window.getSelection()
-      if (sel) {
-        const range = document.createRange()
-        range.selectNodeContents(editorEl)
-        range.collapse(true) // true = 折叠到开头
-        sel.removeAllRanges()
-        sel.addRange(range)
-      }
-    }
-    chatText.value = ''
-    chatReferenceImages.value.forEach((image) => {
-      if (image.localUrl?.startsWith('blob:')) URL.revokeObjectURL(image.localUrl)
-    })
-    chatReferenceImages.value = []
-    activeChatReferenceId.value = ''
-    selectedDetectedElements.value = new Set()
-    elementClickPositions.value = {}
+    clearChatComposer()
   }
   const batchTasks = assistantMessages.map((message, index) => {
     const messageTaskConfig = {
@@ -7305,6 +8284,7 @@ async function sendChat(options = {}) {
         ...messageTaskConfig,
         referenceImageUrls: imageUrls,
         referenceImages: generationReferenceSnapshot,
+        sourceLayerIds: generationSourceLayerIds,
         batchIndex: index + 1,
         batchCount: totalGenerationCount,
       },
@@ -7323,9 +8303,8 @@ async function sendChat(options = {}) {
       model: message.model,
     }
   })
-  const targetLayer = layers.value.find((layer) => layer.id === targetLayerId)
-  if (targetLayer?.url && imageUrls.includes(targetLayer.url)) {
-    for (const task of batchTasks) connectCreationSources([targetLayerId], task.placeholderId)
+  for (const task of batchTasks) {
+    connectCreationSources(generationSourceLayerIds, task.placeholderId)
   }
   void canvas.flushNow?.(props.id)
 
@@ -8065,6 +9044,10 @@ function onGlobalKeydown(event) {
     return
   }
   if (event.key === 'Escape') {
+    if (chatModeMenuOpen.value) {
+      chatModeMenuOpen.value = false
+      return
+    }
     if (chatSelectOpen.value) {
       closeChatSelect()
       return
@@ -8297,6 +9280,9 @@ function useGenerationRecordAsReference(record) {
     url: record.imageUrl,
     name: `记录 ${new Date(record.createdAt).toLocaleString()}`,
     uploading: false,
+    layerId:
+      layers.value.find((layer) => isRealImageLayer(layer) && layer.url === record.imageUrl)?.id ||
+      '',
   })
   activeChatReferenceId.value = chatReferenceImages.value.at(-1)?.id || ''
 }
@@ -8433,7 +9419,9 @@ onMounted(() => {
     toolbarAddOpen.value = false
     helpMenuOpen.value = false
     chatSelectOpen.value = null
+    chatModeMenuOpen.value = false
     chatReferenceSourceOpen.value = false
+    agentConversationHistoryOpen.value = false
     expandedLayerToolbarId.value = ''
     // 关闭右键菜单
     if (contextMenu.visible) contextMenu.visible = false
@@ -8472,6 +9460,11 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   _mounted.value = false
+  cancelAgentPromptEnhancement()
+  if (agentRequestController) {
+    agentRequestController.abort()
+    agentRequestController = null
+  }
   if (todayGlobalImageCountTimer) {
     window.clearInterval(todayGlobalImageCountTimer)
     todayGlobalImageCountTimer = null
@@ -8570,6 +9563,8 @@ function toggleMaterialChatReference(mat) {
     name: mat.name || '我的素材',
     uploading: false,
     materialId: mat.id || '',
+    layerId:
+      layers.value.find((layer) => isRealImageLayer(layer) && layer.url === mat.url)?.id || '',
   }
   chatReferenceImages.value.push(referenceImage)
   activeChatReferenceId.value = referenceImage.id
@@ -9373,13 +10368,17 @@ function contextMenuAddToReference() {
     const layer = layers.value.find((l) => l.id === id)
     if (!layer || !layer.url) continue
     // 避免重复添加
-    const exists = chatReferenceImages.value.some((img) => img.url === layer.url)
-    if (exists) continue
+    const existing = chatReferenceImages.value.find((img) => img.url === layer.url)
+    if (existing) {
+      if (!existing.layerId) existing.layerId = layer.id
+      continue
+    }
     chatReferenceImages.value.push({
       id: `ref-${Date.now()}-${id}`,
       url: layer.url,
       name: layer.name || '参考图',
       uploading: false,
+      layerId: layer.id,
     })
     added++
   }
@@ -9891,6 +10890,9 @@ function openCropPicker(_x, _y, layer) {
   cropMode.rows = 3
   cropMode.cols = 3
   cropMode.selectedCells = new Set()
+  cropMode.processing = false
+  cropMode.progress = 0
+  cropMode.statusText = ''
   closeContextMenu()
   nextTick(() => clampCropPickerOffset())
 }
@@ -9921,6 +10923,9 @@ function enterQuickCrop(cols, rows) {
   cropMode.rows = rows
   cropMode.cols = cols
   cropMode.selectedCells = new Set()
+  cropMode.processing = false
+  cropMode.progress = 0
+  cropMode.statusText = ''
   cropMode.active = true
   closeContextMenu()
 }
@@ -9929,9 +10934,13 @@ function exitCropMode() {
   cropMode.active = false
   cropMode.layerId = null
   cropMode.selectedCells = new Set()
+  cropMode.processing = false
+  cropMode.progress = 0
+  cropMode.statusText = ''
 }
 
 function toggleCellSelect(cellIdx) {
+  if (cropMode.processing) return
   const idx = cellIdx + 1 // 1-based
   const set = new Set(cropMode.selectedCells)
   if (set.has(idx)) {
@@ -9943,6 +10952,7 @@ function toggleCellSelect(cellIdx) {
 }
 
 function toggleCellShift(cellIdx, event) {
+  if (cropMode.processing) return
   if (event.shiftKey) {
     const idx = cellIdx + 1
     const set = new Set(cropMode.selectedCells)
@@ -9954,6 +10964,7 @@ function toggleCellShift(cellIdx, event) {
 }
 
 function selectAllCells() {
+  if (cropMode.processing) return
   const total = cropMode.rows * cropMode.cols
   const all = new Set()
   for (let i = 1; i <= total; i++) all.add(i)
@@ -9961,6 +10972,7 @@ function selectAllCells() {
 }
 
 function invertCells() {
+  if (cropMode.processing) return
   const total = cropMode.rows * cropMode.cols
   const next = new Set()
   for (let i = 1; i <= total; i++) {
@@ -9974,6 +10986,7 @@ function isCropCellSelected(cellIdx) {
 }
 
 async function executeCrop() {
+  if (cropMode.processing) return
   const layer = layers.value.find((l) => l.id === cropMode.layerId)
   if (!layer || !layer.url) {
     showCopyPasteToast('裁图失败：图层无效或缺少图片')
@@ -9985,123 +10998,205 @@ async function executeCrop() {
     return
   }
 
-  pushUndo()
+  cropMode.processing = true
+  cropMode.progress = 4
+  cropMode.statusText = '正在读取原图'
 
-  const img = await loadImageForCrop(layer)
-  if (!img) {
-    console.error('[crop] 图片加载失败')
-    showCopyPasteToast('图片加载失败，无法裁图')
-    exitCropMode()
-    return
-  }
+  try {
+    const img = await loadImageForCrop(layer)
+    if (!img) throw new Error('图片加载失败，无法裁图')
 
-  const natW = img.naturalWidth || layer.naturalWidth || layer.width
-  const natH = img.naturalHeight || layer.naturalHeight || layer.height
-  const cellW = natW / cropMode.cols
-  const cellH = natH / cropMode.rows
-  const displayCellW = layer.width / cropMode.cols
-  const displayCellH = layer.height / cropMode.rows
-  const childW = layer.width // 子图层跟母图一样大
-  const childH = layer.height
+    const natW = img.naturalWidth || layer.naturalWidth || layer.width
+    const natH = img.naturalHeight || layer.naturalHeight || layer.height
+    const cellW = natW / cropMode.cols
+    const cellH = natH / cropMode.rows
+    const childW = layer.width // 子图层跟母图一样大
+    const childH = layer.height
+    const selectedCells = [...cropMode.selectedCells].sort((a, b) => a - b)
+    const uploadedCells = new Array(selectedCells.length)
+    let cursor = 0
+    let completed = 0
+    let localFallbackCount = 0
 
-  const newLayers = []
-  const baseZ = Math.max(...layers.value.map((l) => l.zIndex || 0), 0) + 1
+    cropMode.progress = 12
+    cropMode.statusText = `正在裁切并上传 0 / ${selectedCells.length}`
 
-  for (const cellIdx of [...cropMode.selectedCells].sort((a, b) => a - b)) {
-    const row = Math.floor((cellIdx - 1) / cropMode.cols)
-    const col = (cellIdx - 1) % cropMode.cols
-    // 错位排开：每多一个子图往右下偏移 24px，避免完全重叠看不清
-    const offsetIdx = [...cropMode.selectedCells].sort((a, b) => a - b).indexOf(cellIdx)
-    const offsetX = layer.x + offsetIdx * 24
-    const offsetY = layer.y + offsetIdx * 24
+    const processNextCell = async () => {
+      while (cursor < selectedCells.length) {
+        const outputIndex = cursor
+        cursor += 1
+        const cellIdx = selectedCells[outputIndex]
+        const row = Math.floor((cellIdx - 1) / cropMode.cols)
+        const col = (cellIdx - 1) % cropMode.cols
+        const outputCanvas = document.createElement('canvas')
+        outputCanvas.width = Math.max(1, Math.round(cellW))
+        outputCanvas.height = Math.max(1, Math.round(cellH))
+        const context = outputCanvas.getContext('2d')
+        if (!context) throw new Error('浏览器无法创建裁图画布')
+        context.drawImage(
+          img,
+          Math.round(col * cellW),
+          Math.round(row * cellH),
+          Math.round(cellW),
+          Math.round(cellH),
+          0,
+          0,
+          outputCanvas.width,
+          outputCanvas.height,
+        )
 
-    const canvas = document.createElement('canvas')
-    canvas.width = Math.round(cellW)
-    canvas.height = Math.round(cellH)
-    const ctx = canvas.getContext('2d')
-    ctx.drawImage(
-      img,
-      Math.round(col * cellW),
-      Math.round(row * cellH),
-      Math.round(cellW),
-      Math.round(cellH),
-      0,
-      0,
-      canvas.width,
-      canvas.height,
-    )
-
-    // 上传 OSS
-    const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'))
-    let ossUrl
-    try {
-      const formData = new FormData()
-      formData.append('file', blob, `${layer.name || 'image'}_${cellIdx}.png`)
-      const uploadRes = await fetch(apiPath('/api/v1/file/upload'), {
-        method: 'POST',
-        headers: { ...userStore.authHeaders() },
-        body: formData,
-      })
-      const uploadData = await readApiResponse(uploadRes)
-      ossUrl = uploadData?.url || uploadData?.fileUrl || uploadData?.fullUrl
-    } catch (e) {
-      console.warn('[crop] OSS 上传失败，使用 blob URL:', e)
-      ossUrl = URL.createObjectURL(blob)
+        const blob = await new Promise((resolve, reject) => {
+          outputCanvas.toBlob(
+            (value) => (value ? resolve(value) : reject(new Error('裁图编码失败'))),
+            'image/png',
+          )
+        })
+        const fileName = `${layer.name || 'image'}_${cellIdx}.png`
+        const uploadResult = await uploadCropBlob(blob, fileName)
+        if (uploadResult.localOnly) localFallbackCount += 1
+        uploadedCells[outputIndex] = {
+          cellIdx,
+          url: uploadResult.url,
+          naturalWidth: outputCanvas.width,
+          naturalHeight: outputCanvas.height,
+        }
+        completed += 1
+        cropMode.progress = Math.min(94, 12 + Math.round((completed / selectedCells.length) * 82))
+        cropMode.statusText = `正在裁切并上传 ${completed} / ${selectedCells.length}`
+      }
     }
 
-    newLayers.push({
-      id: `crop-${Date.now()}-${cellIdx}`,
+    const workerCount = Math.min(3, selectedCells.length)
+    await Promise.all(Array.from({ length: workerCount }, () => processNextCell()))
+
+    const baseZ = Math.max(...layers.value.map((item) => item.zIndex || 0), 0) + 1
+    const timestamp = Date.now()
+    const newLayers = uploadedCells.map((cell, index) => ({
+      id: `crop-${timestamp}-${cell.cellIdx}`,
       type: 'image',
-      name: `${layer.name || 'image'}_${cellIdx}`,
-      url: ossUrl,
-      naturalWidth: canvas.width,
-      naturalHeight: canvas.height,
+      name: `${layer.name || 'image'}_${cell.cellIdx}`,
+      url: cell.url,
+      naturalWidth: cell.naturalWidth,
+      naturalHeight: cell.naturalHeight,
       width: Math.max(1, Math.round(childW)),
       height: Math.max(1, Math.round(childH)),
-      x: offsetX,
-      y: offsetY,
-      zIndex: baseZ + cellIdx,
+      x: layer.x + index * 24,
+      y: layer.y + index * 24,
+      zIndex: baseZ + index,
       source: '宫格裁图',
       sourceType: promptSourceTypeForLayer(layer) || undefined,
+    }))
+
+    cropMode.progress = 97
+    cropMode.statusText = '正在写入画布'
+    pushUndo()
+    canvas.updateDocument(props.id, (draft) => {
+      draft.payload.layers.push(...newLayers)
+      return draft
     })
+    selectedLayerIds.value = newLayers.map((item) => item.id)
+    selectedLayerId.value = newLayers.at(-1)?.id || ''
+    cropMode.progress = 100
+    cropMode.statusText = '裁图完成'
+    void canvas.flushNow?.(props.id)
+    showCopyPasteToast(
+      localFallbackCount
+        ? `已生成 ${newLayers.length} 个裁图，${localFallbackCount} 张暂存于本机`
+        : `已生成 ${newLayers.length} 个裁图`,
+    )
+    exitCropMode()
+  } catch (error) {
+    console.error('[crop] 裁图失败:', error)
+    cropMode.processing = false
+    cropMode.progress = 0
+    cropMode.statusText = error instanceof Error ? error.message : '裁图失败，请重试'
+    showCopyPasteToast(cropMode.statusText)
   }
-
-  canvas.updateDocument(props.id, (draft) => {
-    draft.payload.layers.push(...newLayers)
-    return draft
-  })
-
-  showCopyPasteToast(`已生成 ${newLayers.length} 个裁图`)
-
-  exitCropMode()
 }
 
-async function loadImageForCrop(layer) {
-  // OSS 图片已被 <img> 非 CORS 加载过 → 浏览器缓存无 CORS 头
-  // 直接 crossOrigin='anonymous' 会命中缓存 → tainted canvas 安全错误
-  // 必须 fetch 强制走 CORS 网络请求，拿到 blob 后给 Image
+async function uploadCropBlob(blob, fileName) {
+  const file = new File([blob], fileName, { type: 'image/png' })
   try {
-    const sep = layer.url.includes('?') ? '&' : '?'
-    const res = await fetch(layer.url + sep + '_crop=' + Date.now(), { mode: 'cors' })
+    const url = await uploadFile(file)
+    if (!url) throw new Error('OSS 未返回图片地址')
+    return { url, localOnly: false }
+  } catch (directError) {
+    console.warn('[crop] OSS 直传失败，尝试后端转存:', directError)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const uploadData = await readApiResponse(
+        await fetch(apiPath('/api/v1/file/upload'), {
+          method: 'POST',
+          headers: { ...userStore.authHeaders() },
+          body: formData,
+        }),
+      )
+      const url = uploadData?.url || uploadData?.fileUrl || uploadData?.fullUrl
+      if (!url) throw new Error('后端未返回图片地址')
+      return { url, localOnly: false }
+    } catch (backendError) {
+      console.warn('[crop] 后端转存失败，暂用本地图片:', backendError)
+      return { url: URL.createObjectURL(blob), localOnly: true }
+    }
+  }
+}
+
+const cropImageCache = new Map()
+
+async function loadImageForCrop(layer) {
+  const cacheKey = String(layer?.url || '')
+  if (!cacheKey) return null
+  if (cropImageCache.has(cacheKey)) return cropImageCache.get(cacheKey)
+
+  const pending = loadImageForCropUncached(layer)
+  cropImageCache.set(cacheKey, pending)
+  while (cropImageCache.size > 4) {
+    cropImageCache.delete(cropImageCache.keys().next().value)
+  }
+  const image = await pending
+  if (!image) cropImageCache.delete(cacheKey)
+  return image
+}
+
+async function loadImageForCropUncached(layer) {
+  try {
+    const res = await fetch(layer.url, { mode: 'cors', cache: 'force-cache' })
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const blob = await res.blob()
     const blobUrl = URL.createObjectURL(blob)
     return new Promise((resolve) => {
       const img = new Image()
-      img.onload = () => resolve(img)
-      img.onerror = () => resolve(null)
+      let settled = false
+      const finish = (value) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        URL.revokeObjectURL(blobUrl)
+        resolve(value)
+      }
+      img.onload = () => finish(img)
+      img.onerror = () => finish(null)
       img.src = blobUrl
-      setTimeout(() => resolve(img.complete ? img : null), 8000)
+      const timer = setTimeout(() => finish(img.complete ? img : null), 8000)
     })
   } catch (e) {
     console.error('[crop] fetch 失败，尝试 crossOrigin:', e)
     return new Promise((resolve) => {
       const img = new Image()
+      let settled = false
+      const finish = (value) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve(value)
+      }
       img.crossOrigin = 'anonymous'
-      img.onload = () => resolve(img)
-      img.onerror = () => resolve(null)
-      img.src = layer.url + '?_cv=' + Date.now()
-      setTimeout(() => resolve(img.complete ? img : null), 8000)
+      img.onload = () => finish(img)
+      img.onerror = () => finish(null)
+      const separator = layer.url.includes('?') ? '&' : '?'
+      img.src = layer.url + separator + '_cv=' + Date.now()
+      const timer = setTimeout(() => finish(img.complete ? img : null), 8000)
     })
   }
 }
@@ -10436,9 +11531,17 @@ async function loadImageForCrop(layer) {
                   v-show="expandedLayerToolbarId === layer.id"
                   class="layer-toolbar-row layer-toolbar-secondary"
                 >
-                  <button>
+                  <button
+                    :disabled="smartCutoutLayerIds.has(layer.id)"
+                    :title="
+                      smartCutoutLayerIds.has(layer.id)
+                        ? '正在智能抠图'
+                        : '保留主体并生成透明背景 PNG'
+                    "
+                    @click.stop="smartCutoutLayer(layer)"
+                  >
                     <i class="ri-scissors-line" aria-hidden="true"></i>
-                    智能抠图
+                    {{ smartCutoutLayerIds.has(layer.id) ? '抠图中...' : '智能抠图' }}
                   </button>
                   <button>
                     <i class="ri-text" aria-hidden="true"></i>
@@ -11403,6 +12506,7 @@ async function loadImageForCrop(layer) {
           <svg
             v-if="cropMode.active && cropMode.layerId"
             class="crop-grid-overlay"
+            :class="{ 'is-processing': cropMode.processing }"
             :style="{
               position: 'absolute',
               left: `${layers.find((l) => l.id === cropMode.layerId)?.x || 0}px`,
@@ -11412,6 +12516,7 @@ async function loadImageForCrop(layer) {
               zIndex: 9998,
               pointerEvents: 'auto',
             }"
+            @pointerdown.stop
           >
             <!-- 网格线 -->
             <line
@@ -11465,8 +12570,8 @@ async function loadImageForCrop(layer) {
                 "
                 :fill="isCropCellSelected(cellIdx) ? 'rgba(0,120,255,0.3)' : 'transparent'"
                 stroke="transparent"
-                style="cursor: pointer"
-                @click="toggleCellShift(cellIdx, $event)"
+                :style="{ cursor: cropMode.processing ? 'wait' : 'pointer' }"
+                @click.stop="toggleCellShift(cellIdx, $event)"
               />
               <text
                 :x="
@@ -11697,6 +12802,102 @@ async function loadImageForCrop(layer) {
 
         <section v-if="rightTab === 'chat'" class="chat-panel uc-chat">
           <div
+            v-if="chatMode === 'agent'"
+            class="uc-agent-conversation-bar"
+            @click.stop
+          >
+            <strong :title="activeAgentConversationTitle">
+              {{ activeAgentConversationTitle }}
+            </strong>
+            <div class="uc-agent-conversation-actions">
+              <button
+                type="button"
+                :class="{ active: agentConversationHistoryOpen }"
+                title="历史对话"
+                aria-label="历史对话"
+                @click.stop="agentConversationHistoryOpen = !agentConversationHistoryOpen"
+              >
+                <i class="ri-history-line" aria-hidden="true"></i>
+              </button>
+              <button
+                type="button"
+                title="新建 Agent 对话"
+                aria-label="新建 Agent 对话"
+                @click.stop="startNewAgentConversation"
+              >
+                <i class="ri-chat-new-line" aria-hidden="true"></i>
+              </button>
+            </div>
+            <section
+              v-if="agentConversationHistoryOpen"
+              class="uc-agent-conversation-popover"
+              aria-label="Agent 历史对话"
+              @click.stop
+            >
+              <header>
+                <strong>历史对话</strong>
+                <button
+                  type="button"
+                  title="关闭历史对话"
+                  aria-label="关闭历史对话"
+                  @click.stop="agentConversationHistoryOpen = false"
+                >
+                  <i class="ri-close-line" aria-hidden="true"></i>
+                </button>
+              </header>
+              <label class="uc-agent-conversation-search">
+                <i class="ri-search-line" aria-hidden="true"></i>
+                <input
+                  v-model="agentConversationSearch"
+                  type="search"
+                  placeholder="请输入搜索关键词"
+                  aria-label="搜索 Agent 历史对话"
+                />
+              </label>
+              <button
+                type="button"
+                class="uc-agent-conversation-new"
+                @click.stop="startNewAgentConversation"
+              >
+                <i class="ri-add-line" aria-hidden="true"></i>
+                <span>新对话</span>
+              </button>
+              <div class="uc-agent-conversation-list">
+                <div
+                  v-for="conversation in filteredAgentConversations"
+                  :key="conversation.id"
+                  class="uc-agent-conversation-item"
+                  :class="{ active: conversation.id === activeAgentConversationId }"
+                >
+                  <button
+                    type="button"
+                    class="uc-agent-conversation-select"
+                    :title="conversation.title"
+                    @click.stop="switchAgentConversation(conversation.id)"
+                  >
+                    <i class="ri-chat-3-line" aria-hidden="true"></i>
+                    <span>{{ conversation.title }}</span>
+                    <i
+                      v-if="conversation.id === activeAgentConversationId"
+                      class="ri-check-line"
+                      aria-hidden="true"
+                    ></i>
+                  </button>
+                  <button
+                    type="button"
+                    class="uc-agent-conversation-delete"
+                    :title="`删除对话：${conversation.title}`"
+                    :aria-label="`删除对话：${conversation.title}`"
+                    @click.stop="deleteAgentConversation(conversation.id)"
+                  >
+                    <i class="ri-delete-bin-line" aria-hidden="true"></i>
+                  </button>
+                </div>
+                <p v-if="!filteredAgentConversations.length">没有匹配的历史对话</p>
+              </div>
+            </section>
+          </div>
+          <div
             ref="chatHistoryRef"
             class="chat-history uc-chat-history"
             @mouseover="handleChatPillEnter"
@@ -11715,6 +12916,121 @@ async function loadImageForCrop(layer) {
             >
               <div class="uc-chat-msg-wrap">
                 <div class="uc-chat-msg-bubble" v-html="renderMessageContent(message)"></div>
+                <section v-if="agentDraftItems(message.agentDraft).length" class="uc-agent-draft">
+                  <header class="uc-agent-draft-head">
+                    <span>
+                      <i class="ri-draft-line" aria-hidden="true"></i>
+                      优化后的提示词
+                      <small v-if="agentDraftItems(message.agentDraft).length > 1">
+                        {{ agentDraftActiveIndex(message.agentDraft) + 1 }}/{{
+                          agentDraftItems(message.agentDraft).length
+                        }}
+                      </small>
+                    </span>
+                    <button
+                      type="button"
+                      title="复制提示词"
+                      aria-label="复制提示词"
+                      @click.stop="copyAgentDraftPrompt(message)"
+                    >
+                      <i class="ri-file-copy-line" aria-hidden="true"></i>
+                    </button>
+                  </header>
+                  <nav
+                    v-if="agentDraftItems(message.agentDraft).length > 1"
+                    class="uc-agent-draft-switcher"
+                    aria-label="提示词方案切换"
+                  >
+                    <button
+                      type="button"
+                      title="上一个方案"
+                      aria-label="上一个提示词方案"
+                      @click.stop="moveAgentDraft(message, -1)"
+                    >
+                      <i class="ri-arrow-left-s-line" aria-hidden="true"></i>
+                    </button>
+                    <div class="uc-agent-draft-tabs">
+                      <button
+                        v-for="(item, itemIndex) in agentDraftItems(message.agentDraft)"
+                        :key="item.id"
+                        type="button"
+                        :class="{
+                          active: itemIndex === agentDraftActiveIndex(message.agentDraft),
+                          submitted: item.status === 'submitted',
+                        }"
+                        :title="`查看方案 ${itemIndex + 1}`"
+                        :aria-label="`查看提示词方案 ${itemIndex + 1}`"
+                        @click.stop="selectAgentDraft(message, itemIndex)"
+                      >
+                        <i v-if="item.status === 'submitted'" class="ri-check-line" aria-hidden="true"></i>
+                        <span>{{ itemIndex + 1 }}</span>
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      title="下一个方案"
+                      aria-label="下一个提示词方案"
+                      @click.stop="moveAgentDraft(message, 1)"
+                    >
+                      <i class="ri-arrow-right-s-line" aria-hidden="true"></i>
+                    </button>
+                  </nav>
+                  <div
+                    class="uc-agent-draft-prompt"
+                    tabindex="0"
+                    aria-label="当前提示词内容"
+                  >
+                    <div
+                      v-for="(paragraph, paragraphIndex) in agentDraftPromptParagraphs(
+                        agentDraftActiveItem(message.agentDraft)?.prompt,
+                      )"
+                      :key="`${agentDraftActiveItem(message.agentDraft)?.id}-${paragraphIndex}`"
+                      class="uc-agent-draft-paragraph"
+                    >
+                      {{ paragraph }}
+                    </div>
+                  </div>
+                  <div class="uc-agent-draft-settings" aria-label="生图参数">
+                    <span>{{ message.agentDraft.model }}</span>
+                    <span>{{ message.agentDraft.ratio }}</span>
+                    <span>{{ message.agentDraft.resolution }}</span>
+                    <span>{{ message.agentDraft.count }} 张</span>
+                  </div>
+                  <footer class="uc-agent-draft-actions">
+                    <span v-if="agentDraftActiveItem(message.agentDraft)?.status === 'submitted'">
+                      当前方案已提交，可切换其他方案继续生图
+                    </span>
+                    <span v-else-if="agentDraftActiveItem(message.agentDraft)?.status === 'submitting'">
+                      当前方案正在提交
+                    </span>
+                    <span v-else>不满意可继续发消息修改</span>
+                    <button
+                      type="button"
+                      :disabled="
+                        ['submitting', 'submitted'].includes(
+                          agentDraftActiveItem(message.agentDraft)?.status,
+                        )
+                      "
+                      @click.stop="confirmAgentGeneration(message)"
+                    >
+                      <i
+                        :class="
+                          agentDraftActiveItem(message.agentDraft)?.status === 'submitted'
+                            ? 'ri-check-line'
+                            : 'ri-image-add-line'
+                        "
+                        aria-hidden="true"
+                      ></i>
+                      {{
+                        agentDraftActiveItem(message.agentDraft)?.status === 'submitting'
+                          ? '提交中'
+                          : agentDraftActiveItem(message.agentDraft)?.status === 'submitted'
+                            ? '已提交'
+                            : '确认生图'
+                      }}
+                    </button>
+                  </footer>
+                </section>
                 <div v-if="message.role === 'assistant' && message.model" class="uc-chat-msg-meta">
                   {{ message.model }} · {{ message.ratio }} · {{ message.resolution }} ·
                   {{ formatMetaTime(message.createdAt) }}
@@ -11723,8 +13039,20 @@ async function loadImageForCrop(layer) {
             </div>
             <div v-if="!chatMessages.length" class="chat-empty">
               <i>☏</i>
-              <strong>对话生图：通过自然语言修改画布上的图片</strong>
-              <span>点选画布上的图片，再描述你想要的修改</span>
+              <strong>
+                {{
+                  chatMode === 'agent'
+                    ? 'Agent：先沟通并优化提示词，确认后再生图'
+                    : '对话生图：通过自然语言修改画布上的图片'
+                }}
+              </strong>
+              <span>
+                {{
+                  chatMode === 'agent'
+                    ? '添加参考图或描述想法，满意后点击“确认生图”'
+                    : '点选画布上的图片，再描述你想要的修改'
+                }}
+              </span>
             </div>
           </div>
           <!-- 悬停预览弹窗 -->
@@ -11859,16 +13187,18 @@ async function loadImageForCrop(layer) {
                     'chat-editor-empty': !chatText.trim() && !getSelectedDetectedElements().length,
                   }"
                   :data-placeholder="
-                    chatReferenceImages.length
-                      ? '请输入对参考图的修改要求'
-                      : '请输入你想生成的画面描述'
+                    chatMode === 'agent'
+                      ? '上传图片或告诉 Agent 你想怎么优化'
+                      : chatReferenceImages.length
+                        ? '请输入对参考图的修改要求'
+                        : '请输入你想生成的画面描述'
                   "
-                  aria-label="生图提示词"
+                  :aria-label="chatMode === 'agent' ? '与 Agent 沟通' : '生图提示词'"
                   contenteditable="true"
                   @input="handleEditorInput"
                   @click="handleEditorPillClick"
                   @paste="handleEditorPaste"
-                  @keydown.enter.exact.prevent="sendChat"
+                  @keydown.enter.exact.prevent="handleComposerSubmit"
                   @keydown.ctrl.enter.prevent="handleEditorLineBreak"
                   @keydown.shift.enter.prevent="handleEditorLineBreak"
                   @keydown.backspace="handleEditorBackspace"
@@ -11988,14 +13318,92 @@ async function loadImageForCrop(layer) {
                 </label>
               </div>
               <footer class="uc-bottom-toolbar">
-                <span>{{ chatTotalGenerationCount }} 张 · 预计 {{ chatEstimatedMiCost }} 米值</span>
-                <button
-                  :disabled="!chatText.trim() && !getSelectedDetectedElements().length"
-                  @click="sendChat"
-                >
-                  <i class="ri-send-plane-fill" aria-hidden="true"></i>
-                  {{ chatGenerating ? '发送（生成中）' : '发送' }}
-                </button>
+                <div class="uc-bottom-toolbar-left">
+                  <div class="uc-chat-mode-select">
+                    <button
+                      type="button"
+                      class="uc-chat-mode-trigger"
+                      :class="{ 'is-agent': chatMode === 'agent' }"
+                      :aria-expanded="chatModeMenuOpen"
+                      aria-haspopup="menu"
+                      @click.stop="toggleChatModeMenu"
+                    >
+                      <i
+                        :class="chatMode === 'agent' ? 'ri-ai-generate-2-line' : 'ri-image-line'"
+                        aria-hidden="true"
+                      ></i>
+                      <span>{{ chatModeLabel }}</span>
+                      <i class="ri-arrow-up-s-line" aria-hidden="true"></i>
+                    </button>
+                    <div v-if="chatModeMenuOpen" class="uc-chat-mode-menu" role="menu" @click.stop>
+                      <button
+                        v-for="option in chatModeOptions"
+                        :key="option.value"
+                        type="button"
+                        role="menuitemradio"
+                        :aria-checked="chatMode === option.value"
+                        :class="{ active: chatMode === option.value }"
+                        @click="selectChatMode(option.value)"
+                      >
+                        <i :class="option.icon" aria-hidden="true"></i>
+                        <span>{{ option.label }}</span>
+                        <i
+                          v-if="chatMode === option.value"
+                          class="ri-check-line"
+                          aria-hidden="true"
+                        ></i>
+                      </button>
+                    </div>
+                  </div>
+                  <span
+                    class="uc-chat-cost-hint"
+                    :title="chatMode === 'agent' ? 'Agent 只优化提示词，点击确认后才会生图' : ''"
+                  >
+                    {{
+                      chatMode === 'agent'
+                        ? '确认后才生图'
+                        : `${chatTotalGenerationCount} 张 · 预计 ${chatEstimatedMiCost} 米值`
+                    }}
+                  </span>
+                </div>
+                <div class="uc-bottom-toolbar-actions">
+                  <button
+                    v-if="chatMode === 'agent'"
+                    type="button"
+                    class="uc-agent-enhance-button"
+                    :class="{ 'is-loading': agentEnhancingPrompt }"
+                    :disabled="agentEnhancingPrompt || agentPlanning || !chatText.trim()"
+                    :title="agentEnhancingPrompt ? '正在增强提示词' : '增强提示词'"
+                    aria-label="增强提示词"
+                    @click="enhanceAgentPrompt"
+                  >
+                    <i
+                      :class="agentEnhancingPrompt ? 'ri-loader-4-line' : 'ri-magic-line'"
+                      aria-hidden="true"
+                    ></i>
+                  </button>
+                  <button
+                    type="button"
+                    class="uc-chat-submit-button"
+                    :disabled="
+                      agentPlanning ||
+                      agentEnhancingPrompt ||
+                      (!chatText.trim() && !getSelectedDetectedElements().length)
+                    "
+                    @click="handleComposerSubmit"
+                  >
+                    <i class="ri-send-plane-fill" aria-hidden="true"></i>
+                    {{
+                      agentPlanning
+                        ? '思考中'
+                        : chatMode === 'agent'
+                          ? '发送'
+                          : chatGenerating
+                            ? '发送（生成中）'
+                            : '发送'
+                    }}
+                  </button>
+                </div>
               </footer>
             </div>
           </div>
@@ -12030,8 +13438,10 @@ async function loadImageForCrop(layer) {
               @error="markImageBroken('thumb-' + layer.id)"
             />
             <i v-else class="ri-image-line broken-icon" aria-hidden="true"></i>
-            <strong>{{ layerName(layers.findIndex((item) => item.id === layer.id)) }}</strong>
-            <small>{{ Math.round(layer.width) }} x {{ Math.round(layer.height) }}</small>
+            <span class="layer-meta">
+              <strong>{{ layerName(layers.findIndex((item) => item.id === layer.id)) }}</strong>
+              <small>{{ Math.round(layer.width) }} x {{ Math.round(layer.height) }}</small>
+            </span>
             <em>▣</em>
           </button>
         </section>
@@ -13073,14 +14483,41 @@ async function loadImageForCrop(layer) {
 
   <!-- 裁图模式底部工具栏 -->
   <Teleport to="body">
-    <div v-if="cropMode.active" class="uc-crop-toolbar">
-      <span class="uc-crop-toolbar-info">
-        {{ cropMode.selectedCells.size }} / {{ cropMode.rows * cropMode.cols }} 个格子
+    <div v-if="cropMode.active" class="uc-crop-toolbar" aria-live="polite">
+      <span class="uc-crop-toolbar-info" :class="{ 'is-processing': cropMode.processing }">
+        <template v-if="cropMode.processing">
+          <i class="ri-loader-4-line uc-crop-spinner" aria-hidden="true"></i>
+          {{ cropMode.statusText }} · {{ cropMode.progress }}%
+        </template>
+        <template v-else-if="cropMode.statusText">
+          <i class="ri-error-warning-line" aria-hidden="true"></i>
+          {{ cropMode.statusText }}
+        </template>
+        <template v-else>
+          {{ cropMode.selectedCells.size }} / {{ cropMode.rows * cropMode.cols }} 个格子
+        </template>
       </span>
-      <button class="uc-crop-btn" @click="selectAllCells">全选</button>
-      <button class="uc-crop-btn" @click="invertCells">反选</button>
-      <button class="uc-crop-btn uc-crop-btn-primary" @click="executeCrop">确认裁剪</button>
-      <button class="uc-crop-btn uc-crop-btn-danger" @click="exitCropMode">取消</button>
+      <div v-if="cropMode.processing" class="uc-crop-progress-track" aria-hidden="true">
+        <span :style="{ width: `${cropMode.progress}%` }"></span>
+      </div>
+      <button class="uc-crop-btn" :disabled="cropMode.processing" @click="selectAllCells">
+        全选
+      </button>
+      <button class="uc-crop-btn" :disabled="cropMode.processing" @click="invertCells">反选</button>
+      <button
+        class="uc-crop-btn uc-crop-btn-primary"
+        :disabled="cropMode.processing || cropMode.selectedCells.size === 0"
+        @click="executeCrop"
+      >
+        {{ cropMode.processing ? '裁图中' : '确认裁剪' }}
+      </button>
+      <button
+        class="uc-crop-btn uc-crop-btn-danger"
+        :disabled="cropMode.processing"
+        @click="exitCropMode"
+      >
+        取消
+      </button>
     </div>
   </Teleport>
 </template>

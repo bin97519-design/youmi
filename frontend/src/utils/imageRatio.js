@@ -1,4 +1,15 @@
-export const SUPPORTED_IMAGE_RATIOS = ['1:1', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
+export const SUPPORTED_IMAGE_RATIOS = [
+  '1:1',
+  '2:3',
+  '3:2',
+  '3:4',
+  '4:3',
+  '4:5',
+  '5:4',
+  '9:16',
+  '16:9',
+  '21:9',
+]
 
 export function resolveSupportedImageRatio(layer, fallback = '1:1') {
   const width = Number(layer?.naturalWidth || layer?.width || 0)

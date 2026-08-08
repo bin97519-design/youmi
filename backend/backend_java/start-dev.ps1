@@ -1,4 +1,11 @@
-foreach ($name in @("MYSQL_URL", "MYSQL_USER", "MYSQL_PASSWORD")) {
+foreach ($name in @(
+  "MYSQL_URL",
+  "MYSQL_USER",
+  "MYSQL_PASSWORD",
+  "YOUMI_AGENT_API_KEY",
+  "YOUMI_AGENT_BASE_URL",
+  "YOUMI_AGENT_MODEL"
+)) {
   if (-not [Environment]::GetEnvironmentVariable($name, "Process")) {
     $value = [Environment]::GetEnvironmentVariable($name, "User")
     if ($value) {

@@ -111,6 +111,20 @@ export function buildGenerationReplay({
       : fallbackReferences
   const requiresReferenceImage =
     prompt.includes('【局部元素图生图任务】') || /\bbox_2d\s*=\s*\[/i.test(prompt)
+  const sourceLayerIds = [
+    ...new Set(
+      [
+        ...(Array.isArray(requestSnapshot.sourceLayerIds) ? requestSnapshot.sourceLayerIds : []),
+        ...(Array.isArray(userMessage.sourceLayerIds) ? userMessage.sourceLayerIds : []),
+        ...(Array.isArray(userMessage.referenceImages)
+          ? userMessage.referenceImages.map((image) => image?.layerId)
+          : []),
+        ...(Array.isArray(userMessage.elements)
+          ? userMessage.elements.map((element) => element?.layerId)
+          : []),
+      ].filter(Boolean),
+    ),
+  ]
 
   return {
     prompt,
@@ -124,6 +138,7 @@ export function buildGenerationReplay({
         )
       : [],
     targetLayerId: requestSnapshot.targetLayerId || userMessage.targetLayerId || '',
+    sourceLayerIds,
     referenceImageUrls,
     model: record.model || requestSnapshot.model || assistantMessage.model || defaults.model || '',
     ratio: record.ratio || requestSnapshot.ratio || assistantMessage.ratio || defaults.ratio || '',

@@ -100,6 +100,14 @@ youmi:
     max-tokens: 4000
     temperature: 0.2
     timeout-seconds: 60
+  agent-chat:
+    base-url: ${YOUMI_AGENT_BASE_URL:https://api.teamorouter.com/v1}
+    chat-path: ${YOUMI_AGENT_CHAT_PATH:/chat/completions}
+    api-key: ${YOUMI_AGENT_API_KEY:}
+    model: ${YOUMI_AGENT_MODEL:gpt-5.6-luna}
+    max-tokens: ${YOUMI_AGENT_MAX_TOKENS:4000}
+    temperature: ${YOUMI_AGENT_TEMPERATURE:0.2}
+    timeout-seconds: ${YOUMI_AGENT_TIMEOUT_SECONDS:90}
   xfyun:
     base-url: ${XFYUN_VISION_BASE_URL:https://maas-coding-api.cn-huabei-1.xf-yun.com/v2}
     chat-path: ${XFYUN_VISION_CHAT_PATH:/chat/completions}

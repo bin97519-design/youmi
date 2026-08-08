@@ -17,7 +17,7 @@
 </head>
 <body>
   <header class="hero">
-    <small>YOUMI RELEASES · v2.0.5</small>
+    <small>YOUMI RELEASES · v2.0.6</small>
     <h1>有米 AI 更新历程</h1>
     <p>记录每一次功能更新和体验改进，最新内容始终排在最前面。</p>
     <nav class="actions">
@@ -26,12 +26,61 @@
     </nav>
   </header>
   <main><div class="timeline">
-      <div class="date"><span>2026-08-06</span><i></i></div>
+      <div class="date"><span>2026-08-08</span><i></i></div>
       <article class="release latest">
-        <div class="meta"><b>v2.0.5</b><small>最新版本</small></div>
-        <h2>控制台与生图统计体验升级</h2>
-        <p>统一优化控制台和画布的深浅主题，支持多模型同时生成，并补齐全站与个人今日生图统计。</p>
+        <div class="meta"><b>v2.0.6</b><small>最新版本</small></div>
+        <h2>画布 Agent 与提示词创作升级</h2>
+        <p>画布新增可持续沟通的创作 Agent，支持参考图理解、多方案提示词、确认后生图和历史会话管理，同时完善智能抠图与画布交互。</p>
         <div class="visuals">
+        <figure class="wide">
+          <div class="visual-media">
+            <img src="/version-log/assets/v2.0.6-agent-confirm.png" alt="有米画布 Agent 输出优化提示词并等待用户确认生图" loading="lazy">
+          </div>
+          <figcaption>
+            <strong>先沟通优化，确认后再生图</strong>
+            <span>Agent 会结合用户要求和参考图整理可执行提示词，每条结果都提供独立的确认生图按钮，不会未经确认直接生成。</span>
+          </figcaption>
+        </figure>
+        <figure class="">
+          <div class="visual-media">
+            <img src="/version-log/assets/v2.0.6-agent-multi-prompts.png" alt="有米画布 Agent 的多方案提示词切换界面" loading="lazy">
+          </div>
+          <figcaption>
+            <strong>多套提示词独立查看与生成</strong>
+            <span>一次要求多条方案时，结果会拆成独立卡片，通过编号切换查看，并可分别提交生图。</span>
+          </figcaption>
+        </figure>
+        <figure class="">
+          <div class="visual-media">
+            <img src="/version-log/assets/v2.0.6-agent-history.png" alt="有米画布 Agent 的历史对话管理面板" loading="lazy">
+          </div>
+          <figcaption>
+            <strong>创作上下文可持续管理</strong>
+            <span>支持新建、搜索、切换和删除 Agent 会话，历史沟通与当前画布共同保存。</span>
+          </figcaption>
+        </figure></div>
+        <div class="sections">
+        <section class="release-section">
+          <h3>画布 Agent</h3>
+          <ul><li>接入 gpt-5.6-luna 作为 Agent 语言与视觉理解模型，根据是否提交参考图决定是否进行识图分析。</li><li>Agent 先与用户沟通、补充方案和优化提示词，只有用户点击“确认生图”后才会提交生成任务。</li><li>输入区新增增强提示词按钮，可直接润色当前文字并回填，不会自动发送或触发生图。</li><li>新增独立会话、历史会话搜索与删除，并保持同一会话内的上下文连续。</li></ul>
+        </section>
+        <section class="release-section">
+          <h3>提示词体验</h3>
+          <ul><li>用户要求多条提示词时，按数量生成彼此独立的完整方案，可切换、复制并分别确认生图。</li><li>提示词正文自动按语义分段，优化卡片宽度、行距、留白和滚动区域，深浅主题下都更容易阅读。</li><li>增强 Agent 返回格式的容错与一次自动修复，避免多方案结果因尾逗号等格式问题反复显示失败提示。</li><li>历史上下文会跳过解析失败的固定提示，避免错误回复在会话中循环出现。</li></ul>
+        </section>
+        <section class="release-section">
+          <h3>画布能力</h3>
+          <ul><li>激活智能抠图入口，复用现有 banana2 生图通道生成干净背景结果，并展示任务状态。</li><li>参考图参与生成时自动建立来源连接线，生成比例优先跟随参考图，图层列表默认展示每张图片尺寸。</li><li>修复宫格裁图选择、拖动响应和处理中状态，并优化生成图片、提示词与画布操作之间的交互冲突。</li><li>画布创作、普通生图和对话修改继续复用现有模型、比例、分辨率与多模型并行生成体系。</li></ul>
+        </section></div>
+      </article>
+    <div class="date"><span>2026-08-06</span><i></i></div>
+    <details class="release">
+      <summary>
+        <b>v2.0.5</b>
+        <span><strong>控制台与生图统计体验升级</strong><small>统一优化控制台和画布的深浅主题，支持多模型同时生成，并补齐全站与个人今日生图统计。</small></span>
+        <em>查看更多</em>
+      </summary>
+      <div class="visuals">
         <figure class="wide">
           <div class="visual-media">
             <img src="/version-log/assets/v2.0.5-console-dashboard.jpg" alt="有米控制台中的生图任务、模型用量、成功率和趋势统计" loading="lazy">
@@ -50,7 +99,7 @@
             <span>画布顶部同时展示全站与当前账号的今日生图数量，并用高对比色快速区分。</span>
           </figcaption>
         </figure></div>
-        <div class="sections">
+      <div class="sections">
         <section class="release-section">
           <h3>控制台体验</h3>
           <ul><li>统一优化账号管理、角色管理、财务统计和生图统计页面，减少过粗文字、重复边框与拥挤布局。</li><li>重新整理近 14 天趋势、用户与模型筛选、日期范围、耗时和分页控件，完整适配开灯与关灯主题。</li><li>优化模型用量、通道成功率、指标卡和最近任务列表的层级、留白与信息密度。</li></ul>
@@ -63,7 +112,7 @@
           <h3>今日统计</h3>
           <ul><li>画布顶部新增全站今日生图数量与当前账号今日生图数量，每分钟自动刷新。</li><li>全站与个人数据使用不同的高对比色展示，并分别适配深色和浅色主题。</li><li>后端按当天时间范围和登录账号准确汇总图片数量，并补充查询索引与数据隔离测试。</li></ul>
         </section></div>
-      </article>
+    </details>
     <div class="date"><span>2026-08-05</span><i></i></div>
     <details class="release">
       <summary>
@@ -251,6 +300,6 @@
           <ul><li>建立用户、登录、数据隔离、米值和生图任务管理。</li><li>上线运营控制台，提供任务、模型、用户、用量和趋势统计。</li><li>完成深色、浅色主题以及主要页面的响应式适配。</li></ul>
         </section></div>
     </details></div></main>
-  <footer>有米 AI · 当前版本 v2.0.5</footer>
+  <footer>有米 AI · 当前版本 v2.0.6</footer>
 </body>
 </html>
