@@ -401,7 +401,9 @@ public class AdminService {
     Object[] args;
     if (scopeUserId != null) {
       sql = """
-          SELECT DATE(created_at) AS day, COUNT(*) AS tasks, COALESCE(SUM(image_count), 0) AS images,
+          SELECT DATE(created_at) AS day, COUNT(*) AS tasks,
+                 SUM(CASE WHEN LOWER(status) IN ('failed', 'error', 'cancelled', 'canceled') THEN 1 ELSE 0 END) AS failed_tasks,
+                 COALESCE(SUM(image_count), 0) AS images,
                  COALESCE(SUM(mi_cost), 0) AS mi_cost, COALESCE(SUM(money_cost), 0) AS money_cost
           FROM ym_image_task
           WHERE created_at >= DATE_SUB(CURRENT_DATE, INTERVAL 13 DAY) AND user_id = ?
@@ -411,7 +413,9 @@ public class AdminService {
       args = new Object[]{scopeUserId};
     } else {
       sql = """
-          SELECT DATE(created_at) AS day, COUNT(*) AS tasks, COALESCE(SUM(image_count), 0) AS images,
+          SELECT DATE(created_at) AS day, COUNT(*) AS tasks,
+                 SUM(CASE WHEN LOWER(status) IN ('failed', 'error', 'cancelled', 'canceled') THEN 1 ELSE 0 END) AS failed_tasks,
+                 COALESCE(SUM(image_count), 0) AS images,
                  COALESCE(SUM(mi_cost), 0) AS mi_cost, COALESCE(SUM(money_cost), 0) AS money_cost
           FROM ym_image_task
           WHERE created_at >= DATE_SUB(CURRENT_DATE, INTERVAL 13 DAY)
@@ -423,6 +427,7 @@ public class AdminService {
     return jdbcTemplate.query(sql, (rs, rowNum) -> new AdminDtos.DailyImageStat(
         rs.getString("day"),
         rs.getLong("tasks"),
+        rs.getLong("failed_tasks"),
         rs.getInt("images"),
         rs.getInt("mi_cost"),
         rs.getBigDecimal("money_cost")), args);
@@ -482,6 +487,7 @@ public class AdminService {
                COALESCE(t.requested_model, t.model, 'unknown') AS dimension_label,
                DATE(t.created_at) AS day,
                COUNT(*) AS tasks,
+               SUM(CASE WHEN LOWER(t.status) IN ('failed', 'error', 'cancelled', 'canceled') THEN 1 ELSE 0 END) AS failed_tasks,
                COALESCE(SUM(t.image_count), 0) AS images,
                COALESCE(SUM(t.mi_cost), 0) AS mi_cost,
                COALESCE(SUM(t.money_cost), 0) AS money_cost
@@ -505,6 +511,7 @@ public class AdminService {
                END AS dimension_label,
                DATE(t.created_at) AS day,
                COUNT(*) AS tasks,
+               SUM(CASE WHEN LOWER(t.status) IN ('failed', 'error', 'cancelled', 'canceled') THEN 1 ELSE 0 END) AS failed_tasks,
                COALESCE(SUM(t.image_count), 0) AS images,
                COALESCE(SUM(t.mi_cost), 0) AS mi_cost,
                COALESCE(SUM(t.money_cost), 0) AS money_cost
@@ -527,6 +534,7 @@ public class AdminService {
                COALESCE(NULLIF(u.nickname, ''), u.account, CONCAT('用户 #', t.user_id), '未知用户') AS dimension_label,
                DATE(t.created_at) AS day,
                COUNT(*) AS tasks,
+               SUM(CASE WHEN LOWER(t.status) IN ('failed', 'error', 'cancelled', 'canceled') THEN 1 ELSE 0 END) AS failed_tasks,
                COALESCE(SUM(t.image_count), 0) AS images,
                COALESCE(SUM(t.mi_cost), 0) AS mi_cost,
                COALESCE(SUM(t.money_cost), 0) AS money_cost
@@ -548,6 +556,7 @@ public class AdminService {
         new AdminDtos.DailyImageStat(
             rs.getString("day"),
             rs.getLong("tasks"),
+            rs.getLong("failed_tasks"),
             rs.getInt("images"),
             rs.getInt("mi_cost"),
             rs.getBigDecimal("money_cost"))), args);
@@ -604,6 +613,7 @@ public class AdminService {
       return new AdminDtos.DailyImageStat(
           left.day(),
           left.tasks() + right.tasks(),
+          left.failedTasks() + right.failedTasks(),
           left.images() + right.images(),
           left.miCost() + right.miCost(),
           leftMoney.add(rightMoney));

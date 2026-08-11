@@ -86,7 +86,8 @@ public class CanvasAgentService {
     List<String> referenceImageUrls = referenceImageUrls(layers, defaultReferences);
     String visualAnalysis = "";
 
-    String defaultModel = allowedOrDefault(request.model(), ALLOWED_MODELS, "banana2");
+    List<String> defaultModels = allowedModelsOrDefault(
+        request.models(), request.model(), "banana2");
     String defaultRatio = allowedOrDefault(request.ratio(), ALLOWED_RATIOS, "auto");
     String defaultResolution = allowedOrDefault(
         normalizeResolution(request.resolution()), ALLOWED_RESOLUTIONS, "2K");
@@ -114,6 +115,7 @@ public class CanvasAgentService {
           "draftPrompts": ["第一条完整提示词", "第二条完整提示词"],
           "referenceLayerIds": ["真实图层ID"],
           "model": "banana2",
+          "models": ["banana2", "gpt-image-2"],
           "ratio": "3:4",
           "resolution": "2K",
           "count": 1,
@@ -127,7 +129,7 @@ public class CanvasAgentService {
         layers,
         defaultReferences,
         visualAnalysis,
-        defaultModel,
+        defaultModels,
         defaultRatio,
         defaultResolution,
         defaultCount);
@@ -137,7 +139,7 @@ public class CanvasAgentService {
         result.content(),
         defaultReferences,
         submittedReferenceLayerIds,
-        defaultModel,
+        defaultModels,
         defaultRatio,
         defaultResolution,
         defaultCount);
@@ -148,7 +150,7 @@ public class CanvasAgentService {
             repairedResult.content(),
             defaultReferences,
             submittedReferenceLayerIds,
-            defaultModel,
+            defaultModels,
             defaultRatio,
             defaultResolution,
             defaultCount);
@@ -171,6 +173,7 @@ public class CanvasAgentService {
         parsed.draftPrompts(),
         parsed.referenceLayerIds(),
         parsed.imageModel(),
+        parsed.imageModels(),
         parsed.ratio(),
         parsed.resolution(),
         parsed.count(),
@@ -368,13 +371,13 @@ public class CanvasAgentService {
       List<CanvasAgentDtos.LayerContext> layers,
       List<String> references,
       String visualAnalysis,
-      String model,
+      List<String> models,
       String ratio,
       String resolution,
       int count) {
     StringBuilder prompt = new StringBuilder();
     prompt.append("当前用户消息：").append(instruction).append('\n');
-    prompt.append("界面当前参数：模型=").append(model)
+    prompt.append("界面当前参数：模型=").append(models)
         .append("，比例=").append(ratio)
         .append("，分辨率=").append(resolution)
         .append("，数量=").append(count).append('\n');
@@ -405,7 +408,7 @@ public class CanvasAgentService {
       String content,
       List<String> defaultReferences,
       Set<String> validImageLayerIds,
-      String defaultModel,
+      List<String> defaultModels,
       String defaultRatio,
       String defaultResolution,
       int defaultCount) {
@@ -435,12 +438,16 @@ public class CanvasAgentService {
       List<String> references = cleanLayerIds(
           readStringArray(root.path("referenceLayerIds")), validImageLayerIds);
       if (references.isEmpty()) references = defaultReferences;
+      // Image model selection belongs to the user-facing controls. The language model may
+      // recommend prompts, but it must not silently add, remove, or replace paid image models.
+      List<String> imageModels = defaultModels;
       return new ParsedChat(
           reply,
           draftPrompt,
           draftPrompts,
           references,
-          allowedOrDefault(root.path("model").asText(""), ALLOWED_MODELS, defaultModel),
+          imageModels.get(0),
+          imageModels,
           allowedOrDefault(root.path("ratio").asText(""), ALLOWED_RATIOS, defaultRatio),
           allowedOrDefault(
               normalizeResolution(root.path("resolution").asText("")),
@@ -456,7 +463,8 @@ public class CanvasAgentService {
           "",
           List.of(),
           defaultReferences,
-          defaultModel,
+          defaultModels.get(0),
+          defaultModels,
           defaultRatio,
           defaultResolution,
           defaultCount,
@@ -651,6 +659,23 @@ public class CanvasAgentService {
     return allowed.contains(cleaned) ? cleaned : fallback;
   }
 
+  private List<String> allowedModelsOrDefault(
+      List<String> values, String singleValue, String fallback) {
+    LinkedHashSet<String> models = new LinkedHashSet<>();
+    if (values != null) {
+      for (String value : values) {
+        String cleaned = clean(value, 80);
+        if (ALLOWED_MODELS.contains(cleaned)) models.add(cleaned);
+      }
+    }
+    String cleanedSingle = clean(singleValue, 80);
+    if (models.isEmpty() && ALLOWED_MODELS.contains(cleanedSingle)) {
+      models.add(cleanedSingle);
+    }
+    if (models.isEmpty()) models.add(fallback);
+    return List.copyOf(models);
+  }
+
   private int clampCount(Integer count) {
     int value = count == null ? 1 : count;
     return Math.max(1, Math.min(4, value));
@@ -674,6 +699,7 @@ public class CanvasAgentService {
       List<String> draftPrompts,
       List<String> referenceLayerIds,
       String imageModel,
+      List<String> imageModels,
       String ratio,
       String resolution,
       int count,

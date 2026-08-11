@@ -57,8 +57,51 @@ class CanvasAgentServiceTest {
         1));
 
     assertEquals(List.of("第一条提示词", "第二条提示词"), response.draftPrompts());
+    assertEquals(List.of("banana2"), response.imageModels());
     assertTrue(response.readyToGenerate());
     verify(agentChatClient, times(1)).complete(anyList(), anyDouble());
+  }
+
+  @Test
+  void preservesMultipleUserSelectedImageModelsForConfirmation() throws Exception {
+    AgentChatClient agentChatClient = mock(AgentChatClient.class);
+    when(agentChatClient.isConfigured()).thenReturn(true);
+    when(agentChatClient.complete(anyList(), anyDouble()))
+        .thenReturn(new AiChatDtos.CompletionResult(
+            "teamorouter",
+            "gpt-5.6-luna",
+            """
+                {
+                  "reply": "提示词已经整理好。",
+                  "draftPrompts": ["明亮自然的卧室产品主图"],
+                  "referenceLayerIds": [],
+                  "model": "banana2",
+                  "ratio": "3:4",
+                  "resolution": "2K",
+                  "count": 2,
+                  "readyToGenerate": true
+                }
+                """));
+
+    CanvasAgentService service = new CanvasAgentService(
+        new ObjectMapper(), agentChatClient);
+    CanvasAgentDtos.ChatResponse response = service.chat(new CanvasAgentDtos.ChatRequest(
+        "canvas-1",
+        "用两个模型生成",
+        List.of(),
+        List.of(),
+        List.of(),
+        List.of(),
+        "banana2",
+        "3:4",
+        "2K",
+        2,
+        List.of("banana2", "gpt-image-2"),
+        "agent-1"));
+
+    assertEquals(List.of("banana2", "gpt-image-2"), response.imageModels());
+    assertEquals(2, response.count());
+    assertTrue(response.readyToGenerate());
   }
 
   @Test

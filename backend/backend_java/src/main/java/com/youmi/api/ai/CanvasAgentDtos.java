@@ -1,6 +1,7 @@
 package com.youmi.api.ai;
 
 import java.util.List;
+import java.util.Map;
 
 public final class CanvasAgentDtos {
   private CanvasAgentDtos() {}
@@ -45,7 +46,14 @@ public final class CanvasAgentDtos {
 
   public record ChatMessage(String role, String content) {}
 
-  public record EnhancePromptRequest(String prompt) {}
+  public record EnhancePromptRequest(
+      String canvasId,
+      String conversationId,
+      String prompt) {
+    public EnhancePromptRequest(String prompt) {
+      this("", "", prompt);
+    }
+  }
 
   public record EnhancePromptResponse(
       String provider,
@@ -62,7 +70,35 @@ public final class CanvasAgentDtos {
       String model,
       String ratio,
       String resolution,
-      Integer count) {}
+      Integer count,
+      List<String> models,
+      String conversationId) {
+    public ChatRequest(
+        String canvasId,
+        String instruction,
+        List<ChatMessage> history,
+        List<LayerContext> layers,
+        List<String> selectedLayerIds,
+        List<String> referenceLayerIds,
+        String model,
+        String ratio,
+        String resolution,
+        Integer count) {
+      this(
+          canvasId,
+          instruction,
+          history,
+          layers,
+          selectedLayerIds,
+          referenceLayerIds,
+          model,
+          ratio,
+          resolution,
+          count,
+          List.of(),
+          "");
+    }
+  }
 
   public record ChatResponse(
       String provider,
@@ -73,8 +109,22 @@ public final class CanvasAgentDtos {
       List<String> draftPrompts,
       List<String> referenceLayerIds,
       String imageModel,
+      List<String> imageModels,
       String ratio,
       String resolution,
       int count,
       boolean readyToGenerate) {}
+
+  public record ConversationSyncRequest(
+      String canvasId,
+      String title,
+      List<Map<String, Object>> messages) {}
+
+  public record ConversationResponse(
+      String id,
+      String canvasId,
+      String title,
+      List<Map<String, Object>> messages,
+      long createdAt,
+      long updatedAt) {}
 }

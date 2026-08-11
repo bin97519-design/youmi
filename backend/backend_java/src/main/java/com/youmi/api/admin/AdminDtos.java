@@ -123,7 +123,13 @@ public final class AdminDtos {
       String persistStatus) {
   }
 
-  public record DailyImageStat(String day, Long tasks, Integer images, Integer miCost, BigDecimal moneyCost) {
+  public record DailyImageStat(
+      String day,
+      Long tasks,
+      Long failedTasks,
+      Integer images,
+      Integer miCost,
+      BigDecimal moneyCost) {
   }
 
   public record DimensionImageTrend(

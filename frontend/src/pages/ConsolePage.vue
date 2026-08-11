@@ -8,7 +8,7 @@ import { useUserStore } from '../stores/user'
 import { useTheme } from '../composables/useTheme'
 import { apiPath } from '../utils/apiBase'
 import { writeTextToClipboard } from '../utils/clipboard'
-import { buildDailyTopSeries } from '../utils/consoleTrend'
+import { buildDailyTopSeries, buildTotalTrendSeries } from '../utils/consoleTrend'
 import { subscribeImageTaskPersistence } from '../utils/imageTaskSync'
 
 const userStore = useUserStore()
@@ -1214,25 +1214,20 @@ const trendTabs = [
 
 const trendDimensionConfig = computed(() => {
   if (trendDimension.value === 'model') {
-    return { rows: stats.value?.modelTrends || [], placeholder: '筛选模型' }
+    return { rows: stats.value?.modelTrends || [], placeholder: '筛选模型', metric: 'images', unit: '张' }
   }
   if (trendDimension.value === 'shop') {
-    return { rows: stats.value?.shopTrends || [], placeholder: '筛选店铺' }
+    return { rows: stats.value?.shopTrends || [], placeholder: '筛选店铺', metric: 'images', unit: '张' }
   }
   if (trendDimension.value === 'user') {
-    return { rows: stats.value?.userTrends || [], placeholder: '筛选账号或昵称' }
+    return { rows: stats.value?.userTrends || [], placeholder: '筛选账号或昵称', metric: 'images', unit: '张' }
   }
   const daily = stats.value?.daily || []
   return {
-    rows: [
-      {
-        key: 'total',
-        label: '总量',
-        totalTasks: daily.reduce((sum, point) => sum + Number(point.tasks || 0), 0),
-        daily,
-      },
-    ],
+    rows: buildTotalTrendSeries(daily),
     placeholder: '',
+    metric: 'tasks',
+    unit: '任务',
   }
 })
 
@@ -1245,19 +1240,37 @@ function matchesTrendOption(row, rawQuery) {
   return Boolean(matchPinyin(label, query))
 }
 
-const trendUsesDailyTop = computed(() => ['shop', 'user'].includes(trendDimension.value))
+const trendUsesDailyTop = computed(() => ['model', 'shop', 'user'].includes(trendDimension.value))
+
+function trendPointValue(point, metric = trendDimensionConfig.value.metric) {
+  if (point?.value === null) return null
+  return Number(point?.value ?? point?.[metric] ?? 0)
+}
+
+function trendSeriesTotal(series) {
+  return (series?.daily || []).reduce(
+    (sum, point) => sum + Number(trendPointValue(point, series?.metric) || 0),
+    0,
+  )
+}
+
+function trendSeriesColor(series, index) {
+  return series?.color || trendPalette[index % trendPalette.length]
+}
 
 const trendFilterOptions = computed(() => {
   const today = trendDayLabels.value[trendDayLabels.value.length - 1]
   const rows = trendDimensionConfig.value.rows.map((row) => ({
     ...row,
-    todayTasks: (row.daily || []).find((point) => point?.day === today)?.tasks || 0,
+    todayValue: trendPointValue((row.daily || []).find((point) => point?.day === today)) || 0,
+    totalValue: trendSeriesTotal(row),
   }))
   return [...rows]
     .filter((row) => matchesTrendOption(row, trendFilter.value))
     .sort(
       (left, right) =>
-        Number(right.totalTasks || 0) - Number(left.totalTasks || 0),
+        Number(right.todayValue || 0) - Number(left.todayValue || 0) ||
+        Number(right.totalValue || 0) - Number(left.totalValue || 0),
     )
 })
 
@@ -1268,16 +1281,21 @@ const trendVisibleSeries = computed(() => {
     )
     return trendSelectedKeys.value.map((key) => rowsByKey.get(key)).filter(Boolean)
   }
-  if (trendDimension.value === 'total' || !trendUsesDailyTop.value) {
+  if (trendDimension.value === 'total') {
     return trendDimensionConfig.value.rows
   }
-  return buildDailyTopSeries(trendDimensionConfig.value.rows, trendDayLabels.value, 5)
+  return buildDailyTopSeries(
+    trendDimensionConfig.value.rows,
+    trendDayLabels.value,
+    5,
+    trendDimensionConfig.value.metric,
+  )
 })
 
 const trendFilterCount = computed(() => {
   if (trendSelectedKeys.value.length) return `${trendSelectedKeys.value.length}/5`
   if (trendFilter.value.trim()) return trendFilterOptions.value.length
-  if (trendDimension.value === 'total') return 1
+  if (trendDimension.value === 'total') return trendDimensionConfig.value.rows.length
   return trendUsesDailyTop.value ? '5/日' : trendDimensionConfig.value.rows.length
 })
 
@@ -1345,7 +1363,7 @@ const trendDayLabels = computed(() => {
 
 const trendHasData = computed(() =>
   trendVisibleSeries.value.some((series) =>
-    (series.daily || []).some((point) => Number(point.tasks || 0) > 0),
+    (series.daily || []).some((point) => Number(trendPointValue(point, series.metric) || 0) > 0),
   ),
 )
 
@@ -1379,16 +1397,22 @@ function drawTrendChart() {
 
   const days = trendDayLabels.value
   const series = trendVisibleSeries.value.map((item, index) => {
-    const valuesByDay = new Map(
-      (item.daily || []).map((point) => [point.day, Number(point.tasks || 0)]),
-    )
+    const pointsByDay = new Map((item.daily || []).map((point) => [point.day, point]))
     return {
       key: item.key,
       label: item.label || item.key,
-      color: trendPalette[index % trendPalette.length],
-      values: days.map((day) =>
-        valuesByDay.has(day) ? valuesByDay.get(day) : item.dailyTopOnly ? null : 0,
-      ),
+      color: trendSeriesColor(item, index),
+      dashed: Boolean(item.dashed),
+      dailyTopOnly: Boolean(item.dailyTopOnly),
+      unit: item.unit || trendDimensionConfig.value.unit,
+      values: days.map((day) => {
+        const point = pointsByDay.get(day)
+        return point ? trendPointValue(point, item.metric) : item.dailyTopOnly ? null : 0
+      }),
+      pointLabels: days.map((day) => {
+        const point = pointsByDay.get(day)
+        return point?.entityLabel || item.label || item.key
+      }),
     }
   })
   const values = series.flatMap((item) => item.values).filter((value) => value != null)
@@ -1426,12 +1450,13 @@ function drawTrendChart() {
     ctx.fillText(day.slice(5), x, H - 6)
   })
 
-  if (series.length === 1 && !trendVisibleSeries.value[0]?.dailyTopOnly) {
+  const areaSeries = series.find((item) => item.key === 'total' && !item.dailyTopOnly)
+  if (areaSeries) {
     const grad = ctx.createLinearGradient(0, padT, 0, padT + chartH)
     grad.addColorStop(0, isLight ? 'rgba(8,127,140,0.16)' : 'rgba(24,168,184,0.24)')
     grad.addColorStop(1, isLight ? 'rgba(8,127,140,0.01)' : 'rgba(24,168,184,0.02)')
     ctx.beginPath()
-    series[0].values.forEach((value, i) => {
+    areaSeries.values.forEach((value, i) => {
       const x = padL + stepX * i
       const y = padT + chartH - (value / maxVal) * chartH
       i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
@@ -1448,6 +1473,7 @@ function drawTrendChart() {
     ctx.strokeStyle = item.color
     ctx.lineWidth = 2
     ctx.lineJoin = 'round'
+    ctx.setLineDash(item.dashed ? [6, 5] : [])
     let segmentStarted = false
     item.values.forEach((value, i) => {
       if (value == null) {
@@ -1464,6 +1490,7 @@ function drawTrendChart() {
       }
     })
     ctx.stroke()
+    ctx.setLineDash([])
 
     item.values.forEach((value, i) => {
       if (value == null) return
@@ -1499,9 +1526,11 @@ function handleTrendMove(e) {
     .filter((item) => item.values[idx] != null)
     .map((item) => ({
       key: item.key,
-      label: item.label,
+      label: item.pointLabels[idx],
+      rankLabel: item.dailyTopOnly ? item.label : '',
       color: item.color,
       value: item.values[idx],
+      unit: item.unit,
     }))
   if (!items.length) {
     trendTooltip.show = false
@@ -2260,10 +2289,8 @@ onUnmounted(() => {
                 trendDimension === 'total'
                   ? '按生图任务数统计'
                   : trendSelectedKeys.length
-                    ? '单项完整趋势'
-                    : trendDimension === 'shop' || trendDimension === 'user'
-                      ? '每天任务数前 5 名'
-                      : '按模型分组统计'
+                    ? '所选对象完整趋势'
+                    : '每天生图量前 5 名'
               }}
             </p>
           </div>
@@ -2347,7 +2374,7 @@ onUnmounted(() => {
                 @click="selectTrendOption(option)"
               >
                 <span>{{ option.label }}</span>
-                <small>{{ trendUsesDailyTop ? option.todayTasks || 0 : option.totalTasks || 0 }} 任务</small>
+                <small>今日 {{ option.todayValue || 0 }} 张</small>
                 <i
                   v-if="trendSelectedKeys.includes(String(option.key))"
                   class="ri-check-line"
@@ -2363,10 +2390,15 @@ onUnmounted(() => {
         </div>
         <div v-if="trendVisibleSeries.length" class="console-trend-legend" aria-label="趋势图例">
           <span v-for="(series, index) in trendVisibleSeries" :key="series.key">
-            <i :style="{ background: trendPalette[index % trendPalette.length] }"></i>
+            <i
+              :class="{ dashed: series.dashed }"
+              :style="{ background: trendSeriesColor(series, index) }"
+            ></i>
             <b>{{ series.label }}</b>
-            <small v-if="series.todayRank">今日 {{ series.todayTasks || 0 }}</small>
-            <small v-else>{{ series.totalTasks || 0 }}</small>
+            <small v-if="series.dailyTopOnly">
+              {{ series.todayLabel ? `${series.todayLabel} · 今日 ${series.todayValue || 0} 张` : '今日暂无' }}
+            </small>
+            <small v-else>{{ trendSeriesTotal(series) }} {{ trendDimensionConfig.unit }}</small>
           </span>
         </div>
         <div class="console-trend-wrap">
@@ -2388,8 +2420,8 @@ onUnmounted(() => {
               class="console-trend-tooltip-item"
             >
               <i :style="{ background: item.color }"></i>
-              <b>{{ item.label }}</b>
-              <em>{{ item.value }} 任务</em>
+              <b>{{ item.rankLabel ? `${item.rankLabel} · ${item.label}` : item.label }}</b>
+              <em>{{ item.value }} {{ item.unit }}</em>
             </span>
           </div>
         </div>
@@ -2919,6 +2951,17 @@ onUnmounted(() => {
   gap: 10px;
   flex-wrap: wrap;
 }
+.console-accounts-filters .console-search-box,
+.console-accounts-filters .console-filter-select,
+.console-accounts-filters .console-filter-select .custom-select-trigger {
+  height: 38px;
+  min-height: 38px;
+  box-sizing: border-box;
+  border-radius: 7px;
+}
+.console-accounts-filters .console-filter-select {
+  padding: 0;
+}
 /* 任务搜索框 */
 .console-task-search {
   display: flex;
@@ -2983,7 +3026,12 @@ onUnmounted(() => {
   color: #94a3b8;
 }
 .users-table .console-row {
-  grid-template-columns: 130px 120px 80px 100px 80px 130px 80px minmax(270px, 1fr);
+  grid-template-columns: 130px 120px 120px 100px 80px 130px 80px minmax(270px, 1fr);
+}
+.users-table .console-row > select:nth-child(3) {
+  min-width: 120px;
+  padding-left: 10px;
+  padding-right: 30px;
 }
 .console-password-reset-btn {
   display: inline-flex;
@@ -4030,6 +4078,12 @@ onUnmounted(() => {
   border-radius: 50%;
 }
 
+.console-trend-legend i.dashed {
+  width: 13px;
+  height: 2px;
+  border-radius: 1px;
+}
+
 .console-trend-legend b {
   font-weight: 500;
   max-width: 110px;
@@ -4504,7 +4558,25 @@ onUnmounted(() => {
 .console-search-box input,
 .console-task-search input,
 [data-theme='light'] .console-search-box input {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  height: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  outline: 0;
   color: var(--console-text);
+  background: transparent;
+  box-shadow: none;
+}
+
+.console-search-box input:focus,
+.console-task-search input:focus,
+[data-theme='light'] .console-search-box input:focus {
+  border: 0;
+  outline: 0;
   box-shadow: none;
 }
 

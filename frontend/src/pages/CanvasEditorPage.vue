@@ -18,6 +18,12 @@ import { useVersionHistory } from '../composables/useVersionHistory'
 import { layerName, useCanvasStore } from '../stores/canvas'
 import { useUserStore } from '../stores/user'
 import { apiPath } from '../utils/apiBase'
+import { resolveAgentReferenceImages } from '../utils/agentContext'
+import { canCreateAgentDraft, totalAgentGenerationCount } from '../utils/agentDraft'
+import {
+  partitionConversationMessages,
+  stripAgentMessages,
+} from '../utils/agentConversationStore'
 import { buildCanvasAutoLayout } from '../utils/canvasAutoLayout'
 import { writeTextToClipboard } from '../utils/clipboard'
 import {
@@ -736,6 +742,37 @@ let agentRequestController = null
 const agentEnhancingPrompt = ref(false)
 let agentEnhanceRequestController = null
 const LEGACY_AGENT_CONVERSATION_ID = 'agent-legacy'
+const agentConversationSyncTimers = new Map()
+const AGENT_DELETE_QUEUE_KEY = 'youmi-agent-conversation-delete-queue'
+
+function loadAgentConversationDeleteQueue() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(AGENT_DELETE_QUEUE_KEY) || '[]')
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function saveAgentConversationDeleteQueue(queue) {
+  localStorage.setItem(AGENT_DELETE_QUEUE_KEY, JSON.stringify(queue.slice(-100)))
+}
+
+function queueAgentConversationDelete(conversationId) {
+  const queue = loadAgentConversationDeleteQueue().filter(
+    (item) => !(item?.canvasId === props.id && item?.conversationId === conversationId),
+  )
+  queue.push({ canvasId: props.id, conversationId })
+  saveAgentConversationDeleteQueue(queue)
+}
+
+function removeQueuedAgentConversationDelete(conversationId) {
+  saveAgentConversationDeleteQueue(
+    loadAgentConversationDeleteQueue().filter(
+      (item) => !(item?.canvasId === props.id && item?.conversationId === conversationId),
+    ),
+  )
+}
 
 function cancelAgentPromptEnhancement() {
   if (agentEnhanceRequestController) {
@@ -761,6 +798,8 @@ function resolveAgentConversationId(payload = {}) {
 }
 
 const activeAgentConversationId = ref(resolveAgentConversationId(doc.value?.payload || {}))
+const agentConversationRecords = ref([])
+const agentConversationMessagesById = ref({})
 const agentConversationHistoryOpen = ref(false)
 const agentConversationSearch = ref('')
 const regeneratingLayerIds = reactive(new Set())
@@ -1239,9 +1278,12 @@ watch(
     chatGenerationCount.value = normalizeChatGenerationCount(cfg.count)
     chatMode.value = cfg.mode === 'agent' ? 'agent' : 'image'
     activeAgentConversationId.value = resolveAgentConversationId(doc.value?.payload || {})
+    agentConversationRecords.value = []
+    agentConversationMessagesById.value = {}
     agentConversationSearch.value = ''
     agentConversationHistoryOpen.value = false
     initDocState()
+    void loadAgentConversationsFromServer()
   },
 )
 // 聊天消息中元素 pill 的悬停预览
@@ -1992,9 +2034,7 @@ function messageBelongsToAgentConversation(message, conversationId) {
 }
 
 const agentConversations = computed(() => {
-  const payload = doc.value?.payload || {}
-  const messages = payload.chat || []
-  const records = (Array.isArray(payload.agentConversations) ? payload.agentConversations : [])
+  return agentConversationRecords.value
     .filter((record) => record?.id)
     .map((record) => ({
       id: String(record.id),
@@ -2002,26 +2042,8 @@ const agentConversations = computed(() => {
       createdAt: Number(record.createdAt) || 0,
       updatedAt: Number(record.updatedAt) || Number(record.createdAt) || 0,
     }))
-    .filter((record) =>
-      messages.some((message) => messageBelongsToAgentConversation(message, record.id)),
-    )
-
-  const hasLegacyMessages = messages.some(
-    (message) => message?.agent && !message.agentConversationId,
-  )
-  if (hasLegacyMessages && !records.some((record) => record.id === LEGACY_AGENT_CONVERSATION_ID)) {
-    const firstLegacyUserMessage = messages.find(
-      (message) => message?.agent && !message.agentConversationId && message.role === 'user',
-    )
-    records.push({
-      id: LEGACY_AGENT_CONVERSATION_ID,
-      title: agentConversationTitle(firstLegacyUserMessage?.text, '历史对话'),
-      createdAt: Number(firstLegacyUserMessage?.createdAt) || 0,
-      updatedAt: Number(firstLegacyUserMessage?.createdAt) || 0,
-    })
-  }
-
-  return records.sort((left, right) => right.updatedAt - left.updatedAt)
+    .filter((record) => (agentConversationMessagesById.value[record.id] || []).length > 0)
+    .sort((left, right) => right.updatedAt - left.updatedAt)
 })
 
 const activeAgentConversationTitle = computed(
@@ -2048,9 +2070,7 @@ const chatMessages = computed(() => {
       ]
     : messages
   if (chatMode.value === 'agent') {
-    return resolvedMessages.filter((message) =>
-      messageBelongsToAgentConversation(message, activeAgentConversationId.value),
-    )
+    return agentConversationMessagesById.value[activeAgentConversationId.value] || []
   }
   return resolvedMessages.filter((message) => !message.agent && !message.agentConversationId)
 })
@@ -2609,6 +2629,18 @@ function applyImagePersistenceState({
     })
     return draft
   })
+  updateAgentMessagesWhere(
+    (message) => (assistantId && message.id === assistantId) || message.taskId === taskId,
+    (message) => ({
+      ...message,
+      imageUrl:
+        normalizedStatus === 'DONE'
+          ? finalUrl || message.imageUrl
+          : message.imageUrl || finalUrl,
+      persistStatus: normalizedStatus,
+      persistError: persistError || undefined,
+    }),
+  )
   return {
     taskId,
     documentId,
@@ -3119,7 +3151,49 @@ function friendlyImageError(raw) {
   return '生图失败，请稍后重试或调整提示词。'
 }
 
+function setAgentConversationMessages(conversationId, messages) {
+  const cleanId = String(conversationId || '').trim()
+  if (!cleanId) return
+  agentConversationMessagesById.value = {
+    ...agentConversationMessagesById.value,
+    [cleanId]: messages,
+  }
+}
+
+function updateAgentMessage(messageId, updater) {
+  for (const [conversationId, messages] of Object.entries(agentConversationMessagesById.value)) {
+    const index = messages.findIndex((message) => message?.id === messageId)
+    if (index < 0) continue
+    const nextMessages = [...messages]
+    nextMessages[index] = updater(nextMessages[index])
+    setAgentConversationMessages(conversationId, nextMessages)
+    scheduleAgentConversationSync(conversationId)
+    return true
+  }
+  return false
+}
+
+function updateAgentMessagesWhere(matcher, updater) {
+  let changed = false
+  const nextById = { ...agentConversationMessagesById.value }
+  for (const [conversationId, messages] of Object.entries(nextById)) {
+    let conversationChanged = false
+    const nextMessages = messages.map((message) => {
+      if (!matcher(message)) return message
+      conversationChanged = true
+      changed = true
+      return updater(message)
+    })
+    if (!conversationChanged) continue
+    nextById[conversationId] = nextMessages
+    scheduleAgentConversationSync(conversationId)
+  }
+  if (changed) agentConversationMessagesById.value = nextById
+  return changed
+}
+
 function updateChatMessage(messageId, patch) {
+  if (updateAgentMessage(messageId, (message) => ({ ...message, ...patch }))) return
   canvas.updateDocument(props.id, (draft) => {
     draft.payload.chat = draft.payload.chat || []
     draft.payload.chat = draft.payload.chat.map((message) =>
@@ -3127,14 +3201,31 @@ function updateChatMessage(messageId, patch) {
     )
     return draft
   })
+  const updatedMessage = (doc.value?.payload?.chat || []).find((message) => message.id === messageId)
+  const conversationId = updatedMessage?.agentConversationId
+    || (updatedMessage?.agent ? activeAgentConversationId.value : '')
+  if (conversationId) scheduleAgentConversationSync(conversationId)
 }
 
 function addChatMessages(messages) {
-  canvas.updateDocument(props.id, (draft) => {
-    draft.payload.chat = draft.payload.chat || []
-    draft.payload.chat.push(...messages)
-    return draft
-  })
+  const { regularMessages, agentMessagesById: agentMessages } = partitionConversationMessages(
+    messages,
+    activeAgentConversationId.value,
+  )
+  if (regularMessages.length) {
+    canvas.updateDocument(props.id, (draft) => {
+      draft.payload.chat = draft.payload.chat || []
+      draft.payload.chat.push(...regularMessages)
+      return draft
+    })
+  }
+  for (const [conversationId, nextMessages] of agentMessages.entries()) {
+    setAgentConversationMessages(conversationId, [
+      ...(agentConversationMessagesById.value[conversationId] || []),
+      ...nextMessages,
+    ])
+    scheduleAgentConversationSync(conversationId)
+  }
   scrollChatToBottom()
 }
 
@@ -7510,6 +7601,195 @@ function clearChatComposer() {
   elementClickPositions.value = {}
 }
 
+function agentConversationMessages(conversationId) {
+  return (agentConversationMessagesById.value[conversationId] || [])
+    .slice(-200)
+    .map((message) => JSON.parse(JSON.stringify(message)))
+}
+
+async function syncAgentConversationNow(conversationId) {
+  const cleanId = String(conversationId || '').trim()
+  if (!cleanId) return false
+  const messages = agentConversationMessages(cleanId)
+  if (!messages.length) return true
+  const record = agentConversations.value.find((item) => item.id === cleanId)
+  try {
+    await readApiResponse(
+      await fetch(apiPath(`/api/ai/canvas-agent/conversations/${encodeURIComponent(cleanId)}`), {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...userStore.authHeaders(),
+        },
+        body: JSON.stringify({
+          canvasId: props.id,
+          title:
+            record?.title
+            || agentConversationTitle(messages.find((item) => item.role === 'user')?.text),
+          messages,
+        }),
+      }),
+    )
+    return true
+  } catch (error) {
+    console.warn('[agent] 会话同步失败，将保留画布本地副本', error?.message || error)
+    return false
+  }
+}
+
+function scheduleAgentConversationSync(conversationId, delay = 450) {
+  const cleanId = String(conversationId || '').trim()
+  if (!cleanId) return
+  const previous = agentConversationSyncTimers.get(cleanId)
+  if (previous) window.clearTimeout(previous)
+  const timer = window.setTimeout(() => {
+    agentConversationSyncTimers.delete(cleanId)
+    void syncAgentConversationNow(cleanId)
+  }, delay)
+  agentConversationSyncTimers.set(cleanId, timer)
+}
+
+async function deleteAgentConversationOnServer(conversationId) {
+  await readApiResponse(
+    await fetch(
+      apiPath(
+        `/api/ai/canvas-agent/conversations/${encodeURIComponent(conversationId)}?canvasId=${encodeURIComponent(props.id)}`,
+      ),
+      {
+        method: 'DELETE',
+        headers: userStore.authHeaders(),
+      },
+    ),
+  )
+  removeQueuedAgentConversationDelete(conversationId)
+}
+
+async function flushAgentConversationDeleteQueue() {
+  const pending = loadAgentConversationDeleteQueue().filter(
+    (item) => item?.canvasId === props.id && item?.conversationId,
+  )
+  await Promise.allSettled(
+    pending.map((item) => deleteAgentConversationOnServer(item.conversationId)),
+  )
+}
+
+async function loadAgentConversationsFromServer() {
+  const payload = doc.value?.payload || {}
+  const legacyMessages = Array.isArray(payload.chat)
+    ? payload.chat.filter((message) => message?.agent || message?.agentConversationId)
+    : []
+  const localMessagesById = {}
+  for (const message of legacyMessages) {
+    const conversationId = String(
+      message?.agentConversationId || LEGACY_AGENT_CONVERSATION_ID,
+    ).trim()
+    if (!conversationId) continue
+    localMessagesById[conversationId] = [
+      ...(localMessagesById[conversationId] || []),
+      { ...message, agent: true, agentConversationId: conversationId },
+    ]
+  }
+  const savedRecords = Array.isArray(payload.agentConversations)
+    ? payload.agentConversations.filter((record) => record?.id)
+    : []
+  const localRecords = Object.entries(localMessagesById).map(([conversationId, messages]) => {
+    const saved = savedRecords.find((record) => String(record.id) === conversationId)
+    const firstUserMessage = messages.find((message) => message?.role === 'user')
+    const latestMessageAt = Math.max(...messages.map((message) => Number(message.createdAt) || 0), 0)
+    return {
+      id: conversationId,
+      title: agentConversationTitle(saved?.title, agentConversationTitle(firstUserMessage?.text, '历史对话')),
+      createdAt: Number(saved?.createdAt) || Number(firstUserMessage?.createdAt) || Date.now(),
+      updatedAt: Number(saved?.updatedAt) || latestMessageAt || Date.now(),
+    }
+  })
+  agentConversationRecords.value = localRecords
+  agentConversationMessagesById.value = localMessagesById
+  if (!userStore.authHeaders().Authorization) return
+  try {
+    await flushAgentConversationDeleteQueue()
+    const deletedIds = new Set(
+      loadAgentConversationDeleteQueue()
+        .filter((item) => item?.canvasId === props.id)
+        .map((item) => item.conversationId),
+    )
+    const remoteRecords = await readApiResponse(
+      await fetch(
+        apiPath(`/api/ai/canvas-agent/conversations?canvasId=${encodeURIComponent(props.id)}`),
+        { headers: userStore.authHeaders() },
+      ),
+    )
+    const records = (Array.isArray(remoteRecords) ? remoteRecords : []).filter(
+      (record) => record?.id && !deletedIds.has(record.id),
+    )
+    const localIdsToSync = []
+    let nextActiveId = activeAgentConversationId.value
+    const localRecordMap = new Map(localRecords.map((record) => [String(record.id), record]))
+    const remoteRecordMap = new Map(records.map((record) => [String(record.id), record]))
+    const conversationIds = new Set([...localRecordMap.keys(), ...remoteRecordMap.keys()])
+    const mergedMessagesById = {}
+    const mergedRecords = []
+    for (const conversationId of conversationIds) {
+      const localRecord = localRecordMap.get(conversationId)
+      const remoteRecord = remoteRecordMap.get(conversationId)
+      const localMessages = localMessagesById[conversationId] || []
+      const localUpdatedAt = Number(localRecord?.updatedAt) || 0
+      const remoteUpdatedAt = Number(remoteRecord?.updatedAt) || 0
+      const preferLocal = localMessages.length > 0 && localUpdatedAt > remoteUpdatedAt
+      const sourceMessages = preferLocal || !remoteRecord
+        ? localMessages
+        : Array.isArray(remoteRecord.messages)
+          ? remoteRecord.messages
+          : []
+      if (!sourceMessages.length) continue
+      const normalizedMessages = sourceMessages
+        .map((message) => ({
+          ...message,
+          agent: true,
+          agentConversationId: conversationId,
+        }))
+        .sort((left, right) => (Number(left.createdAt) || 0) - (Number(right.createdAt) || 0))
+      mergedMessagesById[conversationId] = normalizedMessages
+      const firstUserMessage = normalizedMessages.find((message) => message?.role === 'user')
+      mergedRecords.push({
+        id: conversationId,
+        title: agentConversationTitle(
+          preferLocal ? localRecord?.title : remoteRecord?.title,
+          agentConversationTitle(firstUserMessage?.text, '历史对话'),
+        ),
+        createdAt:
+          Number(localRecord?.createdAt)
+          || Number(remoteRecord?.createdAt)
+          || Number(firstUserMessage?.createdAt)
+          || Date.now(),
+        updatedAt: Math.max(localUpdatedAt, remoteUpdatedAt),
+      })
+      if (preferLocal || !remoteRecord) localIdsToSync.push(conversationId)
+    }
+
+    mergedRecords.sort((left, right) => right.updatedAt - left.updatedAt)
+    agentConversationRecords.value = mergedRecords.slice(0, 50)
+    agentConversationMessagesById.value = mergedMessagesById
+    if (!mergedMessagesById[nextActiveId] && mergedRecords[0]?.id) nextActiveId = mergedRecords[0].id
+    activeAgentConversationId.value = nextActiveId
+    const syncResults = await Promise.all(
+      localIdsToSync.map((conversationId) => syncAgentConversationNow(conversationId)),
+    )
+    if (syncResults.every(Boolean)) {
+      canvas.updateDocument(props.id, (draft) => {
+        draft.payload.chat = stripAgentMessages(draft.payload.chat)
+        delete draft.payload.agentConversations
+        delete draft.payload.activeAgentConversationId
+        return draft
+      })
+      await canvas.flushNow(props.id)
+    }
+    scrollChatToBottom()
+  } catch (error) {
+    console.warn('[agent] 无法读取服务端会话，暂时使用待迁移的本地副本', error?.message || error)
+  }
+}
+
 function startNewAgentConversation() {
   cancelAgentPromptEnhancement()
   if (agentRequestController) {
@@ -7518,33 +7798,6 @@ function startNewAgentConversation() {
   }
   agentPlanning.value = false
   const newConversationId = createAgentConversationId()
-  const now = Date.now()
-  canvas.updateDocument(props.id, (draft) => {
-    const records = Array.isArray(draft.payload.agentConversations)
-      ? [...draft.payload.agentConversations]
-      : []
-    if (
-      !records.some((record) => record?.id === activeAgentConversationId.value) &&
-      (draft.payload.chat || []).some((message) =>
-        messageBelongsToAgentConversation(message, activeAgentConversationId.value),
-      )
-    ) {
-      const firstUserMessage = (draft.payload.chat || []).find(
-        (message) =>
-          message.role === 'user' &&
-          messageBelongsToAgentConversation(message, activeAgentConversationId.value),
-      )
-      records.push({
-        id: activeAgentConversationId.value,
-        title: agentConversationTitle(firstUserMessage?.text, '历史对话'),
-        createdAt: Number(firstUserMessage?.createdAt) || now,
-        updatedAt: now,
-      })
-    }
-    draft.payload.agentConversations = records.slice(0, 50)
-    draft.payload.activeAgentConversationId = newConversationId
-    return draft
-  })
   activeAgentConversationId.value = newConversationId
   clearChatComposer()
   chatModeMenuOpen.value = false
@@ -7558,33 +7811,27 @@ function startNewAgentConversation() {
 function touchAgentConversation(title) {
   const conversationId = activeAgentConversationId.value
   const now = Date.now()
-  canvas.updateDocument(props.id, (draft) => {
-    const records = Array.isArray(draft.payload.agentConversations)
-      ? [...draft.payload.agentConversations]
-      : []
-    const index = records.findIndex((record) => record?.id === conversationId)
-    if (index >= 0) {
-      const current = records[index]
-      records[index] = {
-        ...current,
-        title:
-          !current.title || current.title === '新对话'
-            ? agentConversationTitle(title)
-            : current.title,
-        updatedAt: now,
-      }
-    } else {
-      records.unshift({
-        id: conversationId,
-        title: agentConversationTitle(title),
-        createdAt: now,
-        updatedAt: now,
-      })
+  const records = [...agentConversationRecords.value]
+  const index = records.findIndex((record) => record?.id === conversationId)
+  if (index >= 0) {
+    const current = records[index]
+    records[index] = {
+      ...current,
+      title:
+        !current.title || current.title === '新对话'
+          ? agentConversationTitle(title)
+          : current.title,
+      updatedAt: now,
     }
-    draft.payload.agentConversations = records.slice(0, 50)
-    draft.payload.activeAgentConversationId = conversationId
-    return draft
-  })
+  } else {
+    records.unshift({
+      id: conversationId,
+      title: agentConversationTitle(title),
+      createdAt: now,
+      updatedAt: now,
+    })
+  }
+  agentConversationRecords.value = records.slice(0, 50)
 }
 
 function switchAgentConversation(conversationId) {
@@ -7598,10 +7845,6 @@ function switchAgentConversation(conversationId) {
   }
   agentPlanning.value = false
   activeAgentConversationId.value = conversationId
-  canvas.updateDocument(props.id, (draft) => {
-    draft.payload.activeAgentConversationId = conversationId
-    return draft
-  })
   clearChatComposer()
   agentConversationSearch.value = ''
   agentConversationHistoryOpen.value = false
@@ -7610,58 +7853,42 @@ function switchAgentConversation(conversationId) {
 
 async function deleteAgentConversation(conversationId) {
   if (!conversationId) return
+  queueAgentConversationDelete(conversationId)
+  const pendingSync = agentConversationSyncTimers.get(conversationId)
+  if (pendingSync) {
+    window.clearTimeout(pendingSync)
+    agentConversationSyncTimers.delete(conversationId)
+  }
   if (conversationId === activeAgentConversationId.value && agentRequestController) {
     agentRequestController.abort()
     agentRequestController = null
     agentPlanning.value = false
   }
 
-  let nextConversationId = activeAgentConversationId.value
-  canvas.updateDocument(props.id, (draft) => {
-    const remainingMessages = (draft.payload.chat || []).filter(
-      (message) => !messageBelongsToAgentConversation(message, conversationId),
-    )
-    let remainingRecords = (Array.isArray(draft.payload.agentConversations)
-      ? draft.payload.agentConversations
-      : []
-    ).filter(
-      (record) =>
-        record?.id &&
-        String(record.id) !== conversationId &&
-        remainingMessages.some((message) =>
-          messageBelongsToAgentConversation(message, String(record.id)),
-        ),
-    )
-
-    if (conversationId === activeAgentConversationId.value) {
-      const hasLegacyMessages = remainingMessages.some(
-        (message) => message?.agent && !message.agentConversationId,
-      )
-      const candidates = [
-        ...remainingRecords
-          .map((record) => ({
-            id: String(record.id),
-            updatedAt: Number(record.updatedAt) || Number(record.createdAt) || 0,
-          }))
-          .sort((left, right) => right.updatedAt - left.updatedAt),
-        ...(hasLegacyMessages
-          ? [{ id: LEGACY_AGENT_CONVERSATION_ID, updatedAt: Number.MAX_SAFE_INTEGER }]
-          : []),
-      ]
-      nextConversationId = candidates[0]?.id || createAgentConversationId()
-    }
-
-    draft.payload.chat = remainingMessages
-    draft.payload.agentConversations = remainingRecords.slice(0, 50)
-    draft.payload.activeAgentConversationId = nextConversationId
-    return draft
-  })
-
+  const remainingRecords = agentConversationRecords.value.filter(
+    (record) => String(record?.id || '') !== conversationId,
+  )
+  agentConversationRecords.value = remainingRecords
+  const nextMessagesById = { ...agentConversationMessagesById.value }
+  delete nextMessagesById[conversationId]
+  agentConversationMessagesById.value = nextMessagesById
+  const nextConversationId =
+    conversationId === activeAgentConversationId.value
+      ? remainingRecords[0]?.id || createAgentConversationId()
+      : activeAgentConversationId.value
   activeAgentConversationId.value = nextConversationId
   agentConversationSearch.value = ''
   clearChatComposer()
-  const saved = await canvas.flushNow(props.id)
-  showCopyPasteToast(saved ? '对话已删除' : '对话已从本地删除，服务器稍后自动同步')
+  let serverDeleted = false
+  try {
+    await deleteAgentConversationOnServer(conversationId)
+    serverDeleted = true
+  } catch (error) {
+    console.warn('[agent] 服务端会话删除失败', error?.message || error)
+  }
+  showCopyPasteToast(
+    serverDeleted ? '对话已删除' : '对话已从当前列表删除，服务器稍后自动同步',
+  )
   scrollChatToBottom()
 }
 
@@ -7690,9 +7917,12 @@ function buildCanvasAgentContext() {
     ]),
   )
   const referenceLayerIds = new Set()
+  const resolvedReferences = resolveAgentReferenceImages({
+    currentImages: chatReferenceImages.value,
+    messages: chatMessages.value,
+  })
 
-  for (const image of chatReferenceImages.value) {
-    if (image.uploading || image.error || !image.url) continue
+  for (const [referenceIndex, image] of resolvedReferences.images.entries()) {
     const matchedLayer = layers.value.find(
       (layer) =>
         layer.id === image.layerId || layer.url === image.url || layer.thumbnailUrl === image.url,
@@ -7701,7 +7931,7 @@ function buildCanvasAgentContext() {
       referenceLayerIds.add(matchedLayer.id)
       continue
     }
-    const contextId = `chat-ref-${image.id}`
+    const contextId = `chat-ref-${image.id || referenceIndex}`
     referenceLayerIds.add(contextId)
     referenceLookup.set(contextId, {
       id: contextId,
@@ -7726,6 +7956,7 @@ function buildCanvasAgentContext() {
     selectedLayerIds: selectedLayerIds.value.filter((id) => referenceLookup.has(id)),
     referenceLayerIds: [...referenceLayerIds].filter((id) => referenceLookup.has(id)),
     referenceLookup,
+    inheritedReferenceImages: resolvedReferences.inherited,
   }
 }
 
@@ -7739,6 +7970,11 @@ function buildCanvasAgentHistory() {
         .join('\n')
       const content = [
         String(message.text || '').trim(),
+        Array.isArray(message.referenceImages) && message.referenceImages.length
+          ? `参考图：${message.referenceImages.length} 张（${
+              message.inheritedReferenceImages ? '沿用本会话前文' : '本轮提交'
+            }）`
+          : '',
         draftPrompts && `提示词草稿：\n${draftPrompts}`,
       ]
         .filter(Boolean)
@@ -7813,6 +8049,17 @@ function agentDraftActiveItem(draft) {
   return items[agentDraftActiveIndex(draft)] || null
 }
 
+function agentDraftModels(draft) {
+  return normalizeChatModelSelection(
+    Array.isArray(draft?.models) && draft.models.length ? draft.models : draft?.model,
+    draft?.model || chatModel.value,
+  )
+}
+
+function agentDraftTotalCount(draft) {
+  return totalAgentGenerationCount(agentDraftModels(draft), draft?.count)
+}
+
 function agentDraftPromptParagraphs(value) {
   const text = String(value || '')
     .replace(/\\r\\n|\\n|\\r/g, '\n')
@@ -7869,27 +8116,24 @@ function moveAgentDraft(message, offset) {
 }
 
 function updateAgentDraftItemStatus(messageId, itemId, status) {
-  canvas.updateDocument(props.id, (draftDocument) => {
-    draftDocument.payload.chat = (draftDocument.payload.chat || []).map((message) => {
-      if (message.id !== messageId || !message.agentDraft) return message
-      const items = agentDraftItems(message.agentDraft).map((item) =>
-        item.id === itemId ? { ...item, status } : item,
-      )
-      const activeIndex = Math.min(
-        agentDraftActiveIndex(message.agentDraft),
-        Math.max(items.length - 1, 0),
-      )
-      return {
-        ...message,
-        agentDraft: {
-          ...message.agentDraft,
-          items,
-          prompt: items[activeIndex]?.prompt || message.agentDraft.prompt,
-          activeIndex,
-        },
-      }
-    })
-    return draftDocument
+  updateAgentMessage(messageId, (message) => {
+    if (!message.agentDraft) return message
+    const items = agentDraftItems(message.agentDraft).map((item) =>
+      item.id === itemId ? { ...item, status } : item,
+    )
+    const activeIndex = Math.min(
+      agentDraftActiveIndex(message.agentDraft),
+      Math.max(items.length - 1, 0),
+    )
+    return {
+      ...message,
+      agentDraft: {
+        ...message.agentDraft,
+        items,
+        prompt: items[activeIndex]?.prompt || message.agentDraft.prompt,
+        activeIndex,
+      },
+    }
   })
 }
 
@@ -7915,6 +8159,7 @@ async function runCanvasAgent() {
       .map((id) => context.referenceLookup.get(id))
       .filter((reference) => reference?.url)
       .map((reference) => ({ url: reference.url, layerId: reference.layerId || '' })),
+    inheritedReferenceImages: context.inheritedReferenceImages,
   }
   const assistantId = `msg-${createdAt}-agent`
   addChatMessages([
@@ -7954,9 +8199,11 @@ async function runCanvasAgent() {
           selectedLayerIds: context.selectedLayerIds,
           referenceLayerIds: context.referenceLayerIds,
           model: chatModel.value,
+          models: [...chatModels.value],
           ratio: chatRatio.value,
           resolution: chatResolution.value,
           count: chatGenerationCount.value,
+          conversationId,
         }),
       }),
     )
@@ -7968,6 +8215,13 @@ async function runCanvasAgent() {
     const references = (response?.referenceLayerIds || [])
       .map((id) => context.referenceLookup.get(id))
       .filter((reference) => reference?.url)
+    const canGenerate = canCreateAgentDraft(response, draftPrompts)
+    const draftModels = normalizeChatModelSelection(
+      Array.isArray(response?.imageModels) && response.imageModels.length
+        ? response.imageModels
+        : chatModels.value,
+      response?.imageModel || chatModel.value,
+    )
     updateChatMessage(assistantId, {
       text: String(
         response?.reply ||
@@ -7977,7 +8231,7 @@ async function runCanvasAgent() {
       ),
       generating: false,
       failed: false,
-      agentDraft: draftPrompts.length
+      agentDraft: canGenerate
         ? {
             prompt: draftPrompts[0],
             prompts: draftPrompts,
@@ -7991,7 +8245,8 @@ async function runCanvasAgent() {
               url: reference.url,
               layerId: reference.layerId || '',
             })),
-            model: response?.imageModel || chatModel.value,
+            model: draftModels[0],
+            models: draftModels,
             ratio: response?.ratio || chatRatio.value,
             resolution: response?.resolution || chatResolution.value,
             count: normalizeChatGenerationCount(response?.count || chatGenerationCount.value),
@@ -8051,7 +8306,7 @@ async function confirmAgentGeneration(message) {
       targetLayerId: referenceImages.find((reference) => reference.layerId)?.layerId || '',
       generationCount: draft.count || 1,
       taskConfig: {
-        models: [draft.model || chatModel.value],
+        models: agentDraftModels(draft),
         model: draft.model || chatModel.value,
         ratio: draft.ratio || chatRatio.value,
         resolution: draft.resolution || chatResolution.value,
@@ -8094,7 +8349,11 @@ async function enhanceAgentPrompt() {
           'Content-Type': 'application/json',
           ...userStore.authHeaders(),
         },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({
+          canvasId: props.id,
+          conversationId: activeAgentConversationId.value,
+          prompt,
+        }),
         signal: requestController.signal,
       }),
     )
@@ -9334,6 +9593,7 @@ onMounted(() => {
   }
   // 连接线/历史/模型参数已从 payload 初始化，这里仅做孤儿连接线清洗
   initDocState()
+  void loadAgentConversationsFromServer()
   // 建立 pill 删除监听 — MutationObserver 比 @input 更可靠
   nextTick(() => setupPillObserver())
   // 恢复已缓存的检测元素（清除旧版错误归一化的缓存）
@@ -9460,6 +9720,11 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   _mounted.value = false
+  for (const [conversationId, timer] of agentConversationSyncTimers.entries()) {
+    window.clearTimeout(timer)
+    void syncAgentConversationNow(conversationId)
+  }
+  agentConversationSyncTimers.clear()
   cancelAgentPromptEnhancement()
   if (agentRequestController) {
     agentRequestController.abort()
@@ -12991,10 +13256,12 @@ async function loadImageForCropUncached(layer) {
                     </div>
                   </div>
                   <div class="uc-agent-draft-settings" aria-label="生图参数">
-                    <span>{{ message.agentDraft.model }}</span>
+                    <span :title="agentDraftModels(message.agentDraft).join('、')">
+                      {{ agentDraftModels(message.agentDraft).join(' + ') }}
+                    </span>
                     <span>{{ message.agentDraft.ratio }}</span>
                     <span>{{ message.agentDraft.resolution }}</span>
-                    <span>{{ message.agentDraft.count }} 张</span>
+                    <span>{{ agentDraftTotalCount(message.agentDraft) }} 张</span>
                   </div>
                   <footer class="uc-agent-draft-actions">
                     <span v-if="agentDraftActiveItem(message.agentDraft)?.status === 'submitted'">

@@ -83,6 +83,39 @@ CREATE TABLE IF NOT EXISTS ym_canvas_document (
   INDEX idx_ym_canvas_user_updated (user_id, updated_at DESC)
 );
 
+CREATE TABLE IF NOT EXISTS ym_agent_conversation (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  conversation_id VARCHAR(128) NOT NULL,
+  user_id BIGINT NOT NULL,
+  canvas_id VARCHAR(64) NOT NULL,
+  title VARCHAR(256) NOT NULL DEFAULT '新对话',
+  messages_json LONGTEXT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_ym_agent_conversation_user_canvas (conversation_id, user_id, canvas_id),
+  INDEX idx_ym_agent_conversation_canvas (user_id, canvas_id, updated_at DESC)
+);
+
+CREATE TABLE IF NOT EXISTS ym_agent_usage (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  canvas_id VARCHAR(64) NULL,
+  conversation_id VARCHAR(128) NULL,
+  operation VARCHAR(32) NOT NULL,
+  provider VARCHAR(64) NULL,
+  model VARCHAR(128) NULL,
+  status VARCHAR(20) NOT NULL,
+  duration_ms BIGINT NOT NULL DEFAULT 0,
+  input_chars INT NOT NULL DEFAULT 0,
+  output_chars INT NOT NULL DEFAULT 0,
+  image_count INT NOT NULL DEFAULT 0,
+  error_message VARCHAR(1000) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_ym_agent_usage_user_created (user_id, created_at),
+  INDEX idx_ym_agent_usage_created (created_at),
+  INDEX idx_ym_agent_usage_status (status)
+);
+
 CREATE TABLE IF NOT EXISTS ym_ecommerce_set (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     set_id VARCHAR(64) NOT NULL UNIQUE,

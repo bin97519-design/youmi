@@ -1,70 +1,101 @@
-function taskCountForDay(row, day) {
-  const point = (row?.daily || []).find((item) => item?.day === day)
-  return Number(point?.tasks || 0)
+function pointForDay(row, day) {
+  return (row?.daily || []).find((item) => item?.day === day)
 }
 
-export function buildDailyTopSeries(rows, days, limit = 5) {
+function metricValue(point, metric) {
+  return Number(point?.[metric] ?? point?.tasks ?? 0)
+}
+
+function totalMetricValue(row, metric) {
+  return (row?.daily || []).reduce((sum, point) => sum + metricValue(point, metric), 0)
+}
+
+export function buildTotalTrendSeries(daily) {
+  const points = Array.isArray(daily) ? daily : []
+  return [
+    {
+      key: 'total',
+      label: '总量',
+      metric: 'tasks',
+      color: '#18a8b8',
+      totalTasks: totalMetricValue({ daily: points }, 'tasks'),
+      daily: points,
+    },
+    {
+      key: 'failed',
+      label: '失败任务',
+      metric: 'failedTasks',
+      color: '#ed5f6d',
+      dashed: true,
+      totalTasks: totalMetricValue({ daily: points }, 'failedTasks'),
+      daily: points,
+    },
+  ]
+}
+
+export function buildDailyTopSeries(rows, days, limit = 5, metric = 'images') {
   const candidates = Array.isArray(rows) ? rows : []
   const visibleDays = Array.isArray(days) ? days : []
   const topLimit = Math.max(1, Number(limit) || 5)
-  const rankings = new Map()
 
-  visibleDays.forEach((day) => {
-    const ranked = candidates
-      .map((row) => ({ row, tasks: taskCountForDay(row, day) }))
-      .filter((item) => item.tasks > 0)
+  const rankings = visibleDays.map((day) =>
+    candidates
+      .map((row) => {
+        const point = pointForDay(row, day)
+        return {
+          row,
+          point,
+          value: metricValue(point, metric),
+        }
+      })
+      .filter((item) => item.value > 0)
       .sort(
         (left, right) =>
-          right.tasks - left.tasks ||
-          Number(right.row?.totalTasks || 0) - Number(left.row?.totalTasks || 0) ||
+          right.value - left.value ||
+          totalMetricValue(right.row, metric) - totalMetricValue(left.row, metric) ||
           String(left.row?.label || left.row?.key || '').localeCompare(
             String(right.row?.label || right.row?.key || ''),
             'zh-CN',
           ),
       )
-      .slice(0, topLimit)
+      .slice(0, topLimit),
+  )
 
-    rankings.set(
-      day,
-      new Map(
-        ranked.map((item, index) => [String(item.row.key), { rank: index + 1, tasks: item.tasks }]),
-      ),
-    )
-  })
-
-  // Use today's ranking as the stable selection for the 14-day trend.
-  const anchorDay = visibleDays[visibleDays.length - 1]
-  const anchorRanking = rankings.get(anchorDay)
-  if (!anchorRanking) return []
-
-  const selectedKeys = new Set([...anchorRanking.keys()].slice(0, topLimit))
-
-  return candidates
-    .filter((row) => selectedKeys.has(String(row?.key || '')))
-    .map((row) => {
-      const key = String(row?.key || '')
-      const rankedToday = anchorRanking.get(key)
-      const rankedDaily = visibleDays.map((day) => {
-        const point = (row.daily || []).find((item) => item?.day === day)
-        return point ? { ...point } : { day, tasks: 0 }
-      })
-      const activeDaily = rankedDaily.filter((point) => Number(point.tasks || 0) > 0)
-
+  return Array.from({ length: topLimit }, (_, index) => {
+    const rank = index + 1
+    const daily = visibleDays.map((day, dayIndex) => {
+      const ranked = rankings[dayIndex]?.[index]
+      if (!ranked) {
+        return {
+          day,
+          value: null,
+          tasks: 0,
+          images: 0,
+          entityKey: '',
+          entityLabel: '',
+          rank,
+        }
+      }
       return {
-        ...row,
-        daily: rankedDaily,
-        dailyTopOnly: false,
-        todayRank: rankedToday?.rank || 0,
-        todayTasks: rankedToday?.tasks || 0,
-        topDays: activeDaily.length,
-        topTasks: activeDaily.reduce((sum, point) => sum + Number(point.tasks || 0), 0),
+        ...(ranked.point || {}),
+        day,
+        value: ranked.value,
+        entityKey: String(ranked.row?.key || ''),
+        entityLabel: ranked.row?.label || ranked.row?.key || '',
+        rank,
       }
     })
-    .filter((row) => row.topDays > 0)
-    .sort(
-      (left, right) =>
-        Number(left.todayRank || Number.MAX_SAFE_INTEGER) -
-          Number(right.todayRank || Number.MAX_SAFE_INTEGER) ||
-        Number(right.totalTasks || 0) - Number(left.totalTasks || 0),
-    )
+    const today = daily[daily.length - 1]
+
+    return {
+      key: `daily-rank-${rank}`,
+      label: `第 ${rank} 名`,
+      rank,
+      daily,
+      dailyTopOnly: true,
+      todayLabel: today?.entityLabel || '',
+      todayValue: Number(today?.value || 0),
+      totalValue: daily.reduce((sum, point) => sum + Number(point.value || 0), 0),
+    }
+  }).filter((series) => series.daily.some((point) => point.value != null))
 }

@@ -18,6 +18,7 @@ const platformId = ref('')
 const shopId = ref('')
 const shopSearch = ref('')
 const openFilterSelect = ref('')
+const activeRangeShortcut = ref('month')
 
 function formatDate(date) {
   const year = date.getFullYear()
@@ -26,9 +27,17 @@ function formatDate(date) {
   return `${year}-${month}-${day}`
 }
 
+function formatMonth(date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  return `${year}-${month}`
+}
+
 const now = new Date()
 const dateFrom = ref(formatDate(new Date(now.getFullYear(), now.getMonth(), 1)))
 const dateTo = ref(formatDate(now))
+const selectedMonth = ref(formatMonth(now))
+const monthPickerYear = ref(now.getFullYear())
 const datePickerArea = ref(null)
 const openDatePicker = ref('')
 const rangeSelecting = ref('from')
@@ -39,6 +48,22 @@ const calendarTitle = computed(
   () => `${calendarCursor.value.getFullYear()}年${calendarCursor.value.getMonth() + 1}月`,
 )
 const calendarTodayDisabled = computed(() => isCalendarDateDisabled(formatDate(new Date())))
+const currentYear = computed(() => new Date().getFullYear())
+const currentMonthValue = computed(() => formatMonth(new Date()))
+const selectedMonthLabel = computed(() => {
+  const matched = selectedMonth.value.match(/^(\d{4})-(\d{2})$/)
+  return matched ? `${matched[1]}年${matched[2]}月` : '选择月份'
+})
+const monthPickerOptions = computed(() =>
+  Array.from({ length: 12 }, (_, index) => {
+    const value = `${monthPickerYear.value}-${String(index + 1).padStart(2, '0')}`
+    return {
+      value,
+      label: `${index + 1}月`,
+      disabled: value > currentMonthValue.value,
+    }
+  }),
+)
 
 const calendarDays = computed(() => {
   const year = calendarCursor.value.getFullYear()
@@ -78,6 +103,7 @@ function displayDate(value) {
 }
 
 function openCalendar() {
+  openFilterSelect.value = ''
   if (openDatePicker.value === 'range') {
     openDatePicker.value = ''
     return
@@ -105,6 +131,8 @@ function isCalendarDateDisabled(value) {
 
 function selectCalendarDate(day) {
   if (day.disabled) return
+  activeRangeShortcut.value = ''
+  selectedMonth.value = ''
   if (rangeSelecting.value === 'from') {
     dateFrom.value = day.value
     dateTo.value = ''
@@ -119,6 +147,8 @@ function selectToday() {
   const value = formatDate(new Date())
   dateFrom.value = value
   dateTo.value = value
+  activeRangeShortcut.value = ''
+  selectedMonth.value = ''
   rangeSelecting.value = 'from'
   openDatePicker.value = ''
 }
@@ -157,6 +187,36 @@ const selectedShopLabel = computed(() => {
 function toggleFilterSelect(key) {
   openDatePicker.value = ''
   openFilterSelect.value = openFilterSelect.value === key ? '' : key
+}
+
+function toggleMonthSelect() {
+  const source = selectedMonth.value || currentMonthValue.value
+  monthPickerYear.value = Number(source.slice(0, 4))
+  toggleFilterSelect('month')
+}
+
+function moveMonthPickerYear(offset) {
+  monthPickerYear.value = Math.min(
+    new Date().getFullYear(),
+    monthPickerYear.value + Number(offset),
+  )
+}
+
+function selectMonth(value) {
+  const matched = String(value || '').match(/^(\d{4})-(\d{2})$/)
+  if (!matched || value > currentMonthValue.value) return
+  const year = Number(matched[1])
+  const month = Number(matched[2]) - 1
+  const start = new Date(year, month, 1)
+  const monthEnd = new Date(year, month + 1, 0)
+  const today = new Date()
+  const end = monthEnd > today ? today : monthEnd
+  dateFrom.value = formatDate(start)
+  dateTo.value = formatDate(end)
+  selectedMonth.value = value
+  activeRangeShortcut.value = value === currentMonthValue.value ? 'month' : ''
+  openFilterSelect.value = ''
+  loadReport()
 }
 
 function selectPlatform(value) {
@@ -253,12 +313,16 @@ async function exportReport() {
 
 function applyRange(days) {
   openDatePicker.value = ''
+  openFilterSelect.value = ''
+  activeRangeShortcut.value = String(days)
   const end = new Date()
   const start = new Date()
   if (days === 'month') {
     start.setDate(1)
+    selectedMonth.value = formatMonth(end)
   } else {
     start.setDate(start.getDate() - Number(days) + 1)
+    selectedMonth.value = ''
   }
   dateFrom.value = formatDate(start)
   dateTo.value = formatDate(end)
@@ -271,6 +335,9 @@ function resetFilters() {
   const current = new Date()
   dateFrom.value = formatDate(new Date(current.getFullYear(), current.getMonth(), 1))
   dateTo.value = formatDate(current)
+  selectedMonth.value = formatMonth(current)
+  monthPickerYear.value = current.getFullYear()
+  activeRangeShortcut.value = 'month'
   platformId.value = ''
   shopId.value = ''
   shopSearch.value = ''
@@ -345,10 +412,61 @@ onBeforeUnmount(() => {
 
     <section class="finance-filters">
       <div class="finance-range-shortcuts" aria-label="快捷日期">
-        <button type="button" @click="applyRange(7)">近7天</button>
-        <button type="button" @click="applyRange(30)">近30天</button>
-        <button type="button" @click="applyRange('month')">本月</button>
+        <button type="button" :class="{ active: activeRangeShortcut === '7' }" @click="applyRange(7)">近7天</button>
+        <button type="button" :class="{ active: activeRangeShortcut === '30' }" @click="applyRange(30)">近30天</button>
+        <button type="button" :class="{ active: activeRangeShortcut === 'month' }" @click="applyRange('month')">本月</button>
       </div>
+      <label class="finance-month-filter">
+        <span>月份</span>
+        <div class="finance-custom-select" :class="{ open: openFilterSelect === 'month' }">
+          <button
+            type="button"
+            class="finance-custom-select-trigger"
+            aria-haspopup="dialog"
+            :aria-expanded="openFilterSelect === 'month'"
+            @click.stop="toggleMonthSelect"
+          >
+            <i class="ri-calendar-2-line" aria-hidden="true"></i>
+            <span>{{ selectedMonthLabel }}</span>
+            <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
+          </button>
+          <section
+            v-if="openFilterSelect === 'month'"
+            class="finance-custom-select-menu finance-month-picker"
+            role="dialog"
+            aria-label="选择统计月份"
+            @click.stop
+          >
+            <header>
+              <button type="button" title="上一年" aria-label="上一年" @click="moveMonthPickerYear(-1)">
+                <i class="ri-arrow-left-s-line" aria-hidden="true"></i>
+              </button>
+              <strong>{{ monthPickerYear }}年</strong>
+              <button
+                type="button"
+                title="下一年"
+                aria-label="下一年"
+                :disabled="monthPickerYear >= currentYear"
+                @click="moveMonthPickerYear(1)"
+              >
+                <i class="ri-arrow-right-s-line" aria-hidden="true"></i>
+              </button>
+            </header>
+            <div class="finance-month-grid">
+              <button
+                v-for="month in monthPickerOptions"
+                :key="month.value"
+                type="button"
+                :class="{ active: month.value === selectedMonth }"
+                :disabled="month.disabled"
+                @click="selectMonth(month.value)"
+              >
+                {{ month.label }}
+              </button>
+            </div>
+          </section>
+        </div>
+      </label>
       <div ref="datePickerArea" class="finance-date-range finance-date-range--single">
         <div class="finance-date-field">
           <span class="finance-filter-label">统计日期范围</span>
@@ -1255,7 +1373,7 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.14);
 }
 
-.finance-custom-select.open .finance-custom-select-trigger > i {
+.finance-custom-select.open .finance-custom-select-trigger > i:last-child {
   transform: rotate(180deg);
 }
 
@@ -1279,6 +1397,96 @@ onBeforeUnmount(() => {
 
 .finance-custom-select-menu--shop {
   min-width: min(280px, calc(100vw - 32px));
+}
+
+.finance-month-filter {
+  align-self: end;
+  min-width: 168px !important;
+}
+
+.finance-month-filter .finance-custom-select {
+  min-width: 168px;
+}
+
+.finance-month-filter .finance-custom-select-trigger {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 18px;
+}
+
+.finance-month-filter .finance-custom-select-trigger > i:first-child {
+  color: var(--console-accent);
+  font-size: 16px;
+}
+
+.finance-month-picker {
+  right: auto;
+  left: 0;
+  width: 260px;
+  max-height: none;
+  overflow: visible;
+  padding: 8px;
+}
+
+.finance-month-picker header {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 32px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.finance-month-picker header strong {
+  color: var(--console-text);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.finance-month-picker header button,
+.finance-month-grid button {
+  display: grid;
+  place-items: center;
+  border: 0;
+  color: var(--console-text);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+}
+
+.finance-month-picker header button {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  font-size: 18px;
+}
+
+.finance-month-picker header button:hover:not(:disabled),
+.finance-month-grid button:hover:not(:disabled) {
+  background: var(--console-surface-hover);
+}
+
+.finance-month-picker header button:disabled,
+.finance-month-grid button:disabled {
+  color: var(--console-subtle);
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.finance-month-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.finance-month-grid button {
+  min-height: 34px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.finance-month-grid button.active {
+  color: var(--console-accent);
+  background: var(--console-accent-soft);
+  font-weight: 600;
 }
 
 .finance-custom-select-option {
@@ -1659,6 +1867,17 @@ td small {
 .finance-range-shortcuts button:hover {
   border-color: var(--console-border-strong);
   background: var(--console-surface-hover);
+}
+
+.finance-range-shortcuts button.active,
+.finance-range-shortcuts button.active:hover,
+[data-theme='light'] .finance-range-shortcuts button.active,
+[data-theme='light'] .finance-range-shortcuts button.active:hover {
+  border-color: var(--console-accent);
+  color: var(--console-accent);
+  background: var(--console-accent-soft);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--console-accent) 14%, transparent);
 }
 
 .finance-btn.primary,
