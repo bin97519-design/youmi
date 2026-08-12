@@ -33,6 +33,14 @@ import {
 } from '../utils/elementEditPrompt'
 import { cachedImgHtml } from '../utils/imageCache'
 import { publishImageTaskPersistence } from '../utils/imageTaskSync'
+import {
+  PROMPT_LIBRARY_CATEGORIES,
+  PROMPT_LIBRARY_VIEWS,
+  derivePromptLibraryTitle,
+  filterPromptLibraryItems,
+  mergePromptIntoComposer,
+  normalizePromptLibraryTags,
+} from '../utils/promptLibrary'
 import { createStoredZip } from '../utils/storedZip'
 import {
   MAX_IMAGE_UPLOAD_BYTES,
@@ -98,6 +106,34 @@ const myMaterialsOpen = ref(false)
 const materialPickerMode = ref('canvas')
 const chatReferenceSourceOpen = ref(false)
 const historyPanelOpen = ref(false)
+const promptLibraryOpen = ref(false)
+const promptLibraryLoading = ref(false)
+const promptLibraryLoaded = ref(false)
+const promptLibraryItems = ref([])
+const promptLibraryView = ref('mine')
+const promptLibraryCategory = ref('ALL')
+const promptLibraryQuery = ref('')
+const promptLibraryCategoryOpen = ref(false)
+const promptLibraryEditor = reactive({
+  visible: false,
+  id: null,
+  title: '',
+  content: '',
+  category: 'GENERAL',
+  tags: '',
+  source: 'MANUAL',
+  saving: false,
+})
+const promptLibraryInsert = reactive({ visible: false, item: null })
+const filteredPromptLibraryItems = computed(() =>
+  filterPromptLibraryItems(promptLibraryItems.value, {
+    view: promptLibraryView.value,
+    query: promptLibraryQuery.value,
+    category: promptLibraryCategory.value,
+  }),
+)
+let promptLibraryLoadPromise = null
+let promptLibraryLoadedAt = 0
 const myMaterials = ref(JSON.parse(localStorage.getItem('youmi_my_materials') || '[]'))
 const copyToCanvasDialog = reactive({
   visible: false,
@@ -1170,7 +1206,7 @@ const chatRatioOptions = [
 const chatResolutionOptions = ['1K', '2K', '4K']
 const initialChatConfig = doc.value?.payload?.chatConfig || {}
 const chatModeOptions = [
-  { value: 'agent', label: 'Agent', icon: 'ri-ai-generate-2-line' },
+  { value: 'agent', label: 'Agent', icon: 'ri-robot-2-line' },
   { value: 'image', label: '图像', icon: 'ri-image-line' },
 ]
 const chatMode = ref(initialChatConfig.mode === 'agent' ? 'agent' : 'image')
@@ -1241,6 +1277,18 @@ const chatEstimatedMiCost = computed(
   () => chatGenerationCount.value * chatModels.value.length * CHAT_IMAGE_MI_COST,
 )
 const chatTotalGenerationCount = computed(() => chatGenerationCount.value * chatModels.value.length)
+const agentGenerationSettings = computed(() => {
+  const models = normalizeChatModelSelection(chatModels.value, chatModel.value)
+  const count = normalizeChatGenerationCount(chatGenerationCount.value)
+  return {
+    models,
+    model: models[0],
+    ratio: chatRatio.value,
+    resolution: chatResolution.value,
+    count,
+    totalCount: totalAgentGenerationCount(models, count),
+  }
+})
 
 function adjustChatGenerationCount(delta) {
   chatGenerationCount.value = normalizeChatGenerationCount(chatGenerationCount.value + delta)
@@ -6878,6 +6926,197 @@ function replaceChatEditorText(value) {
   })
 }
 
+function promptLibraryCategoryLabel(value) {
+  return PROMPT_LIBRARY_CATEGORIES.find((item) => item.value === value)?.label || '其他'
+}
+
+async function loadPromptLibrary({ force = false, silent = false } = {}) {
+  if (!userStore.token) return
+  const cacheIsFresh = promptLibraryLoaded.value && Date.now() - promptLibraryLoadedAt < 60_000
+  if (!force && cacheIsFresh) return
+  if (promptLibraryLoadPromise) return promptLibraryLoadPromise
+
+  if (!silent && !promptLibraryLoaded.value) promptLibraryLoading.value = true
+  promptLibraryLoadPromise = (async () => {
+    try {
+      const items = await readApiResponse(
+        await fetch(apiPath('/api/prompt-library?view=all'), {
+          headers: userStore.authHeaders(),
+        }),
+      )
+      promptLibraryItems.value = Array.isArray(items) ? items : []
+      promptLibraryLoaded.value = true
+      promptLibraryLoadedAt = Date.now()
+    } catch (error) {
+      if (!silent) showCopyPasteToast(error?.message || '提示词库加载失败，请稍后重试')
+    } finally {
+      promptLibraryLoading.value = false
+      promptLibraryLoadPromise = null
+    }
+  })()
+  return promptLibraryLoadPromise
+}
+
+function openPromptLibrary() {
+  if (!userStore.requireLogin()) return
+  promptLibraryOpen.value = true
+  promptLibraryInsert.visible = false
+  promptLibraryInsert.item = null
+  // Let the already-mounted panel paint first; data refresh must not hold up the click response.
+  window.requestAnimationFrame(() => {
+    if (!promptLibraryOpen.value) return
+    if (!promptLibraryLoaded.value) void loadPromptLibrary()
+    else void loadPromptLibrary({ silent: true })
+  })
+}
+
+function closePromptLibrary() {
+  promptLibraryOpen.value = false
+  promptLibraryEditor.visible = false
+  promptLibraryCategoryOpen.value = false
+  promptLibraryInsert.visible = false
+  promptLibraryInsert.item = null
+}
+
+function openPromptLibraryEditor({ item = null, content = '', source = 'MANUAL', category = 'GENERAL' } = {}) {
+  const promptContent = String(item?.content ?? content ?? '').trim()
+  promptLibraryEditor.id = item?.scope === 'PERSONAL' ? item.id : null
+  promptLibraryEditor.title = item?.title || derivePromptLibraryTitle(promptContent)
+  promptLibraryEditor.content = promptContent
+  promptLibraryEditor.category = item?.category || category
+  promptLibraryEditor.tags = (item?.tags || []).join('，')
+  promptLibraryEditor.source = item?.source || source
+  promptLibraryCategoryOpen.value = false
+  promptLibraryEditor.visible = true
+}
+
+function saveCurrentComposerToPromptLibrary() {
+  const content = extractChatEditorText({ includePills: true }).trim()
+  if (!content) {
+    showCopyPasteToast('请先在输入框中填写提示词')
+    return
+  }
+  openPromptLibraryEditor({ content, source: 'INPUT' })
+}
+
+function saveAgentDraftToPromptLibrary(message) {
+  const content = String(agentDraftActiveItem(message?.agentDraft)?.prompt || '').trim()
+  if (!content) return
+  promptLibraryOpen.value = true
+  openPromptLibraryEditor({ content, source: 'AGENT' })
+}
+
+function saveLayerPromptToPromptLibrary(layer) {
+  const content = String(displayLayerReversePromptBody(layer) || '').trim()
+  if (!content) return
+  promptLibraryOpen.value = true
+  openPromptLibraryEditor({ content, source: 'REVERSE' })
+}
+
+async function savePromptLibraryItem() {
+  if (promptLibraryEditor.saving) return
+  const content = promptLibraryEditor.content.trim()
+  if (!content) {
+    showCopyPasteToast('提示词内容不能为空')
+    return
+  }
+  promptLibraryEditor.saving = true
+  try {
+    const id = promptLibraryEditor.id
+    const saved = await readApiResponse(
+      await fetch(apiPath(id ? `/api/prompt-library/${id}` : '/api/prompt-library'), {
+        method: id ? 'PUT' : 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...userStore.authHeaders(),
+        },
+        body: JSON.stringify({
+          title: promptLibraryEditor.title.trim() || derivePromptLibraryTitle(content),
+          content,
+          category: promptLibraryEditor.category,
+          tags: normalizePromptLibraryTags(promptLibraryEditor.tags),
+          source: promptLibraryEditor.source,
+        }),
+      }),
+    )
+    const index = promptLibraryItems.value.findIndex((item) => item.id === saved.id)
+    promptLibraryItems.value = index >= 0
+      ? promptLibraryItems.value.map((item) => (item.id === saved.id ? saved : item))
+      : [saved, ...promptLibraryItems.value]
+    promptLibraryEditor.visible = false
+    promptLibraryView.value = 'mine'
+    showCopyPasteToast(id ? '提示词已更新' : '已收藏到提示词库')
+  } catch (error) {
+    showCopyPasteToast(error?.message || '提示词保存失败')
+  } finally {
+    promptLibraryEditor.saving = false
+  }
+}
+
+async function deletePromptLibraryItem(item) {
+  if (item?.scope !== 'PERSONAL') return
+  if (!window.confirm(`确认删除“${item.title || '这条提示词'}”吗？`)) return
+  try {
+    await readApiResponse(
+      await fetch(apiPath(`/api/prompt-library/${item.id}`), {
+        method: 'DELETE',
+        headers: userStore.authHeaders(),
+      }),
+    )
+    promptLibraryItems.value = promptLibraryItems.value.filter((entry) => entry.id !== item.id)
+    if (promptLibraryEditor.id === item.id) promptLibraryEditor.visible = false
+    showCopyPasteToast('提示词已删除')
+  } catch (error) {
+    showCopyPasteToast(error?.message || '提示词删除失败')
+  }
+}
+
+async function markPromptLibraryItemUsed(item) {
+  try {
+    const updated = await readApiResponse(
+      await fetch(apiPath(`/api/prompt-library/${item.id}/use`), {
+        method: 'POST',
+        headers: userStore.authHeaders(),
+      }),
+    )
+    promptLibraryItems.value = promptLibraryItems.value.map((entry) =>
+      entry.id === updated.id ? updated : entry,
+    )
+  } catch {
+    // Filling the composer is primary; usage statistics can retry next time.
+  }
+}
+
+function applyPromptLibraryItem(item, mode = 'replace') {
+  const current = extractChatEditorText({ includePills: true })
+  replaceChatEditorText(mergePromptIntoComposer(current, item.content, mode))
+  promptLibraryInsert.visible = false
+  promptLibraryInsert.item = null
+  promptLibraryOpen.value = false
+  void markPromptLibraryItemUsed(item)
+  showCopyPasteToast(mode === 'append' ? '提示词已追加到输入框' : '提示词已填入输入框')
+}
+
+async function copyPromptLibraryItem(item) {
+  const content = String(item?.content || '').trim()
+  if (!content) return
+  try {
+    await writeTextToClipboard(content)
+    showCopyPasteToast('提示词已复制')
+  } catch {
+    showCopyPasteToast('复制失败，请稍后重试')
+  }
+}
+
+function choosePromptLibraryItem(item) {
+  if (!extractChatEditorText({ includePills: true }).trim()) {
+    applyPromptLibraryItem(item, 'replace')
+    return
+  }
+  promptLibraryInsert.item = item
+  promptLibraryInsert.visible = true
+}
+
 // 同步：editor 里被 Backspace 删除的 pill → 取消画布选中
 // 用 MutationObserver 代替 @input，因为 contenteditable 的 @input
 // 可能在 pill 完全移出 DOM 之前触发，导致检测不到删除
@@ -8049,15 +8288,12 @@ function agentDraftActiveItem(draft) {
   return items[agentDraftActiveIndex(draft)] || null
 }
 
-function agentDraftModels(draft) {
-  return normalizeChatModelSelection(
-    Array.isArray(draft?.models) && draft.models.length ? draft.models : draft?.model,
-    draft?.model || chatModel.value,
-  )
+function agentDraftModels() {
+  return agentGenerationSettings.value.models
 }
 
-function agentDraftTotalCount(draft) {
-  return totalAgentGenerationCount(agentDraftModels(draft), draft?.count)
+function agentDraftTotalCount() {
+  return agentGenerationSettings.value.totalCount
 }
 
 function agentDraftPromptParagraphs(value) {
@@ -8293,6 +8529,7 @@ async function confirmAgentGeneration(message) {
 
   updateAgentDraftItemStatus(message.id, activeItem.id, 'submitting')
   try {
+    const generationSettings = agentGenerationSettings.value
     const referenceImages = Array.isArray(draft.referenceImages)
       ? draft.referenceImages.filter((reference) => reference?.url)
       : []
@@ -8304,12 +8541,12 @@ async function confirmAgentGeneration(message) {
       referenceLayerIds: referenceImages.map((reference) => reference.layerId).filter(Boolean),
       messageReferenceImages: referenceImages,
       targetLayerId: referenceImages.find((reference) => reference.layerId)?.layerId || '',
-      generationCount: draft.count || 1,
+      generationCount: generationSettings.count,
       taskConfig: {
-        models: agentDraftModels(draft),
-        model: draft.model || chatModel.value,
-        ratio: draft.ratio || chatRatio.value,
-        resolution: draft.resolution || chatResolution.value,
+        models: generationSettings.models,
+        model: generationSettings.model,
+        ratio: generationSettings.ratio,
+        resolution: generationSettings.resolution,
       },
       hideUserMessage: true,
       preserveComposer: true,
@@ -9594,6 +9831,10 @@ onMounted(() => {
   // 连接线/历史/模型参数已从 payload 初始化，这里仅做孤儿连接线清洗
   initDocState()
   void loadAgentConversationsFromServer()
+  const promptLibraryPrefetchTimer = window.setTimeout(() => {
+    void loadPromptLibrary({ silent: true })
+  }, 700)
+  onBeforeUnmount(() => window.clearTimeout(promptLibraryPrefetchTimer))
   // 建立 pill 删除监听 — MutationObserver 比 @input 更可靠
   nextTick(() => setupPillObserver())
   // 恢复已缓存的检测元素（清除旧版错误归一化的缓存）
@@ -12185,15 +12426,27 @@ async function loadImageForCropUncached(layer) {
                           : `${layer.reversePromptCategoryLabel || '通用'}提示词`
                       }}
                     </span>
-                    <button
+                    <div
                       v-if="layer.reversePromptText && !layer.reversePromptPending"
-                      type="button"
-                      title="复制提示词"
-                      aria-label="复制提示词"
-                      @click.stop="copyLayerReversePrompt(layer)"
+                      class="uc-inline-prompt-head-actions"
                     >
-                      <i class="ri-file-copy-line" aria-hidden="true"></i>
-                    </button>
+                      <button
+                        type="button"
+                        title="收藏到提示词库"
+                        aria-label="收藏到提示词库"
+                        @click.stop="saveLayerPromptToPromptLibrary(layer)"
+                      >
+                        <i class="ri-bookmark-line" aria-hidden="true"></i>
+                      </button>
+                      <button
+                        type="button"
+                        title="复制提示词"
+                        aria-label="复制提示词"
+                        @click.stop="copyLayerReversePrompt(layer)"
+                      >
+                        <i class="ri-file-copy-line" aria-hidden="true"></i>
+                      </button>
+                    </div>
                   </div>
                   <p v-if="layer.reversePromptPending">正在识别图片内容，请稍候...</p>
                   <p v-else-if="layer.reversePromptError">
@@ -13192,14 +13445,24 @@ async function loadImageForCropUncached(layer) {
                         }}
                       </small>
                     </span>
-                    <button
-                      type="button"
-                      title="复制提示词"
-                      aria-label="复制提示词"
-                      @click.stop="copyAgentDraftPrompt(message)"
-                    >
-                      <i class="ri-file-copy-line" aria-hidden="true"></i>
-                    </button>
+                    <div class="uc-agent-draft-head-actions">
+                      <button
+                        type="button"
+                        title="收藏到提示词库"
+                        aria-label="收藏到提示词库"
+                        @click.stop="saveAgentDraftToPromptLibrary(message)"
+                      >
+                        <i class="ri-bookmark-line" aria-hidden="true"></i>
+                      </button>
+                      <button
+                        type="button"
+                        title="复制提示词"
+                        aria-label="复制提示词"
+                        @click.stop="copyAgentDraftPrompt(message)"
+                      >
+                        <i class="ri-file-copy-line" aria-hidden="true"></i>
+                      </button>
+                    </div>
                   </header>
                   <nav
                     v-if="agentDraftItems(message.agentDraft).length > 1"
@@ -13256,12 +13519,12 @@ async function loadImageForCropUncached(layer) {
                     </div>
                   </div>
                   <div class="uc-agent-draft-settings" aria-label="生图参数">
-                    <span :title="agentDraftModels(message.agentDraft).join('、')">
-                      {{ agentDraftModels(message.agentDraft).join(' + ') }}
+                    <span :title="agentDraftModels().join('、')">
+                      {{ agentDraftModels().join(' + ') }}
                     </span>
-                    <span>{{ message.agentDraft.ratio }}</span>
-                    <span>{{ message.agentDraft.resolution }}</span>
-                    <span>{{ agentDraftTotalCount(message.agentDraft) }} 张</span>
+                    <span>{{ agentGenerationSettings.ratio }}</span>
+                    <span>{{ agentGenerationSettings.resolution }}</span>
+                    <span>{{ agentDraftTotalCount() }} 张</span>
                   </div>
                   <footer class="uc-agent-draft-actions">
                     <span v-if="agentDraftActiveItem(message.agentDraft)?.status === 'submitted'">
@@ -13596,7 +13859,7 @@ async function loadImageForCropUncached(layer) {
                       @click.stop="toggleChatModeMenu"
                     >
                       <i
-                        :class="chatMode === 'agent' ? 'ri-ai-generate-2-line' : 'ri-image-line'"
+                        :class="chatMode === 'agent' ? 'ri-robot-2-line' : 'ri-image-line'"
                         aria-hidden="true"
                       ></i>
                       <span>{{ chatModeLabel }}</span>
@@ -13634,6 +13897,15 @@ async function loadImageForCropUncached(layer) {
                   </span>
                 </div>
                 <div class="uc-bottom-toolbar-actions">
+                  <button
+                    type="button"
+                    class="uc-prompt-library-button"
+                    title="提示词库"
+                    aria-label="打开提示词库"
+                    @click="openPromptLibrary"
+                  >
+                    <i class="ri-book-shelf-line" aria-hidden="true"></i>
+                  </button>
                   <button
                     v-if="chatMode === 'agent'"
                     type="button"
@@ -14156,6 +14428,14 @@ async function loadImageForCropUncached(layer) {
                     <i class="ri-file-copy-line"></i>
                   </button>
                   <button
+                    v-if="record.prompt"
+                    class="uc-history-act"
+                    title="收藏到提示词库"
+                    @click.stop="openPromptLibraryEditor({ content: record.prompt, source: 'HISTORY' })"
+                  >
+                    <i class="ri-bookmark-line"></i>
+                  </button>
+                  <button
                     class="uc-history-act uc-history-act--danger"
                     title="删除"
                     @click.stop="removeGenerationRecord(record.id)"
@@ -14171,6 +14451,257 @@ async function loadImageForCropUncached(layer) {
           </div>
         </div>
       </div>
+    </div>
+  </Teleport>
+
+  <!-- 提示词库 -->
+  <Teleport to="body">
+    <div
+      class="uc-prompt-library-backdrop"
+      :class="{ 'is-open': promptLibraryOpen }"
+      :aria-hidden="!promptLibraryOpen"
+      :inert="!promptLibraryOpen"
+      @click.self="closePromptLibrary"
+    >
+      <section class="uc-prompt-library-panel" aria-label="提示词库">
+        <header class="uc-prompt-library-head">
+          <div>
+            <i class="ri-book-shelf-line" aria-hidden="true"></i>
+            <span>
+              <strong>提示词库</strong>
+              <small>选择后填入当前画布输入框</small>
+            </span>
+          </div>
+          <button type="button" title="关闭" aria-label="关闭提示词库" @click="closePromptLibrary">
+            <i class="ri-close-line" aria-hidden="true"></i>
+          </button>
+        </header>
+
+        <div class="uc-prompt-library-toolbar">
+          <label class="uc-prompt-library-search">
+            <i class="ri-search-line" aria-hidden="true"></i>
+            <input v-model="promptLibraryQuery" type="search" placeholder="搜索名称、内容或标签" />
+            <button
+              v-if="promptLibraryQuery"
+              type="button"
+              title="清除搜索"
+              aria-label="清除搜索"
+              @click="promptLibraryQuery = ''"
+            >
+              <i class="ri-close-circle-fill" aria-hidden="true"></i>
+            </button>
+          </label>
+          <button type="button" class="uc-prompt-library-save-current" @click="saveCurrentComposerToPromptLibrary">
+            <i class="ri-bookmark-line" aria-hidden="true"></i>
+            收藏当前输入
+          </button>
+          <button type="button" class="uc-prompt-library-new" title="新建提示词" @click="openPromptLibraryEditor()">
+            <i class="ri-add-line" aria-hidden="true"></i>
+          </button>
+        </div>
+
+        <nav class="uc-prompt-library-views" aria-label="提示词库视图">
+          <button
+            v-for="view in PROMPT_LIBRARY_VIEWS"
+            :key="view.value"
+            type="button"
+            :class="{ active: promptLibraryView === view.value }"
+            @click="promptLibraryView = view.value"
+          >
+            {{ view.label }}
+          </button>
+        </nav>
+
+        <div class="uc-prompt-library-categories" aria-label="提示词分类">
+          <button
+            v-for="category in PROMPT_LIBRARY_CATEGORIES"
+            :key="category.value"
+            type="button"
+            :class="{ active: promptLibraryCategory === category.value }"
+            @click="promptLibraryCategory = category.value"
+          >
+            {{ category.label }}
+          </button>
+        </div>
+
+        <div class="uc-prompt-library-body">
+          <div v-if="promptLibraryLoading" class="uc-prompt-library-state">
+            <i class="ri-loader-4-line is-spinning" aria-hidden="true"></i>
+            <span>正在加载提示词库</span>
+          </div>
+          <div v-else-if="!filteredPromptLibraryItems.length" class="uc-prompt-library-state">
+            <i class="ri-book-open-line" aria-hidden="true"></i>
+            <strong>{{ promptLibraryView === 'recent' ? '暂无最近使用' : '没有找到提示词' }}</strong>
+            <span>可以收藏输入框、Agent 或反推得到的提示词</span>
+          </div>
+          <div v-else class="uc-prompt-library-list">
+            <article
+              v-for="item in filteredPromptLibraryItems"
+              :key="item.id"
+              class="uc-prompt-library-card"
+              @click="choosePromptLibraryItem(item)"
+            >
+              <header>
+                <div>
+                  <strong>{{ item.title }}</strong>
+                  <span :class="item.scope === 'PUBLIC' ? 'is-public' : 'is-personal'">
+                    {{ item.scope === 'PUBLIC' ? '公共' : '我的' }}
+                  </span>
+                </div>
+                <div class="uc-prompt-library-card-actions">
+                  <button
+                    v-if="item.scope === 'PERSONAL'"
+                    type="button"
+                    title="编辑"
+                    aria-label="编辑提示词"
+                    @click.stop="openPromptLibraryEditor({ item })"
+                  >
+                    <i class="ri-edit-line" aria-hidden="true"></i>
+                  </button>
+                  <button
+                    v-if="item.scope === 'PERSONAL'"
+                    type="button"
+                    class="danger"
+                    title="删除"
+                    aria-label="删除提示词"
+                    @click.stop="deletePromptLibraryItem(item)"
+                  >
+                    <i class="ri-delete-bin-line" aria-hidden="true"></i>
+                  </button>
+                </div>
+              </header>
+              <p>{{ item.content }}</p>
+              <footer>
+                <div>
+                  <span>{{ promptLibraryCategoryLabel(item.category) }}</span>
+                  <span v-for="tag in item.tags.slice(0, 3)" :key="`${item.id}-${tag}`">#{{ tag }}</span>
+                </div>
+                <div class="uc-prompt-library-card-footer-actions">
+                  <button
+                    type="button"
+                    class="is-copy"
+                    title="复制提示词"
+                    aria-label="复制提示词"
+                    @click.stop="copyPromptLibraryItem(item)"
+                  >
+                    <i class="ri-file-copy-line" aria-hidden="true"></i>
+                    复制
+                  </button>
+                  <button type="button" class="is-insert" @click.stop="choosePromptLibraryItem(item)">
+                    填入输入框
+                    <i class="ri-arrow-right-line" aria-hidden="true"></i>
+                  </button>
+                </div>
+              </footer>
+            </article>
+          </div>
+        </div>
+      </section>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div v-if="promptLibraryEditor.visible" class="uc-prompt-library-dialog-backdrop" @click.self="promptLibraryEditor.visible = false">
+      <section
+        class="uc-prompt-library-dialog"
+        aria-label="编辑提示词"
+        @click="promptLibraryCategoryOpen = false"
+      >
+        <header>
+          <strong>{{ promptLibraryEditor.id ? '编辑提示词' : '收藏提示词' }}</strong>
+          <button type="button" title="关闭" @click="promptLibraryEditor.visible = false">
+            <i class="ri-close-line" aria-hidden="true"></i>
+          </button>
+        </header>
+        <label>
+          <span>名称</span>
+          <input v-model="promptLibraryEditor.title" maxlength="128" placeholder="便于快速识别" />
+        </label>
+        <div class="uc-prompt-library-dialog-row">
+          <div class="uc-prompt-library-field">
+            <span>分类</span>
+            <div
+              class="uc-custom-select uc-prompt-library-category-select"
+              :class="{ open: promptLibraryCategoryOpen }"
+              @click.stop
+            >
+              <button
+                type="button"
+                class="uc-custom-select-trigger"
+                aria-haspopup="listbox"
+                :aria-expanded="promptLibraryCategoryOpen"
+                @click="promptLibraryCategoryOpen = !promptLibraryCategoryOpen"
+              >
+                {{ promptLibraryCategoryLabel(promptLibraryEditor.category) }}
+                <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
+              </button>
+              <div
+                v-if="promptLibraryCategoryOpen"
+                class="uc-custom-select-menu"
+                role="listbox"
+                aria-label="提示词分类"
+              >
+                <button
+                v-for="category in PROMPT_LIBRARY_CATEGORIES.filter((item) => item.value !== 'ALL')"
+                :key="category.value"
+                  type="button"
+                  class="uc-custom-select-item"
+                  :class="{ active: promptLibraryEditor.category === category.value }"
+                  role="option"
+                  :aria-selected="promptLibraryEditor.category === category.value"
+                  @click="
+                    promptLibraryEditor.category = category.value;
+                    promptLibraryCategoryOpen = false
+                  "
+                >
+                  <span>{{ category.label }}</span>
+                  <i
+                    v-if="promptLibraryEditor.category === category.value"
+                    class="ri-check-line"
+                    aria-hidden="true"
+                  ></i>
+                </button>
+              </div>
+            </div>
+          </div>
+          <label>
+            <span>标签</span>
+            <input v-model="promptLibraryEditor.tags" placeholder="例如：窗帘，主图" />
+          </label>
+        </div>
+        <label>
+          <span>提示词内容</span>
+          <textarea v-model="promptLibraryEditor.content" rows="10" maxlength="12000"></textarea>
+        </label>
+        <footer>
+          <button type="button" @click="promptLibraryEditor.visible = false">取消</button>
+          <button
+            type="button"
+            class="primary"
+            :disabled="promptLibraryEditor.saving || !promptLibraryEditor.content.trim()"
+            @click="savePromptLibraryItem"
+          >
+            {{ promptLibraryEditor.saving ? '保存中' : '保存' }}
+          </button>
+        </footer>
+      </section>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div v-if="promptLibraryInsert.visible" class="uc-prompt-library-dialog-backdrop" @click.self="promptLibraryInsert.visible = false">
+      <section class="uc-prompt-library-insert-dialog" aria-label="选择填入方式">
+        <i class="ri-file-add-line" aria-hidden="true"></i>
+        <div>
+          <strong>输入框已有内容</strong>
+          <span>选择如何使用“{{ promptLibraryInsert.item?.title }}”</span>
+        </div>
+        <footer>
+          <button type="button" @click="promptLibraryInsert.visible = false">取消</button>
+          <button type="button" @click="applyPromptLibraryItem(promptLibraryInsert.item, 'append')">追加</button>
+          <button type="button" class="primary" @click="applyPromptLibraryItem(promptLibraryInsert.item, 'replace')">替换</button>
+        </footer>
+      </section>
     </div>
   </Teleport>
 
