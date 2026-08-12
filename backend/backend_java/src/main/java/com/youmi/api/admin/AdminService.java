@@ -84,10 +84,13 @@ public class AdminService {
                u.shop_id, s.`name` AS shop_name,
                p.id AS shop_platform_id, p.code AS shop_platform_code,
                COALESCE(p.name, s.platform) AS shop_platform,
+               u.created_by, creator.account AS creator_account,
+               creator.nickname AS creator_nickname,
                u.created_at, u.updated_at
         FROM ym_sys_user u
         LEFT JOIN ym_shop s ON s.id = u.shop_id
         LEFT JOIN ym_platform p ON p.id = s.platform_id
+        LEFT JOIN ym_sys_user creator ON creator.id = u.created_by
         """);
     List<Object> args = new ArrayList<>();
     if (shopId != null) {
@@ -99,7 +102,7 @@ public class AdminService {
   }
 
   @Transactional
-  public AdminDtos.UserRow createUser(AdminDtos.UserCreateRequest request) {
+  public AdminDtos.UserRow createUser(AdminDtos.UserCreateRequest request, Long createdBy) {
     String account = normalizeRequired(request.account(), "账号不能为空");
     String password = normalizeRequired(request.password(), "密码不能为空");
     String nickname = StringUtils.hasText(request.nickname()) ? request.nickname().trim() : account;
@@ -143,8 +146,8 @@ public class AdminService {
     try {
       jdbcTemplate.update(connection -> {
         PreparedStatement ps = connection.prepareStatement("""
-            INSERT INTO ym_sys_user (account, phone, nickname, password_hash, password_salt, status, mi_value, plan_name, shop_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO ym_sys_user (account, phone, nickname, password_hash, password_salt, status, mi_value, plan_name, shop_id, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, Statement.RETURN_GENERATED_KEYS);
         ps.setString(1, account);
         ps.setString(2, blankToNull(request.phone()));
@@ -155,6 +158,7 @@ public class AdminService {
         ps.setInt(7, miValue);
         ps.setString(8, planName);
         ps.setObject(9, resolvedShopId);
+        ps.setObject(10, createdBy);
         return ps;
       }, keyHolder);
     } catch (DuplicateKeyException exception) {
@@ -236,10 +240,13 @@ public class AdminService {
                u.shop_id, s.`name` AS shop_name,
                p.id AS shop_platform_id, p.code AS shop_platform_code,
                COALESCE(p.name, s.platform) AS shop_platform,
+               u.created_by, creator.account AS creator_account,
+               creator.nickname AS creator_nickname,
                u.created_at, u.updated_at
         FROM ym_sys_user u
         LEFT JOIN ym_shop s ON s.id = u.shop_id
         LEFT JOIN ym_platform p ON p.id = s.platform_id
+        LEFT JOIN ym_sys_user creator ON creator.id = u.created_by
         WHERE u.id = ?
         """;
     List<AdminDtos.UserRow> rows = jdbcTemplate.query(sql, (rs, rowNum) -> mapUser(rs), id);
@@ -703,6 +710,9 @@ public class AdminService {
         nullableLong(rs, "shop_platform_id"),
         rs.getString("shop_platform_code"),
         rs.getString("shop_platform"),
+        nullableLong(rs, "created_by"),
+        rs.getString("creator_account"),
+        rs.getString("creator_nickname"),
         findUserRoleCodes(id),
         time(rs, "created_at"),
         time(rs, "updated_at"));

@@ -117,9 +117,11 @@ class AdminUserShopTest {
           mi_value INT NOT NULL DEFAULT 0,
           plan_name VARCHAR(32) NOT NULL DEFAULT '普通用户',
           shop_id BIGINT NULL,
+          created_by BIGINT NULL,
           created_at DATETIME,
           updated_at DATETIME,
-          INDEX idx_user_shop (shop_id))
+          INDEX idx_user_shop (shop_id),
+          INDEX idx_user_created_by (created_by))
         """);
   }
 
@@ -182,6 +184,9 @@ class AdminUserShopTest {
     JsonNode data = bodyOf(r).get("data");
     assertEquals(shop.longValue(), data.get("shopId").asLong());
     assertEquals("店铺甲", data.get("shopName").asText(), "应回填店铺名称");
+    assertEquals(ADMIN.longValue(), data.get("createdBy").asLong());
+    assertEquals("admin_user", data.get("creatorAccount").asText());
+    assertEquals("admin_user", data.get("creatorNickname").asText());
   }
 
   @Test
@@ -262,6 +267,8 @@ class AdminUserShopTest {
     assertEquals(2, data.size(), "shop1 下应有 2 个账号");
     for (JsonNode u : data) {
       assertEquals(shop1.longValue(), u.get("shopId").asLong());
+      assertEquals(ADMIN.longValue(), u.get("createdBy").asLong());
+      assertEquals("admin_user", u.get("creatorAccount").asText());
     }
   }
 

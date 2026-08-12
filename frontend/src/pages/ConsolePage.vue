@@ -254,6 +254,8 @@ const filteredUsers = computed(() => {
       const hit =
         (u.account || '').toLowerCase().includes(q) ||
         (u.nickname || '').toLowerCase().includes(q) ||
+        (u.creatorAccount || '').toLowerCase().includes(q) ||
+        (u.creatorNickname || '').toLowerCase().includes(q) ||
         String(u.id).includes(q)
       if (!hit) return false
     }
@@ -893,6 +895,8 @@ function normalizeUser(user) {
     phone: user.phone || '',
     nickname: user.nickname || '',
     planName: user.planName || '普通用户',
+    creatorAccount: user.creatorAccount || '',
+    creatorNickname: user.creatorNickname || '',
     roleDraft: user.roles?.[0] || 'USER',
     passwordDraft: '',
   }
@@ -1874,7 +1878,7 @@ onUnmounted(() => {
                 <circle cx="11" cy="11" r="8" />
                 <path d="M21 21l-4.35-4.35" />
               </svg>
-              <input v-model="userSearch" placeholder="搜索账号/昵称" />
+              <input v-model="userSearch" placeholder="搜索账号/昵称/开户管理员" />
             </div>
             <div class="custom-select console-filter-select" @click.stop="toggleDropdown('filterShop')">
               <div class="custom-select-trigger" :class="{ open: dropdownOpen.filterShop }">
@@ -1917,6 +1921,7 @@ onUnmounted(() => {
             <span>状态</span>
             <span>所属店铺</span>
             <span>平台</span>
+            <span>开户管理员</span>
             <span>操作</span>
           </div>
           <div v-for="user in pagedUsers" :key="user.id" class="console-row">
@@ -1937,6 +1942,20 @@ onUnmounted(() => {
             </select>
             <span class="console-shop-cell">{{ user.shopName || '未绑定' }}<em v-if="user.shopPlatform" class="shop-platform-tag">[{{ user.shopPlatform }}]</em></span>
             <span class="console-platform-cell">{{ user.shopPlatform || '-' }}</span>
+            <span class="console-creator-cell">
+              <template v-if="user.createdBy && (user.creatorNickname || user.creatorAccount)">
+                <strong>{{ user.creatorNickname || user.creatorAccount }}</strong>
+                <small>{{ user.creatorNickname && user.creatorAccount && user.creatorNickname !== user.creatorAccount ? `账号 ${user.creatorAccount}` : `ID ${user.createdBy}` }}</small>
+              </template>
+              <template v-else-if="user.createdBy">
+                <strong>管理员已删除</strong>
+                <small>ID {{ user.createdBy }}</small>
+              </template>
+              <template v-else>
+                <strong>历史账号</strong>
+                <small>创建记录未留存</small>
+              </template>
+            </span>
             <span class="console-actions">
               <button type="button" @click="openDrawer(user)"><i class="ri-edit-line"></i>编辑</button>
               <button type="button" @click="saveUser(user)"><i class="ri-save-3-line"></i>保存</button>
@@ -3026,12 +3045,31 @@ onUnmounted(() => {
   color: #94a3b8;
 }
 .users-table .console-row {
-  grid-template-columns: 130px 120px 120px 100px 80px 130px 80px minmax(270px, 1fr);
+  grid-template-columns: 130px 120px 120px 100px 80px 130px 80px 150px minmax(270px, 1fr);
 }
 .users-table .console-row > select:nth-child(3) {
   min-width: 120px;
   padding-left: 10px;
   padding-right: 30px;
+}
+.console-creator-cell {
+  min-width: 0;
+}
+.console-creator-cell strong,
+.console-creator-cell small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.console-creator-cell strong {
+  color: var(--console-text);
+  font-size: 13px;
+  font-weight: 500;
+}
+.console-creator-cell small {
+  margin-top: 3px;
+  color: var(--console-muted);
 }
 .console-password-reset-btn {
   display: inline-flex;

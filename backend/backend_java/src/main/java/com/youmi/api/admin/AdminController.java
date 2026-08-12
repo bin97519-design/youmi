@@ -45,8 +45,8 @@ public class AdminController {
   public ApiResponse<AdminDtos.UserRow> createUser(
       @RequestHeader(value = "Authorization", required = false) String authorization,
       @RequestBody AdminDtos.UserCreateRequest request) {
-    adminAuthService.requireAdmin(authorization);
-    return ApiResponse.ok("用户已创建", adminService.createUser(request));
+    UserAccount admin = adminAuthService.requireAdmin(authorization);
+    return ApiResponse.ok("用户已创建", adminService.createUser(request, admin.id()));
   }
 
   @GetMapping("/users/{id}")

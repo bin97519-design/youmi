@@ -83,7 +83,7 @@ class ShopAccountBindingTest {
         CREATE TABLE IF NOT EXISTS ym_sys_user (
           id BIGINT AUTO_INCREMENT PRIMARY KEY, account VARCHAR(64), phone VARCHAR(32), nickname VARCHAR(64),
           password_hash VARCHAR(128), password_salt VARCHAR(64), status VARCHAR(20),
-          mi_value INT, plan_name VARCHAR(64), shop_id BIGINT,
+          mi_value INT, plan_name VARCHAR(64), shop_id BIGINT, created_by BIGINT,
           created_at TIMESTAMP, updated_at TIMESTAMP)""");
     jdbcTemplate.execute("""
         CREATE TABLE IF NOT EXISTS ym_platform (

@@ -23,6 +23,9 @@ public final class AdminDtos {
       Long shopPlatformId,
       String shopPlatformCode,
       String shopPlatform,
+      Long createdBy,
+      String creatorAccount,
+      String creatorNickname,
       List<String> roles,
       String createdAt,
       String updatedAt) {

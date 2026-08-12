@@ -341,6 +341,15 @@ SET @has_shop_fk = (SELECT COUNT(*) FROM information_schema.table_constraints WH
 SET @sql = IF(@has_shop_fk=0, 'ALTER TABLE ym_sys_user ADD CONSTRAINT fk_user_shop FOREIGN KEY (shop_id) REFERENCES ym_shop (id) ON DELETE RESTRICT', 'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+-- 记录后台开户管理员。仅保存管理员 ID，不设外键，管理员删除后仍可追溯。
+SET @has_user_created_by_col = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@db AND table_name='ym_sys_user' AND column_name='created_by');
+SET @sql = IF(@has_user_created_by_col=0, 'ALTER TABLE ym_sys_user ADD COLUMN created_by BIGINT NULL AFTER shop_id', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @has_user_created_by_idx = (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@db AND table_name='ym_sys_user' AND index_name='idx_user_created_by');
+SET @sql = IF(@has_user_created_by_idx=0, 'ALTER TABLE ym_sys_user ADD INDEX idx_user_created_by (created_by)', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 -- ── 财务流水归属快照 ──
 -- 新流水在扣费时记录平台/店铺，账号后续换店不会改变历史财务归属。
 SET @has_log_shop_col = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@db AND table_name='ym_mi_value_log' AND column_name='shop_id');
