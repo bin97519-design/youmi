@@ -17,7 +17,7 @@
 </head>
 <body>
   <header class="hero">
-    <small>YOUMI RELEASES · v2.0.6</small>
+    <small>YOUMI RELEASES · v2.0.7</small>
     <h1>有米 AI 更新历程</h1>
     <p>记录每一次功能更新和体验改进，最新内容始终排在最前面。</p>
     <nav class="actions">
@@ -26,12 +26,43 @@
     </nav>
   </header>
   <main><div class="timeline">
-      <div class="date"><span>2026-08-08</span><i></i></div>
+      <div class="date"><span>2026-08-12</span><i></i></div>
       <article class="release latest">
-        <div class="meta"><b>v2.0.6</b><small>最新版本</small></div>
-        <h2>画布 Agent 与提示词创作升级</h2>
-        <p>画布新增可持续沟通的创作 Agent，支持参考图理解、多方案提示词、确认后生图和历史会话管理，同时完善智能抠图与画布交互。</p>
+        <div class="meta"><b>v2.0.7</b><small>最新版本</small></div>
+        <h2>提示词库与创作入口体验升级</h2>
+        <p>画布新增服务端提示词库，支持个人收藏、公共模板、最近使用、搜索分类和快速复制填入，并进一步优化 Agent 入口与深浅主题细节。</p>
         <div class="visuals">
+        <figure class="wide">
+          <div class="visual-media">
+            <img src="/version-log/assets/v2.0.7-prompt-library.png" alt="有米画布提示词库中的公共模板、分类筛选和提示词操作" loading="lazy">
+          </div>
+          <figcaption>
+            <strong>常用提示词集中管理</strong>
+            <span>提示词按个人、公共和最近使用分类管理，可搜索、筛选、复制或直接填入画布输入框。</span>
+          </figcaption>
+        </figure></div>
+        <div class="sections">
+        <section class="release-section">
+          <h3>提示词库</h3>
+          <ul><li>画布输入区新增提示词库入口，支持我的提示词、公共模板和最近使用三个视图。</li><li>支持按名称、正文或标签搜索，并按通用、主图、详情页、场景图、卖点图和改图等分类筛选。</li><li>个人提示词独立保存到服务器并按账号隔离，可新建、编辑和删除；公共模板保持只读。</li><li>每条提示词均可一键复制或填入输入框，已有输入内容时可选择替换或追加。</li></ul>
+        </section>
+        <section class="release-section">
+          <h3>使用体验</h3>
+          <ul><li>提示词库改为预加载与后台刷新，打开窗口时不再等待接口返回，连续使用更跟手。</li><li>重新整理提示词条目的左右留白、滚动条和操作按钮，列表在深色与浅色主题下保持一致。</li><li>分类选择器统一使用画布主题色，修复空白下拉、默认金色焦点边框等显示问题。</li><li>收藏入口覆盖输入框、Agent 优化结果、反推提示词和最近生图任务。</li></ul>
+        </section>
+        <section class="release-section">
+          <h3>Agent 细节</h3>
+          <ul><li>Agent 模式入口补充智能助手图标，并同步到底部当前模式按钮。</li><li>优化 Agent 提示词方案与当前模型、比例、分辨率和数量参数的同步展示。</li></ul>
+        </section></div>
+      </article>
+    <div class="date"><span>2026-08-08</span><i></i></div>
+    <details class="release">
+      <summary>
+        <b>v2.0.6</b>
+        <span><strong>画布 Agent 与提示词创作升级</strong><small>画布新增可持续沟通的创作 Agent，支持参考图理解、多方案提示词、确认后生图和历史会话管理，同时完善智能抠图与画布交互。</small></span>
+        <em>查看更多</em>
+      </summary>
+      <div class="visuals">
         <figure class="wide">
           <div class="visual-media">
             <img src="/version-log/assets/v2.0.6-agent-confirm.png" alt="有米画布 Agent 输出优化提示词并等待用户确认生图" loading="lazy">
@@ -59,7 +90,7 @@
             <span>支持新建、搜索、切换和删除 Agent 会话，历史沟通与当前画布共同保存。</span>
           </figcaption>
         </figure></div>
-        <div class="sections">
+      <div class="sections">
         <section class="release-section">
           <h3>画布 Agent</h3>
           <ul><li>接入 gpt-5.6-luna 作为 Agent 语言与视觉理解模型，根据是否提交参考图决定是否进行识图分析。</li><li>Agent 先与用户沟通、补充方案和优化提示词，只有用户点击“确认生图”后才会提交生成任务。</li><li>输入区新增增强提示词按钮，可直接润色当前文字并回填，不会自动发送或触发生图。</li><li>新增独立会话、历史会话搜索与删除，并保持同一会话内的上下文连续。</li></ul>
@@ -72,7 +103,7 @@
           <h3>画布能力</h3>
           <ul><li>激活智能抠图入口，复用现有 banana2 生图通道生成干净背景结果，并展示任务状态。</li><li>参考图参与生成时自动建立来源连接线，生成比例优先跟随参考图，图层列表默认展示每张图片尺寸。</li><li>修复宫格裁图选择、拖动响应和处理中状态，并优化生成图片、提示词与画布操作之间的交互冲突。</li><li>画布创作、普通生图和对话修改继续复用现有模型、比例、分辨率与多模型并行生成体系。</li></ul>
         </section></div>
-      </article>
+    </details>
     <div class="date"><span>2026-08-06</span><i></i></div>
     <details class="release">
       <summary>
@@ -300,6 +331,6 @@
           <ul><li>建立用户、登录、数据隔离、米值和生图任务管理。</li><li>上线运营控制台，提供任务、模型、用户、用量和趋势统计。</li><li>完成深色、浅色主题以及主要页面的响应式适配。</li></ul>
         </section></div>
     </details></div></main>
-  <footer>有米 AI · 当前版本 v2.0.6</footer>
+  <footer>有米 AI · 当前版本 v2.0.7</footer>
 </body>
 </html>
