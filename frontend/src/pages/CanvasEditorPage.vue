@@ -83,15 +83,66 @@ async function loadTodayGlobalImageCount() {
       headers: { ...userStore.authHeaders() },
     })
     const result = await response.json().catch(() => null)
-    if (!response.ok || result?.code !== 0) return
-    const total = Number(result?.data?.totalImages)
-    const personal = Number(result?.data?.personalImages)
-    if (Number.isFinite(total)) todayGlobalImageCount.value = Math.max(0, Math.floor(total))
-    if (result?.data?.personalImages != null && Number.isFinite(personal)) {
-      todayPersonalImageCount.value = Math.max(0, Math.floor(personal))
+    if (response.ok && result?.code === 0) {
+      const total = Number(result?.data?.totalImages)
+      const personal = Number(result?.data?.personalImages)
+      if (Number.isFinite(total)) todayGlobalImageCount.value = Math.max(0, Math.floor(total))
+      if (result?.data?.personalImages != null && Number.isFinite(personal)) {
+        todayPersonalImageCount.value = Math.max(0, Math.floor(personal))
+      }
+      return
     }
+
+    // Compatibility for deployments that have not yet exposed today-global-count.
+    if (response.status === 404) await loadTodayImageCountFromAdminStats()
   } catch {
     // Keep the last successful aggregate when the lightweight refresh is unavailable.
+  }
+}
+
+function localDateKey(date = new Date()) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function normalizedRoleList() {
+  const roles = Array.isArray(userStore.profile?.roles) ? userStore.profile.roles : []
+  return roles.map((role) => String(role || '').toUpperCase())
+}
+
+async function loadTodayImageCountFromAdminStats() {
+  const today = localDateKey()
+  const response = await fetch(
+    apiPath(`/api/admin/image-stats?dateFrom=${encodeURIComponent(today)}&dateTo=${encodeURIComponent(today)}`),
+    { headers: { ...userStore.authHeaders() } },
+  )
+  const result = await response.json().catch(() => null)
+  if (!response.ok || result?.code !== 0) return
+
+  const data = result?.data || {}
+  const todayDaily = Array.isArray(data.daily)
+    ? data.daily.find((item) => String(item?.day || '') === today)
+    : null
+  const scopedImages = Number(todayDaily?.images ?? 0)
+  const isAdmin = normalizedRoleList().includes('ADMIN')
+
+  if (isAdmin && Number.isFinite(scopedImages)) {
+    todayGlobalImageCount.value = Math.max(0, Math.floor(scopedImages))
+  }
+
+  const profileAccount = String(userStore.profile?.account || '').trim()
+  const personalTrend = Array.isArray(data.userTrends)
+    ? data.userTrends.find((trend) => String(trend?.key || '').trim() === profileAccount)
+    : null
+  const personalDaily = Array.isArray(personalTrend?.daily)
+    ? personalTrend.daily.find((item) => String(item?.day || '') === today)
+    : null
+  const personalImages = Number(isAdmin ? (personalDaily?.images ?? 0) : scopedImages)
+
+  if (Number.isFinite(personalImages)) {
+    todayPersonalImageCount.value = Math.max(0, Math.floor(personalImages))
   }
 }
 
@@ -102,6 +153,8 @@ const shortcutsOpen = ref(false)
 const helpMenuOpen = ref(false)
 const toolbarAddOpen = ref(false)
 const minimapVisible = ref(true)
+// 大画布首次打开时不挂载媒体节点，避免立即并发下载全部图片。
+const canvasMediaExpanded = ref(false)
 const myMaterialsOpen = ref(false)
 const materialPickerMode = ref('canvas')
 const chatReferenceSourceOpen = ref(false)
@@ -257,6 +310,7 @@ let clipboardPasteCount = 0
 const rightTab = ref('chat')
 const creationPanelOpen = ref(false)
 const creationRunning = ref(false)
+let activeCreationRuns = 0
 const cameraAnglePanelOpen = ref(false)
 
 // ========== 连接线系统 ==========
@@ -630,9 +684,9 @@ function getConnectionPaths() {
   const _tick = connectionTick.value // 依赖触发
   return connections.value
     .filter((conn) => {
-      // 过滤孤儿连接线：关联图层已不存在的连接线不渲染
-      const fromExists = layers.value.some((l) => l.id === conn.fromLayerId)
-      const toExists = layers.value.some((l) => l.id === conn.toLayerId)
+      // 过滤孤儿连接线，以及收起状态下连接到媒体节点的线。
+      const fromExists = renderedLayerIds.value.has(conn.fromLayerId)
+      const toExists = renderedLayerIds.value.has(conn.toLayerId)
       return fromExists && toExists
     })
     .map((conn) => {
@@ -1517,6 +1571,36 @@ const layerListPointerDrag = reactive({
 })
 
 const layers = computed(() => doc.value.payload.layers)
+function isCanvasMediaLayer(layer) {
+  if (!layer?.url) return false
+  return layer.type !== 'text' && layer.type !== 'placeholder' && layer.type !== 'image-placeholder'
+}
+const canvasMediaLayers = computed(() => layers.value.filter(isCanvasMediaLayer))
+const canvasMediaCount = computed(() => canvasMediaLayers.value.length)
+const renderedLayers = computed(() =>
+  canvasMediaExpanded.value
+    ? layers.value
+    : layers.value.filter((layer) => !isCanvasMediaLayer(layer)),
+)
+const renderedLayerIds = computed(() => new Set(renderedLayers.value.map((layer) => layer.id)))
+
+function toggleCanvasMedia() {
+  canvasMediaExpanded.value = !canvasMediaExpanded.value
+  if (!canvasMediaExpanded.value) {
+    const hiddenIds = new Set(canvasMediaLayers.value.map((layer) => layer.id))
+    selectedLayerIds.value = selectedLayerIds.value.filter((id) => !hiddenIds.has(id))
+    if (hiddenIds.has(selectedLayerId.value)) selectedLayerId.value = ''
+    playingVideoLayerId.value = null
+  }
+  nextTick(() => refreshConnections())
+}
+
+watch(
+  () => props.id,
+  () => {
+    canvasMediaExpanded.value = false
+  },
+)
 const orderedLayers = computed(() =>
   [...layers.value].sort((a, b) => (Number(b.zIndex) || 0) - (Number(a.zIndex) || 0)),
 )
@@ -3733,26 +3817,33 @@ function resolveGenerationSourceLayerIds({
   return [...sourceIds]
 }
 
-async function runCanvasCreation({ type, sourceIds, jobs }) {
-  if (creationRunning.value || !Array.isArray(jobs) || !jobs.length) return
+async function runCanvasCreation({ type, sourceIds, jobs, batchIndex = 0, batchCount = 0 }) {
+  if (!Array.isArray(jobs) || !jobs.length) return
   if (!userStore.requireLogin()) return
 
   creationPanelOpen.value = false
+  activeCreationRuns += 1
   creationRunning.value = true
   chatGenerating.value = true
   rightTab.value = 'chat'
   const polls = []
+  const resolvedBatchIndex = Math.max(0, Number(batchIndex) || 0)
+  const resolvedBatchCount = Math.max(
+    Number(batchCount) || 0,
+    resolvedBatchIndex + jobs.length,
+  )
 
   try {
     for (let index = 0; index < jobs.length; index += 1) {
       const job = jobs[index]
+      const globalIndex = resolvedBatchIndex + index
       const sourceId = job.sourceIds?.[0] || sourceIds?.[0] || ''
       if (sourceId) {
         selectedLayerId.value = sourceId
         selectedLayerIds.value = [sourceId]
       }
 
-      const messageId = `msg-${Date.now()}-creation-${index}`
+      const messageId = `msg-${Date.now()}-creation-${globalIndex}`
       addChatMessages([
         {
           id: messageId,
@@ -3772,7 +3863,7 @@ async function runCanvasCreation({ type, sourceIds, jobs }) {
             targetLayerId: sourceId,
             creationType: type || '',
           },
-          createdAt: Date.now() + index,
+          createdAt: Date.now() + globalIndex,
         },
       ])
 
@@ -3791,9 +3882,9 @@ async function runCanvasCreation({ type, sourceIds, jobs }) {
         },
         messageId,
         {
-          batchCount: jobs.length,
-          batchIndex: index,
-          skipUndo: index > 0,
+          batchCount: resolvedBatchCount,
+          batchIndex: globalIndex,
+          skipUndo: globalIndex > 0,
           skipFlush: true,
         },
       )
@@ -3805,8 +3896,8 @@ async function runCanvasCreation({ type, sourceIds, jobs }) {
       const placeholder = layers.value.find((item) => item.id === placeholderId)
       if (source && placeholder) {
         const columns = 5
-        const column = index % columns
-        const row = Math.floor(index / columns)
+        const column = globalIndex % columns
+        const row = Math.floor(globalIndex / columns)
         updateLayer(placeholderId, {
           name: job.name || `生成结果 ${index + 1}`,
           x: source.x + source.width + 48 + column * (placeholder.width + 36),
@@ -3868,8 +3959,9 @@ async function runCanvasCreation({ type, sourceIds, jobs }) {
     await canvas.flushNow?.(props.id)
     await Promise.allSettled(polls)
   } finally {
-    creationRunning.value = false
-    chatGenerating.value = false
+    activeCreationRuns = Math.max(0, activeCreationRuns - 1)
+    creationRunning.value = activeCreationRuns > 0
+    chatGenerating.value = activeCreationRuns > 0
   }
 }
 
@@ -6137,7 +6229,7 @@ function pickBestElement(candidates) {
 function renderMessageContent(message) {
   let html = escHtml(message.text || '').replace(/\n/g, '<br>')
   // 参考图缩略图（使用缓存，防签名 URL 过期裂图）
-  if (message.referenceImages?.length) {
+  if (message.referenceImages?.length && canvasMediaExpanded.value) {
     const thumbs = message.referenceImages
       .map(
         (img, i) =>
@@ -6149,7 +6241,7 @@ function renderMessageContent(message) {
   if (message.elements?.length) {
     for (const el of message.elements) {
       const name = escHtml(el.name)
-      const thumb = escHtml(el.thumb || '')
+      const thumb = canvasMediaExpanded.value ? escHtml(el.thumb || '') : ''
       const order = el.order
       const box = el.box || []
       const imgStyle =
@@ -6161,7 +6253,7 @@ function renderMessageContent(message) {
     }
   }
   // ---- 生图预览卡片 ----
-  if (message.imageUrl) {
+  if (message.imageUrl && canvasMediaExpanded.value) {
     const imgEsc = escHtml(message.imageUrl)
     const mid = escHtml(message.id || '')
     html +=
@@ -11666,43 +11758,65 @@ async function loadImageForCrop(layer) {
 }
 
 async function loadImageForCropUncached(layer) {
+  const sourceUrl = String(layer?.url || '').trim()
+  if (!sourceUrl) return null
+
+  // The bundled canvas runs on a custom scheme. Remote OSS images can be displayed,
+  // but Chromium blocks pixel reads unless the image opts into that custom origin.
+  // Route those reads through the desktop companion so crop/stitch share a readable source.
+  const readableUrl =
+    window.location.protocol === 'youmi-canvas:' && /^https?:\/\//i.test(sourceUrl)
+      ? `youmi-canvas://app/image-proxy?url=${encodeURIComponent(sourceUrl)}`
+      : sourceUrl
+
   try {
-    const res = await fetch(layer.url, { mode: 'cors', cache: 'force-cache' })
+    const res = await fetch(readableUrl, {
+      mode: 'cors',
+      cache: readableUrl === sourceUrl ? 'force-cache' : 'no-store',
+    })
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const blob = await res.blob()
     const blobUrl = URL.createObjectURL(blob)
     return new Promise((resolve) => {
       const img = new Image()
       let settled = false
+      let timer = null
       const finish = (value) => {
         if (settled) return
         settled = true
-        clearTimeout(timer)
+        if (timer) clearTimeout(timer)
         URL.revokeObjectURL(blobUrl)
         resolve(value)
       }
       img.onload = () => finish(img)
       img.onerror = () => finish(null)
       img.src = blobUrl
-      const timer = setTimeout(() => finish(img.complete ? img : null), 8000)
+      timer = setTimeout(
+        () => finish(img.complete && img.naturalWidth > 0 ? img : null),
+        12000,
+      )
     })
   } catch (e) {
-    console.error('[crop] fetch 失败，尝试 crossOrigin:', e)
+    console.error('[crop] 可读图片加载失败，尝试 crossOrigin:', e)
     return new Promise((resolve) => {
       const img = new Image()
       let settled = false
+      let timer = null
       const finish = (value) => {
         if (settled) return
         settled = true
-        clearTimeout(timer)
+        if (timer) clearTimeout(timer)
         resolve(value)
       }
       img.crossOrigin = 'anonymous'
       img.onload = () => finish(img)
       img.onerror = () => finish(null)
-      const separator = layer.url.includes('?') ? '&' : '?'
-      img.src = layer.url + separator + '_cv=' + Date.now()
-      const timer = setTimeout(() => finish(img.complete ? img : null), 8000)
+      const separator = sourceUrl.includes('?') ? '&' : '?'
+      img.src = `${sourceUrl}${separator}_cv=${Date.now()}`
+      timer = setTimeout(
+        () => finish(img.complete && img.naturalWidth > 0 ? img : null),
+        12000,
+      )
     })
   }
 }
@@ -11792,7 +11906,31 @@ async function loadImageForCropUncached(layer) {
 
     <section class="editor-body">
       <div class="top-tools">
-        <button @click="router.push('/canvas')">▣ 我的画布列表</button>
+        <div class="uc-canvas-list-stack">
+          <button @click="router.push('/canvas')">▣ 我的画布列表</button>
+          <button
+            v-if="canvasMediaCount"
+            type="button"
+            class="uc-canvas-media-deck"
+            :class="{ expanded: canvasMediaExpanded }"
+            :title="canvasMediaExpanded ? '收起画布图片' : `展开并加载 ${canvasMediaCount} 张图片`"
+            :aria-label="canvasMediaExpanded ? '收起画布图片' : `展开并加载 ${canvasMediaCount} 张图片`"
+            :aria-expanded="canvasMediaExpanded"
+            @click.stop="toggleCanvasMedia"
+          >
+            <span class="uc-media-deck-cards" aria-hidden="true">
+              <i></i><i></i><i></i>
+            </span>
+            <span class="uc-media-deck-copy">
+              <strong>{{ canvasMediaExpanded ? '收起图片' : '展开图片' }}</strong>
+              <small>{{ canvasMediaCount }} 张</small>
+            </span>
+            <i
+              :class="canvasMediaExpanded ? 'ri-arrow-up-s-line' : 'ri-arrow-down-s-line'"
+              aria-hidden="true"
+            ></i>
+          </button>
+        </div>
         <button
           type="button"
           class="uc-top-creation-btn"
@@ -11905,7 +12043,7 @@ async function loadImageForCropUncached(layer) {
           }"
         >
           <figure
-            v-for="layer in layers"
+            v-for="layer in renderedLayers"
             :key="layer.id"
             :data-layer-id="layer.id"
             :class="[
@@ -12956,7 +13094,7 @@ async function loadImageForCropUncached(layer) {
               >
                 <div
                   v-if="
-                    layers.find((l) => l.id === layerId) &&
+                    renderedLayerIds.has(layerId) &&
                     !isElementBlocked(layerId, el.box_2d || el.box2d || [0, 0, 1, 1])
                   "
                   class="detected-element-box"
@@ -13621,7 +13759,7 @@ async function loadImageForCropUncached(layer) {
               minHeight: `${panel.chatHeight + 24}px`,
             }"
           >
-            <div v-if="selectedLayer" class="target-layer">
+            <div v-if="selectedLayer && canvasMediaExpanded" class="target-layer">
               <img :src="selectedLayer.thumbnailUrl" alt="" />
               <span>{{ layerName(selectedLayerIndex) }}</span>
             </div>
@@ -13666,7 +13804,12 @@ async function loadImageForCropUncached(layer) {
                     @mouseenter="activeChatReferenceId = image.id"
                     @focus="activeChatReferenceId = image.id"
                   >
-                    <img :src="image.url" :alt="image.name || '参考图'" />
+                    <img
+                      v-if="canvasMediaExpanded"
+                      :src="image.url"
+                      :alt="image.name || '参考图'"
+                    />
+                    <i v-else class="ri-image-line" aria-hidden="true"></i>
                     <span v-if="image.uploading" class="yh-upload-card-status">上传中</span>
                     <span v-else-if="image.error" class="yh-upload-card-status">失败</span>
                     <span class="yh-image-count">{{ index + 1 }}</span>
@@ -13971,7 +14114,11 @@ async function loadImageForCropUncached(layer) {
           >
             <span>◉</span>
             <img
-              v-if="layer.thumbnailUrl && !brokenImages.has('thumb-' + layer.id)"
+              v-if="
+                canvasMediaExpanded &&
+                layer.thumbnailUrl &&
+                !brokenImages.has('thumb-' + layer.id)
+              "
               :src="layer.thumbnailUrl"
               alt=""
               @error="markImageBroken('thumb-' + layer.id)"
@@ -13996,7 +14143,11 @@ async function loadImageForCropUncached(layer) {
             class="gh-record"
           >
             <img
-              v-if="record.imageUrl && !brokenImages.has('rec-' + record.id)"
+              v-if="
+                canvasMediaExpanded &&
+                record.imageUrl &&
+                !brokenImages.has('rec-' + record.id)
+              "
               :src="record.imageUrl"
               alt=""
               @error="markImageBroken('rec-' + record.id)"

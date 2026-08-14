@@ -429,17 +429,6 @@ async function analyzeMainReference(reference, category) {
   return analyzed
 }
 
-async function analyzeMainReferences(items, category) {
-  const results = new Array(items.length)
-  let completed = 0
-  for (let index = 0; index < items.length; index += 1) {
-    results[index] = await analyzeMainReference(items[index], category)
-    completed += 1
-    mainAnalysisStatus.value = `正在反推竞品风格 ${completed}/${items.length}`
-  }
-  return results
-}
-
 async function runMainImages() {
   if (!canRunMain.value) return
   mainAnalyzing.value = true
@@ -449,32 +438,45 @@ async function runMainImages() {
   const selectedProducts = [...products.value]
   const selectedProduct = product.value
   const selectedReferences = [...references.value]
+  const selectedExtra = extra.value
   mainAnalysisStatus.value = `正在反推竞品风格 0/${selectedReferences.length}`
 
   try {
-    const analyses = await analyzeMainReferences(selectedReferences, selectedCategory)
-    emit('run', {
-      type: 'main-image',
-      sourceIds: selectedProducts.map((item) => item.id),
-      jobs: expandJobsBySelectedModels(
-        selectedReferences.map((reference, index) => {
-          const aspect = outputAspect(reference)
-          return {
+    const selectedModelCount = normalizedSelectedModels.value.length
+    const totalBatchCount = selectedReferences.length * selectedModelCount
+
+    for (let index = 0; index < selectedReferences.length; index += 1) {
+      const reference = selectedReferences[index]
+      const analysis = await analyzeMainReference(reference, selectedCategory)
+      const aspect = outputAspect(reference)
+      mainAnalysisStatus.value = `已反推 ${index + 1}/${selectedReferences.length}，正在提交生图`
+
+      emit('run', {
+        type: 'main-image',
+        sourceIds: selectedProducts.map((item) => item.id),
+        batchIndex: index * selectedModelCount,
+        batchCount: totalBatchCount,
+        jobs: expandJobsBySelectedModels([
+          {
             name: `${selectedMode === 'layout' ? '主图复刻' : '风格迁移'} ${index + 1}`,
             prompt: buildCompetitorStyleClonePrompt({
               mode: selectedMode,
-              stylePrompt: analyses[index].stylePrompt,
-              extra: extra.value,
+              stylePrompt: analysis.stylePrompt,
+              extra: selectedExtra,
             }),
             imageUrls: selectedProducts.map((item) => item.url),
             sourceIds: [...selectedProducts.map((item) => item.id), reference.id],
             previewUrl: selectedProduct.url,
             ...aspect,
             resolution: selectedResolution.value,
-          }
-        }),
-      ),
-    })
+          },
+        ]),
+      })
+
+      if (index + 1 < selectedReferences.length) {
+        mainAnalysisStatus.value = `正在反推竞品风格 ${index + 1}/${selectedReferences.length}`
+      }
+    }
   } catch (error) {
     mainAnalysisError.value = String(error?.message || error || '竞品风格反推失败')
   } finally {

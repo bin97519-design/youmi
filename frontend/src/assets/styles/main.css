@@ -10165,6 +10165,101 @@ body {
   background: var(--canvas-surface-hover);
 }
 
+.uc-canvas-list-stack {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-self: flex-start;
+}
+
+.top-tools .uc-canvas-media-deck {
+  position: absolute;
+  top: 50px;
+  left: 0;
+  display: flex;
+  width: 146px;
+  min-height: 72px;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-color: var(--canvas-accent-border);
+  color: var(--canvas-text);
+  background: color-mix(in srgb, var(--canvas-panel) 96%, transparent);
+  box-shadow: var(--canvas-panel-shadow);
+}
+
+.top-tools .uc-canvas-media-deck.expanded {
+  min-height: 42px;
+}
+
+.uc-media-deck-cards {
+  position: relative;
+  display: block;
+  width: 38px;
+  height: 46px;
+  flex: 0 0 38px;
+}
+
+.uc-media-deck-cards i {
+  position: absolute;
+  inset: 4px 2px 2px 4px;
+  border: 1px solid var(--canvas-border-strong);
+  border-radius: 4px;
+  background:
+    linear-gradient(135deg, transparent 46%, var(--canvas-accent-border) 47% 53%, transparent 54%),
+    color-mix(in srgb, var(--canvas-panel) 82%, var(--canvas-accent) 18%);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.22);
+}
+
+.uc-media-deck-cards i:nth-child(1) {
+  transform: translate(-4px, 2px) rotate(-8deg);
+}
+
+.uc-media-deck-cards i:nth-child(2) {
+  transform: translate(3px, 0) rotate(7deg);
+}
+
+.uc-media-deck-cards i:nth-child(3) {
+  transform: translate(0, -2px);
+}
+
+.uc-canvas-media-deck.expanded .uc-media-deck-cards {
+  width: 28px;
+  height: 28px;
+  flex-basis: 28px;
+}
+
+.uc-canvas-media-deck.expanded .uc-media-deck-cards i {
+  inset: 3px;
+}
+
+.uc-media-deck-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  text-align: left;
+}
+
+.uc-media-deck-copy strong,
+.uc-media-deck-copy small {
+  white-space: nowrap;
+}
+
+.uc-media-deck-copy strong {
+  font-size: 13px;
+}
+
+.uc-media-deck-copy small {
+  color: var(--canvas-text-muted);
+  font-size: 11px;
+}
+
+.uc-canvas-media-deck > i {
+  margin-left: auto;
+  color: var(--canvas-accent);
+  font-size: 18px;
+}
+
 .reverse-prompt-mini-card {
   position: absolute;
   z-index: 9300;
