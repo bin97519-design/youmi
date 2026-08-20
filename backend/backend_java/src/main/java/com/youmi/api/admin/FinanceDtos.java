@@ -12,7 +12,8 @@ public final class FinanceDtos {
       FinanceSummary summary,
       List<DailyFinanceRow> daily,
       List<PlatformFinanceRow> platforms,
-      List<ShopFinanceRow> shops) {
+      List<ShopFinanceRow> shops,
+      List<UserFinanceRow> users) {
   }
 
   public record FinancePeriod(
@@ -63,6 +64,19 @@ public final class FinanceDtos {
       String platformName,
       Long transactionCount,
       Long userCount,
+      Long imageMi,
+      Long videoMi,
+      Long totalMi,
+      BigDecimal totalYuan) {
+  }
+
+  public record UserFinanceRow(
+      Long userId,
+      String account,
+      String nickname,
+      Long transactionCount,
+      Long platformCount,
+      Long shopCount,
       Long imageMi,
       Long videoMi,
       Long totalMi,

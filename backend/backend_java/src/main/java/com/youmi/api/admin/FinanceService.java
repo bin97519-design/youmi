@@ -48,7 +48,8 @@ public class FinanceService {
         summary(filter),
         daily(filter),
         platforms(filter),
-        shops(filter));
+        shops(filter),
+        users(filter));
   }
 
   public byte[] exportCsv(
@@ -96,6 +97,14 @@ public class FinanceService {
     for (FinanceDtos.ShopFinanceRow row : report.shops()) {
       appendCsvRow(csv, row.platformName(), row.shopName(), row.shopCode(),
           row.transactionCount(), row.userCount(), row.imageMi(), row.videoMi(),
+          row.totalMi(), row.totalYuan());
+    }
+
+    csv.append("\n个人汇总\n");
+    csv.append("账号,昵称,用户ID,消费笔数,平台数,店铺数,生图米值,视频米值,总米值,金额（元）\n");
+    for (FinanceDtos.UserFinanceRow row : report.users()) {
+      appendCsvRow(csv, row.account(), row.nickname(), row.userId(), row.transactionCount(),
+          row.platformCount(), row.shopCount(), row.imageMi(), row.videoMi(),
           row.totalMi(), row.totalYuan());
     }
     return csv.toString().getBytes(StandardCharsets.UTF_8);
@@ -206,6 +215,37 @@ public class FinanceService {
           rs.getString("platform_name"),
           rs.getLong("transaction_count"),
           rs.getLong("user_count"),
+          rs.getLong("image_mi"),
+          rs.getLong("video_mi"),
+          totalMi,
+          yuan(totalMi));
+    }, filter.args());
+  }
+
+  private List<FinanceDtos.UserFinanceRow> users(LedgerFilter filter) {
+    String sql = """
+        SELECT l.user_id AS effective_user_id,
+               u.account,
+               u.nickname,
+               COUNT(*) AS transaction_count,
+               COUNT(DISTINCT COALESCE(l.platform_id, s.platform_id)) AS platform_count,
+               COUNT(DISTINCT COALESCE(l.shop_id, u.shop_id)) AS shop_count,
+               COALESCE(SUM(CASE WHEN l.biz_type = 'IMAGE' THEN l.price ELSE 0 END), 0) AS image_mi,
+               COALESCE(SUM(CASE WHEN l.biz_type = 'VIDEO' THEN l.price ELSE 0 END), 0) AS video_mi,
+               COALESCE(SUM(l.price), 0) AS total_mi
+        """ + LEDGER_FROM + filter.where() + """
+        GROUP BY l.user_id, u.account, u.nickname
+        ORDER BY total_mi DESC, effective_user_id
+        """;
+    return jdbcTemplate.query(sql, (rs, rowNum) -> {
+      long totalMi = rs.getLong("total_mi");
+      return new FinanceDtos.UserFinanceRow(
+          nullableLong(rs, "effective_user_id"),
+          rs.getString("account"),
+          rs.getString("nickname"),
+          rs.getLong("transaction_count"),
+          rs.getLong("platform_count"),
+          rs.getLong("shop_count"),
           rs.getLong("image_mi"),
           rs.getLong("video_mi"),
           totalMi,

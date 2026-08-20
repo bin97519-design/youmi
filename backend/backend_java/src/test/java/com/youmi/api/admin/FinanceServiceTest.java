@@ -41,6 +41,11 @@ class FinanceServiceTest {
     assertEquals("淘宝", report.shops().get(0).platformName());
     assertEquals("爱洁猫", report.shops().get(0).shopName());
     assertEquals(15L, report.shops().get(0).totalMi());
+    assertEquals(2, report.users().size());
+    assertEquals("operator", report.users().get(0).account());
+    assertEquals("运营", report.users().get(0).nickname());
+    assertEquals(2L, report.users().get(0).transactionCount());
+    assertEquals(15L, report.users().get(0).totalMi());
   }
 
   @Test
@@ -53,6 +58,8 @@ class FinanceServiceTest {
     assertEquals(15L, report.summary().totalMi());
     assertEquals(1, report.platforms().size());
     assertEquals(1, report.shops().size());
+    assertEquals(1, report.users().size());
+    assertEquals("operator", report.users().get(0).account());
   }
 
   @Test
@@ -76,6 +83,8 @@ class FinanceServiceTest {
     assertTrue(csv.contains("有米AI财务消耗报表"));
     assertTrue(csv.contains("平台汇总"));
     assertTrue(csv.contains("店铺汇总"));
+    assertTrue(csv.contains("个人汇总"));
+    assertTrue(csv.contains("operator,运营,100"));
     assertFalse(csv.contains("回滚任务"));
   }
 

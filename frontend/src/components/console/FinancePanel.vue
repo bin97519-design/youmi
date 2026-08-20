@@ -17,6 +17,7 @@ const report = ref(null)
 const platformId = ref('')
 const shopId = ref('')
 const shopSearch = ref('')
+const userSearch = ref('')
 const openFilterSelect = ref('')
 const activeRangeShortcut = ref('month')
 
@@ -242,6 +243,19 @@ const filteredShopRows = computed(() => {
   )
 })
 
+const filteredUserRows = computed(() => {
+  const rows = report.value?.users || []
+  const query = userSearch.value.trim().toLowerCase()
+  if (!query) return rows
+  return rows.filter((row) =>
+    [row.account, row.nickname, row.userId].some((value) =>
+      String(value || '')
+        .toLowerCase()
+        .includes(query),
+    ),
+  )
+})
+
 const summary = computed(() => report.value?.summary || {})
 
 function queryString() {
@@ -341,6 +355,7 @@ function resetFilters() {
   platformId.value = ''
   shopId.value = ''
   shopSearch.value = ''
+  userSearch.value = ''
   loadReport()
 }
 
@@ -943,6 +958,55 @@ onBeforeUnmount(() => {
           </div>
         </section>
       </div>
+
+      <section class="finance-table-section finance-user-summary">
+        <div class="finance-section-head">
+          <div>
+            <h3>个人汇总</h3>
+            <p>按账号汇总成功消费，沿用当前日期、平台和店铺筛选</p>
+          </div>
+          <div class="finance-shop-search">
+            <i class="ri-search-line" aria-hidden="true"></i>
+            <input v-model.trim="userSearch" placeholder="搜索账号、昵称或 ID" />
+          </div>
+        </div>
+        <div class="finance-table-wrap finance-user-table">
+          <table>
+            <thead>
+              <tr>
+                <th>账号</th>
+                <th>涉及范围</th>
+                <th>消费笔数</th>
+                <th>生图米值</th>
+                <th>视频米值</th>
+                <th>总米值</th>
+                <th>金额</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in filteredUserRows" :key="row.userId ?? row.account">
+                <td>
+                  <strong>{{ row.nickname || row.account || '历史账号' }}</strong>
+                  <small>
+                    {{ row.account || '账号已删除' }} · ID {{ row.userId ?? '-' }}
+                  </small>
+                </td>
+                <td>
+                  {{ integer(row.platformCount) }} 个平台 · {{ integer(row.shopCount) }} 个店铺
+                </td>
+                <td>{{ integer(row.transactionCount) }}</td>
+                <td>{{ integer(row.imageMi) }}</td>
+                <td>{{ integer(row.videoMi) }}</td>
+                <td><strong>{{ integer(row.totalMi) }}</strong></td>
+                <td class="money">{{ yuan(row.totalYuan) }}</td>
+              </tr>
+              <tr v-if="!filteredUserRows.length">
+                <td colspan="7" class="finance-empty">暂无匹配账号</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
     </template>
   </section>
 </template>
@@ -1701,6 +1765,10 @@ td small {
   border-color: #dbe3ef;
   color: #1e293b;
   background: #f8fafc;
+}
+
+.finance-user-table table {
+  min-width: 820px;
 }
 
 [data-theme='light'] .finance-custom-select-trigger {
