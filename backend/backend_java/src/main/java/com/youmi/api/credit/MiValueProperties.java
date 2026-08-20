@@ -60,6 +60,10 @@ public class MiValueProperties {
     if (compact.equals("gptimage2") || compact.equals("gptimag2") || value.startsWith("gpt-image-2")) {
       return "gpt-image-2";
     }
+    if (value.equals("wavespeed-ai/qwen-image/edit-multiple-angles")
+        || compact.equals("qwenmultiangle")) {
+      return "qwen-multi-angle";
+    }
     return value;
   }
 

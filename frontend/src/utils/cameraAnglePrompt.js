@@ -54,8 +54,8 @@ export function normalizeHorizontalAngle(value) {
 }
 
 export function describeHorizontalAngle(value) {
-  const inputAngle = clamp(finiteNumber(value), -180, 180)
-  const normalizedAngle = normalizeHorizontalAngle(inputAngle)
+  const normalizedAngle = normalizeHorizontalAngle(finiteNumber(value))
+  const inputAngle = normalizedAngle <= 180 ? normalizedAngle : normalizedAngle - 360
   const nearestIndex = Math.round(normalizedAngle / 45) % HORIZONTAL_VIEWS.length
   const view = HORIZONTAL_VIEWS[nearestIndex]
   const direction =
@@ -75,7 +75,7 @@ export function describeHorizontalAngle(value) {
 }
 
 export function describeSurfaceVisibility(value) {
-  const normalizedAngle = normalizeHorizontalAngle(clamp(finiteNumber(value), -180, 180))
+  const normalizedAngle = normalizeHorizontalAngle(finiteNumber(value))
   const quadrantIndex = Math.min(3, Math.floor(normalizedAngle / 90))
   const quadrant = SURFACE_QUADRANTS[quadrantIndex]
   const localAngle = normalizedAngle - quadrant.start
@@ -148,7 +148,7 @@ export function getCameraAngleSpec({
     horizontal,
     vertical,
     distance: framing,
-    summary: `${horizontal.name} ${formatAngle(Math.abs(horizontal.inputAngle))}° · ${vertical.name} ${formatAngle(Math.abs(vertical.angle))}° · ${framing.name}`,
+    summary: `${horizontal.name} ${formatAngle(horizontal.normalizedAngle)}° · ${vertical.name} ${formatAngle(Math.abs(vertical.angle))}° · ${framing.name}`,
   }
 }
 

@@ -37,10 +37,12 @@ public class ImageGenerationClient {
   private static final String PROVIDER_LK888 = "lk888";
   private static final String PROVIDER_PROXY = "proxy";
   private static final String PROVIDER_ANNES = "agnes";
+  private static final String PROVIDER_WAVESPEED = "wavespeed";
   private static final String GETTOKEN_TASK_PREFIX = PROVIDER_GETTOKEN + ":";
   private static final String LK888_TASK_PREFIX = PROVIDER_LK888 + ":";
   private static final String PROXY_TASK_PREFIX = PROVIDER_PROXY + ":";
   private static final String AGNES_TASK_PREFIX = PROVIDER_ANNES + ":";
+  private static final String WAVESPEED_TASK_PREFIX = PROVIDER_WAVESPEED + ":";
   private static final String APIMART_DIRECT_TASK_PREFIX = "apimart-direct:";
   private static final long PROVIDER_TIMEOUT_MS = 180_000L; // 3 分钟超时阈值（自任务创建起算）
   private static final String BROWSER_USER_AGENT =
@@ -113,7 +115,8 @@ public class ImageGenerationClient {
 
   public ImageGenerationDtos.StatusResponse status() {
     boolean configured = properties.isConfigured() || properties.isGetTokenConfigured()
-        || properties.isLk888Configured() || isProxyConfigured() || properties.isAgnesConfigured();
+        || properties.isLk888Configured() || isProxyConfigured() || properties.isAgnesConfigured()
+        || properties.isWaveSpeedConfigured();
     return new ImageGenerationDtos.StatusResponse(
         configured,
         properties.normalizedBaseUrl(),
@@ -142,7 +145,13 @@ public class ImageGenerationClient {
 
   public ImageGenerationDtos.CreateTaskResponse createTask(ImageGenerationDtos.CreateTaskRequest request)
       throws Exception {
-    if (request == null || request.prompt() == null || request.prompt().isBlank()) {
+    if (request == null) {
+      throw new ApiException(400, "request is required");
+    }
+    String resolvedModel = properties.resolveModel(request.model());
+    boolean waveSpeedMultiAngle = properties.isWaveSpeedMultiAngleModel(resolvedModel);
+    if (!waveSpeedMultiAngle
+        && (request.prompt() == null || request.prompt().isBlank())) {
       throw new ApiException(400, "prompt is required");
     }
     request = ImagePromptPresets.expand(request);
@@ -152,12 +161,20 @@ public class ImageGenerationClient {
         && !properties.isGetTokenConfigured()
         && !properties.isLk888Configured()
         && !properties.isAgnesConfigured()
+        && !properties.isWaveSpeedConfigured()
         && !isProxyConfigured()) {
       throw new ApiException(400, "Image generation api key is not configured");
     }
 
+    // WaveSpeed 专用多角度模型严格走参数化接口，不进入通用生图或兜底链。
+    if (waveSpeedMultiAngle) {
+      if (!properties.isWaveSpeedConfigured()) {
+        throw new ApiException(400, "WaveSpeed api key is not configured");
+      }
+      return createWaveSpeedMultiAngleTask(request);
+    }
+
     // Agnes Image 模型优先（同步 API，直接返回图片）
-    String resolvedModel = properties.resolveModel(request.model());
     if (properties.isAgnesConfigured() && properties.isAgnesModel(resolvedModel)) {
       return createAgnesTask(request);
     }
@@ -220,6 +237,55 @@ public class ImageGenerationClient {
       return createProxyTask(request);
     }
     throw new ApiException(502, "Image generation provider request failed");
+  }
+
+  private ImageGenerationDtos.CreateTaskResponse createWaveSpeedMultiAngleTask(
+      ImageGenerationDtos.CreateTaskRequest request) throws Exception {
+    List<String> imageUrls = request.normalizedImageUrls();
+    if (imageUrls.isEmpty()) {
+      throw new ApiException(400, "多角度生成至少需要 1 张参考图");
+    }
+    if (imageUrls.size() > 3) {
+      throw new ApiException(400, "多角度生成最多支持 3 张参考图");
+    }
+
+    String model = properties.getWaveSpeedMultiAngleModel();
+    int horizontalAngle = normalizeCircularAngle(request.horizontalAngle());
+    int verticalAngle = clampInt(request.verticalAngle(), -30, 60, 0);
+    int distance = clampInt(request.distance(), 0, 2, 1);
+    int seed = request.seed() == null ? -1 : request.seed();
+    String outputFormat = normalizeWaveSpeedOutputFormat(request.outputFormat());
+
+    Map<String, Object> body = new LinkedHashMap<>();
+    body.put("images", imageUrls);
+    body.put("horizontal_angle", horizontalAngle);
+    body.put("vertical_angle", verticalAngle);
+    body.put("distance", distance);
+    if (request.prompt() != null && !request.prompt().isBlank()) {
+      body.put("prompt", request.prompt().trim());
+    }
+    body.put("seed", seed);
+    body.put("output_format", outputFormat);
+
+    JsonNode root = sendWaveSpeedPost(
+        properties.normalizedWaveSpeedBaseUrl() + "/" + model, body);
+    JsonNode data = root.path("data");
+    String predictionId = firstNonBlank(text(data, "id"), text(root, "id"));
+    if (predictionId.isBlank()) {
+      throw new ApiException(502, "WaveSpeed did not return prediction id");
+    }
+    String taskId = WAVESPEED_TASK_PREFIX + predictionId;
+    String status = firstNonBlank(text(data, "status"), "created");
+
+    return new ImageGenerationDtos.CreateTaskResponse(
+        PROVIDER_WAVESPEED,
+        request.model(),
+        model,
+        "auto",
+        "1K",
+        1,
+        List.of(new ImageGenerationDtos.TaskRef(taskId, status)),
+        root);
   }
 
   private ImageGenerationDtos.CreateTaskResponse createFallbackTask(
@@ -965,6 +1031,9 @@ public class ImageGenerationClient {
   /** 纯查询（不含故障转移逻辑）：根据 taskId 前缀分发到各 provider 查询实现 */
   private ImageGenerationDtos.TaskStatusResponse getTaskInternal(String taskId) throws Exception {
     String cleanTaskId = taskId.trim();
+    if (cleanTaskId.startsWith(WAVESPEED_TASK_PREFIX)) {
+      return getWaveSpeedTask(cleanTaskId.substring(WAVESPEED_TASK_PREFIX.length()));
+    }
     // Agnes 同步任务：从缓存直接返回
     if (cleanTaskId.startsWith(AGNES_TASK_PREFIX)) {
       return getAgnesTask(cleanTaskId);
@@ -1024,6 +1093,50 @@ public class ImageGenerationClient {
         "apimart",
         cleanTaskId,
         status.isBlank() ? "unknown" : status,
+        progress,
+        imageUrls,
+        persistStatus,
+        error.isBlank() ? null : error,
+        root);
+  }
+
+  private ImageGenerationDtos.TaskStatusResponse getWaveSpeedTask(String predictionId)
+      throws Exception {
+    if (!properties.isWaveSpeedConfigured()) {
+      throw new ApiException(400, "WaveSpeed api key is not configured");
+    }
+    String cleanId = predictionId == null ? "" : predictionId.trim();
+    if (cleanId.isBlank()) throw new ApiException(400, "prediction id is required");
+
+    String taskId = WAVESPEED_TASK_PREFIX + cleanId;
+    JsonNode root = sendWaveSpeedGet(
+        properties.normalizedWaveSpeedBaseUrl() + "/predictions/" + encode(cleanId) + "/result");
+    JsonNode data = root.path("data");
+    String status = firstNonBlank(text(data, "status"), text(root, "status"), "unknown")
+        .toLowerCase();
+    Integer progress = intValue(data, "progress");
+    if (progress == null) {
+      progress = isDoneStatus(status) ? 100 : status.contains("process") ? 50 : 8;
+    }
+
+    List<String> imageUrls = new ArrayList<>();
+    collectImageUrls(data.path("outputs"), imageUrls);
+    String error = firstNonBlank(
+        text(data.path("error"), "message"),
+        data.path("error").isTextual() ? data.path("error").asText() : "",
+        text(root, "message"));
+    String persistStatus = null;
+    if (isDoneStatus(status) && !imageUrls.isEmpty()) {
+      PollResult result = decidePollResponse(taskId, imageUrls);
+      imageUrls = result.imageUrls();
+      status = result.status();
+      persistStatus = result.persistStatus();
+    }
+
+    return new ImageGenerationDtos.TaskStatusResponse(
+        PROVIDER_WAVESPEED,
+        taskId,
+        status,
         progress,
         imageUrls,
         persistStatus,
@@ -1276,6 +1389,27 @@ public class ImageGenerationClient {
     return send(request, "GetToken");
   }
 
+  private JsonNode sendWaveSpeedPost(String endpoint, Map<String, Object> body) throws Exception {
+    HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create(endpoint))
+        .timeout(Duration.ofSeconds(Math.max(5, properties.getTimeoutSeconds())))
+        .header("Authorization", "Bearer " + properties.getWaveSpeedApiKey())
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
+        .build();
+    return send(request, "WaveSpeed");
+  }
+
+  private JsonNode sendWaveSpeedGet(String endpoint) throws Exception {
+    HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create(endpoint))
+        .timeout(Duration.ofSeconds(Math.max(5, properties.getTimeoutSeconds())))
+        .header("Authorization", "Bearer " + properties.getWaveSpeedApiKey())
+        .GET()
+        .build();
+    return send(request, "WaveSpeed");
+  }
+
   private JsonNode sendLk888Post(String endpoint, Map<String, Object> body) throws Exception {
     HttpRequest request = HttpRequest.newBuilder()
         .uri(URI.create(endpoint))
@@ -1491,6 +1625,26 @@ public class ImageGenerationClient {
     return resolution.trim().toLowerCase();
   }
 
+  private int normalizeCircularAngle(Integer value) {
+    int angle = value == null ? 0 : value;
+    return ((angle % 360) + 360) % 360;
+  }
+
+  private int clampInt(Integer value, int min, int max, int fallback) {
+    int resolved = value == null ? fallback : value;
+    return Math.max(min, Math.min(max, resolved));
+  }
+
+  private String normalizeWaveSpeedOutputFormat(String value) {
+    String format = value == null ? "jpeg" : value.trim().toLowerCase();
+    return switch (format) {
+      case "jpg", "jpeg" -> "jpeg";
+      case "png" -> "png";
+      case "webp" -> "webp";
+      default -> "jpeg";
+    };
+  }
+
   // ===== 异步持久化（生图结果落自有 OSS，真源在后端、落库，与前端刷新无关） =====
   // 轮询内【不再】同步转存（避免 60s 阻塞 + 前端二次转存）。
   // done 时立即返回中转站临时 URL，异步触发持久化并把永久 URL 写回 ym_image_task；
@@ -1656,6 +1810,7 @@ public class ImageGenerationClient {
     else if (taskId.startsWith(LK888_TASK_PREFIX)) provider = PROVIDER_LK888;
     else if (taskId.startsWith(PROXY_TASK_PREFIX)) provider = PROVIDER_PROXY;
     else if (taskId.startsWith(AGNES_TASK_PREFIX)) provider = PROVIDER_ANNES;
+    else if (taskId.startsWith(WAVESPEED_TASK_PREFIX)) provider = PROVIDER_WAVESPEED;
 
     JsonNode raw = objectMapper.createObjectNode()
         .put("source", "persisted_oss")

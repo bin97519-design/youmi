@@ -36,7 +36,34 @@ public class ImageGenerationDtos {
       @JsonProperty("input_fidelity") String inputFidelity,
       @JsonProperty("output_compression") Integer outputCompression,
       @JsonProperty("webhook_url") String webhookUrl,
-      @JsonProperty("client_task_id") String clientTaskId) {
+      @JsonProperty("client_task_id") String clientTaskId,
+      @JsonProperty("horizontal_angle") Integer horizontalAngle,
+      @JsonProperty("vertical_angle") Integer verticalAngle,
+      Integer distance,
+      Integer seed) {
+    public CreateTaskRequest(
+        String prompt,
+        String model,
+        String size,
+        String ratio,
+        String resolution,
+        Integer n,
+        Integer count,
+        List<String> imageUrlsSnake,
+        List<String> imageUrls,
+        String background,
+        String outputFormat,
+        String moderation,
+        String inputFidelity,
+        Integer outputCompression,
+        String webhookUrl,
+        String clientTaskId) {
+      this(
+          prompt, model, size, ratio, resolution, n, count, imageUrlsSnake, imageUrls,
+          background, outputFormat, moderation, inputFidelity, outputCompression, webhookUrl,
+          clientTaskId, null, null, null, null);
+    }
+
     public List<String> normalizedImageUrls() {
       LinkedHashSet<String> urls = new LinkedHashSet<>();
       addUrls(urls, imageUrlsSnake);

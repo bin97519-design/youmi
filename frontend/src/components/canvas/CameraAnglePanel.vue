@@ -1,116 +1,175 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import {
-  buildCameraAnglePrompt,
-  getCameraAngleSpec,
-  normalizeHorizontalAngle,
-} from '../../utils/cameraAnglePrompt'
+import { getCameraAngleSpec, normalizeHorizontalAngle } from '../../utils/cameraAnglePrompt'
 import { writeTextToClipboard } from '../../utils/clipboard'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
   sourceLayer: { type: Object, default: null },
-  model: { type: String, default: 'banana2' },
-  ratio: { type: String, default: 'auto' },
-  resolution: { type: String, default: '2K' },
   busy: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['close', 'insert', 'generate'])
+const emit = defineEmits(['close', 'generate'])
+const UNIT_PRICE = 20
 
+const controlMode = ref('subject')
 const horizontalAngle = ref(0)
 const verticalAngle = ref(0)
 const distance = ref(1)
-const snapHorizontal = ref(false)
-const preserveBackground = ref(true)
+const outputFormat = ref('png')
+const seed = ref(-1)
 const additionalPrompt = ref('')
+const generationShots = ref([])
 const copied = ref(false)
 let copyTimer = null
-
-const horizontalPresets = [
-  { value: -180, label: '后' },
-  { value: -135, label: '左后' },
-  { value: -90, label: '左侧' },
-  { value: -45, label: '左前' },
-  { value: 0, label: '正面' },
-  { value: 45, label: '右前' },
-  { value: 90, label: '右侧' },
-  { value: 135, label: '右后' },
-  { value: 180, label: '后' },
-]
-
-const verticalPresets = [
-  { value: -30, label: '仰拍' },
-  { value: 0, label: '平视' },
-  { value: 30, label: '俯拍' },
-  { value: 60, label: '高俯' },
-]
+let shotSequence = 1
 
 const distanceOptions = [
-  { value: 0, label: '近景', icon: 'ri-zoom-in-line' },
-  { value: 1, label: '中景', icon: 'ri-focus-3-line' },
+  { value: 0, label: '特写', icon: 'ri-zoom-in-line' },
+  { value: 1, label: '标准', icon: 'ri-focus-3-line' },
   { value: 2, label: '远景', icon: 'ri-zoom-out-line' },
 ]
 
+const outputFormats = [
+  { value: 'jpeg', label: 'JPEG' },
+  { value: 'png', label: 'PNG' },
+  { value: 'webp', label: 'WebP' },
+]
+
+const normalizedHorizontal = computed(() => Math.round(normalizeHorizontalAngle(horizontalAngle.value)))
+const signedHorizontalAngle = computed(() => {
+  const normalized = normalizedHorizontal.value
+  return normalized > 180 ? normalized - 360 : normalized
+})
+const apiHorizontalAngle = computed(() =>
+  controlMode.value === 'camera'
+    ? normalizedHorizontal.value
+    : Math.round(normalizeHorizontalAngle(360 - normalizedHorizontal.value)),
+)
+const batchCount = computed(() => generationShots.value.length)
+const totalCost = computed(() => batchCount.value * UNIT_PRICE)
+const distanceLabel = computed(
+  () => distanceOptions.find((item) => item.value === distance.value)?.label || '标准',
+)
+const currentShotExists = computed(() =>
+  generationShots.value.some(
+    (shot) =>
+      shot.horizontalAngle === apiHorizontalAngle.value &&
+      shot.verticalAngle === verticalAngle.value &&
+      shot.distance === distance.value,
+  ),
+)
 const spec = computed(() =>
   getCameraAngleSpec({
-    horizontalAngle: horizontalAngle.value,
+    horizontalAngle: apiHorizontalAngle.value,
     verticalAngle: verticalAngle.value,
     distance: distance.value,
   }),
 )
 
-const prompt = computed(() =>
-  buildCameraAnglePrompt({
-    horizontalAngle: horizontalAngle.value,
-    verticalAngle: verticalAngle.value,
-    distance: distance.value,
-    additionalPrompt: additionalPrompt.value,
-    preserveBackground: preserveBackground.value,
-  }),
-)
+const cubeTransform = computed(() => {
+  const horizontal = signedHorizontalAngle.value
+  const vertical = Math.max(-21, Math.min(21, verticalAngle.value * 0.34))
+  const scale = distance.value === 0 ? 1.08 : distance.value === 2 ? 0.84 : 0.96
+  return `rotateX(${14 - vertical}deg) rotateY(${-30 + horizontal}deg) scale(${scale})`
+})
 
-const normalizedHorizontal = computed(() =>
-  Math.round(normalizeHorizontalAngle(horizontalAngle.value) * 10) / 10,
-)
-
-const cameraMarkerStyle = computed(() => {
-  const radians = (normalizedHorizontal.value * Math.PI) / 180
+const cameraPositionStyle = computed(() => {
+  const radians = (signedHorizontalAngle.value * Math.PI) / 180
+  const radius = distance.value === 0 ? 25 : distance.value === 2 ? 42 : 34
+  const verticalOffset = (verticalAngle.value / 90) * 28
+  const left = 50 + Math.sin(radians) * radius
+  const top = 50 + Math.cos(radians) * radius - verticalOffset
   return {
-    left: `${50 + Math.sin(radians) * 38}%`,
-    top: `${50 + Math.cos(radians) * 38}%`,
+    left: `${Math.max(9, Math.min(91, left))}%`,
+    top: `${Math.max(9, Math.min(91, top))}%`,
   }
 })
 
-const previewTransform = computed(() => {
-  const horizontal = Math.max(-14, Math.min(14, horizontalAngle.value / 9))
-  const vertical = Math.max(-10, Math.min(10, verticalAngle.value / 5))
-  const scale = distance.value === 0 ? 1.12 : distance.value === 2 ? 0.82 : 0.96
-  return `perspective(700px) rotateY(${horizontal}deg) rotateX(${-vertical}deg) scale(${scale})`
+const requestPrompt = computed(() => {
+  const extra = additionalPrompt.value.trim()
+  const base = '保持主体身份、结构、材质、颜色和场景风格一致。'
+  return extra ? `${base}${extra}` : base
+})
+
+const parameterText = computed(() => {
+  return [
+    'WaveSpeed Qwen 多角度',
+    ...generationShots.value.map(
+      (shot, index) =>
+        `视角${index + 1}（${shot.mode === 'subject' ? '主体' : '摄像头'}）：水平 ${shot.horizontalAngle}°，垂直 ${shot.verticalAngle}°，距离 ${shot.distance}`,
+    ),
+    `格式：${outputFormat.value}`,
+    `种子：${seed.value}`,
+    additionalPrompt.value.trim() ? `附加要求：${additionalPrompt.value.trim()}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n')
 })
 
 watch(
   () => props.open,
   (open) => {
     if (!open) return
-    horizontalAngle.value = 0
-    verticalAngle.value = 0
-    distance.value = 1
-    snapHorizontal.value = false
-    preserveBackground.value = true
-    additionalPrompt.value = ''
+    resetControls()
   },
 )
+
+function resetControls() {
+  controlMode.value = 'subject'
+  horizontalAngle.value = 0
+  verticalAngle.value = 0
+  distance.value = 1
+  outputFormat.value = 'png'
+  seed.value = -1
+  additionalPrompt.value = ''
+  generationShots.value = []
+  shotSequence = 1
+}
 
 function normalizeHorizontalInput(value) {
   const number = Number(value)
   if (!Number.isFinite(number)) return 0
-  const clamped = Math.max(-180, Math.min(180, number))
-  return snapHorizontal.value ? Math.round(clamped / 45) * 45 : Math.round(clamped)
+  return Math.max(-180, Math.min(180, Math.round(number)))
 }
 
 function setHorizontal(value) {
-  horizontalAngle.value = normalizeHorizontalInput(value)
+  const next = normalizeHorizontalInput(value)
+  horizontalAngle.value = next
+}
+
+function addCurrentShot() {
+  if (currentShotExists.value) return
+  generationShots.value.push({
+    id: `angle-${shotSequence++}`,
+    mode: controlMode.value,
+    horizontalAngle: apiHorizontalAngle.value,
+    verticalAngle: verticalAngle.value,
+    distance: distance.value,
+  })
+}
+
+function loadShot(shot) {
+  controlMode.value = shot.mode || 'camera'
+  const displayAngle =
+    controlMode.value === 'subject'
+      ? normalizeHorizontalAngle(360 - shot.horizontalAngle)
+      : normalizeHorizontalAngle(shot.horizontalAngle)
+  horizontalAngle.value = displayAngle > 180 ? displayAngle - 360 : displayAngle
+  verticalAngle.value = shot.verticalAngle
+  distance.value = shot.distance
+}
+
+function shotDisplayHorizontal(shot) {
+  const normalized =
+    shot.mode === 'subject'
+      ? normalizeHorizontalAngle(360 - shot.horizontalAngle)
+      : normalizeHorizontalAngle(shot.horizontalAngle)
+  return normalized > 180 ? normalized - 360 : normalized
+}
+
+function removeShot(id) {
+  generationShots.value = generationShots.value.filter((shot) => shot.id !== id)
 }
 
 function setVertical(value) {
@@ -121,24 +180,27 @@ function setVertical(value) {
 }
 
 function payload() {
+  const shots = generationShots.value.map(({ horizontalAngle, verticalAngle, distance }) => ({
+    horizontalAngle,
+    verticalAngle,
+    distance,
+  }))
   return {
-    prompt: prompt.value,
-    displayText: `多角度视角转换：${spec.value.summary}`,
+    prompt: requestPrompt.value,
+    displayText: `多角度批量生成：${shots
+      .map((shot) => `${shot.horizontalAngle}°/${shot.verticalAngle}°/距离${shot.distance}`)
+      .join('、')}`,
     params: {
-      horizontalAngle: horizontalAngle.value,
-      normalizedHorizontalAngle: normalizedHorizontal.value,
-      verticalAngle: verticalAngle.value,
-      distance: distance.value,
-      horizontalView: spec.value.horizontal.name,
-      verticalView: spec.value.vertical.name,
-      distanceView: spec.value.distance.name,
+      shots,
+      seed: Number.isFinite(Number(seed.value)) ? Number(seed.value) : -1,
+      outputFormat: outputFormat.value,
     },
   }
 }
 
-async function copyPrompt() {
+async function copyParameters() {
   try {
-    await writeTextToClipboard(prompt.value)
+    await writeTextToClipboard(parameterText.value)
     copied.value = true
     clearTimeout(copyTimer)
     copyTimer = setTimeout(() => {
@@ -162,14 +224,20 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="body">
-    <div v-if="open" class="cap-backdrop" @click.self="emit('close')">
+    <div
+      class="cap-backdrop"
+      :class="{ 'is-open': open }"
+      :aria-hidden="!open"
+      :inert="!open"
+      @click.self="emit('close')"
+    >
       <section class="cap-panel" role="dialog" aria-modal="true" aria-label="多角度视角调整">
         <header class="cap-head">
           <div>
             <i class="ri-camera-lens-line" aria-hidden="true"></i>
             <span>
               <strong>多角度</strong>
-              <small>精确设置相机位置并生成视角提示词</small>
+              <small>Qwen 多角度模型 · WaveSpeed</small>
             </span>
           </div>
           <button type="button" title="关闭" aria-label="关闭" @click="emit('close')">
@@ -179,209 +247,231 @@ onBeforeUnmount(() => {
 
         <div class="cap-body">
           <section class="cap-preview">
-            <div class="cap-image-stage">
-              <img
-                v-if="sourceLayer?.url"
-                :src="sourceLayer.thumbnailUrl || sourceLayer.url"
-                alt="当前参考图"
-                :style="{ transform: previewTransform }"
-              />
-              <div v-else class="cap-image-empty">
-                <i class="ri-image-line" aria-hidden="true"></i>
-                <span>请选择图片图层</span>
-              </div>
-              <span class="cap-image-label">参考图1</span>
+            <div class="cap-mode-switch" role="group" aria-label="视角控制方式">
+              <button
+                type="button"
+                :class="{ active: controlMode === 'subject' }"
+                @click="controlMode = 'subject'"
+              >
+                主体
+              </button>
+              <button
+                type="button"
+                :class="{ active: controlMode === 'camera' }"
+                @click="controlMode = 'camera'"
+              >
+                摄像头
+              </button>
             </div>
-
-            <div class="cap-camera-map" aria-label="相机水平位置预览">
-              <span class="cap-map-axis cap-map-axis--front">正面 0°</span>
-              <span class="cap-map-axis cap-map-axis--right">右侧 90°</span>
-              <span class="cap-map-axis cap-map-axis--back">背面 180°</span>
-              <span class="cap-map-axis cap-map-axis--left">左侧 270°</span>
-              <div class="cap-map-orbit"></div>
-              <div class="cap-map-subject">
-                <i class="ri-box-3-line" aria-hidden="true"></i>
+            <div
+              v-if="controlMode === 'subject'"
+              class="cap-cube-stage"
+              aria-label="主体立方体视角预览"
+            >
+              <div class="cap-cube" :style="{ transform: cubeTransform }">
+                <div class="cap-cube-face cap-cube-front">
+                  <img
+                    v-if="sourceLayer?.url"
+                    :src="sourceLayer.thumbnailUrl || sourceLayer.url"
+                    alt="当前参考图"
+                  />
+                  <i v-else class="ri-image-line" aria-hidden="true"></i>
+                </div>
+                <div class="cap-cube-face cap-cube-back" aria-hidden="true"></div>
+                <div class="cap-cube-face cap-cube-right"><span>R</span></div>
+                <div class="cap-cube-face cap-cube-left"><span>L</span></div>
+                <div class="cap-cube-face cap-cube-top"><span>T</span></div>
+                <div class="cap-cube-face cap-cube-bottom"><span>B</span></div>
               </div>
-              <div class="cap-map-camera" :style="cameraMarkerStyle">
-                <i class="ri-camera-3-line" aria-hidden="true"></i>
+            </div>
+            <div v-else class="cap-camera-stage" aria-label="摄像头轨道视角预览">
+              <div class="cap-camera-sphere">
+                <span class="cap-orbit-ring cap-orbit-ring--outer"></span>
+                <span class="cap-orbit-ring cap-orbit-ring--horizontal"></span>
+                <span class="cap-orbit-ring cap-orbit-ring--vertical"></span>
+                <span class="cap-orbit-ring cap-orbit-ring--diagonal-a"></span>
+                <span class="cap-orbit-ring cap-orbit-ring--diagonal-b"></span>
+                <span class="cap-camera-axis cap-camera-axis--top">⌃</span>
+                <span class="cap-camera-axis cap-camera-axis--right">›</span>
+                <span class="cap-camera-axis cap-camera-axis--bottom">⌄</span>
+                <span class="cap-camera-axis cap-camera-axis--left">‹</span>
+                <div class="cap-camera-subject">
+                  <img
+                    v-if="sourceLayer?.url"
+                    :src="sourceLayer.thumbnailUrl || sourceLayer.url"
+                    alt="当前参考图"
+                  />
+                  <i v-else class="ri-image-line" aria-hidden="true"></i>
+                </div>
+                <div class="cap-camera-node" :style="cameraPositionStyle">
+                  <i class="ri-camera-3-line" aria-hidden="true"></i>
+                </div>
               </div>
             </div>
 
             <div class="cap-summary">
               <strong>{{ spec.summary }}</strong>
               <span>
-                归一化水平角 {{ normalizedHorizontal }}° · 原始输入
-                {{ horizontalAngle > 0 ? '+' : '' }}{{ horizontalAngle }}°
+                旋转 {{ signedHorizontalAngle }}° · 倾斜 {{ verticalAngle }}° · {{ distanceLabel }}
               </span>
             </div>
           </section>
 
           <section class="cap-controls">
-            <div class="cap-control-group">
-              <div class="cap-control-head">
-                <span>
-                  <i class="ri-arrow-left-right-line" aria-hidden="true"></i>
-                  水平旋转
-                </span>
-                <label class="cap-snap-toggle">
-                  <input v-model="snapHorizontal" type="checkbox" />
-                  <span>45°吸附</span>
-                </label>
-              </div>
-              <div class="cap-range-row">
+            <section class="cap-dimension-card" aria-label="视角参数">
+              <div class="cap-dimension-control">
+                <div>
+                  <span>{{ controlMode === 'camera' ? '旋转' : '主体旋转' }}</span>
+                  <b>{{ signedHorizontalAngle }}°</b>
+                </div>
                 <input
                   :value="horizontalAngle"
                   type="range"
                   min="-180"
                   max="180"
-                  :step="snapHorizontal ? 45 : 1"
+                  step="1"
+                  aria-label="旋转角度"
                   @input="setHorizontal($event.target.value)"
                 />
-                <label class="cap-number-input">
-                  <input
-                    :value="horizontalAngle"
-                    type="number"
-                    min="-180"
-                    max="180"
-                    step="1"
-                    @input="setHorizontal($event.target.value)"
-                  />
-                  <span>°</span>
-                </label>
               </div>
-              <div class="cap-preset-strip cap-preset-strip--angles">
-                <button
-                  v-for="item in horizontalPresets"
-                  :key="item.value"
-                  type="button"
-                  :class="{ active: horizontalAngle === item.value }"
-                  :title="`${item.label} ${item.value}°`"
-                  @click="setHorizontal(item.value)"
-                >
-                  <span>{{ item.label }}</span>
-                  <small>{{ item.value > 0 ? '+' : '' }}{{ item.value }}°</small>
-                </button>
-              </div>
-              <p>{{ spec.horizontal.direction }}，{{ spec.horizontal.composition }}。</p>
-            </div>
 
-            <div class="cap-control-group">
-              <div class="cap-control-head">
-                <span>
-                  <i class="ri-arrow-up-down-line" aria-hidden="true"></i>
-                  垂直倾斜
-                </span>
-                <b>{{ spec.vertical.name }}</b>
-              </div>
-              <div class="cap-range-row">
+              <div class="cap-dimension-control">
+                <div>
+                  <span>倾斜</span>
+                  <b>{{ verticalAngle }}°</b>
+                </div>
                 <input
                   :value="verticalAngle"
                   type="range"
                   min="-30"
                   max="60"
                   step="1"
+                  aria-label="倾斜角度"
                   @input="setVertical($event.target.value)"
                 />
-                <label class="cap-number-input">
-                  <input
-                    :value="verticalAngle"
-                    type="number"
-                    min="-30"
-                    max="60"
-                    step="1"
-                    @input="setVertical($event.target.value)"
-                  />
-                  <span>°</span>
-                </label>
               </div>
-              <div class="cap-preset-strip">
-                <button
-                  v-for="item in verticalPresets"
-                  :key="item.value"
-                  type="button"
-                  :class="{ active: verticalAngle === item.value }"
-                  @click="setVertical(item.value)"
-                >
-                  <span>{{ item.label }}</span>
-                  <small>{{ item.value > 0 ? '+' : '' }}{{ item.value }}°</small>
-                </button>
+
+              <div class="cap-dimension-control">
+                <div>
+                  <span>缩放</span>
+                  <b>{{ distanceLabel }}</b>
+                </div>
+                <input
+                  :value="distance"
+                  type="range"
+                  min="0"
+                  max="2"
+                  step="1"
+                  aria-label="拍摄距离"
+                  @input="distance = Number($event.target.value)"
+                />
               </div>
-              <p>{{ spec.vertical.instruction }}。</p>
+            </section>
+
+            <div class="cap-add-shot">
+              <div>
+                <span>当前视角</span>
+                <strong>
+                  旋转 {{ signedHorizontalAngle }}° · 倾斜 {{ verticalAngle }}° ·
+                  {{ distanceLabel }}
+                </strong>
+                <small v-if="currentShotExists">这组参数已经在生成列表中</small>
+                <small v-else>三个维度确认无误后，加入下方生成列表</small>
+              </div>
+              <button
+                type="button"
+                :disabled="currentShotExists"
+                @click="addCurrentShot"
+              >
+                <i :class="currentShotExists ? 'ri-check-line' : 'ri-add-line'" aria-hidden="true"></i>
+                {{ currentShotExists ? '已加入' : '加入生成列表' }}
+              </button>
             </div>
 
-            <div class="cap-control-group">
-              <div class="cap-control-head">
+            <section class="cap-generation-list" aria-label="角度生成列表">
+              <header>
                 <span>
-                  <i class="ri-focus-mode" aria-hidden="true"></i>
-                  拍摄距离
+                  <i class="ri-list-check-3" aria-hidden="true"></i>
+                  生成列表
                 </span>
-                <b>distance {{ distance }}</b>
+                <b>{{ batchCount }} 张 · {{ totalCost }} 米值</b>
+              </header>
+              <div v-if="!generationShots.length" class="cap-generation-empty">
+                调整上方角度后，点击“加入生成列表”
               </div>
-              <div class="cap-distance-control" role="group" aria-label="拍摄距离">
-                <button
-                  v-for="item in distanceOptions"
-                  :key="item.value"
-                  type="button"
-                  :class="{ active: distance === item.value }"
-                  @click="distance = item.value"
-                >
-                  <i :class="item.icon" aria-hidden="true"></i>
-                  <span>{{ item.label }}</span>
-                  <small>{{ item.value }}</small>
-                </button>
-              </div>
-              <p>{{ spec.distance.instruction }}。</p>
-            </div>
+              <ol v-else>
+                <li v-for="(shot, index) in generationShots" :key="shot.id">
+                  <button type="button" class="cap-shot-main" @click="loadShot(shot)">
+                    <strong>视角 {{ index + 1 }}</strong>
+                    <span>{{ shot.mode === 'subject' ? '主体' : '摄像头' }}</span>
+                    <span>旋转 {{ shotDisplayHorizontal(shot) }}°</span>
+                    <span>倾斜 {{ shot.verticalAngle }}°</span>
+                    <span>{{ distanceOptions.find((item) => item.value === shot.distance)?.label }}</span>
+                  </button>
+                  <small>{{ UNIT_PRICE }} 米值</small>
+                  <button
+                    type="button"
+                    class="cap-shot-remove"
+                    title="从生成列表删除"
+                    :aria-label="`删除视角 ${index + 1}`"
+                    @click="removeShot(shot.id)"
+                  >
+                    <i class="ri-close-line" aria-hidden="true"></i>
+                  </button>
+                </li>
+              </ol>
+            </section>
 
-            <div class="cap-options-row">
-              <label class="cap-check">
-                <input v-model="preserveBackground" type="checkbox" />
-                <span>
-                  <i class="ri-check-line" aria-hidden="true"></i>
-                </span>
-                保持场景风格与光线
+            <div class="cap-output-grid">
+              <div>
+                <span>输出格式</span>
+                <div class="cap-format-control">
+                  <button
+                    v-for="item in outputFormats"
+                    :key="item.value"
+                    type="button"
+                    :class="{ active: outputFormat === item.value }"
+                    @click="outputFormat = item.value"
+                  >
+                    {{ item.label }}
+                  </button>
+                </div>
+              </div>
+              <label>
+                <span>随机种子</span>
+                <input v-model.number="seed" type="number" min="-1" step="1" />
+                <small>-1 为随机</small>
               </label>
-              <span>{{ model }} · {{ ratio }} · {{ resolution }}</span>
             </div>
 
             <label class="cap-extra">
-              <span>附加要求</span>
+              <span>附加提示（可选）</span>
               <textarea
                 v-model="additionalPrompt"
                 rows="2"
-                placeholder="例如：使用纯白摄影棚背景，保持柔和左侧光..."
+                placeholder="例如：保持纯白摄影棚背景与柔和左侧光"
               ></textarea>
             </label>
           </section>
         </div>
 
-        <section class="cap-prompt-preview">
-          <header>
-            <div>
-              <strong>生成提示词</strong>
-              <span>{{ prompt.length }} 字</span>
-            </div>
-            <button type="button" :title="copied ? '已复制' : '复制提示词'" @click="copyPrompt">
-              <i :class="copied ? 'ri-check-line' : 'ri-file-copy-line'" aria-hidden="true"></i>
-              {{ copied ? '已复制' : '复制' }}
-            </button>
-          </header>
-          <textarea :value="prompt" readonly></textarea>
-        </section>
-
         <footer class="cap-footer">
-          <button type="button" class="cap-secondary" @click="emit('insert', payload())">
-            <i class="ri-chat-upload-line" aria-hidden="true"></i>
-            填入对话框
+          <div class="cap-price">
+            <span>{{ batchCount }} 张 × {{ UNIT_PRICE }} 米值</span>
+            <strong>共 {{ totalCost }} 米值</strong>
+          </div>
+          <button type="button" class="cap-secondary" @click="copyParameters">
+            <i :class="copied ? 'ri-check-line' : 'ri-file-copy-line'" aria-hidden="true"></i>
+            {{ copied ? '已复制' : '复制参数' }}
           </button>
           <button
             type="button"
             class="cap-primary"
-            :disabled="busy || !sourceLayer?.url"
+            :disabled="busy || !sourceLayer?.url || !batchCount"
             @click="emit('generate', payload())"
           >
             <i class="ri-sparkling-2-line" aria-hidden="true"></i>
-            {{ busy ? '生成中' : '按此角度生图' }}
+            {{ busy ? '提交中' : `生成 ${batchCount} 张` }}
           </button>
         </footer>
       </section>
@@ -398,7 +488,21 @@ onBeforeUnmount(() => {
   place-items: center;
   padding: 24px;
   background: rgba(4, 6, 10, 0.72);
-  backdrop-filter: blur(4px);
+  visibility: hidden;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateZ(0);
+  will-change: opacity;
+}
+
+.cap-backdrop.is-open {
+  visibility: visible;
+  pointer-events: auto;
+  opacity: 1;
+}
+
+:global([data-theme='light']) .cap-backdrop {
+  background: rgba(15, 23, 42, 0.3);
 }
 
 .cap-panel {
@@ -410,6 +514,8 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   background: var(--canvas-panel, #151515);
   box-shadow: 0 22px 70px rgba(0, 0, 0, 0.48);
+  contain: layout paint;
+  transform: translateZ(0);
 }
 
 .cap-head,
@@ -486,7 +592,238 @@ onBeforeUnmount(() => {
   gap: 14px;
   padding: 18px;
   border-right: 1px solid var(--canvas-border, #353535);
-  background: var(--canvas-surface-muted, #111);
+  background: var(--canvas-input, #191a1f);
+}
+
+.cap-mode-switch,
+.cap-format-control {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--canvas-border, #353535);
+  border-radius: 6px;
+  background: var(--canvas-surface, #202020);
+}
+
+.cap-mode-switch button,
+.cap-format-control button {
+  height: 30px;
+  color: var(--canvas-text-muted, #c3c3c3);
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 11px;
+}
+
+.cap-mode-switch button.active,
+.cap-format-control button.active {
+  color: var(--canvas-text, #fff);
+  background: var(--canvas-accent-soft, rgba(16, 195, 216, 0.16));
+  box-shadow: inset 0 0 0 1px var(--canvas-accent, #10c3d8);
+}
+
+.cap-cube-stage {
+  position: relative;
+  display: grid;
+  min-height: 280px;
+  place-items: center;
+  overflow: hidden;
+  border: 0;
+  border-radius: 8px;
+  background: var(--canvas-surface, #2a2b31);
+  perspective: 760px;
+}
+
+.cap-cube {
+  position: relative;
+  width: 104px;
+  height: 104px;
+  transform-style: preserve-3d;
+  transition: transform 180ms ease;
+}
+
+.cap-cube-face {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  overflow: hidden;
+  place-items: center;
+  color: var(--canvas-text-subtle, #858b96);
+  border: 1.5px solid var(--canvas-border-strong, rgba(255, 255, 255, 0.18));
+  border-radius: 4px;
+  background: var(--canvas-panel, #222329);
+  backface-visibility: hidden;
+  font-size: 20px;
+  font-weight: 500;
+}
+
+.cap-cube-face img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.cap-cube-front {
+  border-color: color-mix(in srgb, var(--canvas-text-subtle, #858b96) 55%, transparent);
+  background: var(--canvas-panel, #222329);
+}
+
+.cap-cube-face:not(.cap-cube-front) {
+  box-shadow: inset 0 0 28px color-mix(in srgb, var(--canvas-text-subtle, #858b96) 8%, transparent);
+}
+
+.cap-cube-front {
+  transform: translateZ(52px);
+}
+
+.cap-cube-back {
+  transform: rotateY(180deg) translateZ(52px);
+}
+
+.cap-cube-right {
+  transform: rotateY(90deg) translateZ(52px);
+}
+
+.cap-cube-left {
+  transform: rotateY(-90deg) translateZ(52px);
+}
+
+.cap-cube-top {
+  transform: rotateX(90deg) translateZ(52px);
+}
+
+.cap-cube-bottom {
+  transform: rotateX(-90deg) translateZ(52px);
+}
+
+.cap-cube-front i {
+  color: var(--canvas-text-subtle, #858b96);
+  font-size: 36px;
+}
+
+.cap-camera-stage {
+  position: relative;
+  display: grid;
+  min-height: 280px;
+  overflow: hidden;
+  place-items: center;
+  border: 1px solid var(--canvas-border, #353535);
+  border-radius: 6px;
+  background: var(--canvas-surface, #2a2b31);
+}
+
+.cap-camera-sphere {
+  position: relative;
+  width: min(230px, 82%);
+  aspect-ratio: 1;
+}
+
+.cap-orbit-ring {
+  position: absolute;
+  inset: 10%;
+  display: block;
+  border: 1px solid color-mix(in srgb, var(--canvas-text-subtle, #898989) 22%, transparent);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.cap-orbit-ring--outer {
+  inset: 7%;
+}
+
+.cap-orbit-ring--horizontal {
+  transform: rotateX(68deg);
+}
+
+.cap-orbit-ring--vertical {
+  transform: rotateY(68deg);
+}
+
+.cap-orbit-ring--diagonal-a {
+  transform: rotate(45deg) scaleX(0.42);
+}
+
+.cap-orbit-ring--diagonal-b {
+  transform: rotate(-45deg) scaleX(0.42);
+}
+
+.cap-camera-subject,
+.cap-camera-node {
+  position: absolute;
+  z-index: 3;
+  display: grid;
+  overflow: hidden;
+  place-items: center;
+  transform: translate(-50%, -50%);
+}
+
+.cap-camera-subject {
+  top: 50%;
+  left: 50%;
+  width: 60px;
+  height: 60px;
+  color: var(--canvas-text-subtle, #898989);
+  border: 1px solid color-mix(in srgb, var(--canvas-border-strong, #555555) 76%, transparent);
+  border-radius: 5px;
+  background: var(--canvas-panel, #151515);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.16);
+}
+
+.cap-camera-subject img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.cap-camera-subject i {
+  font-size: 24px;
+}
+
+.cap-camera-node {
+  width: 38px;
+  height: 30px;
+  color: var(--canvas-accent, #10c3d8);
+  border: 1px solid color-mix(in srgb, var(--canvas-accent, #10c3d8) 48%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--canvas-panel, #151515) 88%, transparent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--canvas-accent, #10c3d8) 10%, transparent);
+  font-size: 18px;
+  transition:
+    left 160ms ease,
+    top 160ms ease;
+}
+
+.cap-camera-axis {
+  position: absolute;
+  z-index: 4;
+  color: var(--canvas-text-subtle, #898989);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.cap-camera-axis--top {
+  top: 1%;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.cap-camera-axis--right {
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+}
+
+.cap-camera-axis--bottom {
+  bottom: 1%;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.cap-camera-axis--left {
+  top: 50%;
+  left: 0;
+  transform: translateY(-50%);
 }
 
 .cap-image-stage {
@@ -666,6 +1003,46 @@ onBeforeUnmount(() => {
   padding: 8px 20px;
 }
 
+.cap-dimension-card {
+  display: grid;
+  gap: 18px;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--canvas-border, #353535);
+}
+
+.cap-dimension-control {
+  display: grid;
+  gap: 8px;
+}
+
+.cap-dimension-control > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cap-dimension-control span {
+  color: var(--canvas-text, #fff);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cap-dimension-control b {
+  color: var(--canvas-text-subtle, #898989);
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.cap-dimension-control input[type='range'] {
+  width: 100%;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--canvas-accent, #10c3d8);
+  cursor: pointer;
+}
+
 .cap-control-group {
   min-width: 0;
   padding: 14px 0;
@@ -760,7 +1137,7 @@ onBeforeUnmount(() => {
 }
 
 .cap-preset-strip--angles {
-  grid-template-columns: repeat(9, minmax(42px, 1fr));
+  grid-template-columns: repeat(8, minmax(46px, 1fr));
   min-width: 0;
   max-width: 100%;
   overflow-x: auto;
@@ -793,6 +1170,15 @@ onBeforeUnmount(() => {
   background: var(--canvas-accent-soft, rgba(255, 241, 166, 0.08));
 }
 
+.cap-preset-strip button.current {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--canvas-accent, #10c3d8) 34%, transparent);
+}
+
+.cap-preset-strip--angles button > i {
+  color: var(--canvas-accent, #10c3d8);
+  font-size: 12px;
+}
+
 .cap-preset-strip span,
 .cap-distance-control span {
   font-size: 10px;
@@ -813,6 +1199,186 @@ onBeforeUnmount(() => {
   line-height: 1.5;
 }
 
+.cap-batch-note {
+  margin-top: 9px;
+  color: var(--canvas-text-subtle, #898989);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.cap-add-shot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 12px;
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--canvas-accent, #10c3d8) 34%, var(--canvas-border, #353535));
+  border-radius: 6px;
+  background: var(--canvas-accent-soft, rgba(16, 195, 216, 0.08));
+}
+
+.cap-add-shot > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.cap-add-shot span,
+.cap-add-shot small {
+  color: var(--canvas-text-subtle, #898989);
+  font-size: 9px;
+}
+
+.cap-add-shot strong {
+  overflow: hidden;
+  color: var(--canvas-text, #fff);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cap-add-shot > button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 128px;
+  height: 36px;
+  padding: 0 13px;
+  color: #061015;
+  border: 1px solid var(--canvas-accent, #10c3d8);
+  border-radius: 6px;
+  background: var(--canvas-accent, #10c3d8);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.cap-add-shot > button:disabled {
+  cursor: default;
+  color: var(--canvas-text-subtle, #898989);
+  border-color: var(--canvas-border, #353535);
+  background: var(--canvas-surface, #202020);
+}
+
+.cap-generation-list {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--canvas-border, #353535);
+}
+
+.cap-generation-list > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 9px;
+}
+
+.cap-generation-list > header span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--canvas-text, #fff);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.cap-generation-list > header i {
+  color: var(--canvas-accent, #10c3d8);
+  font-size: 15px;
+}
+
+.cap-generation-list > header b {
+  color: var(--canvas-accent, #10c3d8);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cap-generation-empty {
+  display: grid;
+  min-height: 48px;
+  place-items: center;
+  color: var(--canvas-text-subtle, #898989);
+  border: 1px dashed var(--canvas-border-strong, #555);
+  border-radius: 6px;
+  background: var(--canvas-input, #191a1f);
+  font-size: 10px;
+}
+
+.cap-generation-list ol {
+  display: grid;
+  gap: 6px;
+  max-height: 168px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  scrollbar-gutter: stable;
+}
+
+.cap-generation-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 28px;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 4px 5px 4px 9px;
+  border: 1px solid var(--canvas-border, #353535);
+  border-radius: 6px;
+  background: var(--canvas-surface, #202020);
+}
+
+.cap-shot-main {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  color: var(--canvas-text-muted, #c3c3c3);
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.cap-shot-main strong {
+  flex: 0 0 auto;
+  color: var(--canvas-text, #fff);
+  font-size: 11px;
+}
+
+.cap-shot-main span {
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cap-generation-list li > small {
+  color: var(--canvas-accent, #10c3d8);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.cap-shot-remove {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  padding: 0;
+  color: var(--canvas-text-subtle, #898989);
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  font-size: 15px;
+}
+
+.cap-shot-remove:hover {
+  color: #fb7185;
+  background: rgba(244, 63, 94, 0.12);
+}
+
 .cap-distance-control {
   grid-template-columns: repeat(3, 1fr);
 }
@@ -821,6 +1387,54 @@ onBeforeUnmount(() => {
   grid-template-columns: auto auto auto;
   align-content: center;
   min-height: 38px;
+}
+
+.cap-output-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px;
+  gap: 14px;
+  padding: 14px 0;
+}
+
+.cap-output-grid > div,
+.cap-output-grid > label {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  min-width: 0;
+}
+
+.cap-output-grid > div > span,
+.cap-output-grid > label > span {
+  color: var(--canvas-text-muted, #c3c3c3);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.cap-format-control {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.cap-output-grid input {
+  min-width: 0;
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  color: var(--canvas-text, #fff);
+  border: 1px solid var(--canvas-border, #353535);
+  border-radius: 6px;
+  outline: 0;
+  background: var(--canvas-input, #191a1f);
+  font-size: 11px;
+}
+
+.cap-output-grid input:focus {
+  border-color: var(--canvas-accent, #10c3d8);
+}
+
+.cap-output-grid small {
+  color: var(--canvas-text-subtle, #898989);
+  font-size: 9px;
 }
 
 .cap-distance-control button i {
@@ -887,7 +1501,7 @@ onBeforeUnmount(() => {
   border: 1px solid var(--canvas-border, #353535);
   border-radius: 6px;
   outline: 0;
-  background: var(--canvas-surface-muted, #111);
+  background: var(--canvas-input, #191a1f);
   font-size: 11px;
   line-height: 1.55;
 }
@@ -942,6 +1556,23 @@ onBeforeUnmount(() => {
   padding: 12px 18px;
 }
 
+.cap-price {
+  display: grid;
+  gap: 2px;
+  margin-right: auto;
+}
+
+.cap-price span {
+  color: var(--canvas-text-subtle, #898989);
+  font-size: 10px;
+}
+
+.cap-price strong {
+  color: var(--canvas-accent, #10c3d8);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
 .cap-footer button {
   display: inline-flex;
   align-items: center;
@@ -961,7 +1592,6 @@ onBeforeUnmount(() => {
 }
 
 .cap-primary {
-  margin-left: auto;
   color: #151515;
   border: 1px solid var(--canvas-accent, #fff1a6);
   background: var(--canvas-accent, #fff1a6);
@@ -992,6 +1622,15 @@ onBeforeUnmount(() => {
     border-bottom: 1px solid var(--canvas-border, #353535);
   }
 
+  .cap-mode-switch {
+    grid-column: 1 / -1;
+  }
+
+  .cap-cube-stage,
+  .cap-camera-stage {
+    min-height: 220px;
+  }
+
   .cap-camera-map {
     width: min(190px, 100%);
   }
@@ -1015,6 +1654,10 @@ onBeforeUnmount(() => {
     padding: 12px;
   }
 
+  .cap-mode-switch {
+    grid-column: auto;
+  }
+
   .cap-summary {
     grid-column: auto;
   }
@@ -1034,6 +1677,15 @@ onBeforeUnmount(() => {
 
   .cap-prompt-preview {
     margin: 0 12px;
+  }
+
+  .cap-add-shot {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .cap-add-shot > button {
+    width: 100%;
   }
 
   .cap-footer {

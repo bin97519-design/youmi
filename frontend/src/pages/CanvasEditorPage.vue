@@ -1038,41 +1038,6 @@ function openCameraAnglePanel(layer = selectedLayer.value) {
   cameraAnglePanelOpen.value = true
 }
 
-async function insertCameraAnglePrompt({ prompt }) {
-  const source = selectedLayer.value
-  if (!source?.url) {
-    showCopyPasteToast('参考图不存在，请重新选择图片')
-    return
-  }
-
-  rightPanelVisible.value = true
-  rightTab.value = 'chat'
-  const existing = chatReferenceImages.value.find((image) => image.url === source.url)
-  if (!existing) {
-    chatReferenceImages.value.push({
-      id: `angle-ref-${Date.now()}`,
-      url: source.url,
-      name: source.name || '角度参考图',
-      layerId: source.id,
-      uploading: false,
-    })
-  }
-  activeChatReferenceId.value =
-    chatReferenceImages.value.find((image) => image.url === source.url)?.id || ''
-
-  await nextTick()
-  const editor = document.querySelector('.chat-editor')
-  if (editor) {
-    editor.textContent = prompt
-    updateChatTextFromEditor()
-    editor.focus()
-  } else {
-    chatText.value = prompt
-  }
-  cameraAnglePanelOpen.value = false
-  showCopyPasteToast('角度提示词和参考图已填入对话框')
-}
-
 async function openLayerDialogModification(layer) {
   if (!isRealImageLayer(layer) || !layer.url) {
     showCopyPasteToast('只有有效图片可以进行对话修改')
@@ -1202,6 +1167,23 @@ async function generateFromCameraAngle(payload) {
   cameraAnglePanelOpen.value = false
   rightPanelVisible.value = true
   rightTab.value = 'chat'
+  const shots = Array.isArray(payload.params.shots) ? payload.params.shots : []
+  if (!shots.length) {
+    showCopyPasteToast('请先把至少一个视角加入生成列表')
+    return
+  }
+  const taskConfigs = shots.map((shot) => ({
+    model: WAVESPEED_MULTI_ANGLE_MODEL,
+    ratio: 'auto',
+    resolution: '1K',
+    generationOptions: {
+      horizontalAngle: shot.horizontalAngle,
+      verticalAngle: shot.verticalAngle,
+      distance: shot.distance,
+      seed: payload.params.seed,
+      outputFormat: payload.params.outputFormat,
+    },
+  }))
 
   const submitted = await sendChat({
     fullPrompt: payload.prompt,
@@ -1212,10 +1194,18 @@ async function generateFromCameraAngle(payload) {
     referenceLayerIds: [sourceId],
     targetLayerId: sourceId,
     generationCount: 1,
+    taskConfigs,
     taskConfig: {
-      model: chatModel.value,
-      ratio: chatRatio.value,
-      resolution: chatResolution.value,
+      model: WAVESPEED_MULTI_ANGLE_MODEL,
+      ratio: 'auto',
+      resolution: '1K',
+      generationOptions: {
+        horizontalAngle: shots[0].horizontalAngle,
+        verticalAngle: shots[0].verticalAngle,
+        distance: shots[0].distance,
+        seed: payload.params.seed,
+        outputFormat: payload.params.outputFormat,
+      },
     },
   })
 
@@ -1243,6 +1233,7 @@ async function recordGenerationToHistory(record) {
 // 对话窗口选中的模型参数也归属文档（payload.chatConfig），未持久化过则保持默认
 // 注意：model 字符串必须和后端 alias 表（ImageGenerationProperties.defaultModelAliases）保持一致
 // 后端会对空格/横线/下划线做归一化容错，但 UI 上用标准写法更专业
+const WAVESPEED_MULTI_ANGLE_MODEL = 'wavespeed-ai/qwen-image/edit-multiple-angles'
 const chatModelOptions = ['banana2', 'banana-pro', 'gpt-image-2', 'agnes-image-2.1-flash']
 const chatRatioOptions = [
   'auto',
@@ -1278,7 +1269,8 @@ function selectChatMode(mode) {
 
 function normalizeChatModelSelection(value, fallback = 'banana2') {
   const requested = Array.isArray(value) ? value : [value]
-  const selected = chatModelOptions.filter((model) => requested.includes(model))
+  const allowedModels = [...chatModelOptions, WAVESPEED_MULTI_ANGLE_MODEL]
+  const selected = allowedModels.filter((model) => requested.includes(model))
   if (selected.length) return selected
   return [chatModelOptions.includes(fallback) ? fallback : chatModelOptions[0]]
 }
@@ -2486,6 +2478,10 @@ async function submitImageTask({
   background,
   outputFormat,
   inputFidelity,
+  horizontalAngle,
+  verticalAngle,
+  distance,
+  seed,
 }) {
   console.log('[submitImageTask] 开始提交', {
     model: model || chatModel.value,
@@ -2509,6 +2505,10 @@ async function submitImageTask({
   if (background) body.background = background
   if (outputFormat) body.output_format = outputFormat
   if (inputFidelity) body.input_fidelity = inputFidelity
+  if (Number.isFinite(Number(horizontalAngle))) body.horizontal_angle = Number(horizontalAngle)
+  if (Number.isFinite(Number(verticalAngle))) body.vertical_angle = Number(verticalAngle)
+  if (Number.isFinite(Number(distance))) body.distance = Number(distance)
+  if (Number.isFinite(Number(seed))) body.seed = Number(seed)
   // 客户端幂等键：落盘到后端，供刷新重提时按它命中已有任务、跳过重复扣费+外部调用。
   if (clientTaskId) body.client_task_id = clientTaskId
 
@@ -3082,6 +3082,10 @@ async function resumeInterruptedNoTaskId(layer) {
       background: layer.genMeta?.generationOptions?.background,
       outputFormat: layer.genMeta?.generationOptions?.outputFormat,
       inputFidelity: layer.genMeta?.generationOptions?.inputFidelity,
+      horizontalAngle: layer.genMeta?.generationOptions?.horizontalAngle,
+      verticalAngle: layer.genMeta?.generationOptions?.verticalAngle,
+      distance: layer.genMeta?.generationOptions?.distance,
+      seed: layer.genMeta?.generationOptions?.seed,
     })
     _pollingTasks.add(taskId) // 提前占住，避免 watch 重扫重复拉起轮询
     // 成功拿到 taskId：清除上一次失败残留的报错/网络标记，避免陈旧 e 字段一直挂在图层上
@@ -6425,6 +6429,10 @@ function getLayerGenerationReplay(layer) {
     ratio: record?.ratio || messageReplay?.ratio || meta.ratio || chatRatio.value,
     resolution:
       record?.resolution || messageReplay?.resolution || meta.resolution || chatResolution.value,
+    generationOptions:
+      Object.keys(messageReplay?.generationOptions || {}).length > 0
+        ? { ...messageReplay.generationOptions }
+        : { ...(meta.generationOptions || {}) },
     creationType,
     sourceLayerIds,
     missingRequiredReference: requiresReferenceImage && !referenceImageUrls.length,
@@ -6581,6 +6589,7 @@ async function regenerateCanvasLayer(layer) {
         model: replay.model,
         ratio: replay.ratio,
         resolution: replay.resolution,
+        generationOptions: replay.generationOptions,
       },
     })
     const connectionSources = replay.sourceLayerIds.length ? replay.sourceLayerIds : [layer.id]
@@ -8806,22 +8815,45 @@ async function sendChat(options = {}) {
   const taskConfig = {
     ratio: sendOptions.taskConfig?.ratio || chatRatio.value,
     resolution: sendOptions.taskConfig?.resolution || chatResolution.value,
+    generationOptions:
+      sendOptions.taskConfig?.generationOptions &&
+      typeof sendOptions.taskConfig.generationOptions === 'object'
+        ? { ...sendOptions.taskConfig.generationOptions }
+        : {},
   }
-  const generationPlans = Array.from({ length: generationCount }, (_, countIndex) =>
-    requestedModels.map((model) => ({ model, countIndex })),
-  ).flat()
+  const explicitTaskConfigs = Array.isArray(sendOptions.taskConfigs)
+    ? sendOptions.taskConfigs.filter((config) => config && typeof config === 'object')
+    : []
+  const generationPlans = explicitTaskConfigs.length
+    ? explicitTaskConfigs.map((config, countIndex) => ({
+        model: normalizeChatModelSelection(config.model, config.model || chatModel.value)[0],
+        countIndex,
+        taskConfig: {
+          ratio: config.ratio || taskConfig.ratio,
+          resolution: config.resolution || taskConfig.resolution,
+          generationOptions:
+            config.generationOptions && typeof config.generationOptions === 'object'
+              ? { ...config.generationOptions }
+              : {},
+        },
+      }))
+    : Array.from({ length: generationCount }, (_, countIndex) =>
+        requestedModels.map((model) => ({ model, countIndex, taskConfig })),
+      ).flat()
   const totalGenerationCount = generationPlans.length
 
   const assistantMessages = generationPlans.map((plan, index) => {
+    const planConfig = plan.taskConfig || taskConfig
     const generationRequest = {
       prompt: fullPrompt,
       displayText: text,
       referenceImageUrls: [...imageUrls],
       model: plan.model,
-      ratio: taskConfig.ratio,
-      resolution: taskConfig.resolution,
+      ratio: planConfig.ratio,
+      resolution: planConfig.resolution,
       targetLayerId,
       sourceLayerIds: [...generationSourceLayerIds],
+      generationOptions: { ...planConfig.generationOptions },
     }
     return {
       id: `msg-${createdAt}-assistant-${index + 1}`,
@@ -8831,8 +8863,8 @@ async function sendChat(options = {}) {
           ? `已提交 ${totalGenerationCount} 张图片，第 ${index + 1} 张（${plan.model}）正在排队生成。`
           : '已提交对话生图任务，请等待生成结果（生成完成后会显示在画布中）。',
       model: plan.model,
-      ratio: taskConfig.ratio,
-      resolution: taskConfig.resolution,
+      ratio: planConfig.ratio,
+      resolution: planConfig.resolution,
       batchIndex: index + 1,
       batchCount: totalGenerationCount,
       createdAt: createdAt + index + 1,
@@ -8862,8 +8894,11 @@ async function sendChat(options = {}) {
     clearChatComposer()
   }
   const batchTasks = assistantMessages.map((message, index) => {
+    const requestConfig = message.generationRequest || {}
     const messageTaskConfig = {
-      ...taskConfig,
+      ratio: requestConfig.ratio || taskConfig.ratio,
+      resolution: requestConfig.resolution || taskConfig.resolution,
+      generationOptions: { ...(requestConfig.generationOptions || {}) },
       model: message.model,
     }
     const placeholderId = addGeneratingPlaceholderLayer(
@@ -8889,6 +8924,7 @@ async function sendChat(options = {}) {
       assistantId: message.id,
       batchIndex: index + 1,
       model: message.model,
+      taskConfig: messageTaskConfig,
     }
   })
   for (const task of batchTasks) {
@@ -8897,7 +8933,7 @@ async function sendChat(options = {}) {
   void canvas.flushNow?.(props.id)
 
   for (const batchTask of batchTasks) {
-    const { placeholderId, assistantId, batchIndex, model } = batchTask
+    const { placeholderId, assistantId, batchIndex, model, taskConfig: batchConfig } = batchTask
     // 每张图拥有独立幂等键、占位图和轮询，刷新后可分别恢复，也不会重复扣费。
     _submittingPlaceholderIds.add(placeholderId)
     activeChatTaskCount.value += 1
@@ -8911,13 +8947,14 @@ async function sendChat(options = {}) {
           imageUrls,
           clientTaskId: ph?.clientTaskId || '',
           model,
-          size: taskConfig.ratio,
-          resolution: taskConfig.resolution,
+          size: batchConfig.ratio,
+          resolution: batchConfig.resolution,
+          ...batchConfig.generationOptions,
         })
         submitted = true
         updateChatMessage(assistantId, {
           taskId,
-          text: `${totalGenerationCount > 1 ? `第 ${batchIndex}/${totalGenerationCount} 张｜` : ''}任务已提交，模型 ${model}｜${taskConfig.ratio}｜${taskConfig.resolution}，正在生成...`,
+          text: `${totalGenerationCount > 1 ? `第 ${batchIndex}/${totalGenerationCount} 张｜` : ''}任务已提交，模型 ${model}｜${batchConfig.ratio}｜${batchConfig.resolution}，正在生成...`,
         })
         updateGeneratingPlaceholder(placeholderId, { taskId, progress: 8, status: 'processing' })
 
@@ -14872,12 +14909,8 @@ async function loadImageForCropUncached(layer) {
   <CameraAnglePanel
     :open="cameraAnglePanelOpen"
     :source-layer="selectedLayer"
-    :model="chatModel"
-    :ratio="chatRatio"
-    :resolution="chatResolution"
     :busy="chatGenerating"
     @close="cameraAnglePanelOpen = false"
-    @insert="insertCameraAnglePrompt"
     @generate="generateFromCameraAngle"
   />
 

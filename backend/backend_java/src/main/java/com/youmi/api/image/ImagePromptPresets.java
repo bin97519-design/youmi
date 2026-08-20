@@ -54,7 +54,11 @@ final class ImagePromptPresets {
         request.inputFidelity(),
         request.outputCompression(),
         request.webhookUrl(),
-        request.clientTaskId());
+        request.clientTaskId(),
+        request.horizontalAngle(),
+        request.verticalAngle(),
+        request.distance(),
+        request.seed());
   }
 
   private static PresetMatch match(String prompt) {

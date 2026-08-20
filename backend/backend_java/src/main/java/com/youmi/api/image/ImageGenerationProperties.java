@@ -46,6 +46,10 @@ public class ImageGenerationProperties {
   private String apimartDirectApiKey = "";
   private String apimartDirectGenerationPath = "/v1/images/generations";
   private String apimartDirectTaskPath = "/v1/tasks";
+  // WaveSpeed Qwen multi-angle provider.
+  private String waveSpeedBaseUrl = "https://api.wavespeed.ai/api/v3";
+  private String waveSpeedApiKey = "";
+  private String waveSpeedMultiAngleModel = "wavespeed-ai/qwen-image/edit-multiple-angles";
   private Map<String, String> modelAliases = defaultModelAliases();
 
   public String getBaseUrl() {
@@ -256,6 +260,7 @@ public class ImageGenerationProperties {
     if (normalized.startsWith("gemini-3-pro-image-preview")) return "banana-pro";
     if (normalized.equals("gpt-image-2") || normalized.startsWith("gpt-image-2-")) return "gpt-image-2";
     if (normalized.startsWith("agnes-image-2.1-flash")) return "agnes-image-2.1-flash";
+    if (isWaveSpeedMultiAngleModel(resolved)) return "qwen-multi-angle";
     return resolved;
   }
 
@@ -480,6 +485,50 @@ public class ImageGenerationProperties {
     if (resolvedModel == null) return false;
     String m = resolvedModel.trim().toLowerCase();
     return m.startsWith("agnes-image");
+  }
+
+  public String getWaveSpeedBaseUrl() {
+    return waveSpeedBaseUrl;
+  }
+
+  public void setWaveSpeedBaseUrl(String waveSpeedBaseUrl) {
+    this.waveSpeedBaseUrl = waveSpeedBaseUrl;
+  }
+
+  public String getWaveSpeedApiKey() {
+    return waveSpeedApiKey;
+  }
+
+  public void setWaveSpeedApiKey(String waveSpeedApiKey) {
+    this.waveSpeedApiKey = waveSpeedApiKey;
+  }
+
+  public String getWaveSpeedMultiAngleModel() {
+    return waveSpeedMultiAngleModel;
+  }
+
+  public void setWaveSpeedMultiAngleModel(String waveSpeedMultiAngleModel) {
+    this.waveSpeedMultiAngleModel = waveSpeedMultiAngleModel;
+  }
+
+  public boolean isWaveSpeedConfigured() {
+    return waveSpeedApiKey != null && !waveSpeedApiKey.isBlank()
+        && waveSpeedBaseUrl != null && !waveSpeedBaseUrl.isBlank();
+  }
+
+  public String normalizedWaveSpeedBaseUrl() {
+    if (waveSpeedBaseUrl == null || waveSpeedBaseUrl.isBlank()) {
+      return "https://api.wavespeed.ai/api/v3";
+    }
+    return waveSpeedBaseUrl.endsWith("/")
+        ? waveSpeedBaseUrl.substring(0, waveSpeedBaseUrl.length() - 1)
+        : waveSpeedBaseUrl;
+  }
+
+  public boolean isWaveSpeedMultiAngleModel(String resolvedModel) {
+    return resolvedModel != null
+        && waveSpeedMultiAngleModel != null
+        && resolvedModel.trim().equalsIgnoreCase(waveSpeedMultiAngleModel.trim());
   }
 
   /** 判断请求的模型是否应走 GetToken provider（banana2 / bananapro → gemini-3 系列） */

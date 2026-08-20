@@ -59,6 +59,9 @@ youmi:
     apimart-direct-api-key: ${YOUMI_IMAGE_APIMART_DIRECT_API_KEY:${YOUMI_IMAGE_API_KEY:${APIMART_API_KEY:${APIMART_IMAGE_API_KEY:}}}}
     apimart-direct-generation-path: ${YOUMI_IMAGE_APIMART_DIRECT_GENERATION_PATH:/v1/images/generations}
     apimart-direct-task-path: ${YOUMI_IMAGE_APIMART_DIRECT_TASK_PATH:/v1/tasks}
+    wave-speed-base-url: ${WAVESPEED_BASE_URL:https://api.wavespeed.ai/api/v3}
+    wave-speed-api-key: ${WAVESPEED_API_KEY:}
+    wave-speed-multi-angle-model: ${WAVESPEED_MULTI_ANGLE_MODEL:wavespeed-ai/qwen-image/edit-multiple-angles}
     fallback-enabled: ${YOUMI_IMAGE_FALLBACK_ENABLED:true}
     get-token-base-url: https://nb.gettoken.cn/openapi/v1
     get-token-api-key: ${GETTOKEN_API_KEY:${YOUMI_GETTOKEN_API_KEY:}}
@@ -93,6 +96,10 @@ youmi:
         1K: 6
         2K: 10
         4K: 15
+      qwen-multi-angle:
+        1K: 20
+        2K: 20
+        4K: 20
   dashscope:
     base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
     api-key: ${DASHSCOPE_API_KEY:}

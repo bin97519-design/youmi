@@ -148,6 +148,10 @@ export function buildGenerationReplay({
       assistantMessage.resolution ||
       defaults.resolution ||
       '',
+    generationOptions:
+      requestSnapshot.generationOptions && typeof requestSnapshot.generationOptions === 'object'
+        ? { ...requestSnapshot.generationOptions }
+        : {},
     requiresReferenceImage,
     missingRequiredReference: requiresReferenceImage && !referenceImageUrls.length,
   }

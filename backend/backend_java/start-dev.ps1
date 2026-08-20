@@ -4,7 +4,10 @@ foreach ($name in @(
   "MYSQL_PASSWORD",
   "YOUMI_AGENT_API_KEY",
   "YOUMI_AGENT_BASE_URL",
-  "YOUMI_AGENT_MODEL"
+  "YOUMI_AGENT_MODEL",
+  "WAVESPEED_API_KEY",
+  "WAVESPEED_BASE_URL",
+  "WAVESPEED_MULTI_ANGLE_MODEL"
 )) {
   if (-not [Environment]::GetEnvironmentVariable($name, "Process")) {
     $value = [Environment]::GetEnvironmentVariable($name, "User")
