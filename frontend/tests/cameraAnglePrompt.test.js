@@ -26,7 +26,7 @@ test('describes the sample camera parameters without losing precision', () => {
   assert.equal(spec.horizontal.normalizedAngle, 310)
   assert.equal(spec.horizontal.name, '左前方')
   assert.equal(spec.vertical.name, '低机位仰拍')
-  assert.equal(spec.distance.name, '中景')
+  assert.equal(spec.distance.name, '标准')
   assert.match(spec.summary, /左前方 50°/)
 })
 

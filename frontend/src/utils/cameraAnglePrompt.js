@@ -11,12 +11,12 @@ const HORIZONTAL_VIEWS = [
 
 const DISTANCE_VIEWS = {
   0: {
-    name: '近景',
+    name: '特写',
     instruction: '相机靠近主体，突出主体细节，但仍需保留主体完整结构',
     occupancy: '主体约占画面宽高的78%到88%',
   },
   1: {
-    name: '中景',
+    name: '标准',
     instruction: '使用自然的中等拍摄距离，完整展示主体及少量周边环境',
     occupancy: '主体约占画面宽高的60%到72%',
   },
@@ -148,7 +148,7 @@ export function getCameraAngleSpec({
     horizontal,
     vertical,
     distance: framing,
-    summary: `${horizontal.name} ${formatAngle(horizontal.normalizedAngle)}° · ${vertical.name} ${formatAngle(Math.abs(vertical.angle))}° · ${framing.name}`,
+    summary: `${horizontal.name} ${formatAngle(Math.abs(horizontal.inputAngle))}° · ${vertical.name} ${formatAngle(Math.abs(vertical.angle))}° · ${framing.name}`,
   }
 }
 

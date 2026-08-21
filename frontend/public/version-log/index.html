@@ -17,7 +17,7 @@
 </head>
 <body>
   <header class="hero">
-    <small>YOUMI RELEASES · v2.0.7</small>
+    <small>YOUMI RELEASES · v2.0.8</small>
     <h1>有米 AI 更新历程</h1>
     <p>记录每一次功能更新和体验改进，最新内容始终排在最前面。</p>
     <nav class="actions">
@@ -26,12 +26,43 @@
     </nav>
   </header>
   <main><div class="timeline">
-      <div class="date"><span>2026-08-12</span><i></i></div>
+      <div class="date"><span>2026-08-21</span><i></i></div>
       <article class="release latest">
-        <div class="meta"><b>v2.0.7</b><small>最新版本</small></div>
-        <h2>提示词库与创作入口体验升级</h2>
-        <p>画布新增服务端提示词库，支持个人收藏、公共模板、最近使用、搜索分类和快速复制填入，并进一步优化 Agent 入口与深浅主题细节。</p>
+        <div class="meta"><b>v2.0.8</b><small>最新版本</small></div>
+        <h2>多角度生图与视角控制升级</h2>
+        <p>画布接入 WaveSpeed Qwen 多角度模型，新增主体与摄像头视角预览、官方角度档位、批量角度生成列表和折叠高级设置。</p>
         <div class="visuals">
+        <figure class="wide">
+          <div class="visual-media">
+            <img src="/version-log/assets/v2.0.8-multi-angle.png" alt="有米画布多角度面板中的立方体预览、角度档位和生成列表" loading="lazy">
+          </div>
+          <figcaption>
+            <strong>视角参数所见即所得</strong>
+            <span>通过主体立方体或摄像头轨道预览确定旋转、倾斜与缩放档位，再将多个角度加入生成列表统一提交。</span>
+          </figcaption>
+        </figure></div>
+        <div class="sections">
+        <section class="release-section">
+          <h3>多角度生图</h3>
+          <ul><li>画布图片工具栏和右键菜单新增多角度入口，接入 WaveSpeed Qwen-Image Edit Multiple Angles 模型。</li><li>支持主体立方体与摄像头轨道两种视角预览，参数变化会同步反映到预览图形和当前视角摘要。</li><li>旋转、倾斜和缩放严格使用模型官方 96 个机位组合，避免自由数值与模型实际支持范围不一致。</li><li>每个角度按 20 米值计费，多个角度可逐个加入生成列表并一次提交，分别输出对应图片。</li></ul>
+        </section>
+        <section class="release-section">
+          <h3>参数与稳定性</h3>
+          <ul><li>恢复由模型原生 horizontal_angle、vertical_angle 和 distance 参数控制视角，避免附加文字与角度参数冲突。</li><li>前端使用易读的正负角度，提交时自动转换为 WaveSpeed 接口要求的水平角度坐标。</li><li>输出格式默认 PNG；输出格式、随机种子和附加提示统一收进默认折叠的高级设置。</li><li>随机种子默认使用 -1 自动随机，需要复现结果时可开启固定种子并输入具体数值。</li></ul>
+        </section>
+        <section class="release-section">
+          <h3>界面体验</h3>
+          <ul><li>重新校准角度档位、滑杆刻度和预览图形的对应关系，档位标签与滑块位置保持对齐。</li><li>多角度面板适配开灯与关灯主题，并优化打开响应、层级、留白和操作反馈。</li><li>高级设置折叠栏实时概括当前格式、种子方式和附加提示状态，减少默认界面的信息负担。</li></ul>
+        </section></div>
+      </article>
+    <div class="date"><span>2026-08-12</span><i></i></div>
+    <details class="release">
+      <summary>
+        <b>v2.0.7</b>
+        <span><strong>提示词库与创作入口体验升级</strong><small>画布新增服务端提示词库，支持个人收藏、公共模板、最近使用、搜索分类和快速复制填入，并进一步优化 Agent 入口与深浅主题细节。</small></span>
+        <em>查看更多</em>
+      </summary>
+      <div class="visuals">
         <figure class="wide">
           <div class="visual-media">
             <img src="/version-log/assets/v2.0.7-prompt-library.png" alt="有米画布提示词库中的公共模板、分类筛选和提示词操作" loading="lazy">
@@ -41,7 +72,7 @@
             <span>提示词按个人、公共和最近使用分类管理，可搜索、筛选、复制或直接填入画布输入框。</span>
           </figcaption>
         </figure></div>
-        <div class="sections">
+      <div class="sections">
         <section class="release-section">
           <h3>提示词库</h3>
           <ul><li>画布输入区新增提示词库入口，支持我的提示词、公共模板和最近使用三个视图。</li><li>支持按名称、正文或标签搜索，并按通用、主图、详情页、场景图、卖点图和改图等分类筛选。</li><li>个人提示词独立保存到服务器并按账号隔离，可新建、编辑和删除；公共模板保持只读。</li><li>每条提示词均可一键复制或填入输入框，已有输入内容时可选择替换或追加。</li></ul>
@@ -54,7 +85,7 @@
           <h3>Agent 细节</h3>
           <ul><li>Agent 模式入口补充智能助手图标，并同步到底部当前模式按钮。</li><li>优化 Agent 提示词方案与当前模型、比例、分辨率和数量参数的同步展示。</li></ul>
         </section></div>
-      </article>
+    </details>
     <div class="date"><span>2026-08-08</span><i></i></div>
     <details class="release">
       <summary>
@@ -331,6 +362,6 @@
           <ul><li>建立用户、登录、数据隔离、米值和生图任务管理。</li><li>上线运营控制台，提供任务、模型、用户、用量和趋势统计。</li><li>完成深色、浅色主题以及主要页面的响应式适配。</li></ul>
         </section></div>
     </details></div></main>
-  <footer>有米 AI · 当前版本 v2.0.7</footer>
+  <footer>有米 AI · 当前版本 v2.0.8</footer>
 </body>
 </html>

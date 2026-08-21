@@ -18,6 +18,8 @@ const verticalAngle = ref(0)
 const distance = ref(1)
 const outputFormat = ref('png')
 const seed = ref(-1)
+const fixedSeed = ref(false)
+const advancedOpen = ref(false)
 const additionalPrompt = ref('')
 const generationShots = ref([])
 const copied = ref(false)
@@ -29,6 +31,9 @@ const distanceOptions = [
   { value: 1, label: '标准', icon: 'ri-focus-3-line' },
   { value: 2, label: '远景', icon: 'ri-zoom-out-line' },
 ]
+
+const horizontalStops = [-180, -135, -90, -45, 0, 45, 90, 135]
+const verticalStops = [-30, 0, 30, 60]
 
 const outputFormats = [
   { value: 'jpeg', label: 'JPEG' },
@@ -51,6 +56,14 @@ const totalCost = computed(() => batchCount.value * UNIT_PRICE)
 const distanceLabel = computed(
   () => distanceOptions.find((item) => item.value === distance.value)?.label || '标准',
 )
+const outputFormatLabel = computed(
+  () => outputFormats.find((item) => item.value === outputFormat.value)?.label || 'PNG',
+)
+const advancedSummary = computed(() => {
+  const seedLabel = fixedSeed.value ? `固定种子 ${normalizedSeed()}` : '随机'
+  const promptLabel = additionalPrompt.value.trim() ? '有附加提示' : '无附加提示'
+  return `${outputFormatLabel.value} · ${seedLabel} · ${promptLabel}`
+})
 const currentShotExists = computed(() =>
   generationShots.value.some(
     (shot) =>
@@ -68,18 +81,20 @@ const spec = computed(() =>
 )
 
 const cubeTransform = computed(() => {
-  const horizontal = signedHorizontalAngle.value
-  const vertical = Math.max(-21, Math.min(21, verticalAngle.value * 0.34))
   const scale = distance.value === 0 ? 1.08 : distance.value === 2 ? 0.84 : 0.96
-  return `rotateX(${14 - vertical}deg) rotateY(${-30 + horizontal}deg) scale(${scale})`
+  return `rotateX(${-verticalAngle.value}deg) rotateY(${signedHorizontalAngle.value}deg) scale(${scale})`
 })
 
 const cameraPositionStyle = computed(() => {
-  const radians = (signedHorizontalAngle.value * Math.PI) / 180
+  const horizontalRadians = (signedHorizontalAngle.value * Math.PI) / 180
+  const verticalRadians = (verticalAngle.value * Math.PI) / 180
   const radius = distance.value === 0 ? 25 : distance.value === 2 ? 42 : 34
-  const verticalOffset = (verticalAngle.value / 90) * 28
-  const left = 50 + Math.sin(radians) * radius
-  const top = 50 + Math.cos(radians) * radius - verticalOffset
+  const horizontalRadius = Math.cos(verticalRadians) * radius
+  const left = 50 + Math.sin(horizontalRadians) * horizontalRadius
+  const top =
+    50 +
+    Math.cos(horizontalRadians) * horizontalRadius -
+    Math.sin(verticalRadians) * radius
   return {
     left: `${Math.max(9, Math.min(91, left))}%`,
     top: `${Math.max(9, Math.min(91, top))}%`,
@@ -122,6 +137,8 @@ function resetControls() {
   distance.value = 1
   outputFormat.value = 'png'
   seed.value = -1
+  fixedSeed.value = false
+  advancedOpen.value = false
   additionalPrompt.value = ''
   generationShots.value = []
   shotSequence = 1
@@ -179,6 +196,26 @@ function setVertical(value) {
     : 0
 }
 
+function rangeStopPosition(index, total) {
+  if (total <= 1) return '50%'
+  const ratio = index / (total - 1)
+  const percentage = Math.round(ratio * 100000) / 1000
+  const thumbOffset = Math.round((8 - ratio * 16) * 1000) / 1000
+  return `calc(${percentage}% + ${thumbOffset}px)`
+}
+
+function normalizedSeed() {
+  if (!fixedSeed.value) return -1
+  const number = Math.floor(Number(seed.value))
+  if (!Number.isFinite(number)) return 0
+  return Math.max(0, Math.min(2147483647, number))
+}
+
+function setFixedSeed(enabled) {
+  fixedSeed.value = Boolean(enabled)
+  seed.value = fixedSeed.value ? normalizedSeed() : -1
+}
+
 function payload() {
   const shots = generationShots.value.map(({ horizontalAngle, verticalAngle, distance }) => ({
     horizontalAngle,
@@ -192,7 +229,7 @@ function payload() {
       .join('、')}`,
     params: {
       shots,
-      seed: Number.isFinite(Number(seed.value)) ? Number(seed.value) : -1,
+      seed: normalizedSeed(),
       outputFormat: outputFormat.value,
     },
   }
@@ -321,18 +358,30 @@ onBeforeUnmount(() => {
             <section class="cap-dimension-card" aria-label="视角参数">
               <div class="cap-dimension-control">
                 <div>
-                  <span>{{ controlMode === 'camera' ? '旋转' : '主体旋转' }}</span>
+                  <span>旋转</span>
                   <b>{{ signedHorizontalAngle }}°</b>
                 </div>
                 <input
                   :value="horizontalAngle"
                   type="range"
                   min="-180"
-                  max="180"
-                  step="1"
+                  max="135"
+                  step="45"
                   aria-label="旋转角度"
                   @input="setHorizontal($event.target.value)"
                 />
+                <div class="cap-range-stops cap-range-stops--horizontal" aria-label="旋转角度档位">
+                  <button
+                    v-for="(stop, index) in horizontalStops"
+                    :key="stop"
+                    type="button"
+                    :class="{ active: horizontalAngle === stop }"
+                    :style="{ left: rangeStopPosition(index, horizontalStops.length) }"
+                    @click="setHorizontal(stop)"
+                  >
+                    {{ stop }}°
+                  </button>
+                </div>
               </div>
 
               <div class="cap-dimension-control">
@@ -345,10 +394,22 @@ onBeforeUnmount(() => {
                   type="range"
                   min="-30"
                   max="60"
-                  step="1"
+                  step="30"
                   aria-label="倾斜角度"
                   @input="setVertical($event.target.value)"
                 />
+                <div class="cap-range-stops cap-range-stops--vertical" aria-label="倾斜角度档位">
+                  <button
+                    v-for="(stop, index) in verticalStops"
+                    :key="stop"
+                    type="button"
+                    :class="{ active: verticalAngle === stop }"
+                    :style="{ left: rangeStopPosition(index, verticalStops.length) }"
+                    @click="setVertical(stop)"
+                  >
+                    {{ stop }}°
+                  </button>
+                </div>
               </div>
 
               <div class="cap-dimension-control">
@@ -365,7 +426,20 @@ onBeforeUnmount(() => {
                   aria-label="拍摄距离"
                   @input="distance = Number($event.target.value)"
                 />
+                <div class="cap-range-stops cap-range-stops--distance" aria-label="拍摄距离档位">
+                  <button
+                    v-for="(item, index) in distanceOptions"
+                    :key="item.value"
+                    type="button"
+                    :class="{ active: distance === item.value }"
+                    :style="{ left: rangeStopPosition(index, distanceOptions.length) }"
+                    @click="distance = item.value"
+                  >
+                    {{ item.value }} · {{ item.label }}
+                  </button>
+                </div>
               </div>
+              <p class="cap-pose-note">官方 96 机位：水平 8 档 × 倾斜 4 档 × 缩放 3 档</p>
             </section>
 
             <div class="cap-add-shot">
@@ -422,36 +496,75 @@ onBeforeUnmount(() => {
               </ol>
             </section>
 
-            <div class="cap-output-grid">
-              <div>
-                <span>输出格式</span>
-                <div class="cap-format-control">
-                  <button
-                    v-for="item in outputFormats"
-                    :key="item.value"
-                    type="button"
-                    :class="{ active: outputFormat === item.value }"
-                    @click="outputFormat = item.value"
-                  >
-                    {{ item.label }}
-                  </button>
-                </div>
-              </div>
-              <label>
-                <span>随机种子</span>
-                <input v-model.number="seed" type="number" min="-1" step="1" />
-                <small>-1 为随机</small>
-              </label>
-            </div>
+            <section class="cap-advanced">
+              <button
+                type="button"
+                class="cap-advanced-trigger"
+                :aria-expanded="advancedOpen"
+                @click="advancedOpen = !advancedOpen"
+              >
+                <span>
+                  <i class="ri-settings-3-line" aria-hidden="true"></i>
+                  <strong>高级设置</strong>
+                  <small>{{ advancedSummary }}</small>
+                </span>
+                <i
+                  :class="advancedOpen ? 'ri-arrow-up-s-line' : 'ri-arrow-down-s-line'"
+                  aria-hidden="true"
+                ></i>
+              </button>
 
-            <label class="cap-extra">
-              <span>附加提示（可选）</span>
-              <textarea
-                v-model="additionalPrompt"
-                rows="2"
-                placeholder="例如：保持纯白摄影棚背景与柔和左侧光"
-              ></textarea>
-            </label>
+              <div v-show="advancedOpen" class="cap-advanced-content">
+                <div class="cap-output-grid">
+                  <div>
+                    <span>输出格式</span>
+                    <div class="cap-format-control">
+                      <button
+                        v-for="item in outputFormats"
+                        :key="item.value"
+                        type="button"
+                        :class="{ active: outputFormat === item.value }"
+                        @click="outputFormat = item.value"
+                      >
+                        {{ item.label }}
+                      </button>
+                    </div>
+                  </div>
+                  <div class="cap-seed-control">
+                    <span>随机种子</span>
+                    <label class="cap-seed-toggle">
+                      <input
+                        type="checkbox"
+                        :checked="fixedSeed"
+                        @change="setFixedSeed($event.target.checked)"
+                      />
+                      <span aria-hidden="true"></span>
+                      <em>{{ fixedSeed ? '固定种子' : '随机' }}</em>
+                    </label>
+                    <input
+                      v-if="fixedSeed"
+                      v-model.number="seed"
+                      type="number"
+                      min="0"
+                      max="2147483647"
+                      step="1"
+                      aria-label="固定随机种子"
+                      @blur="seed = normalizedSeed()"
+                    />
+                    <small v-else>每次生成自动使用随机种子</small>
+                  </div>
+                </div>
+
+                <label class="cap-extra">
+                  <span>附加提示（可选）</span>
+                  <textarea
+                    v-model="additionalPrompt"
+                    rows="2"
+                    placeholder="例如：保持纯白摄影棚背景与柔和左侧光"
+                  ></textarea>
+                </label>
+              </div>
+            </section>
           </section>
         </div>
 
@@ -1043,6 +1156,45 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
+.cap-range-stops {
+  position: relative;
+  height: 22px;
+}
+
+.cap-range-stops button {
+  position: absolute;
+  top: 0;
+  height: 22px;
+  padding: 0 4px;
+  color: var(--canvas-text-subtle, #898989);
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 8px;
+  font-variant-numeric: tabular-nums;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.cap-range-stops button:hover {
+  color: var(--canvas-text, #fff);
+  background: var(--canvas-surface-hover, #292929);
+}
+
+.cap-range-stops button.active {
+  color: var(--canvas-accent, #10c3d8);
+  background: var(--canvas-accent-soft, rgba(16, 195, 216, 0.08));
+  font-weight: 600;
+}
+
+.cap-pose-note {
+  margin: -2px 0 0;
+  color: var(--canvas-text-subtle, #898989);
+  font-size: 9px;
+  line-height: 1.5;
+  text-align: center;
+}
+
 .cap-control-group {
   min-width: 0;
   padding: 14px 0;
@@ -1389,15 +1541,74 @@ onBeforeUnmount(() => {
   min-height: 38px;
 }
 
+.cap-advanced {
+  margin-top: 12px;
+  border-top: 1px solid var(--canvas-border, #353535);
+}
+
+.cap-advanced-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 46px;
+  gap: 12px;
+  padding: 0;
+  color: var(--canvas-text-muted, #c3c3c3);
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.cap-advanced-trigger:hover {
+  color: var(--canvas-text, #fff);
+}
+
+.cap-advanced-trigger > span {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 7px;
+}
+
+.cap-advanced-trigger > span > i {
+  color: var(--canvas-accent, #10c3d8);
+  font-size: 14px;
+}
+
+.cap-advanced-trigger strong {
+  flex: 0 0 auto;
+  color: var(--canvas-text, #fff);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.cap-advanced-trigger small {
+  overflow: hidden;
+  color: var(--canvas-text-subtle, #898989);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cap-advanced-trigger > i {
+  flex: 0 0 auto;
+  font-size: 16px;
+}
+
+.cap-advanced-content {
+  padding: 0 0 14px;
+}
+
 .cap-output-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 150px;
   gap: 14px;
-  padding: 14px 0;
+  padding: 2px 0 14px;
 }
 
 .cap-output-grid > div,
-.cap-output-grid > label {
+.cap-output-grid > .cap-seed-control {
   display: grid;
   align-content: start;
   gap: 7px;
@@ -1405,7 +1616,7 @@ onBeforeUnmount(() => {
 }
 
 .cap-output-grid > div > span,
-.cap-output-grid > label > span {
+.cap-output-grid > .cap-seed-control > span {
   color: var(--canvas-text-muted, #c3c3c3);
   font-size: 11px;
   font-weight: 600;
@@ -1435,6 +1646,61 @@ onBeforeUnmount(() => {
 .cap-output-grid small {
   color: var(--canvas-text-subtle, #898989);
   font-size: 9px;
+}
+
+.cap-seed-toggle {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 30px;
+  gap: 7px;
+  cursor: pointer;
+}
+
+.cap-seed-toggle input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.cap-seed-toggle > span {
+  position: relative;
+  width: 30px;
+  height: 18px;
+  border: 1px solid var(--canvas-border-strong, #555);
+  border-radius: 9px;
+  background: var(--canvas-input, #191a1f);
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.cap-seed-toggle > span::after {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--canvas-text-subtle, #898989);
+  content: '';
+  transition: transform 120ms ease, background 120ms ease;
+}
+
+.cap-seed-toggle input:checked + span {
+  border-color: var(--canvas-accent, #10c3d8);
+  background: var(--canvas-accent-soft, rgba(16, 195, 216, 0.16));
+}
+
+.cap-seed-toggle input:checked + span::after {
+  background: var(--canvas-accent, #10c3d8);
+  transform: translateX(12px);
+}
+
+.cap-seed-toggle em {
+  color: var(--canvas-text-muted, #c3c3c3);
+  font-size: 10px;
+  font-style: normal;
 }
 
 .cap-distance-control button i {
