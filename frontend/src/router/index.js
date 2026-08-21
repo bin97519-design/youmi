@@ -6,6 +6,7 @@ const CanvasListPage = () => import('../pages/CanvasListPage.vue')
 const CanvasEditorPage = () => import('../pages/CanvasEditorPage.vue')
 const CanvasSharePage = () => import('../pages/CanvasSharePage.vue')
 const EcommerceSetPage = () => import('../pages/EcommerceSetPage.vue')
+const SelectionPoolPage = () => import('../pages/SelectionPoolPage.vue')
 const HistoryPage = () => import('../pages/HistoryPage.vue')
 const ConsolePage = () => import('../pages/ConsolePage.vue')
 const PaymentResultPage = () => import('../pages/PaymentResultPage.vue')
@@ -17,6 +18,7 @@ const routes = [
   { path: '/login', redirect: '/' },
   { path: '/history', name: 'history', component: HistoryPage },
   { path: '/console', name: 'console', component: ConsolePage },
+  { path: '/selection-pool', name: 'selection-pool', component: SelectionPoolPage },
   { path: '/points', redirect: '/' },
   {
     path: '/payment-result',

@@ -45,6 +45,7 @@ const displayUser = computed(
 const menuItems = [
   { key: 'home', label: '首页', icon: 'home', route: '/' },
   { key: 'canvas', label: '万能画布', icon: 'canvas', route: '/canvas', dot: true },
+  { key: 'selection-pool', label: '选品库', icon: 'selection-pool', route: '/selection-pool' },
   {
     key: 'designer',
     label: 'AI 设计师',
@@ -272,6 +273,11 @@ async function openCliDownload() {
               <rect class="purple-fill" x="6.2" y="7.3" width="11.5" height="11.5" rx="2" />
               <rect class="purple" x="3.8" y="4.9" width="11.5" height="11.5" rx="2" />
               <path class="yellow-fill" d="M18.2 3.3v3.2M16.6 4.9h3.2" />
+            </svg>
+
+            <svg v-else-if="item.icon === 'selection-pool'" class="yh-icon" viewBox="0 0 24 24">
+              <path class="white" d="M4.5 7.2 12 3.8l7.5 3.4L12 10.6 4.5 7.2Z" />
+              <path class="cyan" d="M4.5 11.3 12 14.7l7.5-3.4M4.5 15.4 12 18.8l7.5-3.4" />
             </svg>
 
             <svg v-else-if="item.icon === 'designer'" class="yh-icon" viewBox="0 0 24 24">
