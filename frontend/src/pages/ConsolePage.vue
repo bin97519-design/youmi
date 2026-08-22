@@ -530,8 +530,9 @@ function changeTaskPageSize(size) {
 }
 
 const taskModelOptions = computed(() => {
-  const set = new Set((stats.value?.tasks || []).map((t) => t.requestedModel || t.model))
-  return [...set].filter(Boolean)
+  const allTimeModels = (stats.value?.models || []).map((item) => item.model)
+  const recentTaskModels = (stats.value?.tasks || []).map((task) => task.requestedModel || task.model)
+  return [...new Set([...allTimeModels, ...recentTaskModels].filter(Boolean))]
 })
 
 const taskUserOptions = computed(() => {
@@ -2466,14 +2467,16 @@ onUnmounted(() => {
                 </div>
               </div>
             </div>
-            <div class="custom-select console-filter-select" @click.stop="toggleDropdown('filterTaskModel')">
+            <div class="custom-select console-filter-select task-model-filter" @click.stop="toggleDropdown('filterTaskModel')">
               <div class="custom-select-trigger" :class="{ open: dropdownOpen.filterTaskModel }">
-                {{ taskModelFilter || '全部模型' }}
+                <span class="task-model-trigger-label" :title="taskModelFilter || '全部模型'">
+                  {{ taskModelFilter || '全部模型' }}
+                </span>
                 <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
               </div>
               <div v-show="dropdownOpen.filterTaskModel" class="custom-select-dropdown">
                 <div @click.stop="taskModelFilter = ''; closeDropdown('filterTaskModel')" :class="{ active: taskModelFilter === '' }">全部模型</div>
-                <div v-for="m in taskModelOptions" :key="m" @click.stop="taskModelFilter = m; closeDropdown('filterTaskModel')" :class="{ active: taskModelFilter === m }">
+                <div v-for="m in taskModelOptions" :key="m" :title="m" @click.stop="taskModelFilter = m; closeDropdown('filterTaskModel')" :class="{ active: taskModelFilter === m }">
                   {{ m }}
                 </div>
               </div>
@@ -3409,6 +3412,19 @@ onUnmounted(() => {
 }
 .task-user-filter {
   width: 180px !important;
+}
+.task-model-filter {
+  width: 180px !important;
+}
+.task-model-trigger-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-model-filter .custom-select-dropdown {
+  right: auto;
+  width: max(100%, 260px);
 }
 .task-user-trigger-label {
   min-width: 0;

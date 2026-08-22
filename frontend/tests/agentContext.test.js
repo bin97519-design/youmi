@@ -19,7 +19,7 @@ test('uses images explicitly submitted in the current Agent turn', () => {
   assert.deepEqual(result.images.map((image) => image.url), ['https://img.example/new.png'])
 })
 
-test('inherits the latest submitted images in the current Agent conversation', () => {
+test('does not silently inherit images from an earlier Agent turn', () => {
   const result = resolveAgentReferenceImages({
     currentImages: [],
     messages: [
@@ -38,15 +38,7 @@ test('inherits the latest submitted images in the current Agent conversation', (
     ],
   })
 
-  assert.equal(result.inherited, true)
-  assert.deepEqual(result.images, [
-    {
-      id: '',
-      layerId: 'layer-2',
-      name: '',
-      url: 'https://img.example/latest.png',
-    },
-  ])
+  assert.deepEqual(result, { images: [], inherited: false })
 })
 
 test('does not inherit non-Agent or unusable temporary images', () => {

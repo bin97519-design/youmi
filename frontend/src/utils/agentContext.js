@@ -19,18 +19,8 @@ function normalizeReferenceImages(images, limit) {
   return result
 }
 
-export function resolveAgentReferenceImages({ currentImages, messages, limit = 8 } = {}) {
+export function resolveAgentReferenceImages({ currentImages, limit = 8 } = {}) {
   const safeLimit = Math.max(1, Math.min(12, Number(limit) || 8))
   const current = normalizeReferenceImages(currentImages, safeLimit)
-  if (current.length) return { images: current, inherited: false }
-
-  const history = Array.isArray(messages) ? messages : []
-  for (let index = history.length - 1; index >= 0; index -= 1) {
-    const message = history[index]
-    if (!message?.agent || message.role !== 'user') continue
-    const inherited = normalizeReferenceImages(message.referenceImages, safeLimit)
-    if (inherited.length) return { images: inherited, inherited: true }
-  }
-
-  return { images: [], inherited: false }
+  return { images: current, inherited: false }
 }

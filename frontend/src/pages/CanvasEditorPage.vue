@@ -279,6 +279,7 @@ function syncDetectionFromLayers() {
 }
 const layerDetectedElements = ref({})
 const selectedDetectedElements = ref(new Set())
+const keyboardSelectionTarget = ref('layer')
 const elementClickPositions = ref({})
 const detectingLayerIds = ref(new Set())
 const chatSkipPillSync = ref(false)
@@ -475,7 +476,24 @@ function deleteSelectedConnection() {
 }
 
 // 选中图层
+function isEditableKeyboardTarget(target) {
+  return (
+    target instanceof Element &&
+    (target.matches('input, textarea, select, [contenteditable]:not([contenteditable="false"])') ||
+      target.isContentEditable)
+  )
+}
+
+function activateLayerKeyboardSelection() {
+  const activeElement = document.activeElement
+  if (isEditableKeyboardTarget(activeElement)) {
+    activeElement.blur()
+  }
+  keyboardSelectionTarget.value = 'layer'
+}
+
 function selectSingleLayer(layer) {
+  activateLayerKeyboardSelection()
   marqueeSelectionIds.value = []
   selectedLayerId.value = layer.id
   selectedLayerIds.value = [layer.id]
@@ -5425,25 +5443,65 @@ function updateLayer(id, patch) {
   })
 }
 
-function removeLayer(id) {
+function removeLayers(ids) {
   if (!userStore.requireLogin()) return
-  // 如果正在播放该视频，清理播放状态
-  if (playingVideoLayerId.value === id) playingVideoLayerId.value = null
-  if (inlineDialogModification.layerId === id) {
+
+  const existingLayerIds = new Set(layers.value.map((layer) => layer.id))
+  const deleteSet = new Set(ids.filter((id) => existingLayerIds.has(id)))
+  if (!deleteSet.size) return
+
+  if (playingVideoLayerId.value && deleteSet.has(playingVideoLayerId.value)) {
+    playingVideoLayerId.value = null
+  }
+  if (inlineDialogModification.layerId && deleteSet.has(inlineDialogModification.layerId)) {
     inlineDialogModification.layerId = ''
     inlineDialogModification.text = ''
     inlineDialogModification.models = []
   }
+  if (expandedLayerToolbarId.value && deleteSet.has(expandedLayerToolbarId.value)) {
+    expandedLayerToolbarId.value = ''
+  }
+
   pushUndo()
-  // 删除关联的连接线
-  connections.value = connections.value.filter((c) => c.fromLayerId !== id && c.toLayerId !== id)
+  connections.value = connections.value.filter(
+    (connection) =>
+      !deleteSet.has(connection.fromLayerId) && !deleteSet.has(connection.toLayerId),
+  )
+
+  const nextDetectedElements = { ...layerDetectedElements.value }
+  for (const id of deleteSet) delete nextDetectedElements[id]
+  layerDetectedElements.value = nextDetectedElements
+  selectedDetectedElements.value = new Set(
+    [...selectedDetectedElements.value].filter(
+      (key) => !deleteSet.has(String(key).split('::')[0]),
+    ),
+  )
+  elementClickPositions.value = Object.fromEntries(
+    Object.entries(elementClickPositions.value).filter(
+      ([key]) => !deleteSet.has(String(key).split('::')[0]),
+    ),
+  )
+
+  const nextSelectedLayerId = layers.value.find((layer) => !deleteSet.has(layer.id))?.id || ''
   canvas.updateDocument(props.id, (draft) => {
-    draft.payload.layers = draft.payload.layers.filter((layer) => layer.id !== id)
+    draft.payload.layers = draft.payload.layers.filter((layer) => !deleteSet.has(layer.id))
     draft.payload.connections = connections.value
+    draft.payload.detectedElements = JSON.parse(JSON.stringify(nextDetectedElements))
+    if (Array.isArray(draft.payload.reversePrompt?.referenceImages)) {
+      draft.payload.reversePrompt.referenceImages =
+        draft.payload.reversePrompt.referenceImages.filter(
+          (reference) => !deleteSet.has(reference.layerId),
+        )
+    }
     return draft
   })
-  selectedLayerId.value = layers.value[0]?.id || ''
-  selectedLayerIds.value = selectedLayerId.value ? [selectedLayerId.value] : []
+  selectedLayerId.value = nextSelectedLayerId
+  selectedLayerIds.value = nextSelectedLayerId ? [nextSelectedLayerId] : []
+  keyboardSelectionTarget.value = 'layer'
+}
+
+function removeLayer(id) {
+  removeLayers([id])
 }
 
 /**
@@ -5623,6 +5681,7 @@ function startLayerDrag(event, layer) {
       event.target.closest('.resize-dot')
     )
       return
+    activateLayerKeyboardSelection()
     event.preventDefault()
     event.stopPropagation()
     marqueeSelectionIds.value = []
@@ -5640,6 +5699,7 @@ function startLayerDrag(event, layer) {
     event.target.closest('.resize-dot')
   )
     return
+  activateLayerKeyboardSelection()
   pushUndo()
   event.preventDefault()
   event.stopPropagation()
@@ -6007,6 +6067,7 @@ function smartToggleElement(layerId, elementId, event) {
     set.add(key)
   }
   selectedDetectedElements.value = set
+  keyboardSelectionTarget.value = set.size ? 'element' : 'layer'
   if (event) {
     const overlay = event.currentTarget.closest('.detected-elements-overlay')
     const overlayRect = overlay
@@ -6928,6 +6989,7 @@ function handleDetectedOverlayClick(event) {
     )
   }
   selectedDetectedElements.value = set
+  keyboardSelectionTarget.value = set.size ? 'element' : 'layer'
   const overlayEl = document.querySelector('.detected-elements-overlay')
   const overlayRect = overlayEl?.getBoundingClientRect() || { left: 0, top: 0 }
   elementClickPositions.value = {
@@ -7593,6 +7655,7 @@ function confirmManualElementName() {
   // 同步选中并更新输入框 pill
   const elKey = `${layerId}::${el.object_name || el.name || el.id}`
   selectedDetectedElements.value = new Set([...selectedDetectedElements.value, elKey])
+  keyboardSelectionTarget.value = 'element'
   console.log('[manual] 手动添加元素:', displayName, box_2d)
   // 持久化到文档（支持撤销恢复）
   canvas.updateDocument(props.id, (draft) => {
@@ -7658,6 +7721,7 @@ function onManualNameInputBlur() {
 
 function clearAllAnnotations() {
   selectedDetectedElements.value = new Set()
+  keyboardSelectionTarget.value = 'layer'
   elementClickPositions.value = {}
 }
 
@@ -8259,7 +8323,6 @@ function buildCanvasAgentContext() {
   const referenceLayerIds = new Set()
   const resolvedReferences = resolveAgentReferenceImages({
     currentImages: chatReferenceImages.value,
-    messages: chatMessages.value,
   })
 
   for (const [referenceIndex, image] of resolvedReferences.images.entries()) {
@@ -9497,6 +9560,7 @@ function startMarquee(event) {
   }
 
   if (event.target !== event.currentTarget) return
+  activateLayerKeyboardSelection()
   event.preventDefault()
   window.getSelection?.()?.removeAllRanges?.()
   const rect = event.currentTarget.getBoundingClientRect()
@@ -9645,9 +9709,7 @@ function stopMarquee(event) {
 
 // 全局快捷键
 function onGlobalKeydown(event) {
-  const tag = String(event.target?.tagName || '').toLowerCase()
-  const inInput =
-    tag === 'input' || tag === 'textarea' || tag === 'select' || event.target?.isContentEditable
+  const inInput = isEditableKeyboardTarget(event.target)
   if (event.key === 'Escape' && copyToCanvasDialog.visible) {
     event.preventDefault()
     closeCopyToCanvasDialog()
@@ -9689,7 +9751,11 @@ function onGlobalKeydown(event) {
   if (event.key === 'Delete') {
     if (inInput) return
     // 优先删除选中的元素框（含手动元素）
-    if (selectedDetectedElements.value.size > 0 && selectedLayerIds.value.length <= 1) {
+    if (
+      keyboardSelectionTarget.value === 'element' &&
+      selectedDetectedElements.value.size > 0 &&
+      selectedLayerIds.value.length <= 1
+    ) {
       event.preventDefault()
       pushUndo() // 删除元素框也入栈，支持撤销
       const nextLayers = { ...layerDetectedElements.value }
@@ -9704,6 +9770,7 @@ function onGlobalKeydown(event) {
       }
       layerDetectedElements.value = nextLayers
       selectedDetectedElements.value = new Set()
+      keyboardSelectionTarget.value = 'layer'
       elementClickPositions.value = {}
       // 持久化到文档
       canvas.updateDocument(props.id, (draft) => {
@@ -9713,55 +9780,16 @@ function onGlobalKeydown(event) {
       return
     }
     // 否则删除选中图层（支持多选批量删除）
-    const idsToDelete =
-      selectedLayerIds.value.length > 1
-        ? selectedLayerIds.value
-        : selectedLayerId.value
-          ? [selectedLayerId.value]
-          : []
+    const existingLayerIds = new Set(layers.value.map((layer) => layer.id))
+    const selectedIds = selectedLayerIds.value.length
+      ? selectedLayerIds.value
+      : selectedLayerId.value
+        ? [selectedLayerId.value]
+        : []
+    const idsToDelete = [...new Set(selectedIds)].filter((id) => existingLayerIds.has(id))
     if (idsToDelete.length > 0) {
       event.preventDefault()
-      if (!userStore.requireLogin()) return
-      pushUndo()
-
-      const deleteSet = new Set(idsToDelete)
-      const nextSelectedLayerId = layers.value.find((layer) => !deleteSet.has(layer.id))?.id || ''
-      if (playingVideoLayerId.value && deleteSet.has(playingVideoLayerId.value)) {
-        playingVideoLayerId.value = null
-      }
-      connections.value = connections.value.filter(
-        (connection) =>
-          !deleteSet.has(connection.fromLayerId) && !deleteSet.has(connection.toLayerId),
-      )
-
-      const nextDetectedElements = { ...layerDetectedElements.value }
-      for (const id of deleteSet) delete nextDetectedElements[id]
-      layerDetectedElements.value = nextDetectedElements
-      selectedDetectedElements.value = new Set(
-        [...selectedDetectedElements.value].filter(
-          (key) => !deleteSet.has(String(key).split('::')[0]),
-        ),
-      )
-      elementClickPositions.value = Object.fromEntries(
-        Object.entries(elementClickPositions.value).filter(
-          ([key]) => !deleteSet.has(String(key).split('::')[0]),
-        ),
-      )
-
-      canvas.updateDocument(props.id, (draft) => {
-        draft.payload.layers = draft.payload.layers.filter((layer) => !deleteSet.has(layer.id))
-        draft.payload.connections = connections.value
-        draft.payload.detectedElements = JSON.parse(JSON.stringify(nextDetectedElements))
-        if (Array.isArray(draft.payload.reversePrompt?.referenceImages)) {
-          draft.payload.reversePrompt.referenceImages =
-            draft.payload.reversePrompt.referenceImages.filter(
-              (reference) => !deleteSet.has(reference.layerId),
-            )
-        }
-        return draft
-      })
-      selectedLayerId.value = nextSelectedLayerId
-      selectedLayerIds.value = nextSelectedLayerId ? [nextSelectedLayerId] : []
+      removeLayers(idsToDelete)
     }
   }
   // 图片复制 / 粘贴（Ctrl+C / Ctrl+V），不干扰 Delete / Ctrl+Z / 工具快捷键
@@ -9808,6 +9836,7 @@ function onGlobalKeydown(event) {
       }
       if (!Array.isArray(snapshot) && snapshot.selectedDetectedElements) {
         selectedDetectedElements.value = new Set(snapshot.selectedDetectedElements)
+        keyboardSelectionTarget.value = selectedDetectedElements.value.size ? 'element' : 'layer'
       }
       // 然后才恢复 layers
       canvas.updateDocument(props.id, (draft) => {
