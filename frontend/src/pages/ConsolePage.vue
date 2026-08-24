@@ -344,11 +344,18 @@ function shiftDays(n) {
   d.setDate(d.getDate() - n)
   return fmtDateValue(d)
 }
-const todayStr = fmtDateValue(new Date())
+function shiftTaskDate(value, days) {
+  const matched = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!matched) return ''
+  const date = new Date(Number(matched[1]), Number(matched[2]) - 1, Number(matched[3]))
+  date.setDate(date.getDate() - days)
+  return fmtDateValue(date)
+}
+const taskTodayStr = ref(fmtDateValue(new Date()))
 const sevenDaysAgoStr = shiftDays(7)
 // 默认最近 7 天，页面一进来就只显示近 7 天的数据
 taskDateFrom.value = sevenDaysAgoStr
-taskDateTo.value = todayStr
+taskDateTo.value = taskTodayStr.value
 
 const showDatePicker = ref(false)
 const taskRangeSelecting = ref('from')
@@ -368,7 +375,7 @@ const taskCalendarTitle = computed(
 )
 
 function isTaskCalendarDateDisabled(value) {
-  if (value > todayStr) return true
+  if (value > taskTodayStr.value) return true
   return Boolean(
     taskRangeSelecting.value === 'to' &&
       taskRangeDraftFrom.value &&
@@ -393,7 +400,7 @@ const taskCalendarDays = computed(() => {
       value,
       label: date.getDate(),
       currentMonth: date.getMonth() === month,
-      today: value === todayStr,
+      today: value === taskTodayStr.value,
       rangeStart: value === taskRangeDraftFrom.value,
       rangeEnd: value === taskRangeDraftTo.value,
       inRange: Boolean(
@@ -408,6 +415,7 @@ const taskCalendarDays = computed(() => {
 })
 
 function toggleTaskDatePicker() {
+  syncTaskToday()
   showDatePicker.value = !showDatePicker.value
   if (!showDatePicker.value) return
   taskRangeSelecting.value = 'from'
@@ -441,6 +449,7 @@ function selectTaskCalendarDate(day) {
 
 const dateShortcuts = [
   { key: 'today', label: '今天' },
+  { key: 'yesterday', label: '昨天' },
   { key: 'week', label: '最近7天' },
   { key: 'month', label: '最近30天' },
   { key: 'all', label: '全部' },
@@ -450,9 +459,10 @@ const activeShortcut = computed(() => {
   if (!taskDateFrom.value && !taskDateTo.value) return 'all'
   const from = taskDateFrom.value
   const to = taskDateTo.value
-  if (from === to && from === todayStr) return 'today'
-  if (from === shiftDays(7) && to === todayStr) return 'week'
-  if (from === shiftDays(30) && to === todayStr) return 'month'
+  if (from === to && from === taskTodayStr.value) return 'today'
+  if (from === to && from === shiftTaskDate(taskTodayStr.value, 1)) return 'yesterday'
+  if (from === shiftTaskDate(taskTodayStr.value, 7) && to === taskTodayStr.value) return 'week'
+  if (from === shiftTaskDate(taskTodayStr.value, 30) && to === taskTodayStr.value) return 'month'
   return ''
 })
 
@@ -462,6 +472,7 @@ function fmtShort(d) { return d ? d.slice(5).replace('-', '/') : '' }
 const dateDisplayText = computed(() => {
   if (activeShortcut.value === 'all') return '全部日期'
   if (activeShortcut.value === 'today') return '今天'
+  if (activeShortcut.value === 'yesterday') return '昨天'
   if (activeShortcut.value === 'week') return '最近7天'
   if (activeShortcut.value === 'month') return '最近30天'
   if (taskDateFrom.value && taskDateTo.value) return `${fmtShort(taskDateFrom.value)} ~ ${fmtShort(taskDateTo.value)}`
@@ -471,18 +482,24 @@ const dateDisplayText = computed(() => {
 })
 
 function applyDateShortcut(key) {
-  const toStr = todayStr
+  const toStr = taskTodayStr.value
   switch (key) {
     case 'today':
       taskDateFrom.value = toStr
       taskDateTo.value = toStr
       break
+    case 'yesterday': {
+      const yesterday = shiftTaskDate(toStr, 1)
+      taskDateFrom.value = yesterday
+      taskDateTo.value = yesterday
+      break
+    }
     case 'week':
-      taskDateFrom.value = shiftDays(7)
+      taskDateFrom.value = shiftTaskDate(toStr, 7)
       taskDateTo.value = toStr
       break
     case 'month':
-      taskDateFrom.value = shiftDays(30)
+      taskDateFrom.value = shiftTaskDate(toStr, 30)
       taskDateTo.value = toStr
       break
     case 'all':
@@ -492,6 +509,14 @@ function applyDateShortcut(key) {
       break
   }
   showDatePicker.value = false
+}
+
+function syncTaskToday() {
+  const nextToday = fmtDateValue(new Date())
+  if (nextToday === taskTodayStr.value) return
+  const previousShortcut = activeShortcut.value
+  taskTodayStr.value = nextToday
+  if (previousShortcut && previousShortcut !== 'all') applyDateShortcut(previousShortcut)
 }
 
 // 拼接日期筛选 query 参数（dateFrom / dateTo）
@@ -1044,7 +1069,9 @@ function onImageTaskPersistence(detail) {
 }
 
 function onVisibilityChange() {
-  if (!document.hidden) void refreshTaskStatsSilently({ force: true })
+  if (document.hidden) return
+  syncTaskToday()
+  void refreshTaskStatsSilently({ force: true })
 }
 
 function taskDuration(task) {
