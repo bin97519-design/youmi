@@ -31,6 +31,7 @@ import org.springframework.util.StringUtils;
 
 @Service
 public class AdminService {
+  private static final Long PROTECTED_ADMIN_USER_ID = 1L;
   private static final List<String> DEFAULT_USER_ROLES = List.of("USER");
 
   private final JdbcTemplate jdbcTemplate;
@@ -229,6 +230,9 @@ public class AdminService {
 
   @Transactional
   public void deleteUser(Long id) {
+    if (PROTECTED_ADMIN_USER_ID.equals(id)) {
+      throw new ApiException(403, "系统管理员账号不可删除");
+    }
     ensureUserExists(id);
     jdbcTemplate.update("DELETE FROM ym_sys_user_role WHERE user_id = ?", id);
     jdbcTemplate.update("DELETE FROM ym_sys_user WHERE id = ?", id);

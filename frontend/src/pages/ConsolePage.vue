@@ -212,6 +212,7 @@ const taskUserSearchInput = ref(null)
 // 日期范围筛选（最近生图任务）：格式 YYYY-MM-DD，空 = 不限
 const taskDateFrom = ref('')
 const taskDateTo = ref('')
+const userRoleFilter = ref('')
 const shopFilter = ref('')
 const platformFilter = ref('')
 const shops = ref([])
@@ -247,6 +248,7 @@ const passwordResetDialog = reactive({
 
 const filteredUsers = computed(() => {
   const q = userSearch.value.trim().toLowerCase()
+  const rf = userRoleFilter.value
   const sf = shopFilter.value
   const pf = platformFilter.value
   return users.value.filter((u) => {
@@ -259,6 +261,7 @@ const filteredUsers = computed(() => {
         String(u.id).includes(q)
       if (!hit) return false
     }
+    if (rf && !(u.roles || []).includes(rf)) return false
     // 店铺筛选：AND 关系（不匹配就过滤掉，继续往下检查平台）
     if (sf === 'UNBOUND') { if (u.shopId) return false }
     else if (sf) { if (String(u.shopId) !== String(sf)) return false }
@@ -287,7 +290,7 @@ function changeUserPageSize(size) {
   userCurrentPage.value = 1
 }
 
-watch([userSearch, shopFilter, platformFilter], () => {
+watch([userSearch, userRoleFilter, shopFilter, platformFilter], () => {
   userCurrentPage.value = 1
 })
 
@@ -783,6 +786,10 @@ async function saveUser(user) {
 }
 
 async function deleteUser(user) {
+  if (Number(user?.id) === 1) {
+    showToast('系统管理员账号不可删除', 'error')
+    return
+  }
   if (!confirm(`确定删除账号「${user.account}」？此操作不可恢复。`)) return
   saving.value = true
   errorText.value = ''
@@ -1166,6 +1173,7 @@ const dropdownOpen = reactive({
   editStatus: false,
   editRole: false,
   editShop: false,
+  filterRole: false,
   filterShop: false,
   filterPlatform: false,
   filterTaskStatus: false,
@@ -1908,6 +1916,23 @@ onUnmounted(() => {
               </svg>
               <input v-model="userSearch" placeholder="搜索账号/昵称/开户管理员" />
             </div>
+            <div class="custom-select console-filter-select" @click.stop="toggleDropdown('filterRole')">
+              <div class="custom-select-trigger" :class="{ open: dropdownOpen.filterRole }">
+                {{ userRoleFilter ? roleLabel(userRoleFilter) : '全部角色' }}
+                <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+              </div>
+              <div v-show="dropdownOpen.filterRole" class="custom-select-dropdown">
+                <div @click.stop="userRoleFilter = ''; closeDropdown('filterRole')" :class="{ active: !userRoleFilter }">全部角色</div>
+                <div
+                  v-for="role in roleOptions"
+                  :key="role"
+                  @click.stop="userRoleFilter = role; closeDropdown('filterRole')"
+                  :class="{ active: userRoleFilter === role }"
+                >
+                  {{ roleLabel(role) }}
+                </div>
+              </div>
+            </div>
             <div class="custom-select console-filter-select" @click.stop="toggleDropdown('filterShop')">
               <div class="custom-select-trigger" :class="{ open: dropdownOpen.filterShop }">
                 {{ shopFilter === '' ? '全部店铺' : shopFilter === 'UNBOUND' ? '未绑定' : shopLabel(shopFilter) }}
@@ -1996,7 +2021,13 @@ onUnmounted(() => {
                 <i class="ri-key-2-line" aria-hidden="true"></i>
                 <span>重置密码</span>
               </button>
-              <button type="button" class="console-btn-danger" @click="deleteUser(user)">
+              <button
+                type="button"
+                class="console-btn-danger"
+                :disabled="Number(user.id) === 1"
+                :title="Number(user.id) === 1 ? '系统管理员账号不可删除' : '删除账号'"
+                @click="deleteUser(user)"
+              >
                 <i class="ri-delete-bin-line"></i>删除
               </button>
             </span>
@@ -4746,6 +4777,16 @@ onUnmounted(() => {
 [data-theme='light'] .console-row button:hover {
   border-color: var(--console-border-strong);
   background: var(--console-surface-hover);
+}
+
+.console-row button:disabled,
+.console-row button:disabled:hover,
+[data-theme='light'] .console-row button:disabled,
+[data-theme='light'] .console-row button:disabled:hover {
+  cursor: not-allowed;
+  opacity: 0.42;
+  border-color: var(--console-border);
+  background: var(--console-surface-raised);
 }
 
 .console-btn-danger,
