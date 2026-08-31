@@ -14107,6 +14107,31 @@ body {
     flex-basis 180ms ease;
 }
 
+.uc-home-dialog-main .uc-chat-upload-deck.yh-upload-deck .yh-upload-card {
+  display: grid;
+  place-items: center;
+  color: #8fd8e2;
+  background: #1b252b;
+  box-shadow:
+    0 8px 18px rgba(0, 0, 0, 0.42),
+    0 0 0 1px rgba(74, 178, 192, 0.28);
+}
+
+.uc-home-dialog-main .uc-chat-upload-deck.yh-upload-deck .yh-upload-card.active,
+.uc-home-dialog-main .uc-chat-upload-deck.yh-upload-deck .yh-upload-card:hover,
+.uc-home-dialog-main .uc-chat-upload-deck.yh-upload-deck .yh-upload-card:focus-visible {
+  color: #dffcff;
+  background: #163b43;
+  box-shadow:
+    0 12px 26px rgba(0, 0, 0, 0.52),
+    0 0 0 2px #2dc4d6;
+}
+
+.uc-home-dialog-main .uc-chat-upload-deck.yh-upload-deck .yh-upload-card > i {
+  font-size: 22px;
+  line-height: 1;
+}
+
 .uc-home-dialog-main .uc-chat-upload-deck.yh-upload-deck.has-images:hover {
   width: calc(58px + (var(--deck-count) - 1) * 24px);
   flex-basis: calc(58px + (var(--deck-count) - 1) * 24px);

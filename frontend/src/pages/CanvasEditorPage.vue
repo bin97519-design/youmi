@@ -13870,12 +13870,7 @@ async function loadImageForCropUncached(layer) {
                     @mouseenter="activeChatReferenceId = image.id"
                     @focus="activeChatReferenceId = image.id"
                   >
-                    <img
-                      v-if="canvasMediaExpanded"
-                      :src="image.url"
-                      :alt="image.name || '参考图'"
-                    />
-                    <i v-else class="ri-image-line" aria-hidden="true"></i>
+                    <img :src="image.url" :alt="image.name || '参考图'" />
                     <span v-if="image.uploading" class="yh-upload-card-status">上传中</span>
                     <span v-else-if="image.error" class="yh-upload-card-status">失败</span>
                     <span class="yh-image-count">{{ index + 1 }}</span>
