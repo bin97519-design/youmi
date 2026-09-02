@@ -1,16 +1,24 @@
 package com.youmi.api.video;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import com.youmi.api.common.ApiException;
-import com.youmi.api.image.ImageGenerationProperties;
+import com.youmi.api.file.OssStorageService;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -20,161 +28,176 @@ import org.junit.jupiter.api.Test;
 
 class VideoGenerationClientTest {
   private final ObjectMapper objectMapper = new ObjectMapper();
+  private final OssStorageService ossStorageService = mock(OssStorageService.class);
   private HttpServer server;
 
   @AfterEach
   void stopServer() {
-    if (server != null) {
-      server.stop(0);
-    }
+    if (server != null) server.stop(0);
   }
 
   @Test
-  void createsGetTokenVeoFastImageToVideoTask() throws Exception {
-    AtomicReference<String> method = new AtomicReference<>();
+  void createsThqTextToVideoTaskAsJson() throws Exception {
     AtomicReference<String> authorization = new AtomicReference<>();
+    AtomicReference<String> idempotencyKey = new AtomicReference<>();
     AtomicReference<JsonNode> requestBody = new AtomicReference<>();
-    startServer("/veo3.1-fast/image-to-video", exchange -> {
-      method.set(exchange.getRequestMethod());
+    startServer();
+    addContext("/videos", exchange -> {
       authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
+      idempotencyKey.set(exchange.getRequestHeaders().getFirst("Idempotency-Key"));
       requestBody.set(objectMapper.readTree(exchange.getRequestBody()));
-      respond(exchange, 200, """
-          {"taskId":"video-123","status":"RUNNING","results":null}
-          """);
+      respondJson(exchange, 200, "{\"task_id\":\"video-123\",\"status\":\"queued\"}");
     });
 
-    VideoGenerationClient client = client();
-    VideoGenerationDtos.CreateTaskRequest request = new VideoGenerationDtos.CreateTaskRequest(
-        "让参考图中的产品自然旋转展示",
-        "ignored-model",
-        "9:16",
-        8,
-        "1080P",
-        List.of("https://example.com/product.png"),
-        "https://example.com/webhook",
-        "client-video-1");
+    VideoGenerationDtos.CreateTaskResponse response = client().createTask(request(List.of()));
 
-    VideoGenerationDtos.CreateTaskResponse response = client.createTask(request);
-
-    assertEquals("POST", method.get());
-    assertEquals("Bearer test-gettoken-key", authorization.get());
-    assertEquals("让参考图中的产品自然旋转展示", requestBody.get().path("prompt").asText());
-    assertEquals("9:16", requestBody.get().path("aspectRatio").asText());
-    assertEquals("8", requestBody.get().path("duration").asText());
-    assertEquals("1080p", requestBody.get().path("resolution").asText());
-    assertEquals("https://example.com/product.png", requestBody.get().path("imageUrls").get(0).asText());
-    assertEquals("client-video-1", requestBody.get().path("clientTaskId").asText());
-    assertEquals("gettoken", response.getProvider());
-    assertEquals("veo31-fast-image2video", response.getModel());
-    assertEquals("gettoken-video:video-123", response.getTaskId());
-    assertEquals("processing", response.getStatus());
+    assertEquals("Bearer test-thq-key", authorization.get());
+    assertEquals("canvas-video-123", idempotencyKey.get());
+    assertEquals("seedance-2.0-fast-0826-720p", requestBody.get().path("model").asText());
+    assertEquals("16:9", requestBody.get().path("aspect_ratio").asText());
+    assertEquals("15", requestBody.get().path("seconds").asText());
+    assertTrue(requestBody.get().path("duration").isMissingNode());
+    assertEquals("720p", requestBody.get().path("resolution").asText());
+    assertTrue(requestBody.get().path("generate_audio").asBoolean());
+    assertEquals("thq", response.getProvider());
+    assertEquals("thq-video:video-123", response.getTaskId());
+    assertEquals("queued", response.getStatus());
   }
 
   @Test
-  void pollsGetTokenQueryAndReturnsVideoUrl() throws Exception {
-    AtomicReference<String> method = new AtomicReference<>();
-    AtomicReference<JsonNode> requestBody = new AtomicReference<>();
-    startServer("/query", exchange -> {
-      method.set(exchange.getRequestMethod());
-      requestBody.set(objectMapper.readTree(exchange.getRequestBody()));
-      respond(exchange, 200, """
-          {
-            "taskId":"video-123",
-            "status":"SUCCESS",
-            "errorCode":"",
-            "errorMessage":"",
-            "results":[
-              {"url":"https://cdn.example.com/result.mp4","outputType":"mp4","text":null}
-            ]
-          }
-          """);
+  void createsJsonReferenceTaskWhenReferenceImageExists() throws Exception {
+    AtomicReference<String> contentType = new AtomicReference<>();
+    AtomicReference<JsonNode> body = new AtomicReference<>();
+    startServer();
+    addContext("/reference.png", exchange -> respond(exchange, 200, "image/png", new byte[] {1, 2, 3}));
+    addContext("/videos", exchange -> {
+      contentType.set(exchange.getRequestHeaders().getFirst("Content-Type"));
+      body.set(objectMapper.readTree(exchange.getRequestBody()));
+      respondJson(exchange, 200, "{\"id\":\"video-ref\",\"status\":\"processing\"}");
     });
+    String referenceUrl = baseUrl() + "/reference.png";
 
-    VideoGenerationDtos.TaskStatusResponse response =
-        client().getTask("gettoken-video:video-123");
+    VideoGenerationDtos.CreateTaskResponse response = client().createTask(request(List.of(referenceUrl)));
 
-    assertEquals("POST", method.get());
-    assertEquals("video-123", requestBody.get().path("taskId").asText());
-    assertEquals("gettoken", response.getProvider());
+    assertEquals("application/json", contentType.get());
+    JsonNode reference = body.get().path("references").path(0);
+    assertEquals("image", reference.path("type").asText());
+    assertEquals("reference", reference.path("role").asText());
+    assertTrue(reference.path("source").asText().startsWith("data:image/png;base64,"));
+    assertTrue(body.get().path("prompt").asText().startsWith("必须以参考图中的主体为视频核心"));
+    assertTrue(body.get().path("prompt").asText().contains("让产品缓慢旋转并自然推进镜头"));
+    assertEquals("thq-video:video-ref", response.getTaskId());
+  }
+
+  @Test
+  void rejectsResolutionThatDoesNotMatchOfficialModel() {
+    VideoGenerationDtos.CreateTaskRequest request = new VideoGenerationDtos.CreateTaskRequest(
+        "让产品缓慢旋转并自然推进镜头", "seedance-2.0-0826-720p", "3:4", 15, "480p",
+        List.of(), null, null, null, true, null, null, null);
+
+    ApiException error = assertThrows(ApiException.class, () -> client().createTask(request));
+
+    assertTrue(error.getMessage().contains("resolution must match"));
+  }
+
+  @Test
+  void persistsCompletedVideoToUserOssAndReturnsPermanentUrl() throws Exception {
+    byte[] videoBytes = "fake-mp4".getBytes(StandardCharsets.UTF_8);
+    AtomicReference<byte[]> uploaded = new AtomicReference<>();
+    AtomicReference<String> downloadAuthorization = new AtomicReference<>();
+    startServer();
+    addContext("/videos/video-123/content", exchange -> {
+      downloadAuthorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
+      respond(exchange, 200, "video/mp4", videoBytes);
+    });
+    addContext("/videos/video-123", exchange ->
+        respondJson(exchange, 200, "{\"task_id\":\"video-123\",\"status\":\"completed\","
+            + "\"download_url\":\"" + baseUrl() + "/videos/video-123/content\"}"));
+    when(ossStorageService.isConfigured()).thenReturn(true);
+    when(ossStorageService.scopeUserDir(42L, "generated-videos"))
+        .thenReturn("users/42/generated-videos");
+    when(ossStorageService.uploadStream(any(InputStream.class), anyString(), eq("video/mp4")))
+        .thenAnswer(invocation -> {
+          uploaded.set(invocation.<InputStream>getArgument(0).readAllBytes());
+          return invocation.getArgument(1);
+        });
+    when(ossStorageService.getFileUrl(anyString())).thenReturn("https://oss.example/video-123.mp4");
+
+    VideoGenerationDtos.TaskStatusResponse response = client().getTask("thq-video:video-123", 42L);
+
     assertEquals("completed", response.getStatus());
     assertEquals(100, response.getProgress());
-    assertEquals(List.of("https://cdn.example.com/result.mp4"), response.getVideoUrls());
+    assertEquals(List.of("https://oss.example/video-123.mp4"), response.getVideoUrls());
+    assertArrayEquals(videoBytes, uploaded.get());
+    assertEquals(null, downloadAuthorization.get());
+    verify(ossStorageService).scopeUserDir(42L, "generated-videos");
   }
 
   @Test
-  void treatsSuccessfulImageOutputAsFailedVideoTask() throws Exception {
-    startServer("/query", exchange -> respond(exchange, 200, """
-        {
-          "taskId":"video-image-result",
-          "status":"SUCCESS",
-          "results":[
-            {"url":"https://cdn.example.com/not-a-video.png","outputType":"png"}
-          ]
-        }
-        """));
+  void treatsSuccessfulHttpFailureEnvelopeAsFailedTask() throws Exception {
+    startServer();
+    addContext("/videos/video-failed", exchange -> respondJson(exchange, 200,
+        "{\"code\":\"fail_to_fetch_task\",\"message\":\"invalid_aspect_ratio\",\"data\":null}"));
 
     VideoGenerationDtos.TaskStatusResponse response =
-        client().getTask("gettoken-video:video-image-result");
+        client().getTask("thq-video:video-failed", 42L);
 
     assertEquals("failed", response.getStatus());
     assertEquals(100, response.getProgress());
-    assertTrue(response.getVideoUrls().isEmpty());
-    assertTrue(response.getError().contains("outputType=png"));
+    assertEquals("invalid_aspect_ratio", response.getError());
   }
 
   @Test
-  void requiresExactlyOneReferenceImage() {
-    VideoGenerationDtos.CreateTaskRequest request = new VideoGenerationDtos.CreateTaskRequest(
-        "生成一个自然的产品运镜视频", null, "16:9", 8, "720p", List.of(), null, null);
+  void rejectsUnsupportedModelBeforeCallingProvider() {
+    VideoGenerationDtos.CreateTaskRequest invalid = new VideoGenerationDtos.CreateTaskRequest(
+        "生成产品展示视频", "unknown-video", "16:9", 15, "480p", List.of(),
+        null, null, null, true, null, null, null);
 
-    ApiException error = assertThrows(ApiException.class, () -> client().createTask(request));
+    ApiException error = assertThrows(ApiException.class, () -> client().createTask(invalid));
 
-    assertTrue(error.getMessage().contains("exactly one image URL"));
+    assertTrue(error.getMessage().contains("unsupported THQ video model"));
   }
 
-  @Test
-  void rejectsUnsupportedVideoParameters() {
-    VideoGenerationDtos.CreateTaskRequest request = new VideoGenerationDtos.CreateTaskRequest(
-        "生成一个自然的产品运镜视频",
-        null,
-        "4:3",
-        5,
-        "2K",
-        List.of("https://example.com/product.png"),
-        null,
-        null);
-
-    ApiException error = assertThrows(ApiException.class, () -> client().createTask(request));
-
-    assertTrue(error.getMessage().contains("ratio must be"));
+  private VideoGenerationDtos.CreateTaskRequest request(List<String> imageUrls) {
+    return new VideoGenerationDtos.CreateTaskRequest(
+        "让产品缓慢旋转并自然推进镜头", null, "16:9", 15, null,
+        imageUrls, null, null, "避免闪烁", true, 12L, null, "canvas-video-123");
   }
 
   private VideoGenerationClient client() {
-    ImageGenerationProperties properties = new ImageGenerationProperties();
-    properties.setGetTokenApiKey("test-gettoken-key");
-    if (server != null) {
-      properties.setGetTokenBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
-    }
-    properties.setGetTokenQueryPath("/query");
+    VideoGenerationProperties properties = new VideoGenerationProperties();
+    properties.setApiKey("test-thq-key");
+    properties.setBaseUrl(server == null ? "http://127.0.0.1:1" : baseUrl());
     properties.setTimeoutSeconds(5);
-    return new VideoGenerationClient(objectMapper, properties);
+    properties.setDownloadTimeoutSeconds(5);
+    return new VideoGenerationClient(objectMapper, properties, ossStorageService);
   }
 
-  private void startServer(String path, ExchangeHandler handler) throws Exception {
+  private void startServer() throws IOException {
     server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.start();
+  }
+
+  private void addContext(String path, ExchangeHandler handler) {
     server.createContext(path, exchange -> {
       try {
         handler.handle(exchange);
       } catch (Exception error) {
-        respond(exchange, 500, "{\"error\":\"" + error.getClass().getSimpleName() + "\"}");
+        respondJson(exchange, 500, "{\"error\":\"" + error.getClass().getSimpleName() + "\"}");
       }
     });
-    server.start();
   }
 
-  private void respond(HttpExchange exchange, int status, String body) throws IOException {
-    byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-    exchange.getResponseHeaders().set("Content-Type", "application/json;charset=UTF-8");
+  private String baseUrl() {
+    return "http://127.0.0.1:" + server.getAddress().getPort();
+  }
+
+  private void respondJson(HttpExchange exchange, int status, String body) throws IOException {
+    respond(exchange, status, "application/json;charset=UTF-8", body.getBytes(StandardCharsets.UTF_8));
+  }
+
+  private void respond(HttpExchange exchange, int status, String contentType, byte[] bytes) throws IOException {
+    exchange.getResponseHeaders().set("Content-Type", contentType);
     exchange.sendResponseHeaders(status, bytes.length);
     exchange.getResponseBody().write(bytes);
     exchange.close();

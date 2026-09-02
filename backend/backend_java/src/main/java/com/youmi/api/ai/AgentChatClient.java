@@ -2,6 +2,7 @@ package com.youmi.api.ai;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -12,6 +13,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import javax.net.ssl.SSLHandshakeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -19,6 +21,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class AgentChatClient {
   private static final Logger log = LoggerFactory.getLogger(AgentChatClient.class);
+  private static final int MAX_HANDSHAKE_ATTEMPTS = 3;
 
   private final ObjectMapper objectMapper;
   private final AgentChatProperties properties;
@@ -27,7 +30,15 @@ public class AgentChatClient {
   public AgentChatClient(ObjectMapper objectMapper, AgentChatProperties properties) {
     this.objectMapper = objectMapper;
     this.properties = properties;
-    this.httpClient = HttpClient.newBuilder()
+    this.httpClient = buildHttpClient();
+    log.info(
+        "Agent model endpoint configured: {}{}",
+        properties.normalizedBaseUrl(),
+        properties.normalizedChatPath());
+  }
+
+  private HttpClient buildHttpClient() {
+    return HttpClient.newBuilder()
         .version(HttpClient.Version.HTTP_1_1)
         .connectTimeout(Duration.ofSeconds(Math.max(3, properties.getTimeoutSeconds())))
         .build();
@@ -98,8 +109,7 @@ public class AgentChatClient {
         .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
         .build();
 
-    HttpResponse<String> response = httpClient.send(
-        request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    HttpResponse<String> response = sendWithHandshakeRetry(request);
     log.info("Agent model response status: {}", response.statusCode());
     if (response.statusCode() < 200 || response.statusCode() >= 300) {
       throw new IllegalStateException(
@@ -111,6 +121,37 @@ public class AgentChatClient {
       throw new IllegalStateException("Agent model returned empty content");
     }
     return new AiChatDtos.CompletionResult("teamorouter", properties.getModel(), content);
+  }
+
+  private HttpResponse<String> sendWithHandshakeRetry(HttpRequest request)
+      throws IOException, InterruptedException {
+    for (int attempt = 1; attempt <= MAX_HANDSHAKE_ATTEMPTS; attempt++) {
+      try {
+        HttpClient client = attempt == 1 ? httpClient : buildHttpClient();
+        return client.send(
+            request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+      } catch (IOException error) {
+        if (!isHandshakeFailure(error) || attempt == MAX_HANDSHAKE_ATTEMPTS) {
+          throw error;
+        }
+        log.warn(
+            "Agent HTTPS handshake failed (attempt {}/{}), retrying with a new connection: {}",
+            attempt,
+            MAX_HANDSHAKE_ATTEMPTS,
+            error.getMessage());
+        Thread.sleep(300L * attempt);
+      }
+    }
+    throw new IOException("Agent model request failed after HTTPS handshake retries");
+  }
+
+  private boolean isHandshakeFailure(Throwable error) {
+    Throwable current = error;
+    while (current != null) {
+      if (current instanceof SSLHandshakeException) return true;
+      current = current.getCause();
+    }
+    return false;
   }
 
   private String readContent(JsonNode root) {

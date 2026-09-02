@@ -20,11 +20,16 @@ public class VideoGenerationDtos {
       @JsonProperty("durationSeconds") @JsonAlias("duration") Integer durationSeconds,
       @JsonProperty("resolution") String resolution,
       @JsonProperty("image_urls") @JsonAlias({"imageUrls", "images"}) List<String> imageUrls,
+      @JsonProperty("first_frame_url") @JsonAlias("firstFrameUrl") String firstFrameUrl,
+      @JsonProperty("last_frame_url") @JsonAlias("lastFrameUrl") String lastFrameUrl,
+      @JsonProperty("negative_prompt") @JsonAlias("negativePrompt") String negativePrompt,
+      @JsonProperty("generate_audio") @JsonAlias("generateAudio") Boolean generateAudio,
+      @JsonProperty("seed") Long seed,
       @JsonProperty("webhook_url") @JsonAlias("webhookUrl") String webhookUrl,
       @JsonProperty("client_task_id") @JsonAlias("clientTaskId") String clientTaskId) {
 
     public CreateTaskRequest(String prompt, String model, String ratio, Integer durationSeconds) {
-      this(prompt, model, ratio, durationSeconds, null, List.of(), null, null);
+      this(prompt, model, ratio, durationSeconds, null, List.of(), null, null, null, null, null, null, null);
     }
 
     public List<String> normalizedImageUrls() {
@@ -35,6 +40,19 @@ public class VideoGenerationDtos {
           .filter(value -> value != null && !value.isBlank())
           .map(String::trim)
           .distinct()
+          .toList();
+    }
+
+    public String normalizedFirstFrameUrl() {
+      if (firstFrameUrl != null && !firstFrameUrl.isBlank()) return firstFrameUrl.trim();
+      return normalizedImageUrls().stream().findFirst().orElse("");
+    }
+
+    public List<String> normalizedReferenceImageUrls() {
+      String firstFrame = normalizedFirstFrameUrl();
+      return normalizedImageUrls().stream()
+          .filter(url -> !url.equals(firstFrame))
+          .limit(14)
           .toList();
     }
   }

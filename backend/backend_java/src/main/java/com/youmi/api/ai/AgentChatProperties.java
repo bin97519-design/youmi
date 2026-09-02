@@ -6,7 +6,7 @@ import org.springframework.stereotype.Component;
 @Component
 @ConfigurationProperties(prefix = "youmi.agent-chat")
 public class AgentChatProperties {
-  private String baseUrl = "https://api.teamorouter.com/v1";
+  private String baseUrl = "https://api.teamorouter.cn/v1";
   private String chatPath = "/chat/completions";
   private String apiKey = "";
   private String model = "gpt-5.6-luna";

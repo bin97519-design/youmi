@@ -2,9 +2,6 @@ foreach ($name in @(
   "MYSQL_URL",
   "MYSQL_USER",
   "MYSQL_PASSWORD",
-  "YOUMI_AGENT_API_KEY",
-  "YOUMI_AGENT_BASE_URL",
-  "YOUMI_AGENT_MODEL",
   "WAVESPEED_API_KEY",
   "WAVESPEED_BASE_URL",
   "WAVESPEED_MULTI_ANGLE_MODEL"
@@ -14,6 +11,37 @@ foreach ($name in @(
     if ($value) {
       [Environment]::SetEnvironmentVariable($name, $value, "Process")
     }
+  }
+}
+
+# THQ video settings are kept outside the repository and refreshed on every start.
+foreach ($name in @(
+  "THQ_VIDEO_API_KEY",
+  "THQ_VIDEO_BASE_URL",
+  "THQ_VIDEO_TIMEOUT_SECONDS",
+  "THQ_VIDEO_DOWNLOAD_TIMEOUT_SECONDS",
+  "THQ_VIDEO_PERSIST_GENERATED"
+)) {
+  $value = [Environment]::GetEnvironmentVariable($name, "User")
+  if ($value) {
+    [Environment]::SetEnvironmentVariable($name, $value, "Process")
+  }
+}
+
+# Agent settings are managed in the user environment. Always refresh them so a
+# long-running launcher cannot pass stale values into a restarted backend.
+foreach ($name in @(
+  "YOUMI_AGENT_API_KEY",
+  "YOUMI_AGENT_BASE_URL",
+  "YOUMI_AGENT_MODEL",
+  "YOUMI_AGENT_CHAT_PATH",
+  "YOUMI_AGENT_MAX_TOKENS",
+  "YOUMI_AGENT_TEMPERATURE",
+  "YOUMI_AGENT_TIMEOUT_SECONDS"
+)) {
+  $value = [Environment]::GetEnvironmentVariable($name, "User")
+  if ($value) {
+    [Environment]::SetEnvironmentVariable($name, $value, "Process")
   }
 }
 if (-not $env:MYSQL_PASSWORD) {

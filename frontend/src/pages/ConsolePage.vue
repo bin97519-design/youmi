@@ -4164,12 +4164,37 @@ onUnmounted(() => {
 .console-trend-legend {
   display: flex;
   min-height: 24px;
+  padding: 0 2px 5px;
   align-items: center;
   gap: 8px 14px;
   overflow-x: auto;
   overflow-y: hidden;
   flex-wrap: nowrap;
   scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--console-accent) 48%, transparent) transparent;
+  overscroll-behavior-inline: contain;
+}
+
+.console-trend-legend::-webkit-scrollbar {
+  height: 5px;
+}
+
+.console-trend-legend::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: transparent;
+}
+
+.console-trend-legend::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--console-accent) 42%, var(--console-border));
+}
+
+.console-trend-legend::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--console-accent) 72%, var(--console-border));
+}
+
+.console-trend-legend::-webkit-scrollbar-button {
+  display: none;
 }
 
 .console-trend-legend > span {
@@ -4211,7 +4236,9 @@ onUnmounted(() => {
 }
 
 .console-trend-card .console-trend-wrap {
-  height: 245px;
+  height: auto;
+  min-height: 245px;
+  flex: 1 1 245px;
 }
 
 .console-trend-tooltip {
@@ -4269,6 +4296,8 @@ onUnmounted(() => {
 
   .console-trend-card .console-trend-wrap {
     height: 220px;
+    min-height: 220px;
+    flex-basis: 220px;
   }
 }
 
@@ -4862,7 +4891,17 @@ onUnmounted(() => {
 }
 
 .console-trend-card .console-trend-wrap {
-  height: 270px;
+  height: auto;
+  min-height: 270px;
+  flex: 1 1 270px;
+}
+
+@media (max-width: 700px) {
+  .console-trend-card .console-trend-wrap {
+    height: 220px;
+    min-height: 220px;
+    flex: 0 0 220px;
+  }
 }
 
 .console-trend-tooltip,

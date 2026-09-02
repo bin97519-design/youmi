@@ -331,7 +331,11 @@ function applyRange(days) {
   activeRangeShortcut.value = String(days)
   const end = new Date()
   const start = new Date()
-  if (days === 'month') {
+  if (days === 'yesterday') {
+    end.setDate(end.getDate() - 1)
+    start.setTime(end.getTime())
+    selectedMonth.value = ''
+  } else if (days === 'month') {
     start.setDate(1)
     selectedMonth.value = formatMonth(end)
   } else {
@@ -427,6 +431,13 @@ onBeforeUnmount(() => {
 
     <section class="finance-filters">
       <div class="finance-range-shortcuts" aria-label="快捷日期">
+        <button
+          type="button"
+          :class="{ active: activeRangeShortcut === 'yesterday' }"
+          @click="applyRange('yesterday')"
+        >
+          昨日
+        </button>
         <button type="button" :class="{ active: activeRangeShortcut === '7' }" @click="applyRange(7)">近7天</button>
         <button type="button" :class="{ active: activeRangeShortcut === '30' }" @click="applyRange(30)">近30天</button>
         <button type="button" :class="{ active: activeRangeShortcut === 'month' }" @click="applyRange('month')">本月</button>

@@ -15,7 +15,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * GetToken Veo3.1 Fast 图生视频入口。米值闸门逻辑完全镜像 {@code ImageTaskController}：
+ * THQ 视频生成入口。米值闸门逻辑完全镜像 {@code ImageTaskController}：
  * 先扣后生成、失败回滚、异步终态回滚/确认，单价取 {@code MiValueProperties} 的 VIDEO(50)。
  */
 @RestController
@@ -49,7 +49,17 @@ public class VideoTaskController {
       return ApiResponse.ok(response);
     } catch (Exception e) {
       miValueService.rollback(userId, deduct.logId());
-      throw new ApiException(502, "生成服务异常，失败任务不计入米值消耗");
+      System.err.println("[VideoTask] createTask FAILED for user=" + userId
+          + " model=" + request.model()
+          + " error=" + e.getClass().getSimpleName() + ": " + e.getMessage());
+      e.printStackTrace();
+      String reason = e.getMessage() == null || e.getMessage().isBlank()
+          ? "上游视频服务未返回错误原因"
+          : e.getMessage().replaceAll("\\s+", " ").trim();
+      if (reason.length() > 500) {
+        reason = reason.substring(0, 500) + "...";
+      }
+      throw new ApiException(502, "视频生成失败，失败任务不计入米值消耗：" + reason, e);
     }
   }
 
@@ -62,7 +72,7 @@ public class VideoTaskController {
     if (!miValueService.isTaskOwnedByUser(userId, taskId, MiBizType.VIDEO)) {
       throw new ApiException(404, "Video task not found");
     }
-    VideoGenerationDtos.TaskStatusResponse response = videoGenerationClient.getTask(taskId);
+    VideoGenerationDtos.TaskStatusResponse response = videoGenerationClient.getTask(taskId, userId);
     if (isTerminalFailed(response.getStatus())) {
       miValueService.rollbackByTaskId(taskId);
     } else if (isTerminalSuccess(response.getStatus())) {

@@ -79,6 +79,12 @@ youmi:
     upload-field-name: file
     timeout-seconds: 60
     upload-timeout-seconds: 120
+  video:
+    base-url: ${THQ_VIDEO_BASE_URL:https://new.thqllm.com/v1}
+    api-key: ${THQ_VIDEO_API_KEY:}
+    timeout-seconds: ${THQ_VIDEO_TIMEOUT_SECONDS:120}
+    download-timeout-seconds: ${THQ_VIDEO_DOWNLOAD_TIMEOUT_SECONDS:600}
+    persist-generated-videos: ${THQ_VIDEO_PERSIST_GENERATED:true}
   credit:
     prices:
       IMAGE: 10
@@ -108,7 +114,7 @@ youmi:
     temperature: 0.2
     timeout-seconds: 60
   agent-chat:
-    base-url: ${YOUMI_AGENT_BASE_URL:https://api.teamorouter.com/v1}
+    base-url: ${YOUMI_AGENT_BASE_URL:https://api.teamorouter.cn/v1}
     chat-path: ${YOUMI_AGENT_CHAT_PATH:/chat/completions}
     api-key: ${YOUMI_AGENT_API_KEY:}
     model: ${YOUMI_AGENT_MODEL:gpt-5.6-luna}

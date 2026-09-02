@@ -20,11 +20,16 @@ import { useUserStore } from '../stores/user'
 import { apiPath } from '../utils/apiBase'
 import { resolveAgentReferenceImages } from '../utils/agentContext'
 import { canCreateAgentDraft, totalAgentGenerationCount } from '../utils/agentDraft'
-import {
-  partitionConversationMessages,
-  stripAgentMessages,
-} from '../utils/agentConversationStore'
+import { partitionConversationMessages, stripAgentMessages } from '../utils/agentConversationStore'
 import { buildCanvasAutoLayout } from '../utils/canvasAutoLayout'
+import {
+  CANVAS_ASSET_REVIEW_STATUS,
+  isCanvasAssetKept,
+  isReviewableCanvasAsset,
+  reviewableCanvasAssets,
+  selectedReviewableCanvasAssets,
+  unmarkedCanvasAssets,
+} from '../utils/canvasAssetReview'
 import { writeTextToClipboard } from '../utils/clipboard'
 import {
   buildElementEditPrompt,
@@ -115,7 +120,9 @@ function normalizedRoleList() {
 async function loadTodayImageCountFromAdminStats() {
   const today = localDateKey()
   const response = await fetch(
-    apiPath(`/api/admin/image-stats?dateFrom=${encodeURIComponent(today)}&dateTo=${encodeURIComponent(today)}`),
+    apiPath(
+      `/api/admin/image-stats?dateFrom=${encodeURIComponent(today)}&dateTo=${encodeURIComponent(today)}`,
+    ),
     { headers: { ...userStore.authHeaders() } },
   )
   const result = await response.json().catch(() => null)
@@ -219,11 +226,16 @@ function toggleToolbarAdd() {
     const btn = addMenuWrapEl.value?.querySelector('.uc-toolbar-add-btn')
     if (btn) {
       const r = btn.getBoundingClientRect()
+      const menuHalfWidth = 116
+      const menuCenterX = Math.max(
+        menuHalfWidth + 8,
+        Math.min(window.innerWidth - menuHalfWidth - 8, r.left + r.width / 2),
+      )
       addMenuPosition.value = {
         position: 'fixed',
-        top: r.top + r.height / 2 + 'px',
-        left: r.right + 8 + 'px',
-        transform: 'translateY(-50%)',
+        top: r.top - 8 + 'px',
+        left: menuCenterX + 'px',
+        transform: 'translate(-50%, -100%)',
         zIndex: 9999,
       }
     }
@@ -912,7 +924,7 @@ const agentConversationHistoryOpen = ref(false)
 const agentConversationSearch = ref('')
 const regeneratingLayerIds = reactive(new Set())
 const smartCutoutLayerIds = reactive(new Set())
-const chatSelectOpen = ref(null) // 'model' | 'ratio' | 'resolution' | null
+const chatSelectOpen = ref(null)
 const chatModeMenuOpen = ref(false)
 
 function toggleChatSelect(name) {
@@ -941,6 +953,10 @@ function selectChatOption(name, value) {
   }
   if (name === 'ratio') chatRatio.value = value
   if (name === 'resolution') chatResolution.value = value
+  if (name === 'video-model') videoModel.value = value
+  if (name === 'video-ratio') videoRatio.value = value
+  if (name === 'video-resolution') videoResolution.value = value
+  if (name === 'video-duration') videoDuration.value = Number(value)
   closeChatSelect()
 }
 
@@ -1271,10 +1287,16 @@ const initialChatConfig = doc.value?.payload?.chatConfig || {}
 const chatModeOptions = [
   { value: 'agent', label: 'Agent', icon: 'ri-robot-2-line' },
   { value: 'image', label: '图像', icon: 'ri-image-line' },
+  { value: 'video', label: '视频', icon: 'ri-video-line' },
 ]
-const chatMode = ref(initialChatConfig.mode === 'agent' ? 'agent' : 'image')
+const chatMode = ref(
+  ['agent', 'image', 'video'].includes(initialChatConfig.mode) ? initialChatConfig.mode : 'image',
+)
 const chatModeLabel = computed(
   () => chatModeOptions.find((option) => option.value === chatMode.value)?.label || '图像',
+)
+const chatModeIcon = computed(
+  () => chatModeOptions.find((option) => option.value === chatMode.value)?.icon || 'ri-image-line',
 )
 
 function selectChatMode(mode) {
@@ -1327,6 +1349,46 @@ const inlineDialogModelTitle = computed(() =>
 )
 const chatRatio = ref(initialChatConfig.ratio || '9:16')
 const chatResolution = ref(initialChatConfig.resolution || '2K')
+const videoModelOptions = [
+  { value: 'seedance-2.0-fast-0826-480p', label: 'SD2 Fast · 480p' },
+  { value: 'seedance-2.0-fast-0826-720p', label: 'SD2 Fast · 720p' },
+  { value: 'seedance-2.0-0826-480p', label: 'SD2 · 480p' },
+  { value: 'seedance-2.0-0826-720p', label: 'SD2 · 720p' },
+]
+const LEGACY_DEFAULT_VIDEO_MODEL = 'seedance-2.0-fast-0826-480p'
+const DEFAULT_VIDEO_MODEL = 'seedance-2.0-fast-0826-720p'
+const videoRatioOptions = ['adaptive', '21:9', '16:9', '4:3', '1:1', '3:4', '9:16']
+const videoResolutionForModel = (model) => (String(model).endsWith('-720p') ? '720p' : '480p')
+const initialVideoConfig = initialChatConfig.video || {}
+const videoModel = ref(
+  initialVideoConfig.model === LEGACY_DEFAULT_VIDEO_MODEL
+    ? DEFAULT_VIDEO_MODEL
+    : videoModelOptions.some((option) => option.value === initialVideoConfig.model)
+      ? initialVideoConfig.model
+      : DEFAULT_VIDEO_MODEL,
+)
+const videoRatio = ref(
+  videoRatioOptions.includes(initialVideoConfig.ratio) ? initialVideoConfig.ratio : '16:9',
+)
+const videoResolution = ref(videoResolutionForModel(videoModel.value))
+const videoDuration = ref(15)
+const videoGenerateAudio = ref(initialVideoConfig.generateAudio !== false)
+const videoModelLabel = computed(
+  () =>
+    videoModelOptions.find((option) => option.value === videoModel.value)?.label ||
+    videoModel.value,
+)
+const videoRatioLabel = computed(() =>
+  videoRatio.value === 'adaptive' ? '自适应' : videoRatio.value,
+)
+const videoResolutionOptions = computed(() => [videoResolutionForModel(videoModel.value)])
+const videoDurationOptions = computed(() => [15])
+const VIDEO_MI_COST = 50
+
+watch(videoModel, () => {
+  videoResolution.value = videoResolutionForModel(videoModel.value)
+  videoDuration.value = 15
+})
 const CHAT_GENERATION_COUNT_MIN = 1
 const CHAT_GENERATION_COUNT_MAX = 4
 const CHAT_IMAGE_MI_COST = 15
@@ -1361,19 +1423,40 @@ const TASK_POLL_INTERVAL = 2500
 const TASK_RESULT_SYNC_ATTEMPTS = 60
 const TASK_RESULT_STALE_AFTER_MS = 24 * 60 * 60 * 1000
 // 对话窗口选中的模型参数变化时，落库到按文档隔离的 payload.chatConfig
-watch([chatModels, chatRatio, chatResolution, chatGenerationCount, chatMode], () => {
-  canvas.updateDocument(props.id, (draft) => {
-    draft.payload.chatConfig = {
-      model: chatModel.value,
-      models: [...chatModels.value],
-      ratio: chatRatio.value,
-      resolution: chatResolution.value,
-      count: chatGenerationCount.value,
-      mode: chatMode.value,
-    }
-    return draft
-  })
-})
+watch(
+  [
+    chatModels,
+    chatRatio,
+    chatResolution,
+    chatGenerationCount,
+    chatMode,
+    videoModel,
+    videoRatio,
+    videoResolution,
+    videoDuration,
+    videoGenerateAudio,
+  ],
+  () => {
+    canvas.updateDocument(props.id, (draft) => {
+      draft.payload.chatConfig = {
+        model: chatModel.value,
+        models: [...chatModels.value],
+        ratio: chatRatio.value,
+        resolution: chatResolution.value,
+        count: chatGenerationCount.value,
+        mode: chatMode.value,
+        video: {
+          model: videoModel.value,
+          ratio: videoRatio.value,
+          resolution: videoResolution.value,
+          duration: videoDuration.value,
+          generateAudio: videoGenerateAudio.value,
+        },
+      }
+      return draft
+    })
+  },
+)
 // 切换画布文档（SPA 复用组件实例、props.id 变化时）重新从新文档 payload 同步本地状态，
 // 避免把上一个文档的连接线/历史错写到新文档（准则 D：互不串扰）
 watch(
@@ -1388,7 +1471,15 @@ watch(
     chatRatio.value = cfg.ratio || '9:16'
     chatResolution.value = cfg.resolution || '2K'
     chatGenerationCount.value = normalizeChatGenerationCount(cfg.count)
-    chatMode.value = cfg.mode === 'agent' ? 'agent' : 'image'
+    chatMode.value = ['agent', 'image', 'video'].includes(cfg.mode) ? cfg.mode : 'image'
+    const videoCfg = cfg.video || {}
+    videoModel.value = videoModelOptions.some((option) => option.value === videoCfg.model)
+      ? videoCfg.model
+      : DEFAULT_VIDEO_MODEL
+    videoRatio.value = videoRatioOptions.includes(videoCfg.ratio) ? videoCfg.ratio : '16:9'
+    videoResolution.value = videoResolutionForModel(videoModel.value)
+    videoDuration.value = 15
+    videoGenerateAudio.value = videoCfg.generateAudio !== false
     activeAgentConversationId.value = resolveAgentConversationId(doc.value?.payload || {})
     agentConversationRecords.value = []
     agentConversationMessagesById.value = {}
@@ -1615,6 +1706,35 @@ const orderedLayers = computed(() =>
   [...layers.value].sort((a, b) => (Number(b.zIndex) || 0) - (Number(a.zIndex) || 0)),
 )
 const selectedLayer = computed(() => layers.value.find((item) => item.id === selectedLayerId.value))
+const reviewableMediaLayers = computed(() => reviewableCanvasAssets(layers.value))
+const keptMediaLayers = computed(() => reviewableMediaLayers.value.filter(isCanvasAssetKept))
+const unmarkedMediaLayers = computed(() => unmarkedCanvasAssets(layers.value))
+const selectedReviewMediaLayers = computed(() =>
+  selectedReviewableCanvasAssets(
+    layers.value,
+    selectedLayerIds.value.length
+      ? selectedLayerIds.value
+      : selectedLayerId.value
+        ? [selectedLayerId.value]
+        : [],
+  ),
+)
+const selectedReviewMediaAllKept = computed(
+  () =>
+    selectedReviewMediaLayers.value.length > 0 &&
+    selectedReviewMediaLayers.value.every(isCanvasAssetKept),
+)
+const reviewMarkActionTitle = computed(() => {
+  const count = selectedReviewMediaLayers.value.length
+  if (!count) return '先选择要标记的图片或视频'
+  return selectedReviewMediaAllKept.value
+    ? `取消 ${count} 个素材的采用标记`
+    : `标记 ${count} 个素材为已采用`
+})
+const deleteUnmarkedActionTitle = computed(() => {
+  const count = unmarkedMediaLayers.value.length
+  return count ? `删除 ${count} 个未采用素材` : '没有可删除的未采用素材'
+})
 const selectedCreationLayers = computed(() =>
   selectedLayerIds.value
     .map((id) => layers.value.find((item) => item.id === id))
@@ -1868,9 +1988,30 @@ watch(
   },
 )
 
-const toolbarStyle = computed(() =>
-  toolbar.x === null ? {} : { left: `${toolbar.x}px`, top: `${toolbar.y}px`, bottom: 'auto' },
-)
+const toolbarStyle = computed(() => {
+  const viewportWidth = Math.max(320, Number(viewportSize.width) || 1200)
+  const margin = 16
+  let segmentStart = 0
+  let segmentEnd = viewportWidth
+
+  if (rightPanelVisible.value) {
+    const panelWidth = Math.max(0, Math.min(viewportWidth, Number(panel.width) || 0))
+    const panelLeft =
+      panel.x === null
+        ? viewportWidth - panelWidth
+        : Math.max(0, Math.min(viewportWidth - panelWidth, Number(panel.x) || 0))
+    const panelRight = panelLeft + panelWidth
+
+    if (viewportWidth - panelRight > panelLeft) segmentStart = panelRight
+    else segmentEnd = panelLeft
+  }
+
+  const availableWidth = Math.max(56, segmentEnd - segmentStart)
+  return {
+    left: `${Math.round(segmentStart + availableWidth / 2)}px`,
+    maxWidth: `${Math.max(56, Math.round(availableWidth - margin * 2))}px`,
+  }
+})
 
 // 缩放滑块
 const ZOOM_MIN = 0.1,
@@ -2784,9 +2925,7 @@ function applyImagePersistenceState({
     (message) => ({
       ...message,
       imageUrl:
-        normalizedStatus === 'DONE'
-          ? finalUrl || message.imageUrl
-          : message.imageUrl || finalUrl,
+        normalizedStatus === 'DONE' ? finalUrl || message.imageUrl : message.imageUrl || finalUrl,
       persistStatus: normalizedStatus,
       persistError: persistError || undefined,
     }),
@@ -3355,9 +3494,12 @@ function updateChatMessage(messageId, patch) {
     )
     return draft
   })
-  const updatedMessage = (doc.value?.payload?.chat || []).find((message) => message.id === messageId)
-  const conversationId = updatedMessage?.agentConversationId
-    || (updatedMessage?.agent ? activeAgentConversationId.value : '')
+  const updatedMessage = (doc.value?.payload?.chat || []).find(
+    (message) => message.id === messageId,
+  )
+  const conversationId =
+    updatedMessage?.agentConversationId ||
+    (updatedMessage?.agent ? activeAgentConversationId.value : '')
   if (conversationId) scheduleAgentConversationSync(conversationId)
 }
 
@@ -3850,10 +3992,7 @@ async function runCanvasCreation({ type, sourceIds, jobs, batchIndex = 0, batchC
   rightTab.value = 'chat'
   const polls = []
   const resolvedBatchIndex = Math.max(0, Number(batchIndex) || 0)
-  const resolvedBatchCount = Math.max(
-    Number(batchCount) || 0,
-    resolvedBatchIndex + jobs.length,
-  )
+  const resolvedBatchCount = Math.max(Number(batchCount) || 0, resolvedBatchIndex + jobs.length)
 
   try {
     for (let index = 0; index < jobs.length; index += 1) {
@@ -4838,7 +4977,10 @@ function onLayerDblClick(event, layer) {
   }
   if (layer.type === 'text') {
     startEditText(layer)
-  } else if (layer.type === 'image-placeholder' || (layer.type === 'video' && !layer.url)) {
+  } else if (
+    layer.type === 'image-placeholder' ||
+    (layer.type === 'video' && !layer.url && !layer.generating)
+  ) {
     uploadNodeMedia(layer)
   } else if (layer.type === 'video' && layer.url) {
     // 双击视频：打开视频查看器
@@ -5443,6 +5585,63 @@ function updateLayer(id, patch) {
   })
 }
 
+function setCanvasAssetReview(ids, kept) {
+  if (!userStore.requireLogin()) return 0
+  const targetIds = new Set((Array.isArray(ids) ? ids : []).map(String))
+  const targets = reviewableMediaLayers.value.filter((layer) => targetIds.has(String(layer.id)))
+  if (!targets.length) return 0
+
+  pushUndo()
+  const reviewedAt = kept ? Date.now() : null
+  canvas.updateDocument(props.id, (draft) => {
+    draft.payload.layers = draft.payload.layers.map((layer) => {
+      if (!targetIds.has(String(layer.id)) || !isReviewableCanvasAsset(layer)) return layer
+      const next = { ...layer }
+      if (kept) {
+        next.assetReviewStatus = CANVAS_ASSET_REVIEW_STATUS.KEPT
+        next.assetReviewedAt = reviewedAt
+      } else {
+        delete next.assetReviewStatus
+        delete next.assetReviewedAt
+      }
+      return next
+    })
+    return draft
+  })
+  return targets.length
+}
+
+function toggleSelectedCanvasAssetReview() {
+  const targets = selectedReviewMediaLayers.value
+  if (!targets.length) {
+    showCopyPasteToast('请先选择图片或视频')
+    return
+  }
+  const keep = !targets.every(isCanvasAssetKept)
+  const count = setCanvasAssetReview(
+    targets.map((layer) => layer.id),
+    keep,
+  )
+  if (count)
+    showCopyPasteToast(keep ? `已标记 ${count} 个素材为采用` : `已取消 ${count} 个采用标记`)
+}
+
+function deleteUnmarkedCanvasAssets() {
+  const targets = unmarkedMediaLayers.value
+  if (!targets.length) {
+    showCopyPasteToast('没有可删除的未采用素材')
+    return
+  }
+  const keptCount = keptMediaLayers.value.length
+  const warning = keptCount
+    ? `确认删除 ${targets.length} 个未采用的图片或视频？已采用的 ${keptCount} 个素材会保留。`
+    : `当前没有已采用素材。确认删除全部 ${targets.length} 个图片或视频？`
+  if (!window.confirm(warning)) return
+
+  removeLayers(targets.map((layer) => layer.id))
+  showCopyPasteToast(`已删除 ${targets.length} 个未采用素材，可撤销恢复`)
+}
+
 function removeLayers(ids) {
   if (!userStore.requireLogin()) return
 
@@ -5464,17 +5663,14 @@ function removeLayers(ids) {
 
   pushUndo()
   connections.value = connections.value.filter(
-    (connection) =>
-      !deleteSet.has(connection.fromLayerId) && !deleteSet.has(connection.toLayerId),
+    (connection) => !deleteSet.has(connection.fromLayerId) && !deleteSet.has(connection.toLayerId),
   )
 
   const nextDetectedElements = { ...layerDetectedElements.value }
   for (const id of deleteSet) delete nextDetectedElements[id]
   layerDetectedElements.value = nextDetectedElements
   selectedDetectedElements.value = new Set(
-    [...selectedDetectedElements.value].filter(
-      (key) => !deleteSet.has(String(key).split('::')[0]),
-    ),
+    [...selectedDetectedElements.value].filter((key) => !deleteSet.has(String(key).split('::')[0])),
   )
   elementClickPositions.value = Object.fromEntries(
     Object.entries(elementClickPositions.value).filter(
@@ -6317,8 +6513,15 @@ function renderMessageContent(message) {
       html = html.replace(`[${name}]`, pillHtml)
     }
   }
-  // ---- 生图预览卡片 ----
-  if (message.imageUrl && canvasMediaExpanded.value) {
+  // ---- 生成结果预览卡片 ----
+  if (message.videoUrl && canvasMediaExpanded.value) {
+    const videoEsc = escHtml(message.videoUrl)
+    const mid = escHtml(message.id || '')
+    html +=
+      `<div class="chat-gen-preview chat-video-preview" data-msg-id="${mid}">` +
+      `<video src="${videoEsc}" controls playsinline preload="metadata"></video>` +
+      `</div>`
+  } else if (message.imageUrl && canvasMediaExpanded.value) {
     const imgEsc = escHtml(message.imageUrl)
     const mid = escHtml(message.id || '')
     html +=
@@ -6666,6 +6869,10 @@ async function regenerateCanvasLayer(layer) {
 }
 
 async function replayChatGeneration(messageId, { retryFailure = false, button } = {}) {
+  if (getVideoChatReplay(messageId)) {
+    await replayVideoChatGeneration(messageId, { button })
+    return
+  }
   const replay = getChatGenerationReplay(messageId)
   if (!replay?.prompt) {
     showCopyPasteToast('未找到这次生图的原始提示词')
@@ -7093,6 +7300,11 @@ function promptLibraryCategoryLabel(value) {
   return PROMPT_LIBRARY_CATEGORIES.find((item) => item.value === value)?.label || '其他'
 }
 
+function selectPromptLibraryEditorCategory(value) {
+  promptLibraryEditor.category = value
+  promptLibraryCategoryOpen.value = false
+}
+
 async function loadPromptLibrary({ force = false, silent = false } = {}) {
   if (!userStore.token) return
   const cacheIsFresh = promptLibraryLoaded.value && Date.now() - promptLibraryLoadedAt < 60_000
@@ -7141,7 +7353,12 @@ function closePromptLibrary() {
   promptLibraryInsert.item = null
 }
 
-function openPromptLibraryEditor({ item = null, content = '', source = 'MANUAL', category = 'GENERAL' } = {}) {
+function openPromptLibraryEditor({
+  item = null,
+  content = '',
+  source = 'MANUAL',
+  category = 'GENERAL',
+} = {}) {
   const promptContent = String(item?.content ?? content ?? '').trim()
   promptLibraryEditor.id = item?.scope === 'PERSONAL' ? item.id : null
   promptLibraryEditor.title = item?.title || derivePromptLibraryTitle(promptContent)
@@ -7203,9 +7420,10 @@ async function savePromptLibraryItem() {
       }),
     )
     const index = promptLibraryItems.value.findIndex((item) => item.id === saved.id)
-    promptLibraryItems.value = index >= 0
-      ? promptLibraryItems.value.map((item) => (item.id === saved.id ? saved : item))
-      : [saved, ...promptLibraryItems.value]
+    promptLibraryItems.value =
+      index >= 0
+        ? promptLibraryItems.value.map((item) => (item.id === saved.id ? saved : item))
+        : [saved, ...promptLibraryItems.value]
     promptLibraryEditor.visible = false
     promptLibraryView.value = 'mine'
     showCopyPasteToast(id ? '提示词已更新' : '已收藏到提示词库')
@@ -8028,8 +8246,8 @@ async function syncAgentConversationNow(conversationId) {
         body: JSON.stringify({
           canvasId: props.id,
           title:
-            record?.title
-            || agentConversationTitle(messages.find((item) => item.role === 'user')?.text),
+            record?.title ||
+            agentConversationTitle(messages.find((item) => item.role === 'user')?.text),
           messages,
         }),
       }),
@@ -8099,10 +8317,16 @@ async function loadAgentConversationsFromServer() {
   const localRecords = Object.entries(localMessagesById).map(([conversationId, messages]) => {
     const saved = savedRecords.find((record) => String(record.id) === conversationId)
     const firstUserMessage = messages.find((message) => message?.role === 'user')
-    const latestMessageAt = Math.max(...messages.map((message) => Number(message.createdAt) || 0), 0)
+    const latestMessageAt = Math.max(
+      ...messages.map((message) => Number(message.createdAt) || 0),
+      0,
+    )
     return {
       id: conversationId,
-      title: agentConversationTitle(saved?.title, agentConversationTitle(firstUserMessage?.text, '历史对话')),
+      title: agentConversationTitle(
+        saved?.title,
+        agentConversationTitle(firstUserMessage?.text, '历史对话'),
+      ),
       createdAt: Number(saved?.createdAt) || Number(firstUserMessage?.createdAt) || Date.now(),
       updatedAt: Number(saved?.updatedAt) || latestMessageAt || Date.now(),
     }
@@ -8140,11 +8364,12 @@ async function loadAgentConversationsFromServer() {
       const localUpdatedAt = Number(localRecord?.updatedAt) || 0
       const remoteUpdatedAt = Number(remoteRecord?.updatedAt) || 0
       const preferLocal = localMessages.length > 0 && localUpdatedAt > remoteUpdatedAt
-      const sourceMessages = preferLocal || !remoteRecord
-        ? localMessages
-        : Array.isArray(remoteRecord.messages)
-          ? remoteRecord.messages
-          : []
+      const sourceMessages =
+        preferLocal || !remoteRecord
+          ? localMessages
+          : Array.isArray(remoteRecord.messages)
+            ? remoteRecord.messages
+            : []
       if (!sourceMessages.length) continue
       const normalizedMessages = sourceMessages
         .map((message) => ({
@@ -8162,10 +8387,10 @@ async function loadAgentConversationsFromServer() {
           agentConversationTitle(firstUserMessage?.text, '历史对话'),
         ),
         createdAt:
-          Number(localRecord?.createdAt)
-          || Number(remoteRecord?.createdAt)
-          || Number(firstUserMessage?.createdAt)
-          || Date.now(),
+          Number(localRecord?.createdAt) ||
+          Number(remoteRecord?.createdAt) ||
+          Number(firstUserMessage?.createdAt) ||
+          Date.now(),
         updatedAt: Math.max(localUpdatedAt, remoteUpdatedAt),
       })
       if (preferLocal || !remoteRecord) localIdsToSync.push(conversationId)
@@ -8174,7 +8399,8 @@ async function loadAgentConversationsFromServer() {
     mergedRecords.sort((left, right) => right.updatedAt - left.updatedAt)
     agentConversationRecords.value = mergedRecords.slice(0, 50)
     agentConversationMessagesById.value = mergedMessagesById
-    if (!mergedMessagesById[nextActiveId] && mergedRecords[0]?.id) nextActiveId = mergedRecords[0].id
+    if (!mergedMessagesById[nextActiveId] && mergedRecords[0]?.id)
+      nextActiveId = mergedRecords[0].id
     activeAgentConversationId.value = nextActiveId
     const syncResults = await Promise.all(
       localIdsToSync.map((conversationId) => syncAgentConversationNow(conversationId)),
@@ -8290,9 +8516,7 @@ async function deleteAgentConversation(conversationId) {
   } catch (error) {
     console.warn('[agent] 服务端会话删除失败', error?.message || error)
   }
-  showCopyPasteToast(
-    serverDeleted ? '对话已删除' : '对话已从当前列表删除，服务器稍后自动同步',
-  )
+  showCopyPasteToast(serverDeleted ? '对话已删除' : '对话已从当前列表删除，服务器稍后自动同步')
   scrollChatToBottom()
 }
 
@@ -8394,7 +8618,8 @@ function splitAgentDraftPrompt(value) {
     .trim()
   if (!text) return []
 
-  const markerPattern = /(?:^|\n)\s*(?=(?:第\s*\d+\s*(?:张|条|个|版|组|款|套)?|(?:方案|提示词)\s*\d+|\d+\s*[.、）)]\s*)\s*[:：.]?)/g
+  const markerPattern =
+    /(?:^|\n)\s*(?=(?:第\s*\d+\s*(?:张|条|个|版|组|款|套)?|(?:方案|提示词)\s*\d+|\d+\s*[.、）)]\s*)\s*[:：.]?)/g
   const markerIndexes = []
   for (const match of text.matchAll(markerPattern)) {
     const markerIndex = Number(match.index) + String(match[0] || '').length
@@ -8434,11 +8659,10 @@ function agentDraftItems(draft) {
   }
   const prompts = normalizeAgentDraftPrompts(draft.prompts?.length ? draft.prompts : draft.prompt)
   return prompts.map((prompt, index) => ({
-      id: `agent-draft-${index}`,
-      prompt,
-      status: prompts.length > 1 ? 'ready' : draft.status || 'ready',
-    }),
-  )
+    id: `agent-draft-${index}`,
+    prompt,
+    status: prompts.length > 1 ? 'ready' : draft.status || 'ready',
+  }))
 }
 
 function agentDraftActiveIndex(draft) {
@@ -8473,7 +8697,10 @@ function agentDraftPromptParagraphs(value) {
   if (!text) return []
 
   const paragraphs = []
-  for (const line of text.split(/\n+/).map((item) => item.trim()).filter(Boolean)) {
+  for (const line of text
+    .split(/\n+/)
+    .map((item) => item.trim())
+    .filter(Boolean)) {
     const sentences = line.match(/[^。！？!?；;]+[。！？!?；;]?/g) || [line]
     let current = ''
     let sentenceCount = 0
@@ -8511,7 +8738,8 @@ function selectAgentDraft(message, index) {
 function moveAgentDraft(message, offset) {
   const items = agentDraftItems(message?.agentDraft)
   if (items.length < 2) return
-  const nextIndex = (agentDraftActiveIndex(message.agentDraft) + offset + items.length) % items.length
+  const nextIndex =
+    (agentDraftActiveIndex(message.agentDraft) + offset + items.length) % items.length
   selectAgentDraft(message, nextIndex)
 }
 
@@ -8714,8 +8942,7 @@ async function confirmAgentGeneration(message) {
       },
       hideUserMessage: true,
       preserveComposer: true,
-      agentConversationId:
-        message.agentConversationId || activeAgentConversationId.value,
+      agentConversationId: message.agentConversationId || activeAgentConversationId.value,
     })
     updateAgentDraftItemStatus(message.id, activeItem.id, 'submitted')
   } catch (error) {
@@ -8725,7 +8952,410 @@ async function confirmAgentGeneration(message) {
 }
 
 function handleComposerSubmit() {
-  return chatMode.value === 'agent' ? runCanvasAgent() : sendChat()
+  if (chatMode.value === 'agent') return runCanvasAgent()
+  if (chatMode.value === 'video') return sendVideoChat()
+  return sendChat()
+}
+
+const VIDEO_TASK_POLL_INTERVAL = 4000
+const VIDEO_TASK_MAX_POLLS = 900
+const pollingVideoTaskIds = new Set()
+
+function canvasVideoSize(ratio = '16:9') {
+  const [rawWidth, rawHeight] = String(ratio).split(':').map(Number)
+  const aspect = rawWidth > 0 && rawHeight > 0 ? rawWidth / rawHeight : 16 / 9
+  const width = CANVAS_IMAGE_WIDTH
+  return { width, height: Math.max(180, Math.round(width / aspect)) }
+}
+
+function extractVideoTaskUrl(task) {
+  const urls = task?.videoUrls || task?.video_urls || task?.videos || []
+  if (Array.isArray(urls)) {
+    const match = urls.find((url) => typeof url === 'string' && url.trim())
+    if (match) return match.trim()
+  }
+  return String(task?.videoUrl || task?.video_url || task?.url || '').trim()
+}
+
+async function submitVideoTask({
+  prompt,
+  imageUrls,
+  model,
+  ratio,
+  resolution,
+  duration,
+  generateAudio,
+  clientTaskId,
+}) {
+  const data = await readApiResponse(
+    await fetch(apiPath('/api/video-tasks'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...userStore.authHeaders(),
+      },
+      body: JSON.stringify({
+        prompt,
+        model,
+        ratio,
+        resolution,
+        durationSeconds: duration,
+        generate_audio: generateAudio,
+        image_urls: imageUrls,
+        client_task_id: clientTaskId,
+      }),
+    }),
+  )
+  const taskId = String(data?.taskId || data?.task_id || '').trim()
+  if (!taskId) throw new Error('视频任务提交成功，但没有返回 task_id')
+  return taskId
+}
+
+async function fetchVideoTask(taskId) {
+  return readApiResponse(
+    await fetch(apiPath('/api/video-tasks/' + encodeURIComponent(taskId)), {
+      headers: { ...userStore.authHeaders() },
+    }),
+  )
+}
+
+function addGeneratingVideoLayer(prompt, config, assistantId, sourceLayerIds) {
+  pushUndo()
+  const size = canvasVideoSize(config.ratio)
+  const position = findAvailableCanvasLayerPosition(size.width, size.height)
+  let layerId = ''
+  canvas.updateDocument(props.id, (draft) => {
+    const index = draft.payload.layers.length
+    const maxZ = draft.payload.layers.reduce((max, layer) => Math.max(max, layer.zIndex || 0), 0)
+    layerId = `video-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+    draft.payload.layers.push({
+      id: layerId,
+      name: layerName(index),
+      type: 'video',
+      url: '',
+      thumbnailUrl: '',
+      width: size.width,
+      height: size.height,
+      x: position.x,
+      y: position.y,
+      zIndex: maxZ + 1,
+      visible: true,
+      locked: false,
+      source: 'THQ 视频生成',
+      generating: true,
+      progress: 1,
+      status: 'queued',
+      statusText: '视频任务正在提交…',
+      prompt,
+      assistantId,
+      sourceLayerIds: [...sourceLayerIds],
+      videoMeta: { ...config },
+      createdAt: Date.now(),
+    })
+    return draft
+  })
+  selectedLayerId.value = layerId
+  selectedLayerIds.value = [layerId]
+  return layerId
+}
+
+async function pollVideoTaskUntilDone(taskId, layerId, assistantId = '') {
+  for (let index = 0; index < VIDEO_TASK_MAX_POLLS; index += 1) {
+    await wait(VIDEO_TASK_POLL_INTERVAL)
+    if (!_mounted.value) return false
+    if (!layers.value.some((layer) => layer.id === layerId)) return false
+
+    const task = await fetchVideoTask(taskId)
+    const status = normalizeStatus(task?.status) || 'processing'
+    const progress = Math.min(
+      99,
+      Math.max(1, Number.isFinite(Number(task?.progress)) ? Number(task.progress) : 5 + index),
+    )
+    if (status === 'failed' || status === 'canceled') {
+      const failureMessage = task?.error || '视频生成失败'
+      updateLayer(layerId, {
+        taskId,
+        generating: false,
+        status: 'failed',
+        progress: 100,
+        statusText: failureMessage,
+        lastError: failureMessage,
+      })
+      if (assistantId) {
+        updateChatMessage(assistantId, {
+          taskId,
+          text: `视频生成失败：${failureMessage}`,
+          generating: false,
+          failed: true,
+        })
+      }
+      void canvas.flushNow?.(props.id)
+      throw new Error(failureMessage)
+    }
+    updateLayer(layerId, {
+      taskId,
+      status,
+      progress,
+      statusText:
+        status === 'persisting'
+          ? '视频已生成，正在转存到素材空间…'
+          : `视频生成中 ${Math.round(progress)}%`,
+    })
+    if (assistantId) {
+      updateChatMessage(assistantId, {
+        taskId,
+        text:
+          status === 'persisting'
+            ? '视频已生成，正在转存到素材空间…'
+            : `视频生成中 ${Math.round(progress)}%`,
+        generating: true,
+      })
+    }
+
+    if (status !== 'completed') continue
+
+    const videoUrl = extractVideoTaskUrl(task)
+    if (!videoUrl) throw new Error('视频任务已完成，但没有返回视频地址')
+    updateLayer(layerId, {
+      url: videoUrl,
+      generating: false,
+      progress: 100,
+      status: 'completed',
+      statusText: '视频生成完成',
+    })
+    if (assistantId) {
+      updateChatMessage(assistantId, {
+        taskId,
+        text: '视频生成完成，已添加到画布。',
+        videoUrl,
+        generating: false,
+        failed: false,
+      })
+    }
+    void canvas.flushNow?.(props.id)
+    return true
+  }
+  throw new Error('视频生成等待超时，请稍后在画布中继续查看')
+}
+
+async function startVideoTaskPoll(taskId, layerId, assistantId = '') {
+  if (!taskId || pollingVideoTaskIds.has(taskId)) return false
+  pollingVideoTaskIds.add(taskId)
+  try {
+    return await pollVideoTaskUntilDone(taskId, layerId, assistantId)
+  } finally {
+    pollingVideoTaskIds.delete(taskId)
+  }
+}
+
+function resumePendingVideoTasks() {
+  for (const layer of layers.value) {
+    if (layer.type !== 'video' || !layer.generating || !layer.taskId) continue
+    if (pollingVideoTaskIds.has(layer.taskId)) continue
+    void startVideoTaskPoll(layer.taskId, layer.id, layer.assistantId || '').catch((error) => {
+      updateLayer(layer.id, {
+        generating: false,
+        status: 'failed',
+        statusText: error?.message || '视频任务恢复失败',
+      })
+    })
+  }
+}
+
+watch(
+  () =>
+    layers.value
+      .filter((layer) => layer.type === 'video' && layer.generating && layer.taskId)
+      .map((layer) => `${layer.id}:${layer.taskId}:${layer.status}`)
+      .join('|'),
+  () => {
+    if (_mounted.value) nextTick(() => resumePendingVideoTasks())
+  },
+  { flush: 'post' },
+)
+
+async function sendVideoChat(options = {}) {
+  const prompt = String(options.prompt ?? getEditorPrompt()).trim()
+  if (!prompt) return
+  if (!userStore.requireLogin()) return
+  if (prompt.length > 2500) {
+    showCopyPasteToast('视频提示词不能超过 2500 个字符')
+    return
+  }
+  if (!options.references && chatReferenceImages.value.some((image) => image.uploading)) {
+    showCopyPasteToast('参考图仍在上传，请稍后再发送')
+    return
+  }
+
+  const selectedIds = new Set(
+    selectedLayerIds.value.length
+      ? selectedLayerIds.value
+      : selectedLayerId.value
+        ? [selectedLayerId.value]
+        : [],
+  )
+  const selectedReferences = options.references
+    ? []
+    : layers.value
+        .filter((layer) => selectedIds.has(layer.id) && isRealImageLayer(layer))
+        .map((layer) => ({ url: layer.url, layerId: layer.id }))
+  const composerReferences = (options.references || chatReferenceImages.value)
+    .filter(
+      (image) =>
+        !image.uploading && !image.error && image.url && !String(image.url).startsWith('blob:'),
+    )
+    .map((image) => ({ url: image.url, layerId: image.layerId || '' }))
+  const referenceMap = new Map()
+  for (const reference of [...composerReferences, ...selectedReferences]) {
+    if (!referenceMap.has(reference.url)) referenceMap.set(reference.url, reference)
+  }
+  const references = [...referenceMap.values()].slice(0, 15)
+  const imageUrls = references.map((reference) => reference.url)
+  const sourceLayerIds = [
+    ...new Set(references.map((reference) => reference.layerId).filter(Boolean)),
+  ]
+  const requestedConfig = options.config || {}
+  const requestedModel = videoModelOptions.some((option) => option.value === requestedConfig.model)
+    ? requestedConfig.model
+    : videoModel.value
+  const config = {
+    model: requestedModel,
+    ratio: videoRatioOptions.includes(requestedConfig.ratio)
+      ? requestedConfig.ratio
+      : videoRatio.value,
+    resolution: videoResolutionForModel(requestedModel),
+    duration: 15,
+    generateAudio:
+      typeof requestedConfig.generateAudio === 'boolean'
+        ? requestedConfig.generateAudio
+        : videoGenerateAudio.value,
+  }
+  const createdAt = Date.now()
+  const assistantId = `msg-${createdAt}-video`
+  const messageReferences = references.map((reference) => ({ ...reference }))
+  const submittedVideoText = references.length
+    ? `已携带 ${references.length} 张参考图提交视频任务，正在排队生成。`
+    : '已提交视频任务，正在排队生成。'
+  const userMessage = {
+    id: `msg-${createdAt}`,
+    role: 'user',
+    text: prompt,
+    createdAt,
+    referenceImages: messageReferences,
+    sourceLayerIds,
+  }
+  const assistantMessage = {
+    id: assistantId,
+    role: 'assistant',
+    text: submittedVideoText,
+    model: config.model,
+    ratio: config.ratio,
+    resolution: config.resolution,
+    duration: config.duration,
+    createdAt: createdAt + 1,
+    generating: true,
+    failed: false,
+    videoGeneration: true,
+    videoRequest: {
+      prompt,
+      ...config,
+      referenceImages: messageReferences,
+      sourceLayerIds,
+    },
+  }
+  addChatMessages(options.hideUserMessage ? [assistantMessage] : [userMessage, assistantMessage])
+  const layerId = addGeneratingVideoLayer(prompt, config, assistantId, sourceLayerIds)
+  connectCreationSources(sourceLayerIds, layerId)
+  if (!options.preserveComposer) clearChatComposer()
+  activeChatTaskCount.value += 1
+
+  try {
+    const taskId = await submitVideoTask({
+      prompt,
+      imageUrls,
+      ...config,
+      clientTaskId: assistantId,
+    })
+    updateLayer(layerId, {
+      taskId,
+      status: 'queued',
+      progress: 3,
+      statusText: '视频任务已提交，等待生成…',
+    })
+    updateChatMessage(assistantId, { taskId, text: submittedVideoText })
+    await startVideoTaskPoll(taskId, layerId, assistantId)
+    return true
+  } catch (error) {
+    const message = error?.message || '视频生成失败'
+    updateLayer(layerId, {
+      generating: false,
+      status: 'failed',
+      statusText: message,
+      lastError: message,
+    })
+    updateChatMessage(assistantId, {
+      text: `视频生成失败：${message}`,
+      generating: false,
+      failed: true,
+    })
+    showCopyPasteToast(message)
+    return false
+  } finally {
+    activeChatTaskCount.value = Math.max(0, activeChatTaskCount.value - 1)
+  }
+}
+
+function getVideoChatReplay(messageId) {
+  const chat = doc.value?.payload?.chat || []
+  const messageIndex = chat.findIndex((message) => message.id === messageId)
+  const assistantMessage = messageIndex >= 0 ? chat[messageIndex] : null
+  if (!assistantMessage?.videoGeneration) return null
+
+  const userMessage =
+    messageIndex > 0 && chat[messageIndex - 1]?.role === 'user' ? chat[messageIndex - 1] : {}
+  const stored = assistantMessage.videoRequest || {}
+  const legacyResolution = String(assistantMessage.resolution || '')
+  const durationMatch = legacyResolution.match(/(\d+)\s*秒/)
+  const references = (stored.referenceImages || userMessage.referenceImages || [])
+    .filter((reference) => reference?.url)
+    .map((reference) => ({ url: reference.url, layerId: reference.layerId || '' }))
+
+  return {
+    prompt: String(stored.prompt || userMessage.text || '').trim(),
+    references,
+    config: {
+      model: stored.model || assistantMessage.model || videoModel.value,
+      ratio: stored.ratio || assistantMessage.ratio || videoRatio.value,
+      resolution:
+        stored.resolution || legacyResolution.split('·')[0].trim() || videoResolution.value,
+      duration: Number(stored.duration || assistantMessage.duration || durationMatch?.[1] || 15),
+      generateAudio:
+        typeof stored.generateAudio === 'boolean' ? stored.generateAudio : videoGenerateAudio.value,
+    },
+  }
+}
+
+async function replayVideoChatGeneration(messageId, { button } = {}) {
+  const replay = getVideoChatReplay(messageId)
+  if (!replay?.prompt) {
+    showCopyPasteToast('未找到这次视频生成的原始提示词')
+    return
+  }
+  if (button) button.disabled = true
+  updateChatMessage(messageId, { retrying: true })
+  try {
+    const submitted = await sendVideoChat({
+      prompt: replay.prompt,
+      references: replay.references,
+      config: replay.config,
+      hideUserMessage: true,
+      preserveComposer: true,
+    })
+    updateChatMessage(messageId, { retrying: false, retried: submitted })
+  } finally {
+    updateChatMessage(messageId, { retrying: false })
+    if (button) button.disabled = false
+  }
 }
 
 async function enhanceAgentPrompt() {
@@ -10050,6 +10680,7 @@ onMounted(() => {
   setTimeout(() => {
     resumeInterruptedPlaceholders()
     resumePersistingImageLayers()
+    resumePendingVideoTasks()
     retryFailedNoTaskPlaceholders()
     cleanupDeadPlaceholders()
     purgeEmptyUrlPlaceholders()
@@ -11001,6 +11632,30 @@ function contextMenuAddToMaterials() {
   if (contextMenu.layer) addLayerToMaterials(contextMenu.layer)
   closeContextMenu()
 }
+function contextMenuReviewLayers() {
+  const targetId = contextMenu.layerId
+  const ids =
+    selectedLayerIds.value.length > 1 && selectedLayerIds.value.includes(targetId)
+      ? [...selectedLayerIds.value]
+      : [targetId]
+  return selectedReviewableCanvasAssets(layers.value, ids)
+}
+function contextMenuReviewLabel() {
+  const targets = contextMenuReviewLayers()
+  if (!targets.length) return '标为采用'
+  return targets.every(isCanvasAssetKept) ? '取消采用标记' : '标为采用'
+}
+function contextMenuToggleAssetReview() {
+  const targets = contextMenuReviewLayers()
+  const keep = !targets.every(isCanvasAssetKept)
+  const count = setCanvasAssetReview(
+    targets.map((layer) => layer.id),
+    keep,
+  )
+  closeContextMenu()
+  if (count)
+    showCopyPasteToast(keep ? `已标记 ${count} 个素材为采用` : `已取消 ${count} 个采用标记`)
+}
 function contextMenuDeleteLayer() {
   if (contextMenu.layerId) removeLayer(contextMenu.layerId)
   closeContextMenu()
@@ -11857,10 +12512,7 @@ async function loadImageForCropUncached(layer) {
       img.onload = () => finish(img)
       img.onerror = () => finish(null)
       img.src = blobUrl
-      timer = setTimeout(
-        () => finish(img.complete && img.naturalWidth > 0 ? img : null),
-        12000,
-      )
+      timer = setTimeout(() => finish(img.complete && img.naturalWidth > 0 ? img : null), 12000)
     })
   } catch (e) {
     console.error('[crop] 可读图片加载失败，尝试 crossOrigin:', e)
@@ -11879,10 +12531,7 @@ async function loadImageForCropUncached(layer) {
       img.onerror = () => finish(null)
       const separator = sourceUrl.includes('?') ? '&' : '?'
       img.src = `${sourceUrl}${separator}_cv=${Date.now()}`
-      timer = setTimeout(
-        () => finish(img.complete && img.naturalWidth > 0 ? img : null),
-        12000,
-      )
+      timer = setTimeout(() => finish(img.complete && img.naturalWidth > 0 ? img : null), 12000)
     })
   }
 }
@@ -11980,12 +12629,16 @@ async function loadImageForCropUncached(layer) {
             class="uc-canvas-media-deck"
             :class="{ expanded: canvasMediaExpanded }"
             :title="canvasMediaExpanded ? '收起画布图片' : `展开并加载 ${canvasMediaCount} 张图片`"
-            :aria-label="canvasMediaExpanded ? '收起画布图片' : `展开并加载 ${canvasMediaCount} 张图片`"
+            :aria-label="
+              canvasMediaExpanded ? '收起画布图片' : `展开并加载 ${canvasMediaCount} 张图片`
+            "
             :aria-expanded="canvasMediaExpanded"
             @click.stop="toggleCanvasMedia"
           >
             <span class="uc-media-deck-cards" aria-hidden="true">
-              <i></i><i></i><i></i>
+              <i></i>
+              <i></i>
+              <i></i>
             </span>
             <span class="uc-media-deck-copy">
               <strong>{{ canvasMediaExpanded ? '收起图片' : '展开图片' }}</strong>
@@ -12037,7 +12690,7 @@ async function loadImageForCropUncached(layer) {
         </button>
       </aside>
 
-      <!-- 左侧 + 号分类菜单栏（已合并到 bottom-tools 的 uc-toolbar-add-btn 弹层） -->
+      <!-- + 号分类菜单栏（已合并到底部工具栏的 uc-toolbar-add-btn 弹层） -->
       <div
         :class="[
           'stage',
@@ -12116,6 +12769,7 @@ async function loadImageForCropUncached(layer) {
               'canvas-layer',
               {
                 selected: selectedLayerIds.includes(layer.id),
+                'is-kept': isCanvasAssetKept(layer),
                 'multi-selected':
                   selectedLayerIds.length > 1 && selectedLayerIds.includes(layer.id),
                 'is-placeholder': layer.type === 'placeholder',
@@ -12155,6 +12809,14 @@ async function loadImageForCropUncached(layer) {
             >
               <span class="layer-detecting-spinner" />
               <span class="layer-detecting-text">AI 检测元素中...</span>
+            </div>
+            <div
+              v-if="isCanvasAssetKept(layer)"
+              class="uc-asset-kept-badge"
+              aria-label="已采用"
+              title="已采用"
+            >
+              <i class="ri-bookmark-3-fill" aria-hidden="true"></i>
             </div>
             <template
               v-if="
@@ -12522,16 +13184,23 @@ async function loadImageForCropUncached(layer) {
                   </div>
                 </template>
                 <template v-else>
-                  <!-- 视频占位态：暖金品牌色 + 虚线框 + 图标 + 提示词 -->
-                  <div class="uc-image-placeholder-inner">
-                    <div class="uc-placeholder-icon">
-                      <i class="ri-video-line"></i>
+                  <div v-if="layer.generating" class="uc-video-generating">
+                    <i class="ri-movie-ai-line" aria-hidden="true"></i>
+                    <strong>{{ Math.min(99, Math.round(layer.progress || 0)) }}%</strong>
+                    <span>{{ layer.statusText || '视频生成中…' }}</span>
+                  </div>
+                  <template v-else>
+                    <!-- 视频占位态：双击后可上传本地视频 -->
+                    <div class="uc-image-placeholder-inner">
+                      <div class="uc-placeholder-icon">
+                        <i class="ri-video-line"></i>
+                      </div>
                     </div>
-                  </div>
-                  <div class="uc-text-node-hint" @pointerdown.stop @click.stop.exact>
-                    <i class="ri-edit-line"></i>
-                    提示词
-                  </div>
+                    <div class="uc-text-node-hint" @pointerdown.stop @click.stop.exact>
+                      <i class="ri-upload-2-line"></i>
+                      双击上传
+                    </div>
+                  </template>
                 </template>
                 <button
                   class="uc-node-close"
@@ -13421,6 +14090,7 @@ async function loadImageForCropUncached(layer) {
 
       <nav
         class="bottom-tools uc-sidebar-tools uc-floating uc-floating-toolbar is-docked"
+        :style="toolbarStyle"
         aria-label="画布工具栏"
         @pointerdown.stop
       >
@@ -13455,6 +14125,36 @@ async function loadImageForCropUncached(layer) {
           @click="autoArrangeImages"
         >
           <i class="ri-layout-grid-line" aria-hidden="true"></i>
+        </button>
+        <button
+          type="button"
+          class="uc-sidebar-tool-btn uc-asset-review-toggle"
+          :class="{ active: selectedReviewMediaAllKept }"
+          :disabled="!selectedReviewMediaLayers.length"
+          :title="reviewMarkActionTitle"
+          :aria-label="reviewMarkActionTitle"
+          @click="toggleSelectedCanvasAssetReview"
+        >
+          <i
+            :class="selectedReviewMediaAllKept ? 'ri-bookmark-3-fill' : 'ri-bookmark-3-line'"
+            aria-hidden="true"
+          ></i>
+          <span v-if="selectedReviewMediaLayers.length" class="uc-asset-action-count">
+            {{ selectedReviewMediaLayers.length }}
+          </span>
+        </button>
+        <button
+          type="button"
+          class="uc-sidebar-tool-btn uc-asset-cleanup-button"
+          :disabled="!unmarkedMediaLayers.length"
+          :title="deleteUnmarkedActionTitle"
+          :aria-label="deleteUnmarkedActionTitle"
+          @click="deleteUnmarkedCanvasAssets"
+        >
+          <i class="ri-delete-bin-6-line" aria-hidden="true"></i>
+          <span v-if="unmarkedMediaLayers.length" class="uc-asset-action-count">
+            {{ unmarkedMediaLayers.length }}
+          </span>
         </button>
         <div class="uc-sidebar-tool-sep"></div>
         <button
@@ -13523,11 +14223,7 @@ async function loadImageForCropUncached(layer) {
         </header>
 
         <section v-if="rightTab === 'chat'" class="chat-panel uc-chat">
-          <div
-            v-if="chatMode === 'agent'"
-            class="uc-agent-conversation-bar"
-            @click.stop
-          >
+          <div v-if="chatMode === 'agent'" class="uc-agent-conversation-bar" @click.stop>
             <strong :title="activeAgentConversationTitle">
               {{ activeAgentConversationTitle }}
             </strong>
@@ -13694,7 +14390,11 @@ async function loadImageForCropUncached(layer) {
                         :aria-label="`查看提示词方案 ${itemIndex + 1}`"
                         @click.stop="selectAgentDraft(message, itemIndex)"
                       >
-                        <i v-if="item.status === 'submitted'" class="ri-check-line" aria-hidden="true"></i>
+                        <i
+                          v-if="item.status === 'submitted'"
+                          class="ri-check-line"
+                          aria-hidden="true"
+                        ></i>
                         <span>{{ itemIndex + 1 }}</span>
                       </button>
                     </div>
@@ -13707,11 +14407,7 @@ async function loadImageForCropUncached(layer) {
                       <i class="ri-arrow-right-s-line" aria-hidden="true"></i>
                     </button>
                   </nav>
-                  <div
-                    class="uc-agent-draft-prompt"
-                    tabindex="0"
-                    aria-label="当前提示词内容"
-                  >
+                  <div class="uc-agent-draft-prompt" tabindex="0" aria-label="当前提示词内容">
                     <div
                       v-for="(paragraph, paragraphIndex) in agentDraftPromptParagraphs(
                         agentDraftActiveItem(message.agentDraft)?.prompt,
@@ -13734,7 +14430,9 @@ async function loadImageForCropUncached(layer) {
                     <span v-if="agentDraftActiveItem(message.agentDraft)?.status === 'submitted'">
                       当前方案已提交，可切换其他方案继续生图
                     </span>
-                    <span v-else-if="agentDraftActiveItem(message.agentDraft)?.status === 'submitting'">
+                    <span
+                      v-else-if="agentDraftActiveItem(message.agentDraft)?.status === 'submitting'"
+                    >
                       当前方案正在提交
                     </span>
                     <span v-else>不满意可继续发消息修改</span>
@@ -13766,25 +14464,33 @@ async function loadImageForCropUncached(layer) {
                   </footer>
                 </section>
                 <div v-if="message.role === 'assistant' && message.model" class="uc-chat-msg-meta">
-                  {{ message.model }} · {{ message.ratio }} · {{ message.resolution }} ·
+                  {{ message.model }} · {{ message.ratio }} · {{ message.resolution }}
+                  <template v-if="message.videoGeneration && message.duration">
+                    · {{ message.duration }}秒
+                  </template>
+                  ·
                   {{ formatMetaTime(message.createdAt) }}
                 </div>
               </div>
             </div>
             <div v-if="!chatMessages.length" class="chat-empty">
-              <i>☏</i>
+              <i :class="chatModeIcon" aria-hidden="true"></i>
               <strong>
                 {{
                   chatMode === 'agent'
                     ? 'Agent：先沟通并优化提示词，确认后再生图'
-                    : '对话生图：通过自然语言修改画布上的图片'
+                    : chatMode === 'video'
+                      ? '视频生成：描述画面、动作与运镜'
+                      : '对话生图：通过自然语言修改画布上的图片'
                 }}
               </strong>
               <span>
                 {{
                   chatMode === 'agent'
                     ? '添加参考图或描述想法，满意后点击“确认生图”'
-                    : '点选画布上的图片，再描述你想要的修改'
+                    : chatMode === 'video'
+                      ? '可添加首帧和参考图，也可以直接通过文字生成视频'
+                      : '点选画布上的图片，再描述你想要的修改'
                 }}
               </span>
             </div>
@@ -13923,11 +14629,19 @@ async function loadImageForCropUncached(layer) {
                   :data-placeholder="
                     chatMode === 'agent'
                       ? '上传图片或告诉 Agent 你想怎么优化'
-                      : chatReferenceImages.length
-                        ? '请输入对参考图的修改要求'
-                        : '请输入你想生成的画面描述'
+                      : chatMode === 'video'
+                        ? '描述你想生成的视频画面和运镜'
+                        : chatReferenceImages.length
+                          ? '请输入对参考图的修改要求'
+                          : '请输入你想生成的画面描述'
                   "
-                  :aria-label="chatMode === 'agent' ? '与 Agent 沟通' : '生图提示词'"
+                  :aria-label="
+                    chatMode === 'agent'
+                      ? '与 Agent 沟通'
+                      : chatMode === 'video'
+                        ? '视频生成提示词'
+                        : '生图提示词'
+                  "
                   contenteditable="true"
                   @input="handleEditorInput"
                   @click="handleEditorPillClick"
@@ -13938,7 +14652,11 @@ async function loadImageForCropUncached(layer) {
                   @keydown.backspace="handleEditorBackspace"
                 />
               </div>
-              <div class="uc-chat-generate-options" @click.stop="closeChatSelect">
+              <div
+                v-if="chatMode !== 'video'"
+                class="uc-chat-generate-options"
+                @click.stop="closeChatSelect"
+              >
                 <label>
                   <span>模型</span>
                   <div class="uc-custom-select" :class="{ open: chatSelectOpen === 'model' }">
@@ -14051,21 +14769,150 @@ async function loadImageForCropUncached(layer) {
                   </div>
                 </label>
               </div>
+              <div
+                v-else
+                class="uc-chat-generate-options uc-video-generate-options"
+                @click.stop="closeChatSelect"
+              >
+                <label>
+                  <span>视频模型</span>
+                  <div class="uc-custom-select" :class="{ open: chatSelectOpen === 'video-model' }">
+                    <button
+                      type="button"
+                      class="uc-custom-select-trigger"
+                      :title="videoModelLabel"
+                      @click.stop="toggleChatSelect('video-model')"
+                    >
+                      {{ videoModelLabel }}
+                      <i class="ri-arrow-down-s-line"></i>
+                    </button>
+                    <div v-if="chatSelectOpen === 'video-model'" class="uc-custom-select-menu">
+                      <button
+                        v-for="model in videoModelOptions"
+                        :key="model.value"
+                        type="button"
+                        class="uc-custom-select-item"
+                        :class="{ active: videoModel === model.value }"
+                        @click.stop="selectChatOption('video-model', model.value)"
+                      >
+                        {{ model.label }}
+                      </button>
+                    </div>
+                  </div>
+                </label>
+                <label>
+                  <span>比例</span>
+                  <div class="uc-custom-select" :class="{ open: chatSelectOpen === 'video-ratio' }">
+                    <button
+                      type="button"
+                      class="uc-custom-select-trigger"
+                      @click.stop="toggleChatSelect('video-ratio')"
+                    >
+                      {{ videoRatioLabel }}
+                      <i class="ri-arrow-down-s-line"></i>
+                    </button>
+                    <div v-if="chatSelectOpen === 'video-ratio'" class="uc-custom-select-menu">
+                      <button
+                        v-for="ratio in videoRatioOptions"
+                        :key="ratio"
+                        type="button"
+                        class="uc-custom-select-item"
+                        :class="{ active: videoRatio === ratio }"
+                        @click.stop="selectChatOption('video-ratio', ratio)"
+                      >
+                        {{ ratio === 'adaptive' ? '自适应' : ratio }}
+                      </button>
+                    </div>
+                  </div>
+                </label>
+                <label>
+                  <span>清晰度</span>
+                  <div
+                    class="uc-custom-select"
+                    :class="{ open: chatSelectOpen === 'video-resolution' }"
+                  >
+                    <button
+                      type="button"
+                      class="uc-custom-select-trigger"
+                      @click.stop="toggleChatSelect('video-resolution')"
+                    >
+                      {{ videoResolution }}
+                      <i class="ri-arrow-down-s-line"></i>
+                    </button>
+                    <div v-if="chatSelectOpen === 'video-resolution'" class="uc-custom-select-menu">
+                      <button
+                        v-for="resolution in videoResolutionOptions"
+                        :key="resolution"
+                        type="button"
+                        class="uc-custom-select-item"
+                        :class="{ active: videoResolution === resolution }"
+                        @click.stop="selectChatOption('video-resolution', resolution)"
+                      >
+                        {{ resolution }}
+                      </button>
+                    </div>
+                  </div>
+                </label>
+                <label>
+                  <span>时长</span>
+                  <div
+                    class="uc-custom-select"
+                    :class="{ open: chatSelectOpen === 'video-duration' }"
+                  >
+                    <button
+                      type="button"
+                      class="uc-custom-select-trigger"
+                      @click.stop="toggleChatSelect('video-duration')"
+                    >
+                      {{ videoDuration }} 秒
+                      <i class="ri-arrow-down-s-line"></i>
+                    </button>
+                    <div v-if="chatSelectOpen === 'video-duration'" class="uc-custom-select-menu">
+                      <button
+                        v-for="duration in videoDurationOptions"
+                        :key="duration"
+                        type="button"
+                        class="uc-custom-select-item"
+                        :class="{ active: videoDuration === duration }"
+                        @click.stop="selectChatOption('video-duration', duration)"
+                      >
+                        {{ duration }} 秒
+                      </button>
+                    </div>
+                  </div>
+                </label>
+                <label>
+                  <span>声音</span>
+                  <button
+                    type="button"
+                    class="uc-video-audio-toggle"
+                    :class="{ active: videoGenerateAudio }"
+                    :aria-pressed="videoGenerateAudio"
+                    @click.stop="videoGenerateAudio = !videoGenerateAudio"
+                  >
+                    <i
+                      :class="videoGenerateAudio ? 'ri-volume-up-line' : 'ri-volume-mute-line'"
+                      aria-hidden="true"
+                    ></i>
+                    {{ videoGenerateAudio ? '开启' : '关闭' }}
+                  </button>
+                </label>
+              </div>
               <footer class="uc-bottom-toolbar">
                 <div class="uc-bottom-toolbar-left">
                   <div class="uc-chat-mode-select">
                     <button
                       type="button"
                       class="uc-chat-mode-trigger"
-                      :class="{ 'is-agent': chatMode === 'agent' }"
+                      :class="{
+                        'is-agent': chatMode === 'agent',
+                        'is-video': chatMode === 'video',
+                      }"
                       :aria-expanded="chatModeMenuOpen"
                       aria-haspopup="menu"
                       @click.stop="toggleChatModeMenu"
                     >
-                      <i
-                        :class="chatMode === 'agent' ? 'ri-robot-2-line' : 'ri-image-line'"
-                        aria-hidden="true"
-                      ></i>
+                      <i :class="chatModeIcon" aria-hidden="true"></i>
                       <span>{{ chatModeLabel }}</span>
                       <i class="ri-arrow-up-s-line" aria-hidden="true"></i>
                     </button>
@@ -14096,7 +14943,9 @@ async function loadImageForCropUncached(layer) {
                     {{
                       chatMode === 'agent'
                         ? '确认后才生图'
-                        : `${chatTotalGenerationCount} 张 · 预计 ${chatEstimatedMiCost} 米值`
+                        : chatMode === 'video'
+                          ? `${videoDuration} 秒 · 预计 ${VIDEO_MI_COST} 米值`
+                          : `${chatTotalGenerationCount} 张 · 预计 ${chatEstimatedMiCost} 米值`
                     }}
                   </span>
                 </div>
@@ -14176,9 +15025,7 @@ async function loadImageForCropUncached(layer) {
             <span>◉</span>
             <img
               v-if="
-                canvasMediaExpanded &&
-                layer.thumbnailUrl &&
-                !brokenImages.has('thumb-' + layer.id)
+                canvasMediaExpanded && layer.thumbnailUrl && !brokenImages.has('thumb-' + layer.id)
               "
               :src="layer.thumbnailUrl"
               alt=""
@@ -14189,6 +15036,12 @@ async function loadImageForCropUncached(layer) {
               <strong>{{ layerName(layers.findIndex((item) => item.id === layer.id)) }}</strong>
               <small>{{ Math.round(layer.width) }} x {{ Math.round(layer.height) }}</small>
             </span>
+            <i
+              v-if="isCanvasAssetKept(layer)"
+              class="ri-bookmark-3-fill uc-layer-kept-icon"
+              title="已采用"
+              aria-label="已采用"
+            ></i>
             <em>▣</em>
           </button>
         </section>
@@ -14204,11 +15057,7 @@ async function loadImageForCropUncached(layer) {
             class="gh-record"
           >
             <img
-              v-if="
-                canvasMediaExpanded &&
-                record.imageUrl &&
-                !brokenImages.has('rec-' + record.id)
-              "
+              v-if="canvasMediaExpanded && record.imageUrl && !brokenImages.has('rec-' + record.id)"
               :src="record.imageUrl"
               alt=""
               @error="markImageBroken('rec-' + record.id)"
@@ -14643,7 +15492,9 @@ async function loadImageForCropUncached(layer) {
                     v-if="record.prompt"
                     class="uc-history-act"
                     title="收藏到提示词库"
-                    @click.stop="openPromptLibraryEditor({ content: record.prompt, source: 'HISTORY' })"
+                    @click.stop="
+                      openPromptLibraryEditor({ content: record.prompt, source: 'HISTORY' })
+                    "
                   >
                     <i class="ri-bookmark-line"></i>
                   </button>
@@ -14703,11 +15554,20 @@ async function loadImageForCropUncached(layer) {
               <i class="ri-close-circle-fill" aria-hidden="true"></i>
             </button>
           </label>
-          <button type="button" class="uc-prompt-library-save-current" @click="saveCurrentComposerToPromptLibrary">
+          <button
+            type="button"
+            class="uc-prompt-library-save-current"
+            @click="saveCurrentComposerToPromptLibrary"
+          >
             <i class="ri-bookmark-line" aria-hidden="true"></i>
             收藏当前输入
           </button>
-          <button type="button" class="uc-prompt-library-new" title="新建提示词" @click="openPromptLibraryEditor()">
+          <button
+            type="button"
+            class="uc-prompt-library-new"
+            title="新建提示词"
+            @click="openPromptLibraryEditor()"
+          >
             <i class="ri-add-line" aria-hidden="true"></i>
           </button>
         </div>
@@ -14743,7 +15603,9 @@ async function loadImageForCropUncached(layer) {
           </div>
           <div v-else-if="!filteredPromptLibraryItems.length" class="uc-prompt-library-state">
             <i class="ri-book-open-line" aria-hidden="true"></i>
-            <strong>{{ promptLibraryView === 'recent' ? '暂无最近使用' : '没有找到提示词' }}</strong>
+            <strong>
+              {{ promptLibraryView === 'recent' ? '暂无最近使用' : '没有找到提示词' }}
+            </strong>
             <span>可以收藏输入框、Agent 或反推得到的提示词</span>
           </div>
           <div v-else class="uc-prompt-library-list">
@@ -14786,7 +15648,9 @@ async function loadImageForCropUncached(layer) {
               <footer>
                 <div>
                   <span>{{ promptLibraryCategoryLabel(item.category) }}</span>
-                  <span v-for="tag in item.tags.slice(0, 3)" :key="`${item.id}-${tag}`">#{{ tag }}</span>
+                  <span v-for="tag in item.tags.slice(0, 3)" :key="`${item.id}-${tag}`">
+                    #{{ tag }}
+                  </span>
                 </div>
                 <div class="uc-prompt-library-card-footer-actions">
                   <button
@@ -14799,7 +15663,11 @@ async function loadImageForCropUncached(layer) {
                     <i class="ri-file-copy-line" aria-hidden="true"></i>
                     复制
                   </button>
-                  <button type="button" class="is-insert" @click.stop="choosePromptLibraryItem(item)">
+                  <button
+                    type="button"
+                    class="is-insert"
+                    @click.stop="choosePromptLibraryItem(item)"
+                  >
                     填入输入框
                     <i class="ri-arrow-right-line" aria-hidden="true"></i>
                   </button>
@@ -14813,7 +15681,11 @@ async function loadImageForCropUncached(layer) {
   </Teleport>
 
   <Teleport to="body">
-    <div v-if="promptLibraryEditor.visible" class="uc-prompt-library-dialog-backdrop" @click.self="promptLibraryEditor.visible = false">
+    <div
+      v-if="promptLibraryEditor.visible"
+      class="uc-prompt-library-dialog-backdrop"
+      @click.self="promptLibraryEditor.visible = false"
+    >
       <section
         class="uc-prompt-library-dialog"
         aria-label="编辑提示词"
@@ -14854,17 +15726,16 @@ async function loadImageForCropUncached(layer) {
                 aria-label="提示词分类"
               >
                 <button
-                v-for="category in PROMPT_LIBRARY_CATEGORIES.filter((item) => item.value !== 'ALL')"
-                :key="category.value"
+                  v-for="category in PROMPT_LIBRARY_CATEGORIES.filter(
+                    (item) => item.value !== 'ALL',
+                  )"
+                  :key="category.value"
                   type="button"
                   class="uc-custom-select-item"
                   :class="{ active: promptLibraryEditor.category === category.value }"
                   role="option"
                   :aria-selected="promptLibraryEditor.category === category.value"
-                  @click="
-                    promptLibraryEditor.category = category.value;
-                    promptLibraryCategoryOpen = false
-                  "
+                  @click="selectPromptLibraryEditorCategory(category.value)"
                 >
                   <span>{{ category.label }}</span>
                   <i
@@ -14901,7 +15772,11 @@ async function loadImageForCropUncached(layer) {
   </Teleport>
 
   <Teleport to="body">
-    <div v-if="promptLibraryInsert.visible" class="uc-prompt-library-dialog-backdrop" @click.self="promptLibraryInsert.visible = false">
+    <div
+      v-if="promptLibraryInsert.visible"
+      class="uc-prompt-library-dialog-backdrop"
+      @click.self="promptLibraryInsert.visible = false"
+    >
       <section class="uc-prompt-library-insert-dialog" aria-label="选择填入方式">
         <i class="ri-file-add-line" aria-hidden="true"></i>
         <div>
@@ -14910,8 +15785,16 @@ async function loadImageForCropUncached(layer) {
         </div>
         <footer>
           <button type="button" @click="promptLibraryInsert.visible = false">取消</button>
-          <button type="button" @click="applyPromptLibraryItem(promptLibraryInsert.item, 'append')">追加</button>
-          <button type="button" class="primary" @click="applyPromptLibraryItem(promptLibraryInsert.item, 'replace')">替换</button>
+          <button type="button" @click="applyPromptLibraryItem(promptLibraryInsert.item, 'append')">
+            追加
+          </button>
+          <button
+            type="button"
+            class="primary"
+            @click="applyPromptLibraryItem(promptLibraryInsert.item, 'replace')"
+          >
+            替换
+          </button>
         </footer>
       </section>
     </div>
@@ -14990,6 +15873,20 @@ async function loadImageForCropUncached(layer) {
       <button class="uc-context-menu-item" @click="contextMenuAddToMaterials">
         <i class="ri-folder-image-line"></i>
         添加到我的素材
+      </button>
+      <button
+        v-if="isReviewableCanvasAsset(contextMenu.layer)"
+        class="uc-context-menu-item"
+        @click="contextMenuToggleAssetReview"
+      >
+        <i
+          :class="
+            contextMenuReviewLayers().every(isCanvasAssetKept)
+              ? 'ri-bookmark-3-fill'
+              : 'ri-bookmark-3-line'
+          "
+        ></i>
+        {{ contextMenuReviewLabel() }}
       </button>
       <button class="uc-context-menu-item" @click="openCopyToCanvasDialog">
         <i class="ri-file-copy-2-line"></i>
