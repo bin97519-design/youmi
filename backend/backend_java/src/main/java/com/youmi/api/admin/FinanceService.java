@@ -21,8 +21,8 @@ public class FinanceService {
   private static final String LEDGER_FROM = """
       FROM ym_mi_value_log l
       LEFT JOIN ym_sys_user u ON u.id = l.user_id
-      LEFT JOIN ym_shop s ON s.id = COALESCE(l.shop_id, u.shop_id)
-      LEFT JOIN ym_platform p ON p.id = COALESCE(l.platform_id, s.platform_id)
+      LEFT JOIN ym_shop s ON s.id = COALESCE(u.shop_id, l.shop_id)
+      LEFT JOIN ym_platform p ON p.id = COALESCE(s.platform_id, l.platform_id)
       """;
 
   private final JdbcTemplate jdbcTemplate;
@@ -114,7 +114,7 @@ public class FinanceService {
     String sql = """
         SELECT COUNT(*) AS transaction_count,
                COUNT(DISTINCT l.user_id) AS user_count,
-               COUNT(DISTINCT COALESCE(l.shop_id, u.shop_id)) AS shop_count,
+               COUNT(DISTINCT COALESCE(u.shop_id, l.shop_id)) AS shop_count,
                COALESCE(SUM(CASE WHEN l.biz_type = 'IMAGE' THEN l.price ELSE 0 END), 0) AS image_mi,
                COALESCE(SUM(CASE WHEN l.biz_type = 'VIDEO' THEN l.price ELSE 0 END), 0) AS video_mi,
                COALESCE(SUM(l.price), 0) AS total_mi
@@ -159,17 +159,17 @@ public class FinanceService {
 
   private List<FinanceDtos.PlatformFinanceRow> platforms(LedgerFilter filter) {
     String sql = """
-        SELECT COALESCE(l.platform_id, s.platform_id) AS effective_platform_id,
+        SELECT COALESCE(s.platform_id, l.platform_id) AS effective_platform_id,
                COALESCE(p.code, 'UNBOUND') AS platform_code,
                COALESCE(p.name, '未绑定平台') AS platform_name,
                COUNT(*) AS transaction_count,
-               COUNT(DISTINCT COALESCE(l.shop_id, u.shop_id)) AS shop_count,
+               COUNT(DISTINCT COALESCE(u.shop_id, l.shop_id)) AS shop_count,
                COUNT(DISTINCT l.user_id) AS user_count,
                COALESCE(SUM(CASE WHEN l.biz_type = 'IMAGE' THEN l.price ELSE 0 END), 0) AS image_mi,
                COALESCE(SUM(CASE WHEN l.biz_type = 'VIDEO' THEN l.price ELSE 0 END), 0) AS video_mi,
                COALESCE(SUM(l.price), 0) AS total_mi
         """ + LEDGER_FROM + filter.where() + """
-        GROUP BY COALESCE(l.platform_id, s.platform_id), p.code, p.name
+        GROUP BY COALESCE(s.platform_id, l.platform_id), p.code, p.name
         ORDER BY total_mi DESC, platform_name
         """;
     return jdbcTemplate.query(sql, (rs, rowNum) -> {
@@ -190,10 +190,10 @@ public class FinanceService {
 
   private List<FinanceDtos.ShopFinanceRow> shops(LedgerFilter filter) {
     String sql = """
-        SELECT COALESCE(l.shop_id, u.shop_id) AS effective_shop_id,
+        SELECT COALESCE(u.shop_id, l.shop_id) AS effective_shop_id,
                COALESCE(s.code, 'UNBOUND') AS shop_code,
                COALESCE(s.name, '未绑定店铺') AS shop_name,
-               COALESCE(l.platform_id, s.platform_id) AS effective_platform_id,
+               COALESCE(s.platform_id, l.platform_id) AS effective_platform_id,
                COALESCE(p.name, '未绑定平台') AS platform_name,
                COUNT(*) AS transaction_count,
                COUNT(DISTINCT l.user_id) AS user_count,
@@ -201,8 +201,8 @@ public class FinanceService {
                COALESCE(SUM(CASE WHEN l.biz_type = 'VIDEO' THEN l.price ELSE 0 END), 0) AS video_mi,
                COALESCE(SUM(l.price), 0) AS total_mi
         """ + LEDGER_FROM + filter.where() + """
-        GROUP BY COALESCE(l.shop_id, u.shop_id), s.code, s.name,
-                 COALESCE(l.platform_id, s.platform_id), p.name
+        GROUP BY COALESCE(u.shop_id, l.shop_id), s.code, s.name,
+                 COALESCE(s.platform_id, l.platform_id), p.name
         ORDER BY total_mi DESC, shop_name
         """;
     return jdbcTemplate.query(sql, (rs, rowNum) -> {
@@ -228,8 +228,8 @@ public class FinanceService {
                u.account,
                u.nickname,
                COUNT(*) AS transaction_count,
-               COUNT(DISTINCT COALESCE(l.platform_id, s.platform_id)) AS platform_count,
-               COUNT(DISTINCT COALESCE(l.shop_id, u.shop_id)) AS shop_count,
+               COUNT(DISTINCT COALESCE(s.platform_id, l.platform_id)) AS platform_count,
+               COUNT(DISTINCT COALESCE(u.shop_id, l.shop_id)) AS shop_count,
                COALESCE(SUM(CASE WHEN l.biz_type = 'IMAGE' THEN l.price ELSE 0 END), 0) AS image_mi,
                COALESCE(SUM(CASE WHEN l.biz_type = 'VIDEO' THEN l.price ELSE 0 END), 0) AS video_mi,
                COALESCE(SUM(l.price), 0) AS total_mi
@@ -268,11 +268,11 @@ public class FinanceService {
     args.add(Timestamp.valueOf(dateFrom.atStartOfDay()));
     args.add(Timestamp.valueOf(dateTo.plusDays(1).atStartOfDay()));
     if (platformId != null) {
-      where.append(" AND COALESCE(l.platform_id, s.platform_id) = ?\n");
+      where.append(" AND COALESCE(s.platform_id, l.platform_id) = ?\n");
       args.add(platformId);
     }
     if (shopId != null) {
-      where.append(" AND COALESCE(l.shop_id, u.shop_id) = ?\n");
+      where.append(" AND COALESCE(u.shop_id, l.shop_id) = ?\n");
       args.add(shopId);
     }
     return new LedgerFilter(where.toString(), args.toArray());

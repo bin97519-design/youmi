@@ -46,6 +46,11 @@ public class ImageGenerationProperties {
   private String apimartDirectApiKey = "";
   private String apimartDirectGenerationPath = "/v1/images/generations";
   private String apimartDirectTaskPath = "/v1/tasks";
+  // TeamoRouter GPT Image 2.5 provider.
+  private String teamorouterBaseUrl = "https://api.teamorouter.cn/v1";
+  private String teamorouterApiKey = "";
+  private String teamorouterGenerationPath = "/images/generations";
+  private String teamorouterEditsPath = "/images/edits";
   // WaveSpeed Qwen multi-angle provider.
   private String waveSpeedBaseUrl = "https://api.wavespeed.ai/api/v3";
   private String waveSpeedApiKey = "";
@@ -258,6 +263,7 @@ public class ImageGenerationProperties {
     String normalized = resolved.toLowerCase(Locale.ROOT);
     if (normalized.startsWith("gemini-3.1-flash-image-preview")) return "banana2";
     if (normalized.startsWith("gemini-3-pro-image-preview")) return "banana-pro";
+    if (isTeamorouterModel(resolved)) return normalized;
     if (normalized.equals("gpt-image-2") || normalized.startsWith("gpt-image-2-")) return "gpt-image-2";
     if (normalized.startsWith("agnes-image-2.1-flash")) return "agnes-image-2.1-flash";
     if (isWaveSpeedMultiAngleModel(resolved)) return "qwen-multi-angle";
@@ -480,6 +486,76 @@ public class ImageGenerationProperties {
     return apimartDirectTaskPath.startsWith("/") ? apimartDirectTaskPath : "/" + apimartDirectTaskPath;
   }
 
+  public String getTeamorouterBaseUrl() {
+    return teamorouterBaseUrl;
+  }
+
+  public void setTeamorouterBaseUrl(String teamorouterBaseUrl) {
+    this.teamorouterBaseUrl = teamorouterBaseUrl;
+  }
+
+  public String getTeamorouterApiKey() {
+    return teamorouterApiKey;
+  }
+
+  public void setTeamorouterApiKey(String teamorouterApiKey) {
+    this.teamorouterApiKey = teamorouterApiKey;
+  }
+
+  public String getTeamorouterGenerationPath() {
+    return teamorouterGenerationPath;
+  }
+
+  public void setTeamorouterGenerationPath(String teamorouterGenerationPath) {
+    this.teamorouterGenerationPath = teamorouterGenerationPath;
+  }
+
+  public String getTeamorouterEditsPath() {
+    return teamorouterEditsPath;
+  }
+
+  public void setTeamorouterEditsPath(String teamorouterEditsPath) {
+    this.teamorouterEditsPath = teamorouterEditsPath;
+  }
+
+  public boolean isTeamorouterConfigured() {
+    return teamorouterApiKey != null && !teamorouterApiKey.isBlank();
+  }
+
+  public String normalizedTeamorouterBaseUrl() {
+    if (teamorouterBaseUrl == null || teamorouterBaseUrl.isBlank()) {
+      return "https://api.teamorouter.cn/v1";
+    }
+    return teamorouterBaseUrl.endsWith("/")
+        ? teamorouterBaseUrl.substring(0, teamorouterBaseUrl.length() - 1)
+        : teamorouterBaseUrl;
+  }
+
+  public String normalizedTeamorouterGenerationPath() {
+    if (teamorouterGenerationPath == null || teamorouterGenerationPath.isBlank()) {
+      return "/images/generations";
+    }
+    return teamorouterGenerationPath.startsWith("/")
+        ? teamorouterGenerationPath
+        : "/" + teamorouterGenerationPath;
+  }
+
+  public String normalizedTeamorouterEditsPath() {
+    if (teamorouterEditsPath == null || teamorouterEditsPath.isBlank()) {
+      return "/images/edits";
+    }
+    return teamorouterEditsPath.startsWith("/")
+        ? teamorouterEditsPath
+        : "/" + teamorouterEditsPath;
+  }
+
+  public boolean isTeamorouterModel(String resolvedModel) {
+    if (resolvedModel == null) return false;
+    String modelName = resolvedModel.trim().toLowerCase(Locale.ROOT);
+    return modelName.equals("gpt-image-2.5-sunburst")
+        || modelName.equals("gpt-image-2.5-flare");
+  }
+
   /** 判断请求的模型是否应走 Agnes provider */
   public boolean isAgnesModel(String resolvedModel) {
     if (resolvedModel == null) return false;
@@ -570,6 +646,12 @@ public class ImageGenerationProperties {
     aliases.put("gptimag2", "gpt-image-2");
     aliases.put("gptimage2", "gpt-image-2");
     aliases.put("gpt-image-2", "gpt-image-2");
+    aliases.put("gpt-image-2.5-sunburst", "gpt-image-2.5-sunburst");
+    aliases.put("gptimage25sunburst", "gpt-image-2.5-sunburst");
+    aliases.put("gptimage2.5sunburst", "gpt-image-2.5-sunburst");
+    aliases.put("gpt-image-2.5-flare", "gpt-image-2.5-flare");
+    aliases.put("gptimage25flare", "gpt-image-2.5-flare");
+    aliases.put("gptimage2.5flare", "gpt-image-2.5-flare");
     aliases.put("gpt-img-2", "gpt-image-2");
     aliases.put("gptimg2", "gpt-image-2");
     // 兼容用户手抖写法：空格分隔 / 错误拼写

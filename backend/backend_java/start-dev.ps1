@@ -50,6 +50,10 @@ if (-not $env:MYSQL_PASSWORD) {
 if (-not $env:SERVER_PORT) {
   $env:SERVER_PORT = "8083"
 }
+# Local credential development: plain HTTP is allowed only on a loopback-bound server.
+# Production still uses the HTTPS requirement from application.yml.
+$env:SERVER_ADDRESS = "127.0.0.1"
+$env:YOUMI_CREDENTIAL_REQUIRE_HTTPS = "false"
 $env:YOUMI_IMAGE_API_KEY = [Environment]::GetEnvironmentVariable("YOUMI_IMAGE_API_KEY", "User")
 if (-not $env:YOUMI_IMAGE_API_KEY) {
   $env:YOUMI_IMAGE_API_KEY = [Environment]::GetEnvironmentVariable("APIMART_API_KEY", "User")
@@ -64,7 +68,12 @@ if (-not $env:YOUMI_IMAGE_APIMART_DIRECT_API_KEY) {
 $env:GETTOKEN_API_KEY = [Environment]::GetEnvironmentVariable("GETTOKEN_API_KEY", "User")
 $env:LK888_API_KEY = [Environment]::GetEnvironmentVariable("LK888_API_KEY", "User")
 $env:XFYUN_VISION_API_KEY = [Environment]::GetEnvironmentVariable("XFYUN_VISION_API_KEY", "User")
+$env:DASHSCOPE_API_KEY = [Environment]::GetEnvironmentVariable("DASHSCOPE_API_KEY", "User")
 $env:AGNES_API_KEY = [Environment]::GetEnvironmentVariable("AGNES_API_KEY", "User")
+$env:TEAMOROUTER_IMAGE_API_KEY = [Environment]::GetEnvironmentVariable("TEAMOROUTER_IMAGE_API_KEY", "User")
+if (-not $env:TEAMOROUTER_IMAGE_API_KEY) {
+  $env:TEAMOROUTER_IMAGE_API_KEY = [Environment]::GetEnvironmentVariable("TEAMOROUTER_API_KEY", "User")
+}
 $env:APIMART_API_KEY = [Environment]::GetEnvironmentVariable("APIMART_API_KEY", "User")
 $env:IMAGE_PROXY_API_KEY = [Environment]::GetEnvironmentVariable("IMAGE_PROXY_API_KEY", "User")
 $env:OSS_ACCESS_KEY_ID = [Environment]::GetEnvironmentVariable("OSS_ACCESS_KEY_ID", "User")

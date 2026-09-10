@@ -17,6 +17,8 @@ class ImageGenerationPropertiesTest {
       "bananapro, banana-pro",
       "'banana pro', banana-pro",
       "gpt-image-2, gpt-image-2",
+      "gpt-image-2.5-sunburst, gpt-image-2.5-sunburst",
+      "gpt-image-2.5-flare, gpt-image-2.5-flare",
       "'GPT imag 2', gpt-image-2",
       "'gpt image 2', gpt-image-2",
       "agnes-image-2.1-flash, agnes-image-2.1-flash",

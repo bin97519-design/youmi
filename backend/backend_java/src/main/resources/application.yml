@@ -46,6 +46,10 @@ youmi:
     cors-auto-configure: ${OSS_CORS_AUTO_CONFIGURE:true}
   auth:
     token-ttl-seconds: 604800
+  credentials:
+    require-https: ${YOUMI_CREDENTIAL_REQUIRE_HTTPS:true}
+    master-key: ${YOUMI_CREDENTIAL_MASTER_KEY:}
+    master-key-version: ${YOUMI_CREDENTIAL_MASTER_KEY_VERSION:v1}
   image:
     base-url: https://api.apimart.ai
     generation-path: /v1/images/generations
@@ -59,6 +63,10 @@ youmi:
     apimart-direct-api-key: ${YOUMI_IMAGE_APIMART_DIRECT_API_KEY:${YOUMI_IMAGE_API_KEY:${APIMART_API_KEY:${APIMART_IMAGE_API_KEY:}}}}
     apimart-direct-generation-path: ${YOUMI_IMAGE_APIMART_DIRECT_GENERATION_PATH:/v1/images/generations}
     apimart-direct-task-path: ${YOUMI_IMAGE_APIMART_DIRECT_TASK_PATH:/v1/tasks}
+    teamorouter-base-url: ${TEAMOROUTER_IMAGE_BASE_URL:https://api.teamorouter.cn/v1}
+    teamorouter-api-key: ${TEAMOROUTER_IMAGE_API_KEY:${TEAMOROUTER_API_KEY:}}
+    teamorouter-generation-path: ${TEAMOROUTER_IMAGE_GENERATION_PATH:/images/generations}
+    teamorouter-edits-path: ${TEAMOROUTER_IMAGE_EDITS_PATH:/images/edits}
     wave-speed-base-url: ${WAVESPEED_BASE_URL:https://api.wavespeed.ai/api/v3}
     wave-speed-api-key: ${WAVESPEED_API_KEY:}
     wave-speed-multi-angle-model: ${WAVESPEED_MULTI_ANGLE_MODEL:wavespeed-ai/qwen-image/edit-multiple-angles}
@@ -102,6 +110,14 @@ youmi:
         1K: 6
         2K: 10
         4K: 15
+      "[gpt-image-2.5-sunburst]":
+        1K: 11
+        2K: 11
+        4K: 18
+      "[gpt-image-2.5-flare]":
+        1K: 11
+        2K: 11
+        4K: 13
       qwen-multi-angle:
         1K: 20
         2K: 20

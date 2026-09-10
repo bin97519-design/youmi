@@ -21,6 +21,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -38,11 +39,13 @@ public class ImageGenerationClient {
   private static final String PROVIDER_PROXY = "proxy";
   private static final String PROVIDER_ANNES = "agnes";
   private static final String PROVIDER_WAVESPEED = "wavespeed";
+  private static final String PROVIDER_TEAMOROUTER = "teamorouter";
   private static final String GETTOKEN_TASK_PREFIX = PROVIDER_GETTOKEN + ":";
   private static final String LK888_TASK_PREFIX = PROVIDER_LK888 + ":";
   private static final String PROXY_TASK_PREFIX = PROVIDER_PROXY + ":";
   private static final String AGNES_TASK_PREFIX = PROVIDER_ANNES + ":";
   private static final String WAVESPEED_TASK_PREFIX = PROVIDER_WAVESPEED + ":";
+  private static final String TEAMOROUTER_TASK_PREFIX = PROVIDER_TEAMOROUTER + ":";
   private static final String APIMART_DIRECT_TASK_PREFIX = "apimart-direct:";
   private static final long PROVIDER_TIMEOUT_MS = 180_000L; // 3 分钟超时阈值（自任务创建起算）
   private static final String BROWSER_USER_AGENT =
@@ -68,6 +71,8 @@ public class ImageGenerationClient {
   private final ThreadPoolTaskExecutor persistExecutor = buildPersistExecutor();
   // Agnes 上游是同步接口；用独立线程池包装成内部异步任务，避免一次生成阻塞后续提交。
   private final ThreadPoolTaskExecutor agnesExecutor = buildAgnesExecutor();
+  // TeamoRouter Images API is synchronous; expose it through the same async task contract as Agnes.
+  private final ThreadPoolTaskExecutor teamorouterExecutor = buildTeamorouterExecutor();
 
   @Autowired
   public ImageGenerationClient(
@@ -113,10 +118,22 @@ public class ImageGenerationClient {
     return executor;
   }
 
+  private static ThreadPoolTaskExecutor buildTeamorouterExecutor() {
+    ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+    executor.setCorePoolSize(2);
+    executor.setMaxPoolSize(8);
+    executor.setQueueCapacity(32);
+    executor.setThreadNamePrefix("teamorouter-generate-");
+    executor.setWaitForTasksToCompleteOnShutdown(false);
+    executor.setDaemon(true);
+    executor.initialize();
+    return executor;
+  }
+
   public ImageGenerationDtos.StatusResponse status() {
     boolean configured = properties.isConfigured() || properties.isGetTokenConfigured()
         || properties.isLk888Configured() || isProxyConfigured() || properties.isAgnesConfigured()
-        || properties.isWaveSpeedConfigured();
+        || properties.isWaveSpeedConfigured() || properties.isTeamorouterConfigured();
     return new ImageGenerationDtos.StatusResponse(
         configured,
         properties.normalizedBaseUrl(),
@@ -162,6 +179,7 @@ public class ImageGenerationClient {
         && !properties.isLk888Configured()
         && !properties.isAgnesConfigured()
         && !properties.isWaveSpeedConfigured()
+        && !properties.isTeamorouterConfigured()
         && !isProxyConfigured()) {
       throw new ApiException(400, "Image generation api key is not configured");
     }
@@ -172,6 +190,15 @@ public class ImageGenerationClient {
         throw new ApiException(400, "WaveSpeed api key is not configured");
       }
       return createWaveSpeedMultiAngleTask(request);
+    }
+
+    // Keep GPT Image 2.5 models on their dedicated TeamoRouter route. This must run
+    // before the generic gpt-image proxy matcher below.
+    if (properties.isTeamorouterModel(resolvedModel)) {
+      if (!properties.isTeamorouterConfigured()) {
+        throw new ApiException(400, "TeamoRouter image api key is not configured");
+      }
+      return createTeamorouterTask(request);
     }
 
     // Agnes Image 模型优先（同步 API，直接返回图片）
@@ -497,6 +524,216 @@ public class ImageGenerationClient {
         count,
         tasks,
         root);
+  }
+
+  private ImageGenerationDtos.CreateTaskResponse createTeamorouterTask(
+      ImageGenerationDtos.CreateTaskRequest request) {
+    String resolvedModel = properties.resolveModel(request.model());
+    String ratio = properties.normalizeSize(request.size(), request.ratio());
+    String resolution = properties.normalizeResolution(resolvedModel, request.resolution());
+    String pixelSize = pickProxySize(ratio, resolution);
+    int count = request.requestedCount();
+    String taskId = TEAMOROUTER_TASK_PREFIX + java.util.UUID.randomUUID().toString().replace("-", "");
+    Long ownerId = requestUserId.get();
+
+    teamorouterTaskCache.put(taskId, TeamorouterTaskState.processing());
+    try {
+      teamorouterExecutor.execute(() -> runTeamorouterTask(
+          taskId, request, resolvedModel, pixelSize, resolution, ownerId));
+    } catch (RuntimeException rejected) {
+      teamorouterTaskCache.remove(taskId);
+      throw new ApiException(503, "TeamoRouter task queue is full, please retry later");
+    }
+
+    ObjectNode queued = objectMapper.createObjectNode();
+    queued.put("status", "submitted");
+    queued.put("pixelSize", pixelSize);
+    return new ImageGenerationDtos.CreateTaskResponse(
+        PROVIDER_TEAMOROUTER,
+        request.model(),
+        resolvedModel,
+        pixelSize,
+        resolution,
+        count,
+        List.of(new ImageGenerationDtos.TaskRef(taskId, "submitted")),
+        queued);
+  }
+
+  private void runTeamorouterTask(
+      String taskId,
+      ImageGenerationDtos.CreateTaskRequest request,
+      String resolvedModel,
+      String pixelSize,
+      String resolution,
+      Long ownerId) {
+    if (ownerId != null) requestUserId.set(ownerId);
+    try {
+      List<String> referenceUrls = request.normalizedImageUrls();
+      String quality = mapProxyQuality(resolution);
+      JsonNode root;
+      if (referenceUrls.isEmpty()) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("model", resolvedModel);
+        body.put("prompt", request.prompt().trim());
+        body.put("size", pixelSize);
+        body.put("quality", quality);
+        body.put("n", request.requestedCount());
+        putIfPresent(body, "background", request.background());
+        putIfPresent(body, "output_format", normalizeTeamorouterOutputFormat(request.outputFormat()));
+        putIfPresent(body, "moderation", request.moderation());
+        if (request.outputCompression() != null) {
+          body.put("output_compression", Math.max(0, Math.min(100, request.outputCompression())));
+        }
+        root = sendTeamorouterJsonPost(
+            properties.normalizedTeamorouterBaseUrl()
+                + properties.normalizedTeamorouterGenerationPath(),
+            body);
+      } else {
+        root = sendTeamorouterEdit(
+            properties.normalizedTeamorouterBaseUrl()
+                + properties.normalizedTeamorouterEditsPath(),
+            request,
+            resolvedModel,
+            pixelSize,
+            quality,
+            referenceUrls);
+      }
+
+      String outputFormat = normalizeTeamorouterOutputFormat(request.outputFormat());
+      List<String> generatedUrls = extractTeamorouterImages(root, outputFormat);
+      if (generatedUrls.isEmpty()) {
+        throw new ApiException(502, "TeamoRouter did not return images: " + compact(root.toString()));
+      }
+      generatedUrls = persistImageUrls(taskId, generatedUrls);
+      teamorouterTaskCache.put(taskId, TeamorouterTaskState.completed(generatedUrls, root));
+    } catch (Exception error) {
+      String message = error.getMessage() == null || error.getMessage().isBlank()
+          ? error.getClass().getSimpleName()
+          : error.getMessage();
+      teamorouterTaskCache.put(taskId, TeamorouterTaskState.failed(message));
+      System.err.println("[teamorouter] async task failed taskId=" + taskId + ": " + message);
+    } finally {
+      requestUserId.remove();
+    }
+  }
+
+  private List<String> extractTeamorouterImages(JsonNode root, String outputFormat) {
+    List<String> generatedUrls = new ArrayList<>();
+    JsonNode data = root.path("data");
+    if (!data.isArray()) return generatedUrls;
+    String mimeType = "jpg".equals(outputFormat) || "jpeg".equals(outputFormat)
+        ? "image/jpeg"
+        : "image/" + outputFormat;
+    for (JsonNode item : data) {
+      String url = text(item, "url");
+      if (!url.isBlank()) addUrl(generatedUrls, url);
+      String b64 = text(item, "b64_json");
+      if (!b64.isBlank() && url.isBlank()) {
+        addUrl(generatedUrls, "data:" + mimeType + ";base64," + b64);
+      }
+    }
+    return generatedUrls;
+  }
+
+  private final Map<String, TeamorouterTaskState> teamorouterTaskCache = new ConcurrentHashMap<>();
+
+  private record TeamorouterTaskState(
+      String status, Integer progress, List<String> imageUrls, String error, JsonNode raw) {
+    static TeamorouterTaskState processing() {
+      return new TeamorouterTaskState("processing", 1, List.of(), null, null);
+    }
+
+    static TeamorouterTaskState completed(List<String> imageUrls, JsonNode raw) {
+      return new TeamorouterTaskState("completed", 100, List.copyOf(imageUrls), null, raw);
+    }
+
+    static TeamorouterTaskState failed(String error) {
+      return new TeamorouterTaskState("failed", 0, List.of(), error, null);
+    }
+  }
+
+  private JsonNode sendTeamorouterJsonPost(String endpoint, Map<String, Object> body) throws Exception {
+    HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create(endpoint))
+        .timeout(Duration.ofSeconds(Math.max(360, properties.getTimeoutSeconds())))
+        .header("Authorization", "Bearer " + properties.getTeamorouterApiKey())
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
+        .build();
+    return send(request, "TeamoRouter");
+  }
+
+  private JsonNode sendTeamorouterEdit(
+      String endpoint,
+      ImageGenerationDtos.CreateTaskRequest request,
+      String resolvedModel,
+      String pixelSize,
+      String quality,
+      List<String> referenceUrls) throws Exception {
+    String boundary = "----YoumiTeamoRouter" + java.util.UUID.randomUUID().toString().replace("-", "");
+    ByteArrayOutputStream output = new ByteArrayOutputStream();
+    writeMultipartText(output, boundary, "model", resolvedModel);
+    writeMultipartText(output, boundary, "prompt", request.prompt().trim());
+    writeMultipartText(output, boundary, "size", pixelSize);
+    writeMultipartText(output, boundary, "quality", quality);
+    writeMultipartText(output, boundary, "n", String.valueOf(request.requestedCount()));
+    writeMultipartText(output, boundary, "output_format", normalizeTeamorouterOutputFormat(request.outputFormat()));
+    writeMultipartTextIfPresent(output, boundary, "background", request.background());
+    writeMultipartTextIfPresent(output, boundary, "moderation", request.moderation());
+    writeMultipartTextIfPresent(output, boundary, "input_fidelity", request.inputFidelity());
+    if (request.outputCompression() != null) {
+      writeMultipartText(output, boundary, "output_compression",
+          String.valueOf(Math.max(0, Math.min(100, request.outputCompression()))));
+    }
+    for (int index = 0; index < referenceUrls.size(); index++) {
+      DownloadedImage image = downloadImage("teamorouter-ref", index, referenceUrls.get(index));
+      writeMultipartFile(output, boundary, "image", image);
+    }
+    output.write(("--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+
+    HttpRequest httpRequest = HttpRequest.newBuilder()
+        .uri(URI.create(endpoint))
+        .timeout(Duration.ofSeconds(Math.max(360, properties.getTimeoutSeconds())))
+        .header("Authorization", "Bearer " + properties.getTeamorouterApiKey())
+        .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+        .POST(HttpRequest.BodyPublishers.ofByteArray(output.toByteArray()))
+        .build();
+    return send(httpRequest, "TeamoRouter");
+  }
+
+  private void writeMultipartTextIfPresent(
+      ByteArrayOutputStream output, String boundary, String name, String value) throws IOException {
+    if (value != null && !value.isBlank()) writeMultipartText(output, boundary, name, value.trim());
+  }
+
+  private void writeMultipartText(
+      ByteArrayOutputStream output, String boundary, String name, String value) throws IOException {
+    output.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
+    output.write(("Content-Disposition: form-data; name=\"" + name + "\"\r\n\r\n")
+        .getBytes(StandardCharsets.UTF_8));
+    output.write(value.getBytes(StandardCharsets.UTF_8));
+    output.write("\r\n".getBytes(StandardCharsets.UTF_8));
+  }
+
+  private void writeMultipartFile(
+      ByteArrayOutputStream output, String boundary, String fieldName, DownloadedImage image)
+      throws IOException {
+    output.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
+    output.write(("Content-Disposition: form-data; name=\"" + fieldName + "\"; filename=\""
+        + image.filename().replace("\"", "_") + "\"\r\n").getBytes(StandardCharsets.UTF_8));
+    output.write(("Content-Type: " + image.contentType() + "\r\n\r\n")
+        .getBytes(StandardCharsets.UTF_8));
+    output.write(image.bytes());
+    output.write("\r\n".getBytes(StandardCharsets.UTF_8));
+  }
+
+  private String normalizeTeamorouterOutputFormat(String value) {
+    if (value == null || value.isBlank()) return "png";
+    return switch (value.trim().toLowerCase()) {
+      case "jpg", "jpeg" -> "jpeg";
+      case "webp" -> "webp";
+      default -> "png";
+    };
   }
 
   private ImageGenerationDtos.CreateTaskResponse createAgnesTask(ImageGenerationDtos.CreateTaskRequest request)
@@ -1031,6 +1268,9 @@ public class ImageGenerationClient {
   /** 纯查询（不含故障转移逻辑）：根据 taskId 前缀分发到各 provider 查询实现 */
   private ImageGenerationDtos.TaskStatusResponse getTaskInternal(String taskId) throws Exception {
     String cleanTaskId = taskId.trim();
+    if (cleanTaskId.startsWith(TEAMOROUTER_TASK_PREFIX)) {
+      return getTeamorouterTask(cleanTaskId);
+    }
     if (cleanTaskId.startsWith(WAVESPEED_TASK_PREFIX)) {
       return getWaveSpeedTask(cleanTaskId.substring(WAVESPEED_TASK_PREFIX.length()));
     }
@@ -1340,6 +1580,31 @@ public class ImageGenerationClient {
         persistStatus,
         error.isBlank() ? null : error,
         root);
+  }
+
+  /** TeamoRouter internal asynchronous task lookup. */
+  private ImageGenerationDtos.TaskStatusResponse getTeamorouterTask(String taskId) {
+    TeamorouterTaskState cached = teamorouterTaskCache.get(taskId);
+    if (cached == null) {
+      return new ImageGenerationDtos.TaskStatusResponse(
+          PROVIDER_TEAMOROUTER,
+          taskId,
+          "failed",
+          null,
+          List.of(),
+          null,
+          "TeamoRouter task result expired or not found",
+          null);
+    }
+    return new ImageGenerationDtos.TaskStatusResponse(
+        PROVIDER_TEAMOROUTER,
+        taskId,
+        cached.status(),
+        cached.progress(),
+        cached.imageUrls(),
+        "completed".equalsIgnoreCase(cached.status()) ? "DONE" : null,
+        cached.error(),
+        cached.raw());
   }
 
   /** Agnes 内部异步任务查询。 */
@@ -1787,6 +2052,7 @@ public class ImageGenerationClient {
         if (urls == null || urls.isEmpty()) continue;
         String provider = task.provider() == null ? "" : task.provider().trim().toLowerCase();
         if (PROVIDER_PROXY.equals(provider) || PROVIDER_ANNES.equals(provider)
+            || PROVIDER_TEAMOROUTER.equals(provider)
             || allUrlsAlreadyPersisted(urls)) {
           markPersistedUrls(task.taskId(), urls);
         } else {
@@ -1810,6 +2076,7 @@ public class ImageGenerationClient {
     else if (taskId.startsWith(LK888_TASK_PREFIX)) provider = PROVIDER_LK888;
     else if (taskId.startsWith(PROXY_TASK_PREFIX)) provider = PROVIDER_PROXY;
     else if (taskId.startsWith(AGNES_TASK_PREFIX)) provider = PROVIDER_ANNES;
+    else if (taskId.startsWith(TEAMOROUTER_TASK_PREFIX)) provider = PROVIDER_TEAMOROUTER;
     else if (taskId.startsWith(WAVESPEED_TASK_PREFIX)) provider = PROVIDER_WAVESPEED;
 
     JsonNode raw = objectMapper.createObjectNode()
@@ -1988,12 +2255,29 @@ public class ImageGenerationClient {
     if (imageUrl == null || imageUrl.isBlank()) {
       throw new ApiException(502, "Generated image URL is empty");
     }
+    String normalizedUrl = imageUrl.trim();
+    if (normalizedUrl.startsWith("data:image/")) {
+      int commaIndex = normalizedUrl.indexOf(',');
+      if (commaIndex < 0 || !normalizedUrl.substring(0, commaIndex).contains(";base64")) {
+        throw new ApiException(502, "Generated image data URI is invalid");
+      }
+      String metadata = normalizedUrl.substring(5, commaIndex);
+      String contentType = metadata.split(";", 2)[0].trim();
+      try {
+        byte[] bytes = Base64.getDecoder().decode(normalizedUrl.substring(commaIndex + 1));
+        if (bytes.length == 0) throw new IllegalArgumentException("empty image");
+        String filename = "generated-" + index + "." + extensionFor(contentType);
+        return new DownloadedImage(bytes, contentType, filename);
+      } catch (IllegalArgumentException error) {
+        throw new ApiException(502, "Generated image base64 data is invalid");
+      }
+    }
     // Use HttpURLConnection instead of HttpClient to avoid HTTP/1.1 keep-alive
     // connection pool pollution (same issue as APIMart polling). External CDN
     // servers may close idle connections without RST, causing partial downloads.
     java.net.HttpURLConnection conn = null;
     try {
-      java.net.URL url = new java.net.URL(imageUrl.trim());
+      java.net.URL url = new java.net.URL(normalizedUrl);
       conn = (java.net.HttpURLConnection) url.openConnection();
       conn.setConnectTimeout((int) Duration.ofSeconds(10).toMillis());
       conn.setReadTimeout((int) Duration.ofSeconds(Math.max(30, properties.getTimeoutSeconds())).toMillis());
@@ -2383,7 +2667,7 @@ public class ImageGenerationClient {
       String taskId, ImageGenerationDtos.CreateTaskRequest request, String provider) {
     if (taskId == null || taskId.isBlank()) return;
     if (PROVIDER_PROXY.equals(provider) || PROVIDER_LK888.equals(provider)
-        || PROVIDER_ANNES.equals(provider)) return;
+        || PROVIDER_ANNES.equals(provider) || PROVIDER_TEAMOROUTER.equals(provider)) return;
     String backup = determineBackupProvider(provider, properties.resolveModel(request.model()));
     if (backup == null) return; // 无可用备用链，无需追踪
     failoverStates.put(taskId, new FailoverState(System.currentTimeMillis(), request, provider));
@@ -2489,75 +2773,51 @@ public class ImageGenerationClient {
 
   private String proxyModel;  // 当前请求的代理模型，供内部判断
 
-  /**
-   * gpt-image-2 灵活尺寸计算：
-   * 官方规则：
-   *   - 任意 WxH，宽高都必须被 16 整除
-   *   - 长宽比 1:3 ~ 3:1
-   *   - 最大 3840x2160；>2560x1440 为实验性
-   *   - 标准尺寸：1024x1024、1536x1024、1024x1536
-   *   - 支持 auto
-   *
-   * 策略：按 targetRatio + resolution 档位直接算 WxH，再对齐到 16 整数倍
-   *
-   * resolution → 基准短边（px）：
-   *   1K → 768    (约 720p)
-   *   2K → 1440   (2K QHD 短边)
-   *   4K → 2160   (4K UHD 短边，即 3840x2160 的短边)
-   */
+  /** Convert the UI quality tier and aspect ratio to an OpenAI-compatible pixel size. */
   private String pickProxySize(String ratio, String resolution) {
-    double targetRatio = parseRatio(ratio);
-    if (targetRatio <= 0) return "auto";
+    final long minPixels = 655_360L;
+    final long providerMaxPixels = 8_294_400L;
+    final int maxEdge = 3_840;
+    double targetRatio = Math.max(1.0 / 3.0, Math.min(3.0, parseRatio(ratio)));
 
-    int baseShort; // 短边基准（代理最低像素 655360 ≈ 809²，1K档需 ≥1024）
-    int maxPixels; // 像素上限（宽*高，代理上限 8294400）
+    int baseShort;
+    long tierMaxPixels;
     switch (parseTier(parseResolutionTier(resolution))) {
-      case 0: baseShort = 1024; maxPixels = 1024 * 2048; break;      // 1K: 1024短边，≤2M像素
-      case 2: baseShort = 2160; maxPixels = 3840 * 2160; break;      // 4K: 2160短边，≤8.3M像素
-      default: baseShort = 1440; maxPixels = 2560 * 1440; break;     // 2K: 1440短边，≤3.7M像素
+      case 0: baseShort = 1024; tierMaxPixels = 1024L * 2048L; break;
+      case 2: baseShort = 2160; tierMaxPixels = providerMaxPixels; break;
+      default: baseShort = 1440; tierMaxPixels = 2560L * 1440L; break;
     }
 
-    int w, h;
+    double width;
+    double height;
     if (targetRatio >= 1.0) {
-      // 横向或方形：短边=高
-      h = baseShort;
-      w = (int) Math.round(h * targetRatio);
+      height = baseShort;
+      width = height * targetRatio;
     } else {
-      // 竖向：短边=宽
-      w = baseShort;
-      h = (int) Math.round(w / targetRatio);
+      width = baseShort;
+      height = width / targetRatio;
     }
 
-    // 对齐到 16 整数倍（向下取整）
-    w = (w / 16) * 16;
-    h = (h / 16) * 16;
-    // 最小 16
-    w = Math.max(16, w);
-    h = Math.max(16, h);
+    double scale = Math.min(1.0, (double) maxEdge / Math.max(width, height));
+    scale = Math.min(scale, Math.sqrt((double) tierMaxPixels / (width * height)));
+    width *= scale;
+    height *= scale;
 
-    // 像素上限约束：等比缩放
-    while ((long) w * h > maxPixels) {
-      w = (w * 15 / 16 / 16) * 16;
-      h = (h * 15 / 16 / 16) * 16;
+    int w = Math.max(16, ((int) Math.floor(width) / 16) * 16);
+    int h = Math.max(16, ((int) Math.floor(height) / 16) * 16);
+
+    // The normal tier sizes are already above the minimum. Keep an explicit guard
+    // for custom inputs so every emitted size stays within the provider contract.
+    if ((long) w * h < minPixels) {
+      double grow = Math.sqrt((double) minPixels / ((long) w * h));
+      w = Math.min(maxEdge, (int) Math.ceil(w * grow / 16.0) * 16);
+      h = Math.min(maxEdge, (int) Math.ceil(h * grow / 16.0) * 16);
     }
-
-    // 长宽比约束 1:3 ~ 3:1
-    double actualRatio = (double) w / h;
-    if (actualRatio > 3.0) {
-      h = (w / 3 / 16) * 16;
-    } else if (actualRatio < 1.0 / 3.0) {
-      w = (h / 3 / 16) * 16;
+    if ((long) w * h > providerMaxPixels) {
+      double shrink = Math.sqrt((double) providerMaxPixels / ((long) w * h));
+      w = Math.max(16, ((int) Math.floor(w * shrink) / 16) * 16);
+      h = Math.max(16, ((int) Math.floor(h * shrink) / 16) * 16);
     }
-
-    // 最大尺寸约束
-    w = Math.min(w, 3840);
-    h = Math.min(h, 3840);
-    // 重新对齐 16
-    w = (w / 16) * 16;
-    h = (h / 16) * 16;
-
-    // 安全兜底
-    if (w < 16 || h < 16) return "auto";
 
     return w + "x" + h;
   }

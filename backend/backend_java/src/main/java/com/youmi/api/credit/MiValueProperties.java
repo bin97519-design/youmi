@@ -57,6 +57,14 @@ public class MiValueProperties {
     String compact = value.replaceAll("[\\s_\\-]+", "");
     if (compact.equals("banana2") || value.startsWith("gemini-3.1-flash")) return "banana2";
     if (compact.equals("bananapro") || value.startsWith("gemini-3-pro")) return "banana-pro";
+    if (value.equals("gpt-image-2.5-sunburst") || compact.equals("gptimage25sunburst")
+        || compact.equals("gptimage2.5sunburst")) {
+      return "gpt-image-2.5-sunburst";
+    }
+    if (value.equals("gpt-image-2.5-flare") || compact.equals("gptimage25flare")
+        || compact.equals("gptimage2.5flare")) {
+      return "gpt-image-2.5-flare";
+    }
     if (compact.equals("gptimage2") || compact.equals("gptimag2") || value.startsWith("gpt-image-2")) {
       return "gpt-image-2";
     }

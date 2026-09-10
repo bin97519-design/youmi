@@ -12,4 +12,6 @@ test('uses the configured model and resolution price matrix', () => {
 test('multiplies the unit price by image count', () => {
   assert.equal(imageMiCost('banana2', '2K', 3), 27)
   assert.equal(imageMiCost('gpt-image-2', '1K', 2), 12)
+  assert.equal(imageMiCost('gpt-image-2.5-sunburst', '4K', 2), 36)
+  assert.equal(imageMiCost('gpt-image-2.5-flare', '4K', 2), 26)
 })

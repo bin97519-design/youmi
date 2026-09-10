@@ -55,6 +55,20 @@ export function fetchMigrationTasks(userStore) {
   return request('/migration-tasks', userStore)
 }
 
+export function createMigrationTask(userStore, body) {
+  return request('/migration-tasks', userStore, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export function claimMigrationTask(userStore, taskId) {
+  return request(`/migration-tasks/${encodeURIComponent(taskId)}/claim`, userStore, {
+    method: 'POST',
+    body: '{}',
+  })
+}
+
 export function createSelectionProduct(userStore, body) {
   return request('/products', userStore, {
     method: 'POST',

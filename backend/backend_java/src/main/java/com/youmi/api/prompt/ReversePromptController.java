@@ -27,4 +27,10 @@ public class ReversePromptController {
       @RequestBody ReversePromptDtos.AnalyzeImageRequest request) throws Exception {
     return ApiResponse.ok(reversePromptService.analyze(request));
   }
+
+  @PostMapping("/review-style-clone")
+  public ApiResponse<ReversePromptDtos.ReviewStyleCloneResponse> reviewStyleClone(
+      @RequestBody ReversePromptDtos.ReviewStyleCloneRequest request) throws Exception {
+    return ApiResponse.ok(reversePromptService.reviewStyleClone(request));
+  }
 }

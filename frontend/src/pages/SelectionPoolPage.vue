@@ -7,6 +7,8 @@ import { useTheme } from '../composables/useTheme'
 import { useUserStore } from '../stores/user'
 import {
   assignSelectionTags,
+  claimMigrationTask,
+  createMigrationTask,
   createSelectionProduct,
   deleteSelectionProducts,
   fetchMigrationTasks,
@@ -15,6 +17,12 @@ import {
   fetchSelectionTags,
   updateSelectionProduct,
 } from '../utils/selectionPoolApi'
+import {
+  openProductMoverWorkbench,
+  prepareProductMoverMigration,
+  probeProductMover,
+  productMoverApiBase,
+} from '../utils/productMoverBridge'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -35,8 +43,13 @@ const detailProduct = ref(null)
 const detailLoading = ref(false)
 const detailSaving = ref(false)
 const taskDialogOpen = ref(false)
+const migrationDialogOpen = ref(false)
 const tagDialogOpen = ref(false)
 const manualDialogOpen = ref(false)
+const migrationStarting = ref(false)
+const taskActionId = ref('')
+const pluginState = ref('checking')
+const pluginInfo = ref(null)
 const activeTagIds = ref(new Set())
 const toast = ref({ visible: false, type: 'success', message: '' })
 let toastTimer = null
@@ -57,6 +70,13 @@ const manualForm = reactive({
   coverImageUrl: '',
 })
 
+const migrationForm = reactive({
+  targetPlatform: 'TAOBAO',
+  submitMode: 'REVIEW',
+  defaultStock: 999,
+  copyImages: true,
+})
+
 const platformOptions = [
   { value: '', label: '全部平台' },
   { value: 'TAOBAO', label: '淘宝' },
@@ -64,6 +84,7 @@ const platformOptions = [
   { value: '1688', label: '1688' },
   { value: 'DOUYIN', label: '抖音' },
   { value: 'JD', label: '京东' },
+  { value: 'PDD', label: '拼多多' },
   { value: 'LOCAL', label: '自定义' },
 ]
 
@@ -101,6 +122,7 @@ const taskLabels = {
   QUEUED: '等待接管',
   PUBLISHING: '发布中',
   COMPLETED: '已完成',
+  COMPLETED_WITH_ERRORS: '完成但有失败',
   PARTIAL: '部分完成',
   FAILED: '失败',
 }
@@ -138,6 +160,24 @@ const currentTagOptions = computed(() => [
   ...tags.value.map((tag) => ({ value: tag.id, label: tag.name })),
 ])
 const manualPlatformOptions = computed(() => platformOptions.filter((option) => option.value))
+const targetPlatformOptions = [
+  { value: 'TAOBAO', label: '淘宝' },
+  { value: 'TMALL', label: '天猫' },
+  { value: 'JD', label: '京东' },
+  { value: 'PDD', label: '拼多多' },
+  { value: 'DOUYIN', label: '抖店' },
+]
+const submitModeOptions = [
+  { value: 'REVIEW', label: '停在发布页，人工检查' },
+  { value: 'DRAFT', label: '自动保存草稿' },
+  { value: 'PUBLISH', label: '二次确认后正式发布' },
+]
+const pluginConnected = computed(() => pluginState.value === 'connected')
+const pluginStatusLabel = computed(() => {
+  if (pluginState.value === 'checking') return '正在检测插件'
+  if (pluginConnected.value) return `搬家插件 ${pluginInfo.value?.version || ''}`.trim()
+  return '搬家插件未连接'
+})
 
 function showToast(message, type = 'success') {
   if (toastTimer) window.clearTimeout(toastTimer)
@@ -185,7 +225,7 @@ function statusTone(value) {
   if (['COLLECTED', 'PUBLISHED', 'COMPLETED'].includes(value)) return 'success'
   if (value === 'QUEUED') return 'queued'
   if (['COLLECTING', 'PUBLISHING'].includes(value)) return 'working'
-  if (['FAILED', 'PARTIAL'].includes(value)) return 'danger'
+  if (['FAILED', 'PARTIAL', 'COMPLETED_WITH_ERRORS'].includes(value)) return 'danger'
   return 'muted'
 }
 
@@ -405,12 +445,112 @@ async function saveManualProduct() {
   }
 }
 
-function openBatchCollection() {
-  showToast('批量采集请在有米搬家插件中执行，采集结果会自动同步到这里', 'info')
+async function refreshPluginConnection({ quiet = false } = {}) {
+  pluginState.value = 'checking'
+  try {
+    pluginInfo.value = await probeProductMover()
+    pluginState.value = 'connected'
+    return true
+  } catch (error) {
+    pluginInfo.value = null
+    pluginState.value = 'disconnected'
+    if (!quiet) showToast(error?.message || '没有检测到搬家插件', 'error')
+    return false
+  }
+}
+
+async function openBatchCollection() {
+  try {
+    await openProductMoverWorkbench()
+    showToast('已打开有米商品搬家工作台', 'info')
+  } catch (error) {
+    pluginState.value = 'disconnected'
+    showToast(error?.message || '无法打开搬家插件', 'error')
+  }
 }
 
 function prepareMigration() {
-  showToast('已选商品会在下一步接入搬家发布流程', 'info')
+  if (!selectedCount.value) return
+  migrationDialogOpen.value = true
+  void refreshPluginConnection({ quiet: true })
+}
+
+async function handoffMigrationToPlugin(task, handoff) {
+  const resolvedTask = handoff?.task || task
+  const options = resolvedTask?.options || {}
+  const productRowIds = (handoff?.items || []).map((item) => item.productRowId).filter(Boolean)
+  if (!productRowIds.length) throw new Error('搬家任务没有等待发布的商品')
+
+  return prepareProductMoverMigration({
+    taskId: resolvedTask.taskId,
+    productRowIds,
+    frozenItems: handoff.items || [],
+    targetPlatform: resolvedTask.targetPlatform,
+    submitMode: options.submitMode || migrationForm.submitMode,
+    defaultStock: options.defaultStock ?? migrationForm.defaultStock,
+    apiBase: productMoverApiBase(),
+    token: userStore.token,
+  })
+}
+
+async function createAndStartMigration() {
+  if (!selectedCount.value || migrationStarting.value) return
+  migrationStarting.value = true
+  let createdTask = null
+  try {
+    if (!(await refreshPluginConnection({ quiet: true })))
+      throw new Error('未检测到搬家插件，请启用插件并刷新当前页面')
+    if (!userStore.token) throw new Error('请先登录有米账号')
+
+    createdTask = await createMigrationTask(userStore, {
+      productRowIds: [...selectedIds.value],
+      targetPlatform: migrationForm.targetPlatform,
+      targetShopRef: null,
+      options: {
+        copyImages: migrationForm.copyImages,
+        client: 'WEB_SELECTION_POOL',
+        shopStrategy: 'CURRENT_SELLER_SESSION',
+        categoryStrategy: 'SOURCE_CATEGORY_EXACT',
+        submitMode: migrationForm.submitMode,
+        defaultStock: Math.max(0, Math.trunc(Number(migrationForm.defaultStock) || 0)),
+      },
+    })
+    const handoff = await claimMigrationTask(userStore, createdTask.taskId)
+    await handoffMigrationToPlugin(createdTask, handoff)
+
+    migrationDialogOpen.value = false
+    selectedIds.value = new Set()
+    showToast('搬家任务已接管，正在打开目标平台官方发布页')
+    await loadData({ quiet: true })
+  } catch (error) {
+    showToast(
+      createdTask
+        ? `任务已保留，可在“待发布任务”中重试：${error?.message || '插件接管失败'}`
+        : error?.message || '搬家任务创建失败',
+      'error',
+    )
+    if (createdTask) await loadData({ quiet: true })
+  } finally {
+    migrationStarting.value = false
+  }
+}
+
+async function claimExistingTask(task) {
+  if (!task?.taskId || taskActionId.value) return
+  taskActionId.value = task.taskId
+  try {
+    if (!(await refreshPluginConnection({ quiet: true })))
+      throw new Error('未检测到搬家插件，请启用插件并刷新当前页面')
+    const handoff = await claimMigrationTask(userStore, task.taskId)
+    await handoffMigrationToPlugin(task, handoff)
+    taskDialogOpen.value = false
+    showToast('任务已由当前浏览器接管，正在打开官方发布页')
+    await loadData({ quiet: true })
+  } catch (error) {
+    showToast(error?.message || '任务接管失败', 'error')
+  } finally {
+    taskActionId.value = ''
+  }
 }
 
 function sendToCanvas(product) {
@@ -428,7 +568,7 @@ function sendToCanvas(product) {
 
 onMounted(() => {
   if (!userStore.isAuthenticated) userStore.restoreSession()
-  void loadData()
+  void Promise.all([loadData(), refreshPluginConnection({ quiet: true })])
 })
 </script>
 
@@ -447,6 +587,16 @@ onMounted(() => {
       </div>
 
       <div class="header-actions">
+        <button
+          class="plugin-chip"
+          :class="`is-${pluginState}`"
+          type="button"
+          :title="pluginConnected ? '插件已连接，点击重新检测' : '点击重新检测搬家插件'"
+          @click="refreshPluginConnection()"
+        >
+          <i :class="pluginConnected ? 'ri-plug-line' : 'ri-plug-2-line'"></i>
+          {{ pluginStatusLabel }}
+        </button>
         <span class="account-chip">
           <i class="ri-user-3-line"></i>
           {{ accountLabel }}
@@ -475,8 +625,8 @@ onMounted(() => {
           刷新
         </button>
         <button class="secondary-button" type="button" @click="openBatchCollection">
-          <i class="ri-links-line"></i>
-          批量采集
+          <i class="ri-window-line"></i>
+          插件工作台
         </button>
         <button class="primary-button" type="button" @click="openManualDialog">
           <i class="ri-add-line"></i>
@@ -770,15 +920,123 @@ onMounted(() => {
               </strong>
               <small>{{ formatTime(task.createdAt) }}</small>
             </div>
-            <span class="status-pill" :class="`is-${statusTone(task.status)}`">
-              {{ taskLabels[task.status] || task.status }}
-            </span>
+            <div class="task-actions">
+              <span class="status-pill" :class="`is-${statusTone(task.status)}`">
+                {{ taskLabels[task.status] || task.status }}
+              </span>
+              <button
+                type="button"
+                :disabled="Boolean(taskActionId)"
+                @click="claimExistingTask(task)"
+              >
+                <i
+                  :class="
+                    taskActionId === task.taskId ? 'ri-loader-4-line spinning' : 'ri-play-line'
+                  "
+                ></i>
+                {{
+                  taskActionId === task.taskId
+                    ? '接管中'
+                    : task.status === 'QUEUED'
+                      ? '接管发布'
+                      : '继续发布'
+                }}
+              </button>
+            </div>
           </article>
           <div v-if="!migrationTasks.length" class="dialog-empty">
             <i class="ri-inbox-line"></i>
             当前没有发布任务
           </div>
         </div>
+      </section>
+    </div>
+
+    <div
+      v-if="migrationDialogOpen"
+      class="dialog-backdrop"
+      @mousedown.self="migrationDialogOpen = false"
+    >
+      <section
+        class="standard-dialog migration-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="migration-dialog-title"
+      >
+        <header>
+          <div>
+            <span>浏览器接管</span>
+            <h2 id="migration-dialog-title">创建搬家任务</h2>
+          </div>
+          <button type="button" :disabled="migrationStarting" @click="migrationDialogOpen = false">
+            <i class="ri-close-line"></i>
+          </button>
+        </header>
+        <div class="migration-summary">
+          <strong>{{ selectedCount }}</strong>
+          <span>个商品将冻结资料，并交给当前 Chrome 中的搬家插件处理</span>
+        </div>
+        <form @submit.prevent="createAndStartMigration">
+          <label>
+            <span>目标平台</span>
+            <ThemedSelect
+              v-model="migrationForm.targetPlatform"
+              :options="targetPlatformOptions"
+              aria-label="搬家目标平台"
+            />
+          </label>
+          <label>
+            <span>填写完成后</span>
+            <ThemedSelect
+              v-model="migrationForm.submitMode"
+              :options="submitModeOptions"
+              aria-label="搬家提交方式"
+            />
+          </label>
+          <label>
+            <span>来源未提供库存时</span>
+            <input v-model.number="migrationForm.defaultStock" type="number" min="0" step="1" />
+          </label>
+          <label class="migration-check">
+            <input v-model="migrationForm.copyImages" type="checkbox" />
+            <span>复制并转存商品图片</span>
+          </label>
+          <p>
+            插件会使用当前浏览器已登录的目标平台卖家账号，打开官方发布页并填写可识别的商品资料；不会绕过安全验证，也不会未经确认直接正式发布。
+          </p>
+          <div class="plugin-readiness" :class="{ connected: pluginConnected }">
+            <i :class="pluginConnected ? 'ri-checkbox-circle-line' : 'ri-error-warning-line'"></i>
+            <span>
+              {{
+                pluginConnected
+                  ? '搬家插件已连接，可以接管任务'
+                  : '尚未检测到搬家插件，请启用插件并刷新页面'
+              }}
+            </span>
+            <button v-if="!pluginConnected" type="button" @click="refreshPluginConnection()">
+              重新检测
+            </button>
+          </div>
+          <footer>
+            <button
+              type="button"
+              :disabled="migrationStarting"
+              @click="migrationDialogOpen = false"
+            >
+              取消
+            </button>
+            <button
+              class="primary-button"
+              type="submit"
+              :disabled="migrationStarting || !pluginConnected"
+            >
+              <i
+                :class="migrationStarting ? 'ri-loader-4-line spinning' : 'ri-play-circle-line'"
+              ></i>
+              {{ migrationStarting ? '正在创建并接管' : '确认并启动插件' }}
+            </button>
+          </footer>
+        </form>
       </section>
     </div>
 
@@ -1033,6 +1291,32 @@ button:disabled {
   background: var(--canvas-accent-soft);
   font-size: 12px;
   white-space: nowrap;
+}
+
+.plugin-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 11px;
+  border: 1px solid var(--canvas-border);
+  border-radius: 6px;
+  color: var(--canvas-text-subtle);
+  background: var(--canvas-panel);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.plugin-chip.is-connected {
+  color: var(--color-success);
+  border-color: color-mix(in srgb, var(--color-success) 36%, transparent);
+  background: color-mix(in srgb, var(--color-success) 10%, transparent);
+}
+
+.plugin-chip.is-disconnected {
+  color: var(--color-error);
+  border-color: color-mix(in srgb, var(--color-error) 36%, transparent);
+  background: color-mix(in srgb, var(--color-error) 8%, transparent);
 }
 
 .task-notice,
@@ -1588,6 +1872,24 @@ input[type='checkbox'] {
   margin-top: 4px;
   color: var(--canvas-text-subtle);
 }
+.task-actions {
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 7px;
+}
+.task-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--canvas-accent-border);
+  border-radius: 5px;
+  color: var(--canvas-accent);
+  background: var(--canvas-accent-soft);
+  font-size: 12px;
+}
 .dialog-empty {
   display: flex;
   min-height: 180px;
@@ -1639,6 +1941,104 @@ input[type='checkbox'] {
   justify-content: flex-end;
   padding: 12px 18px;
   border-top: 1px solid var(--canvas-border);
+}
+
+.migration-dialog form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  padding: 18px;
+}
+.migration-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 16px 18px 0;
+  color: var(--canvas-text-muted);
+}
+.migration-summary strong {
+  color: var(--canvas-accent);
+  font-size: 26px;
+  font-weight: 650;
+}
+.migration-dialog form > label {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--canvas-text-muted);
+  font-size: 12px;
+}
+.migration-dialog input[type='number'] {
+  min-height: 38px;
+  padding: 0 11px;
+  border: 1px solid var(--canvas-border);
+  border-radius: 6px;
+  outline: 0;
+  color: var(--canvas-text);
+  background: var(--canvas-surface);
+}
+.migration-dialog .migration-check {
+  align-items: center;
+  align-self: end;
+  min-height: 38px;
+  flex-direction: row;
+}
+.migration-dialog form > p,
+.plugin-readiness,
+.migration-dialog form > footer {
+  grid-column: 1 / -1;
+}
+.migration-dialog form > p {
+  margin: 0;
+  color: var(--canvas-text-subtle);
+  font-size: 12px;
+  line-height: 1.65;
+}
+.plugin-readiness {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 11px;
+  border: 1px solid color-mix(in srgb, var(--color-error) 32%, transparent);
+  border-radius: 6px;
+  color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 7%, transparent);
+  font-size: 12px;
+}
+.plugin-readiness.connected {
+  color: var(--color-success);
+  border-color: color-mix(in srgb, var(--color-success) 32%, transparent);
+  background: color-mix(in srgb, var(--color-success) 8%, transparent);
+}
+.plugin-readiness span {
+  flex: 1;
+}
+.plugin-readiness button {
+  padding: 0;
+  border: 0;
+  color: currentColor;
+  background: transparent;
+}
+.migration-dialog form > footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+}
+.migration-dialog form > footer button {
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid var(--canvas-border);
+  border-radius: 6px;
+  color: var(--canvas-text-muted);
+  background: var(--canvas-surface);
+}
+.migration-dialog form > footer .primary-button {
+  color: #fff;
+  border-color: var(--canvas-accent);
+  background: var(--canvas-accent);
 }
 
 .manual-dialog form {
@@ -1883,6 +2283,14 @@ input[type='checkbox'] {
   }
   .manual-dialog form {
     grid-template-columns: 1fr;
+  }
+  .migration-dialog form {
+    grid-template-columns: 1fr;
+  }
+  .migration-dialog form > p,
+  .plugin-readiness,
+  .migration-dialog form > footer {
+    grid-column: auto;
   }
   .manual-dialog .wide-field,
   .manual-dialog form footer {

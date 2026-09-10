@@ -37,6 +37,10 @@ youmi:
     public-base-url: ${YOUMI_VERIFICATION_PUBLIC_BASE_URL:http://127.0.0.1:8083}
   auth:
     token-ttl-seconds: 604800
+  credentials:
+    require-https: ${YOUMI_CREDENTIAL_REQUIRE_HTTPS:false}
+    master-key: ${YOUMI_CREDENTIAL_MASTER_KEY:}
+    master-key-version: ${YOUMI_CREDENTIAL_MASTER_KEY_VERSION:v1}
   image:
     base-url: https://api.apimart.ai
     generation-path: /v1/images/generations
@@ -46,6 +50,10 @@ youmi:
     proxy-api-key: ${IMAGE_PROXY_API_KEY:${PROXY_AUTH_TOKEN:}}
     proxy-generation-path: ${PROXY_GENERATION_PATH:/api/images/jobs}
     proxy-task-path: ${PROXY_TASK_PATH:/api/images/jobs}
+    teamorouter-base-url: ${TEAMOROUTER_IMAGE_BASE_URL:https://api.teamorouter.cn/v1}
+    teamorouter-api-key: ${TEAMOROUTER_IMAGE_API_KEY:${TEAMOROUTER_API_KEY:}}
+    teamorouter-generation-path: ${TEAMOROUTER_IMAGE_GENERATION_PATH:/images/generations}
+    teamorouter-edits-path: ${TEAMOROUTER_IMAGE_EDITS_PATH:/images/edits}
     fallback-enabled: true
     get-token-base-url: https://nb.gettoken.cn/openapi/v1
     get-token-api-key: ${GETTOKEN_API_KEY:}

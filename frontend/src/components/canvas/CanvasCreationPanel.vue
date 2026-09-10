@@ -4,8 +4,11 @@ import { useUserStore } from '../../stores/user'
 import { apiPath } from '../../utils/apiBase'
 import { createDemandFallback, createDetailFallback } from '../../utils/canvasCreative'
 import {
+  assessCompetitorStyleCloneReadiness,
+  buildCompetitorStyleCloneImageUrls,
   buildCompetitorStyleClonePrompt,
   extractCompetitorStylePrompt,
+  extractProductIdentityPrompt,
 } from '../../utils/canvasStyleClone'
 import { resolveSupportedImageRatio } from '../../utils/imageRatio'
 
@@ -16,7 +19,14 @@ const props = defineProps({
   resolution: { type: String, default: '2K' },
   modelOptions: {
     type: Array,
-    default: () => ['banana2', 'banana-pro', 'gpt-image-2', 'agnes-image-2.1-flash'],
+    default: () => [
+      'banana2',
+      'banana-pro',
+      'gpt-image-2',
+      'gpt-image-2.5-sunburst',
+      'gpt-image-2.5-flare',
+      'agnes-image-2.1-flash',
+    ],
   },
   ratioOptions: {
     type: Array,
@@ -43,7 +53,12 @@ const userStore = useUserStore()
 const tab = ref('main')
 const mode = ref('layout')
 const extra = ref('')
-const mainCategory = ref('general')
+const mainProductFacts = ref('')
+const mainForbiddenContent = ref('')
+const mainAutoQuality = ref(true)
+const mainQualityThreshold = ref(90)
+const mainQualityRetries = ref(2)
+const mainCategory = ref('')
 const mainCategories = ref([
   { value: 'general', label: '通用' },
   { value: 'mattress', label: '床垫' },
@@ -150,8 +165,20 @@ const generationSelectConfigs = computed(() => [
 const products = computed(() => orderedLayers.value.slice(0, productLayerCount.value))
 const product = computed(() => products.value[0] || null)
 const references = computed(() => orderedLayers.value.slice(productLayerCount.value))
+const sameCategoryOptions = computed(() =>
+  mainCategories.value.filter((category) => category.value !== 'general'),
+)
+const mainReadiness = computed(() =>
+  assessCompetitorStyleCloneReadiness({
+    mode: mode.value,
+    productCount: products.value.length,
+    referenceCount: references.value.length,
+    category: mainCategory.value,
+    productFacts: mainProductFacts.value,
+  }),
+)
 const canRunMain = computed(() =>
-  Boolean(products.value.length && references.value.length && !props.busy && !mainAnalyzing.value),
+  Boolean(mainReadiness.value.canRun && !props.busy && !mainAnalyzing.value),
 )
 const selectedDemandCards = computed(() => demandCards.value.filter((card) => card.selected))
 const canPlanDemands = computed(() =>
@@ -205,12 +232,14 @@ watch(
       resetLayerDrag()
       mainAnalysisError.value = ''
       mainAnalysisStatus.value = ''
-      mainCategory.value = 'general'
+      mainCategory.value = ''
       void loadMainCategories()
       return
     }
     generationSelectOpen.value = ''
     extra.value = ''
+    mainProductFacts.value = ''
+    mainForbiddenContent.value = ''
     mainAnalysisError.value = ''
     mainAnalysisStatus.value = ''
     demandError.value = ''
@@ -255,7 +284,7 @@ function expandJobsBySelectedModels(jobs) {
   )
 }
 
-watch([mode, mainCategory, references], () => {
+watch([mode, mainCategory, references, products, mainProductFacts, mainForbiddenContent], () => {
   mainAnalysisError.value = ''
   mainAnalysisStatus.value = ''
 })
@@ -397,8 +426,8 @@ function resetLayerDrag() {
   activeLayerDropZone.value = ''
 }
 
-async function analyzeMainReference(reference, category) {
-  const cacheKey = `${category}::${reference.url}`
+async function analyzeMainReference(reference, category, cloneMode) {
+  const cacheKey = `${cloneMode}::${category}::${reference.url}`
   if (mainAnalysisCache.has(cacheKey)) return mainAnalysisCache.get(cacheKey)
 
   const response = await fetch(apiPath('/api/prompt/analyze-image'), {
@@ -422,9 +451,41 @@ async function analyzeMainReference(reference, category) {
   }
 
   const result = payload.data || {}
-  const stylePrompt = extractCompetitorStylePrompt(result.promptJson, result.fieldLabels)
+  const stylePrompt = extractCompetitorStylePrompt(result.promptJson, result.fieldLabels, cloneMode)
   if (!stylePrompt) throw new Error(`${reference.name || '竞品图'}没有解析出可用风格`)
   const analyzed = { ...result, stylePrompt }
+  mainAnalysisCache.set(cacheKey, analyzed)
+  return analyzed
+}
+
+async function analyzeMainProduct(productReference, category) {
+  const cacheKey = `product::${category}::${productReference.url}`
+  if (mainAnalysisCache.has(cacheKey)) return mainAnalysisCache.get(cacheKey)
+
+  const response = await fetch(apiPath('/api/prompt/analyze-image'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...userStore.authHeaders(),
+    },
+    body: JSON.stringify({
+      category,
+      imageUrl: productReference.url,
+      thinkingEnabled: false,
+    }),
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (response.status === 401 || response.status === 403) {
+    throw new Error(payload.message || '登录已失效，请重新登录')
+  }
+  if (!response.ok || payload.code) {
+    throw new Error(payload.message || `${productReference.name || '我方产品图'}识别失败`)
+  }
+
+  const result = payload.data || {}
+  const identityPrompt = extractProductIdentityPrompt(result.promptJson, result.fieldLabels)
+  if (!identityPrompt) throw new Error(`${productReference.name || '我方产品图'}没有识别出产品身份`)
+  const analyzed = { ...result, identityPrompt }
   mainAnalysisCache.set(cacheKey, analyzed)
   return analyzed
 }
@@ -439,15 +500,29 @@ async function runMainImages() {
   const selectedProduct = product.value
   const selectedReferences = [...references.value]
   const selectedExtra = extra.value
-  mainAnalysisStatus.value = `正在反推竞品风格 0/${selectedReferences.length}`
+  const selectedProductFacts = mainProductFacts.value
+  const selectedForbiddenContent = mainForbiddenContent.value
+  mainAnalysisStatus.value = `正在识别我方产品 0/${selectedProducts.length}`
 
   try {
     const selectedModelCount = normalizedSelectedModels.value.length
     const totalBatchCount = selectedReferences.length * selectedModelCount
+    const productIdentityParts = []
+
+    for (let productIndex = 0; productIndex < selectedProducts.length; productIndex += 1) {
+      const productReference = selectedProducts[productIndex]
+      const productAnalysis = await analyzeMainProduct(productReference, selectedCategory)
+      productIdentityParts.push(
+        `【我方产品图${productIndex + 1}】\n${productAnalysis.identityPrompt}`,
+      )
+      mainAnalysisStatus.value = `正在识别我方产品 ${productIndex + 1}/${selectedProducts.length}`
+    }
+    const productIdentityPrompt = productIdentityParts.join('\n')
+    mainAnalysisStatus.value = `正在反推竞品风格 0/${selectedReferences.length}`
 
     for (let index = 0; index < selectedReferences.length; index += 1) {
       const reference = selectedReferences[index]
-      const analysis = await analyzeMainReference(reference, selectedCategory)
+      const analysis = await analyzeMainReference(reference, selectedCategory, selectedMode)
       const aspect = outputAspect(reference)
       mainAnalysisStatus.value = `已反推 ${index + 1}/${selectedReferences.length}，正在提交生图`
 
@@ -463,10 +538,32 @@ async function runMainImages() {
               mode: selectedMode,
               stylePrompt: analysis.stylePrompt,
               extra: selectedExtra,
+              productCount: selectedProducts.length,
+              referenceIndex: index + 1,
+              referenceCount: selectedReferences.length,
+              productFacts: selectedProductFacts,
+              productIdentityPrompt,
+              forbiddenContent: selectedForbiddenContent,
             }),
-            imageUrls: selectedProducts.map((item) => item.url),
-            sourceIds: [...selectedProducts.map((item) => item.id), reference.id],
+            imageUrls: buildCompetitorStyleCloneImageUrls(
+              reference.url,
+              selectedProducts.map((item) => item.url),
+            ),
+            sourceIds: [reference.id, ...selectedProducts.map((item) => item.id)],
             previewUrl: selectedProduct.url,
+            cloneQuality: {
+              enabled: mainAutoQuality.value,
+              mode: selectedMode,
+              competitorImageUrl: reference.url,
+              productImageUrls: selectedProducts.map((item) => item.url),
+              productFacts: [selectedProductFacts, productIdentityPrompt]
+                .filter(Boolean)
+                .join('\n'),
+              forbiddenContent: selectedForbiddenContent,
+              threshold: Number(mainQualityThreshold.value) || 90,
+              maxRetries: Number(mainQualityRetries.value) || 0,
+            },
+            inputFidelity: 'high',
             ...aspect,
             resolution: selectedResolution.value,
           },
@@ -739,21 +836,69 @@ function runDetail() {
             <label :class="{ active: mode === 'layout' }">
               <input v-model="mode" type="radio" value="layout" />
               <b>同类目复刻</b>
-              <span>借鉴参考图的版式、构图与视觉节奏，产品保持为你的商品。</span>
+              <span>高保真迁移构图、人物动作、场景、光色与排版骨架。</span>
+              <small>必须选择具体类目 · 不复制竞品产品事实</small>
             </label>
             <label :class="{ active: mode === 'style' }">
               <input v-model="mode" type="radio" value="style" />
               <b>跨类目借风格</b>
-              <span>保留产品真实外观，只迁移参考图的配色、光线和氛围。</span>
+              <span>保留视觉关系，对不适配的产品姿态和场景做等价映射。</span>
+              <small>不生硬照搬原类目的用途、配件和功能结构</small>
             </label>
+          </div>
+
+          <div class="ccp-quality-settings">
+            <label>
+              <input v-model="mainAutoQuality" type="checkbox" />
+              <span>
+                <b>生成后自动质检</b>
+                <small>产品身份为硬门槛；低于阈值最多自动返修两次，仍不通过则拦截</small>
+              </span>
+            </label>
+            <label v-if="mainAutoQuality">
+              <span>通过分</span>
+              <select v-model.number="mainQualityThreshold" :disabled="mainAnalyzing">
+                <option :value="85">85</option>
+                <option :value="90">90</option>
+                <option :value="95">95</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="ccp-clone-flow" aria-label="标准复刻流程">
+            <span>
+              <b>1</b>
+              模式边界
+            </span>
+            <i class="ri-arrow-right-s-line" aria-hidden="true"></i>
+            <span>
+              <b>2</b>
+              素材分区
+            </span>
+            <i class="ri-arrow-right-s-line" aria-hidden="true"></i>
+            <span>
+              <b>3</b>
+              逐图反推
+            </span>
+            <i class="ri-arrow-right-s-line" aria-hidden="true"></i>
+            <span>
+              <b>4</b>
+              独立成图
+            </span>
+            <i class="ri-arrow-right-s-line" aria-hidden="true"></i>
+            <span>
+              <b>5</b>
+              画布质检
+            </span>
           </div>
 
           <div class="ccp-analysis-settings">
             <label v-if="mode === 'layout'">
               <span>产品类目</span>
               <select v-model="mainCategory" :disabled="mainAnalyzing">
+                <option value="" disabled>请选择具体类目</option>
                 <option
-                  v-for="category in mainCategories"
+                  v-for="category in sameCategoryOptions"
                   :key="category.value"
                   :value="category.value"
                 >
@@ -765,8 +910,8 @@ function runDetail() {
               <i class="ri-sparkling-line"></i>
               {{
                 mode === 'layout'
-                  ? '先按产品类目反推竞品版式与风格，再用我方产品图生成'
-                  : '先通用反推竞品视觉风格，再用我方产品图跨类目迁移'
+                  ? '竞品原图直传并提取逐图视觉指纹，每张参考图对应一张独立成图'
+                  : '保留镜头、人物、场景与视觉节奏，并为我方产品重映射合理关系'
               }}
             </span>
           </div>
@@ -861,17 +1006,74 @@ function runDetail() {
             </div>
           </div>
 
-          <label class="ccp-extra">
-            <span>
-              补充要求
-              <small>可选</small>
-            </span>
-            <textarea
-              v-model="extra"
-              rows="3"
-              placeholder="例如：主标题保留“清凉一夏”，整体更轻盈，减少促销元素"
-            />
-          </label>
+          <div class="ccp-clone-brief">
+            <label>
+              <span>
+                已确认产品事实
+                <small>建议填写</small>
+              </span>
+              <textarea
+                v-model="mainProductFacts"
+                rows="3"
+                placeholder="填写品类、外观、材质、结构、可验证卖点和适用场景；不确定的信息不要填写"
+              />
+            </label>
+            <label>
+              <span>
+                项目禁用内容
+                <small>可选</small>
+              </span>
+              <textarea
+                v-model="mainForbiddenContent"
+                rows="3"
+                placeholder="例如：不出现医疗功效、价格、认证、对方品牌、原文案和人物IP"
+              />
+            </label>
+            <label class="wide">
+              <span>
+                本轮补充要求
+                <small>可选</small>
+              </span>
+              <textarea
+                v-model="extra"
+                rows="2"
+                placeholder="例如：主标题使用“舒适好眠”，整套降低促销感，产品占画面约60%"
+              />
+            </label>
+          </div>
+
+          <section class="ccp-clone-readiness" aria-label="生成前检查">
+            <header>
+              <strong>生成前检查</strong>
+              <span>{{ mainReadiness.canRun ? '硬性条件已满足' : '请先处理必填项' }}</span>
+            </header>
+            <ul>
+              <li
+                v-for="check in mainReadiness.checks"
+                :key="check.id"
+                :class="{
+                  passed: check.passed,
+                  warning: !check.passed && !check.blocking,
+                  blocking: !check.passed && check.blocking,
+                }"
+              >
+                <i
+                  :class="
+                    check.passed
+                      ? 'ri-checkbox-circle-fill'
+                      : check.blocking
+                        ? 'ri-close-circle-fill'
+                        : 'ri-error-warning-fill'
+                  "
+                  aria-hidden="true"
+                ></i>
+                <span>
+                  <b>{{ check.label }}</b>
+                  <small>{{ check.detail }}</small>
+                </span>
+              </li>
+            </ul>
+          </section>
         </template>
 
         <template v-else-if="tab === 'demand'">
@@ -1125,7 +1327,13 @@ function runDetail() {
             :disabled="!canRunMain"
             @click="runMainImages"
           >
-            {{ mainAnalyzing ? '正在反推风格…' : busy ? '正在提交…' : '开始生成' }}
+            {{
+              mainAnalyzing
+                ? mainAnalysisStatus || '正在反推并提交…'
+                : busy
+                  ? '正在提交…'
+                  : `生成 ${references.length * normalizedSelectedModels.length} 张${mode === 'layout' ? '同类目复刻' : '跨类目风格图'}`
+            }}
           </button>
           <button
             v-else-if="tab === 'demand'"
@@ -1416,6 +1624,87 @@ function runDetail() {
   font-size: 12px;
   line-height: 1.5;
 }
+.ccp-mode-grid small {
+  margin-top: auto;
+  color: var(--canvas-text-subtle);
+  font-size: 10px;
+  line-height: 1.4;
+}
+.ccp-mode-grid label.active small {
+  color: var(--canvas-accent);
+}
+.ccp-quality-settings {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 20px 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--canvas-border);
+  border-radius: 10px;
+  background: var(--canvas-surface);
+}
+.ccp-quality-settings label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--canvas-text-muted);
+  font-size: 11px;
+}
+.ccp-quality-settings label:first-child span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ccp-quality-settings b {
+  font-size: 11px;
+}
+.ccp-quality-settings small {
+  color: var(--canvas-text-subtle);
+  font-size: 9px;
+  font-weight: 400;
+}
+.ccp-quality-settings select {
+  min-width: 66px;
+  padding: 5px 7px;
+  border: 1px solid var(--canvas-border);
+  border-radius: 7px;
+  background: var(--canvas-input);
+  color: inherit;
+}
+.ccp-clone-flow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 0 20px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--canvas-border);
+  border-radius: 10px;
+  background: var(--canvas-surface);
+  color: var(--canvas-text-subtle);
+  font-size: 10px;
+}
+.ccp-clone-flow span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.ccp-clone-flow b {
+  display: grid;
+  width: 17px;
+  height: 17px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--canvas-accent-soft);
+  color: var(--canvas-accent);
+  font-size: 9px;
+}
+.ccp-clone-flow i {
+  color: var(--canvas-border-strong);
+  font-size: 15px;
+}
 .ccp-analysis-settings {
   display: flex;
   min-height: 38px;
@@ -1606,6 +1895,117 @@ function runDetail() {
   color: inherit;
   font: inherit;
   font-size: 13px;
+}
+.ccp-clone-brief {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 4px 20px 10px;
+}
+.ccp-clone-brief label {
+  display: block;
+  min-width: 0;
+}
+.ccp-clone-brief label.wide {
+  grid-column: 1 / -1;
+}
+.ccp-clone-brief label > span {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--canvas-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.ccp-clone-brief small {
+  color: var(--canvas-text-subtle);
+  font-weight: 400;
+}
+.ccp-clone-brief textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 9px 11px;
+  border: 1px solid var(--canvas-border);
+  border-radius: 10px;
+  background: var(--canvas-input);
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.ccp-clone-brief textarea:focus {
+  border-color: var(--canvas-accent-border);
+  outline: 2px solid var(--canvas-accent-soft);
+}
+.ccp-clone-readiness {
+  margin: 0 20px 18px;
+  padding: 10px 12px;
+  border: 1px solid var(--canvas-border);
+  border-radius: 12px;
+  background: var(--canvas-surface);
+}
+.ccp-clone-readiness > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.ccp-clone-readiness > header strong {
+  font-size: 12px;
+}
+.ccp-clone-readiness > header span {
+  color: var(--canvas-text-subtle);
+  font-size: 10px;
+}
+.ccp-clone-readiness ul {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ccp-clone-readiness li {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  background: var(--canvas-panel);
+}
+.ccp-clone-readiness li > i {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  font-size: 14px;
+}
+.ccp-clone-readiness li.passed > i {
+  color: #2e9b62;
+}
+.ccp-clone-readiness li.warning > i {
+  color: #c68a24;
+}
+.ccp-clone-readiness li.blocking > i {
+  color: #d14343;
+}
+.ccp-clone-readiness li > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.ccp-clone-readiness li b {
+  color: var(--canvas-text-muted);
+  font-size: 11px;
+}
+.ccp-clone-readiness li small {
+  overflow: hidden;
+  color: var(--canvas-text-subtle);
+  font-size: 9px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .ccp-demand-input {
   display: grid;
@@ -1940,9 +2340,18 @@ function runDetail() {
   opacity: 0.45;
 }
 @media (max-width: 680px) {
+  .ccp-backdrop {
+    padding: 8px;
+  }
+  .ccp-panel {
+    width: 100%;
+    max-height: calc(100vh - 16px);
+  }
   .ccp-generation-settings,
   .ccp-mode-grid,
   .ccp-selection,
+  .ccp-clone-brief,
+  .ccp-clone-readiness ul,
   .ccp-demand-input,
   .ccp-demand-cards,
   .ccp-detail-screens,
@@ -1950,6 +2359,17 @@ function runDetail() {
     grid-template-columns: 1fr;
   }
   .ccp-analysis-settings {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .ccp-clone-brief label.wide {
+    grid-column: auto;
+  }
+  .ccp-clone-flow {
+    justify-content: flex-start;
+    overflow-x: auto;
+  }
+  .ccp-quality-settings {
     align-items: flex-start;
     flex-direction: column;
   }

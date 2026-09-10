@@ -5,6 +5,7 @@ import { useCanvasStore } from '../stores/canvas';
 import { useUserStore } from '../stores/user';
 import { useTheme } from '../composables/useTheme';
 import { apiPath } from '../utils/apiBase';
+import { buildOssThumbnailUrl } from '../utils/ossImage';
 import { createStoredZip } from '../utils/storedZip';
 
 const router = useRouter();
@@ -57,6 +58,15 @@ function downloadableLayers(doc) {
 
 function imageCount(doc) {
   return downloadableLayers(doc).length;
+}
+
+function documentThumbnailUrl(doc) {
+  const sourceUrl =
+    doc?.thumbnailUrl ||
+    downloadableLayers(doc).find((layer) => layer.thumbnailUrl || layer.url)?.thumbnailUrl ||
+    downloadableLayers(doc)[0]?.url ||
+    '';
+  return buildOssThumbnailUrl(sourceUrl, { width: 640, height: 480, quality: 76 });
 }
 
 const documents = computed(() => {
@@ -440,7 +450,13 @@ onBeforeUnmount(() => {
           :aria-label="`打开画布：${doc.title}`"
           @click="openDocument(doc.id)"
         >
-          <img v-if="doc.thumbnailUrl" :src="doc.thumbnailUrl" alt="" loading="lazy" />
+          <img
+            v-if="documentThumbnailUrl(doc)"
+            :src="documentThumbnailUrl(doc)"
+            alt=""
+            loading="lazy"
+            decoding="async"
+          />
           <span v-else class="empty-preview">
             <i class="ri-image-line" aria-hidden="true"></i>
           </span>

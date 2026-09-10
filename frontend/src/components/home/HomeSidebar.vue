@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import VersionHistoryDialog from '../common/VersionHistoryDialog.vue'
 import { useVersionHistory } from '../../composables/useVersionHistory'
 import { downloadLatestCliInstaller } from '../../utils/cliDownload'
+import productMoverIcon from '../../assets/icons/product-mover.png'
 
 const {
   currentAppVersion,
@@ -275,10 +276,12 @@ async function openCliDownload() {
               <path class="yellow-fill" d="M18.2 3.3v3.2M16.6 4.9h3.2" />
             </svg>
 
-            <svg v-else-if="item.icon === 'selection-pool'" class="yh-icon" viewBox="0 0 24 24">
-              <path class="white" d="M4.5 7.2 12 3.8l7.5 3.4L12 10.6 4.5 7.2Z" />
-              <path class="cyan" d="M4.5 11.3 12 14.7l7.5-3.4M4.5 15.4 12 18.8l7.5-3.4" />
-            </svg>
+            <img
+              v-else-if="item.icon === 'selection-pool'"
+              class="yh-icon yh-icon-product-mover"
+              :src="productMoverIcon"
+              alt=""
+            />
 
             <svg v-else-if="item.icon === 'designer'" class="yh-icon" viewBox="0 0 24 24">
               <path class="white" d="m5.1 16.7 2.2 2.2 11.6-11.6-2.2-2.2L5.1 16.7Z" />

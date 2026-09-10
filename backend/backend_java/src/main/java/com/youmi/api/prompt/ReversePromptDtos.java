@@ -24,6 +24,39 @@ public final class ReversePromptDtos {
       Map<String, String> fieldLabels,
       String raw) {}
 
+  public record ReviewStyleCloneRequest(
+      String mode,
+      String competitorImageUrl,
+      List<String> productImageUrls,
+      String generatedImageUrl,
+      String productFacts,
+      String forbiddenContent,
+      Integer threshold) {}
+
+  public record CloneQualityScores(
+      int productConsistency,
+      int silhouette,
+      int proportionThickness,
+      int surfacePattern,
+      int edgeFoldMarkings,
+      int composition,
+      int colorTemperature,
+      int lighting,
+      int scene,
+      int peopleAction,
+      int typography,
+      int compliance,
+      int overall) {}
+
+  public record ReviewStyleCloneResponse(
+      String provider,
+      String model,
+      CloneQualityScores scores,
+      boolean passed,
+      boolean retryRecommended,
+      List<String> issues,
+      String repairInstruction) {}
+
   public record BridgeResult(
       String source,
       String category,

@@ -28,8 +28,8 @@ class FinanceServiceTest {
   }
 
   @Test
-  @DisplayName("只统计成功消费，并按流水快照归属平台和店铺")
-  void reportUsesSuccessfulLedgerAndSnapshotDimensions() {
+  @DisplayName("只统计成功消费，并按账号当前归属汇总平台和店铺")
+  void reportUsesSuccessfulLedgerAndCurrentUserShop() {
     FinanceDtos.FinanceReport report =
         financeService.report("2026-07-01", "2026-07-31", null, null);
 
@@ -37,10 +37,10 @@ class FinanceServiceTest {
     assertEquals(23L, report.summary().totalMi());
     assertEquals("0.23", report.summary().totalYuan().toPlainString());
     assertEquals(2, report.daily().size());
-    assertEquals(2, report.platforms().size());
-    assertEquals("淘宝", report.shops().get(0).platformName());
-    assertEquals("爱洁猫", report.shops().get(0).shopName());
-    assertEquals(15L, report.shops().get(0).totalMi());
+    assertEquals(1, report.platforms().size());
+    assertEquals("京东", report.shops().get(0).platformName());
+    assertEquals("京东旗舰店", report.shops().get(0).shopName());
+    assertEquals(23L, report.shops().get(0).totalMi());
     assertEquals(2, report.users().size());
     assertEquals("operator", report.users().get(0).account());
     assertEquals("运营", report.users().get(0).nickname());
@@ -52,13 +52,28 @@ class FinanceServiceTest {
   @DisplayName("平台和店铺筛选可组合")
   void reportFiltersByPlatformAndShop() {
     FinanceDtos.FinanceReport report =
+        financeService.report("2026-07-01", "2026-07-31", 2L, 20L);
+
+    assertEquals(3L, report.summary().transactionCount());
+    assertEquals(23L, report.summary().totalMi());
+    assertEquals(1, report.platforms().size());
+    assertEquals(1, report.shops().size());
+    assertEquals(2, report.users().size());
+  }
+
+  @Test
+  @DisplayName("账号换店后历史成功消费立即归入新店")
+  void reportReflectsShopReassignment() {
+    jdbcTemplate.update("UPDATE ym_sys_user SET shop_id = 10 WHERE id = 100");
+
+    FinanceDtos.FinanceReport report =
         financeService.report("2026-07-01", "2026-07-31", 1L, 10L);
 
     assertEquals(2L, report.summary().transactionCount());
     assertEquals(15L, report.summary().totalMi());
-    assertEquals(1, report.platforms().size());
     assertEquals(1, report.shops().size());
-    assertEquals(1, report.users().size());
+    assertEquals("爱洁猫", report.shops().get(0).shopName());
+    assertEquals("淘宝", report.shops().get(0).platformName());
     assertEquals("operator", report.users().get(0).account());
   }
 
@@ -136,7 +151,7 @@ class FinanceServiceTest {
         VALUES (100, 'operator', '运营', 20), (200, 'jd-user', '京东运营', 20)
         """);
 
-    // 用户 100 当前已换到京东店，但历史流水快照仍属于淘宝爱洁猫。
+    // 用户 100 当前已换到京东店；财务汇总应随账号当前归属变化，流水快照只作兜底。
     insertLog(100, 10L, 1L, "IMAGE", 8, "SUCCESS", "2026-07-10 10:00:00", "生图");
     insertLog(100, 10L, 1L, "VIDEO", 7, "SUCCESS", "2026-07-10 11:00:00", "视频");
     insertLog(200, 20L, 2L, "IMAGE", 8, "SUCCESS", "2026-07-11 10:00:00", "生图");

@@ -38,7 +38,14 @@ const selectedRatio = ref('智能比例')
 const ratioOptions = ['1:1', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
 const modelOpen = ref(false)
 const selectedModel = ref('gpt-image-2')
-const modelOptions = ['banana2', 'banana-pro', 'gpt-image-2', 'agnes-image-2.1-flash']
+const modelOptions = [
+  'banana2',
+  'banana-pro',
+  'gpt-image-2',
+  'gpt-image-2.5-sunburst',
+  'gpt-image-2.5-flare',
+  'agnes-image-2.1-flash',
+]
 const qualityOpen = ref(false)
 const selectedQuality = ref('2K')
 const qualityOptions = ['1K', '2K', '4K']
@@ -1785,6 +1792,8 @@ async function submitCloneGenerate() {
                 <span>模型</span>
                 <select v-model="detailDraft.model">
                   <option>gpt-image-2</option>
+                  <option>gpt-image-2.5-sunburst</option>
+                  <option>gpt-image-2.5-flare</option>
                   <option>banana2</option>
                   <option>agnes-image-2.1-flash</option>
                 </select>

@@ -30,6 +30,11 @@ import {
   selectedReviewableCanvasAssets,
   unmarkedCanvasAssets,
 } from '../utils/canvasAssetReview'
+import {
+  archiveCanvasAssetDeletion,
+  restoreCanvasAssetDeletion,
+} from '../utils/canvasAssetTrash'
+import { findVisibleGenerationPlacement } from '../utils/canvasGenerationPlacement'
 import { writeTextToClipboard } from '../utils/clipboard'
 import {
   buildElementEditPrompt,
@@ -38,6 +43,7 @@ import {
 } from '../utils/elementEditPrompt'
 import { cachedImgHtml } from '../utils/imageCache'
 import { publishImageTaskPersistence } from '../utils/imageTaskSync'
+import { buildOssThumbnailUrl as buildCanvasThumbnailUrl } from '../utils/ossImage'
 import {
   PROMPT_LIBRARY_CATEGORIES,
   PROMPT_LIBRARY_VIEWS,
@@ -160,8 +166,9 @@ const shortcutsOpen = ref(false)
 const helpMenuOpen = ref(false)
 const toolbarAddOpen = ref(false)
 const minimapVisible = ref(true)
-// 大画布首次打开时不挂载媒体节点，避免立即并发下载全部图片。
+// 大画布首次打开时只渲染轻量占位卡，避免立即并发下载全部媒体。
 const canvasMediaExpanded = ref(false)
+const revealedCanvasMediaIds = ref(new Set())
 const myMaterialsOpen = ref(false)
 const materialPickerMode = ref('canvas')
 const chatReferenceSourceOpen = ref(false)
@@ -1268,7 +1275,14 @@ async function recordGenerationToHistory(record) {
 // 注意：model 字符串必须和后端 alias 表（ImageGenerationProperties.defaultModelAliases）保持一致
 // 后端会对空格/横线/下划线做归一化容错，但 UI 上用标准写法更专业
 const WAVESPEED_MULTI_ANGLE_MODEL = 'wavespeed-ai/qwen-image/edit-multiple-angles'
-const chatModelOptions = ['banana2', 'banana-pro', 'gpt-image-2', 'agnes-image-2.1-flash']
+const chatModelOptions = [
+  'banana2',
+  'banana-pro',
+  'gpt-image-2',
+  'gpt-image-2.5-sunburst',
+  'gpt-image-2.5-flare',
+  'agnes-image-2.1-flash',
+]
 const chatRatioOptions = [
   'auto',
   '1:1',
@@ -1591,11 +1605,34 @@ const manualNameInput = reactive({
 })
 // 图片加载失败追踪：OSS 故障/签名过期时显示占位而非白条
 const brokenImages = reactive(new Set())
+const thumbnailFallbackLayerIds = reactive(new Set())
+
+function canvasLayerThumbnailUrl(layer) {
+  if (!layer) return ''
+  return buildCanvasThumbnailUrl(layer.thumbnailUrl || layer.url)
+}
+
+function canvasLayerRenderUrl(layer) {
+  if (!layer) return ''
+  return thumbnailFallbackLayerIds.has(layer.id)
+    ? layer.url || layer.thumbnailUrl || ''
+    : canvasLayerThumbnailUrl(layer)
+}
+
+function handleCanvasLayerImageError(layer) {
+  if (canvasLayerRenderUrl(layer) !== layer?.url && layer?.url) {
+    thumbnailFallbackLayerIds.add(layer.id)
+    return
+  }
+  markImageBroken(layer?.id)
+}
+
 function markImageBroken(id) {
   brokenImages.add(id)
 }
 function retryImage(id) {
   // 从失败集合移除 → 触发模板重渲染 → img 重新发起加载（OSS 恢复后即可救回）
+  thumbnailFallbackLayerIds.delete(id)
   brokenImages.delete(id)
 }
 // 宫格裁图模式
@@ -1678,19 +1715,32 @@ function isCanvasMediaLayer(layer) {
 }
 const canvasMediaLayers = computed(() => layers.value.filter(isCanvasMediaLayer))
 const canvasMediaCount = computed(() => canvasMediaLayers.value.length)
-const renderedLayers = computed(() =>
-  canvasMediaExpanded.value
-    ? layers.value
-    : layers.value.filter((layer) => !isCanvasMediaLayer(layer)),
-)
+const renderedLayers = computed(() => layers.value)
 const renderedLayerIds = computed(() => new Set(renderedLayers.value.map((layer) => layer.id)))
+
+function isCanvasMediaRevealed(layer) {
+  if (!isCanvasMediaLayer(layer)) return true
+  return canvasMediaExpanded.value || revealedCanvasMediaIds.value.has(layer.id)
+}
+
+function revealCanvasMediaIds(layerIds) {
+  if (!Array.isArray(layerIds) || !layerIds.length) return
+  const nextIds = new Set(revealedCanvasMediaIds.value)
+  for (const layerId of layerIds) {
+    if (layerId) nextIds.add(layerId)
+  }
+  revealedCanvasMediaIds.value = nextIds
+  nextTick(() => refreshConnections())
+}
+
+function revealCanvasMedia(layerId) {
+  revealCanvasMediaIds([layerId])
+}
 
 function toggleCanvasMedia() {
   canvasMediaExpanded.value = !canvasMediaExpanded.value
   if (!canvasMediaExpanded.value) {
-    const hiddenIds = new Set(canvasMediaLayers.value.map((layer) => layer.id))
-    selectedLayerIds.value = selectedLayerIds.value.filter((id) => !hiddenIds.has(id))
-    if (hiddenIds.has(selectedLayerId.value)) selectedLayerId.value = ''
+    revealedCanvasMediaIds.value = new Set()
     playingVideoLayerId.value = null
   }
   nextTick(() => refreshConnections())
@@ -1700,6 +1750,7 @@ watch(
   () => props.id,
   () => {
     canvasMediaExpanded.value = false
+    revealedCanvasMediaIds.value = new Set()
   },
 )
 const orderedLayers = computed(() =>
@@ -1735,6 +1786,19 @@ const deleteUnmarkedActionTitle = computed(() => {
   const count = unmarkedMediaLayers.value.length
   return count ? `删除 ${count} 个未采用素材` : '没有可删除的未采用素材'
 })
+const deletedAssetBatches = computed(() => {
+  const batches = doc.value?.payload?.deletedAssetBatches
+  return Array.isArray(batches) ? batches : []
+})
+const latestDeletedAssetBatch = computed(() => deletedAssetBatches.value.at(-1) || null)
+const latestDeletedAssetCount = computed(
+  () => latestDeletedAssetBatch.value?.entries?.length || latestDeletedAssetBatch.value?.layers?.length || 0,
+)
+const restoreDeletedAssetsTitle = computed(() =>
+  latestDeletedAssetCount.value
+    ? `恢复最近删除的 ${latestDeletedAssetCount.value} 个素材`
+    : '没有可恢复的素材',
+)
 const selectedCreationLayers = computed(() =>
   selectedLayerIds.value
     .map((id) => layers.value.find((item) => item.id === id))
@@ -2627,6 +2691,58 @@ async function readApiResponse(response) {
   return result.data
 }
 
+async function reviewStyleCloneQuality(config, generatedImageUrl) {
+  if (!config?.enabled || !generatedImageUrl) return null
+  return readApiResponse(
+    await fetch(apiPath('/api/prompt/review-style-clone'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...userStore.authHeaders(),
+      },
+      body: JSON.stringify({
+        mode: config.mode || 'layout',
+        competitorImageUrl: config.competitorImageUrl || '',
+        productImageUrls: Array.isArray(config.productImageUrls) ? config.productImageUrls : [],
+        generatedImageUrl,
+        productFacts: config.productFacts || '',
+        forbiddenContent: config.forbiddenContent || '',
+        threshold: Number(config.threshold) || 90,
+      }),
+    }),
+  )
+}
+
+function buildStyleCloneRepairPrompt(basePrompt, review) {
+  const repairInstruction = String(review?.repairInstruction || '').trim()
+  const issues = Array.isArray(review?.issues) ? review.issues.filter(Boolean).slice(0, 6) : []
+  const scores = review?.scores || {}
+  const productFailures = [
+    ['silhouette', 95, '外轮廓与产品类型'],
+    ['proportionThickness', 92, '长宽比例、厚度和折叠状态'],
+    ['surfacePattern', 92, '表面色块、绗缝与纹理'],
+    ['edgeFoldMarkings', 90, '包边、侧面、折痕和印花标记'],
+  ]
+    .filter(([key, threshold]) => Number(scores[key]) < threshold)
+    .map(([, , label]) => label)
+  return [
+    basePrompt,
+    '【自动质检返修】',
+    repairInstruction || issues.join('；'),
+    productFailures.length
+      ? `产品身份硬门槛未通过：${productFailures.join('、')}。完全放弃当前错误商品外观，重新以参考图2及之后的我方产品图重建商品；竞品商品只作负参考，绝不继承其厚度、结构、纹理或截面。`
+      : '',
+    '本次必须优先修复以上差异，同时继续严格保持我方产品事实、参考图1的视觉骨架以及全部禁用规则。只输出修正后的最终图片。',
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
+function createGenerationClientTaskId() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID()
+  return 'c-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10)
+}
+
 async function submitImageTask({
   prompt,
   imageUrls,
@@ -2748,6 +2864,94 @@ async function pollImageTaskUntilDone(taskId, placeholderId, assistantId, prompt
     if (imageReady) {
       const url = extractTaskImageUrl(status)
       if (!url) throw new Error('任务完成，但没有返回图片地址')
+      const qualityLayer = layers.value.find((layer) => layer.id === placeholderId)
+      const qualityMeta = qualityLayer?.genMeta || {}
+      const qualityConfig = qualityMeta.cloneQuality
+      let qualityReview = qualityMeta.lastQualityReview || null
+      if (qualityConfig?.enabled) {
+        updateGeneratingPlaceholder(placeholderId, {
+          progress: 98,
+          status: 'processing',
+          statusText: '生成完成，正在进行复刻质检…',
+        })
+        if (assistantId) {
+          updateChatMessage(assistantId, {
+            text: '图片已生成，正在对照竞品构图与产品一致性进行质检…',
+            generating: true,
+          })
+        }
+        try {
+          qualityReview = await reviewStyleCloneQuality(qualityConfig, url)
+          const qualityAttempt = Math.max(0, Number(qualityMeta.qualityAttempt) || 0)
+          const maxRetries = Math.max(0, Number(qualityConfig.maxRetries) || 0)
+          const shouldRetry = Boolean(
+            qualityReview?.retryRecommended &&
+            qualityReview?.repairInstruction &&
+            qualityAttempt < maxRetries,
+          )
+          if (shouldRetry) {
+            const basePrompt = qualityMeta.basePrompt || qualityMeta.prompt || prompt
+            const retryPrompt = buildStyleCloneRepairPrompt(basePrompt, qualityReview)
+            const retryClientTaskId = createGenerationClientTaskId()
+            const nextMeta = {
+              ...qualityMeta,
+              prompt: retryPrompt,
+              basePrompt,
+              clientTaskId: retryClientTaskId,
+              qualityAttempt: qualityAttempt + 1,
+              lastQualityReview: qualityReview,
+            }
+            updateLayer(placeholderId, {
+              prompt: retryPrompt,
+              taskId: '',
+              clientTaskId: retryClientTaskId,
+              genMeta: nextMeta,
+            })
+            updateGeneratingPlaceholder(placeholderId, {
+              progress: 6,
+              status: 'submitted',
+              statusText: `质检 ${qualityReview.scores?.overall || 0} 分，正在自动返修…`,
+            })
+            const retryTaskId = await submitImageTask({
+              prompt: retryPrompt,
+              imageUrls: qualityMeta.referenceImageUrls || [],
+              model: qualityMeta.model,
+              size: qualityMeta.ratio,
+              resolution: qualityMeta.resolution,
+              inputFidelity: qualityMeta.generationOptions?.inputFidelity,
+              clientTaskId: retryClientTaskId,
+            })
+            updateGeneratingPlaceholder(placeholderId, {
+              taskId: retryTaskId,
+              progress: 8,
+              status: 'processing',
+              statusText: `质检 ${qualityReview.scores?.overall || 0} 分，正在自动返修…`,
+            })
+            return await startImagePoll(retryTaskId, placeholderId, assistantId, retryPrompt)
+          }
+          updateLayer(placeholderId, {
+            cloneQualityReview: qualityReview,
+            cloneQualityScore: qualityReview?.scores?.overall,
+            cloneQualityPassed: Boolean(qualityReview?.passed),
+            genMeta: { ...qualityMeta, lastQualityReview: qualityReview },
+          })
+          if (!qualityReview?.passed) {
+            const rejectedError = new Error(
+              `产品一致性质检未通过（${qualityReview?.scores?.overall || 0}分）：${qualityReview?.repairInstruction || qualityReview?.issues?.join('；') || '生成结果改变了我方产品外观'}`,
+            )
+            rejectedError.styleCloneRejected = true
+            throw rejectedError
+          }
+        } catch (qualityError) {
+          if (qualityError?.styleCloneRejected) throw qualityError
+          console.warn('[reviewStyleCloneQuality] 质检不可用，拦截生成结果:', qualityError)
+          updateLayer(placeholderId, {
+            cloneQualityUnavailable: true,
+            cloneQualityError: String(qualityError?.message || qualityError),
+          })
+          throw new Error(`复刻质检不可用，已拦截结果：${qualityError?.message || qualityError}`)
+        }
+      }
       const persistStatus = String(
         status.persistStatus ||
           (String(status.status || '').toLowerCase() === 'persisting' ? 'PENDING' : 'DONE'),
@@ -2790,8 +2994,14 @@ async function pollImageTaskUntilDone(taskId, placeholderId, assistantId, prompt
         createdAt: Date.now(),
       })
       if (assistantId) {
+        const qualityScore = Number(qualityReview?.scores?.overall)
+        const qualityText = Number.isFinite(qualityScore)
+          ? qualityReview?.passed
+            ? `，自动质检 ${qualityScore} 分`
+            : `，自动质检 ${qualityScore} 分，建议人工复核`
+          : ''
         updateChatMessage(assistantId, {
-          text: '生成完成，已添加到画布。',
+          text: `生成完成${qualityText}，已添加到画布。`,
           imageUrl: url,
           generating: false,
         })
@@ -2896,7 +3106,9 @@ function applyImagePersistenceState({
         (layer.url === temporaryUrl || layer.temporaryUrl === temporaryUrl || !layer.url)
       return {
         ...layer,
-        ...(canReplaceUrl ? { url: finalUrl, thumbnailUrl: finalUrl } : {}),
+        ...(canReplaceUrl
+          ? { url: finalUrl, thumbnailUrl: buildCanvasThumbnailUrl(finalUrl) }
+          : {}),
         persistStatus: normalizedStatus,
         persistError: persistError || undefined,
         temporaryUrl: undefined,
@@ -3607,6 +3819,53 @@ function findAvailableCanvasLayerPosition(width, height) {
   }
 }
 
+function visibleCanvasWorldRect() {
+  const stage = document.querySelector('.stage')
+  const stageRect = stage?.getBoundingClientRect()
+  const scale = Math.max(0.01, Number(viewScale.value) || 1)
+  let leftPx = 78
+  let rightPx = Math.max(leftPx + 1, (stageRect?.width || viewportSize.width) - 20)
+  const topPx = 72
+  const bottomPx = Math.max(topPx + 1, (stageRect?.height || viewportSize.height) - 22)
+  const rightPanel = rightPanelVisible.value ? document.querySelector('.right-panel') : null
+  const panelRect = rightPanel?.getBoundingClientRect()
+
+  if (stageRect && panelRect) {
+    const panelLeft = Math.max(0, panelRect.left - stageRect.left)
+    const panelRight = Math.min(stageRect.width, panelRect.right - stageRect.left)
+    if (panelLeft >= stageRect.width / 2) rightPx = Math.min(rightPx, panelLeft - 18)
+    else if (panelRight <= stageRect.width / 2) leftPx = Math.max(leftPx, panelRight + 18)
+  }
+
+  return {
+    x: (leftPx - viewOffset.value.x) / scale,
+    y: (topPx - viewOffset.value.y) / scale,
+    width: Math.max(1, (rightPx - leftPx) / scale),
+    height: Math.max(1, (bottomPx - topPx) / scale),
+  }
+}
+
+function firstGenerationReferenceLayer(genMeta, referenceImages) {
+  const referenceUrls = [
+    ...(Array.isArray(genMeta.referenceImageUrls) ? genMeta.referenceImageUrls : []),
+    ...(referenceImages || []).map((image) => image?.url),
+  ].filter(Boolean)
+  const referenceIds = [
+    ...(referenceImages || []).map((image) => image?.layerId),
+    ...(Array.isArray(genMeta.sourceLayerIds) ? genMeta.sourceLayerIds : []),
+  ].filter(Boolean)
+
+  for (const url of referenceUrls) {
+    const layer = layers.value.find((item) => isRealImageLayer(item) && item.url === url)
+    if (layer) return layer
+  }
+  for (const layerId of referenceIds) {
+    const layer = layers.value.find((item) => item.id === layerId && isRealImageLayer(item))
+    if (layer) return layer
+  }
+  return isRealImageLayer(selectedLayer.value) ? selectedLayer.value : null
+}
+
 async function addImageLayerFromUrl(url, name = 'AI生成图片', detectPrompt = '', options = {}) {
   try {
     // 后端已在异步持久化完成后返回永久 OSS URL，此处不再二次转存（去掉 30s 自杀式 abort）
@@ -3628,7 +3887,7 @@ async function addImageLayerFromUrl(url, name = 'AI生成图片', detectPrompt =
         id: `layer-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         name: layerName(index),
         url,
-        thumbnailUrl: url,
+        thumbnailUrl: buildCanvasThumbnailUrl(url),
         naturalWidth: size.width,
         naturalHeight: size.height,
         width,
@@ -3645,6 +3904,7 @@ async function addImageLayerFromUrl(url, name = 'AI生成图片', detectPrompt =
       draft.payload.layers.push(layer)
       return draft
     })
+    revealCanvasMedia(layerId)
     selectedLayerId.value = layerId
     selectedLayerIds.value = [layerId]
     return layerId
@@ -3792,7 +4052,7 @@ async function pasteCopiedLayers() {
         id: newId,
         name: layerName(draft.payload.layers.length),
         url: buffer.url,
-        thumbnailUrl: buffer.thumbnailUrl || buffer.url,
+        thumbnailUrl: buildCanvasThumbnailUrl(buffer.thumbnailUrl || buffer.url),
         naturalWidth: buffer.naturalWidth,
         naturalHeight: buffer.naturalHeight,
         width: buffer.width,
@@ -3814,6 +4074,7 @@ async function pasteCopiedLayers() {
     return draft
   })
   layerDetectedElements.value = nextDetected
+  revealCanvasMediaIds(newIds)
   selectedLayerIds.value = newIds
   selectedLayerId.value = newIds.at(-1) || ''
   showCopyPasteToast(newIds.length > 1 ? `已粘贴 ${newIds.length} 张图片` : '已粘贴图片')
@@ -3822,20 +4083,23 @@ async function pasteCopiedLayers() {
 
 function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '', placement = {}) {
   if (!placement.skipUndo) pushUndo()
+  const explicitReferenceUrls = Array.isArray(genMeta.referenceImageUrls)
+    ? genMeta.referenceImageUrls
+    : []
   const referenceImages = (
-    Array.isArray(genMeta.referenceImages) ? genMeta.referenceImages : chatReferenceImages.value
+    Array.isArray(genMeta.referenceImages)
+      ? genMeta.referenceImages
+      : explicitReferenceUrls.length
+        ? explicitReferenceUrls.map((url) => ({ url }))
+        : chatReferenceImages.value
   ).filter((image) => !image.uploading && !image.error)
-  const selected = selectedLayer.value
-  const base =
-    selected?.type === 'placeholder'
-      ? [...layers.value].reverse().find((l) => l.type !== 'placeholder')
-      : selected
-  const previewUrl = genMeta.previewUrl || referenceImages.at(-1)?.url || base?.url || ''
+  const base = firstGenerationReferenceLayer(genMeta, referenceImages)
+  const previewUrl = genMeta.previewUrl || referenceImages[0]?.url || base?.url || ''
   let layerId = ''
 
   // 占位框大小：与参考图/选中图的长宽比一致
   // 优先用参考图的尺寸，其次用选中图的尺寸，最后默认 3:4
-  const refImg = referenceImages.at(-1)
+  const refImg = referenceImages[0]
   const aspectSrc =
     genMeta.aspectWidth && genMeta.aspectHeight
       ? { w: genMeta.aspectWidth, h: genMeta.aspectHeight }
@@ -3848,29 +4112,40 @@ function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '',
           ? { w: base.naturalWidth || base.width || 3, h: base.naturalHeight || base.height || 4 }
           : { w: 3, h: 4 }
   const aspectRatio = aspectSrc.w / aspectSrc.h
-  const placeholderHeight = Math.round(PLACEHOLDER_WIDTH / aspectRatio)
+  const placementViewport = visibleCanvasWorldRect()
+  const naturalPlaceholderHeight = Math.round(PLACEHOLDER_WIDTH / aspectRatio)
+  const viewportFitScale = Math.min(
+    1,
+    Math.max(0.25, (placementViewport.width - 36) / PLACEHOLDER_WIDTH),
+    Math.max(0.25, (placementViewport.height - 36) / naturalPlaceholderHeight),
+  )
+  const placeholderWidth = Math.round(PLACEHOLDER_WIDTH * viewportFitScale)
+  const placeholderHeight = Math.round(naturalPlaceholderHeight * viewportFitScale)
+  const occupied = layers.value
+    .filter((layer) => layer?.visible !== false)
+    .map((layer) => ({
+      x: Number(layer.x) || 0,
+      y: Number(layer.y) || 0,
+      width: Math.max(1, Number(layer.width) || 1),
+      height: Math.max(1, Number(layer.height) || 1),
+    }))
+  const generatedPosition = findVisibleGenerationPlacement({
+    viewport: placementViewport,
+    anchor: base,
+    occupied,
+    width: placeholderWidth,
+    height: placeholderHeight,
+    gap: 36,
+    margin: 18,
+  })
 
   canvas.updateDocument(props.id, (draft) => {
     const index = draft.payload.layers.length
     const maxZ = draft.payload.layers.reduce((max, layer) => Math.max(max, layer.zIndex || 0), 0)
-    // 视口中心的世界坐标 = (viewportSize/2 - viewOffset) / viewScale
-    const cx = (viewportSize.width / 2 - viewOffset.value.x) / viewScale.value
-    const cy = (viewportSize.height / 2 - viewOffset.value.y) / viewScale.value
     const batchCount = normalizeChatGenerationCount(placement.batchCount || genMeta.batchCount)
     const batchIndex = Math.max(0, Math.min(batchCount - 1, Number(placement.batchIndex) || 0))
-    const batchColumns = Math.min(2, batchCount)
-    const batchRows = Math.ceil(batchCount / batchColumns)
-    const batchGap = 40
-    const batchWidth = batchColumns * PLACEHOLDER_WIDTH + (batchColumns - 1) * batchGap
-    const batchHeight = batchRows * placeholderHeight + (batchRows - 1) * batchGap
-    const batchOriginX = base ? base.x + base.width + batchGap : cx - batchWidth / 2
-    const batchOriginY = base ? base.y : cy - batchHeight / 2
     // 客户端幂等键：同一张生图稳定携带，刷新重提时后端按它命中已有任务、跳过重复扣费+外部调用。
-    function genClientTaskId() {
-      if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID()
-      return 'c-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10)
-    }
-    const clientTaskId = genClientTaskId()
+    const clientTaskId = createGenerationClientTaskId()
     const layer = {
       id: `placeholder-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       type: 'placeholder',
@@ -3893,6 +4168,10 @@ function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '',
           : [],
         creationType: genMeta.creationType || '',
         sourceLayerIds: Array.isArray(genMeta.sourceLayerIds) ? genMeta.sourceLayerIds : [],
+        cloneQuality:
+          genMeta.cloneQuality && typeof genMeta.cloneQuality === 'object'
+            ? { ...genMeta.cloneQuality }
+            : null,
         generationOptions:
           genMeta.generationOptions && typeof genMeta.generationOptions === 'object'
             ? { ...genMeta.generationOptions }
@@ -3907,12 +4186,12 @@ function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '',
       url: '',
       thumbnailUrl: previewUrl,
       previewUrl,
-      naturalWidth: PLACEHOLDER_WIDTH,
+      naturalWidth: placeholderWidth,
       naturalHeight: placeholderHeight,
-      width: PLACEHOLDER_WIDTH,
+      width: placeholderWidth,
       height: placeholderHeight,
-      x: batchOriginX + (batchIndex % batchColumns) * (PLACEHOLDER_WIDTH + batchGap),
-      y: batchOriginY + Math.floor(batchIndex / batchColumns) * (placeholderHeight + batchGap),
+      x: generatedPosition.x,
+      y: generatedPosition.y,
       zIndex: maxZ + 1,
       visible: true,
       locked: false,
@@ -4023,6 +4302,8 @@ async function runCanvasCreation({ type, sourceIds, jobs, batchIndex = 0, batchC
             resolution: job.resolution || chatResolution.value,
             targetLayerId: sourceId,
             creationType: type || '',
+            cloneQuality: job.cloneQuality || null,
+            inputFidelity: job.inputFidelity || '',
           },
           createdAt: Date.now() + globalIndex,
         },
@@ -4040,6 +4321,10 @@ async function runCanvasCreation({ type, sourceIds, jobs, batchIndex = 0, batchC
           aspectHeight: job.aspectHeight,
           creationType: type || '',
           sourceLayerIds: job.sourceIds || sourceIds || [],
+          cloneQuality: job.cloneQuality || null,
+          generationOptions: {
+            inputFidelity: job.inputFidelity || '',
+          },
         },
         messageId,
         {
@@ -4053,16 +4338,10 @@ async function runCanvasCreation({ type, sourceIds, jobs, batchIndex = 0, batchC
       // 避免图层 watch 把刚创建的任务误判成“刷新后待恢复任务”并并发重提。
       _submittingPlaceholderIds.add(placeholderId)
 
-      const source = layers.value.find((item) => item.id === sourceId)
       const placeholder = layers.value.find((item) => item.id === placeholderId)
-      if (source && placeholder) {
-        const columns = 5
-        const column = globalIndex % columns
-        const row = Math.floor(globalIndex / columns)
+      if (placeholder) {
         updateLayer(placeholderId, {
           name: job.name || `生成结果 ${index + 1}`,
-          x: source.x + source.width + 48 + column * (placeholder.width + 36),
-          y: source.y + row * (placeholder.height + 36),
         })
       }
       connectCreationSources(job.sourceIds || sourceIds || [], placeholderId)
@@ -4075,6 +4354,7 @@ async function runCanvasCreation({ type, sourceIds, jobs, batchIndex = 0, batchC
           model: job.model || chatModel.value,
           size: job.ratio || 'auto',
           resolution: job.resolution || chatResolution.value,
+          inputFidelity: job.inputFidelity || '',
           clientTaskId: pendingLayer?.clientTaskId || '',
         })
         updateGeneratingPlaceholder(placeholderId, {
@@ -4158,7 +4438,7 @@ async function replaceGeneratingPlaceholder(
         ...placeholder,
         type: 'image',
         url,
-        thumbnailUrl: url,
+        thumbnailUrl: buildCanvasThumbnailUrl(url),
         taskId: persistence.taskId || placeholder.taskId,
         persistStatus: persistence.persistStatus || placeholder.persistStatus,
         temporaryUrl: persistence.persistStatus === 'PENDING' ? url : undefined,
@@ -4179,6 +4459,7 @@ async function replaceGeneratingPlaceholder(
     })
 
     if (!replaced) return addImageLayerFromUrl(url)
+    revealCanvasMedia(layerId)
     selectedLayerId.value = layerId
     selectedLayerIds.value = [layerId]
     // 生图完成后自动检测元素（买家秀跳过）
@@ -4374,6 +4655,7 @@ function uploadNodeMedia(layer) {
           })
         }
       }
+      revealCanvasMedia(layer.id)
       // 上传完成后自动智能分层
       await nextTick()
       const updatedLayer = layers.value.find((l) => l.id === layer.id)
@@ -5305,6 +5587,7 @@ async function addFiles(fileList, options = {}) {
           return draft
         })
         if (referenceImage) referenceImage.layerId = layerId
+        revealCanvasMedia(layerId)
         uploadedLayerIds.push(layerId)
         uploadedCount += 1
       } else {
@@ -5326,7 +5609,7 @@ async function addFiles(fileList, options = {}) {
             id: `layer-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
             name: layerName(index),
             url,
-            thumbnailUrl: url,
+            thumbnailUrl: buildCanvasThumbnailUrl(url),
             naturalWidth: size.width,
             naturalHeight: size.height,
             width: displaySize.width,
@@ -5353,6 +5636,7 @@ async function addFiles(fileList, options = {}) {
           return draft
         })
         if (referenceImage) referenceImage.layerId = layerId
+        revealCanvasMedia(layerId)
         uploadedLayerIds.push(layerId)
         uploadedCount += 1
       }
@@ -5639,7 +5923,7 @@ function deleteUnmarkedCanvasAssets() {
   if (!window.confirm(warning)) return
 
   removeLayers(targets.map((layer) => layer.id))
-  showCopyPasteToast(`已删除 ${targets.length} 个未采用素材，可撤销恢复`)
+  showCopyPasteToast(`已删除 ${targets.length} 个未采用素材，可点击恢复按钮找回`)
 }
 
 function removeLayers(ids) {
@@ -5680,20 +5964,41 @@ function removeLayers(ids) {
 
   const nextSelectedLayerId = layers.value.find((layer) => !deleteSet.has(layer.id))?.id || ''
   canvas.updateDocument(props.id, (draft) => {
-    draft.payload.layers = draft.payload.layers.filter((layer) => !deleteSet.has(layer.id))
-    draft.payload.connections = connections.value
-    draft.payload.detectedElements = JSON.parse(JSON.stringify(nextDetectedElements))
-    if (Array.isArray(draft.payload.reversePrompt?.referenceImages)) {
-      draft.payload.reversePrompt.referenceImages =
-        draft.payload.reversePrompt.referenceImages.filter(
-          (reference) => !deleteSet.has(reference.layerId),
-        )
-    }
+    archiveCanvasAssetDeletion(draft.payload, [...deleteSet])
     return draft
   })
   selectedLayerId.value = nextSelectedLayerId
   selectedLayerIds.value = nextSelectedLayerId ? [nextSelectedLayerId] : []
   keyboardSelectionTarget.value = 'layer'
+  void canvas.flushNow?.(props.id)
+}
+
+function restoreLastDeletedCanvasAssets() {
+  if (!userStore.requireLogin()) return
+  const batch = latestDeletedAssetBatch.value
+  if (!batch) {
+    showCopyPasteToast('没有可恢复的素材')
+    return
+  }
+
+  pushUndo()
+  const restoredIds = []
+  canvas.updateDocument(props.id, (draft) => {
+    restoredIds.push(...restoreCanvasAssetDeletion(draft.payload).restoredIds)
+    return draft
+  })
+
+  connections.value = [...(doc.value?.payload?.connections || [])]
+  layerDetectedElements.value = { ...(doc.value?.payload?.detectedElements || {}) }
+  if (restoredIds.length) {
+    revealCanvasMediaIds(restoredIds)
+    selectedLayerIds.value = restoredIds
+    selectedLayerId.value = restoredIds.at(-1) || ''
+    showCopyPasteToast(`已恢复 ${restoredIds.length} 个素材`)
+  } else {
+    showCopyPasteToast('最近删除的素材已经在画布中')
+  }
+  void canvas.flushNow?.(props.id)
 }
 
 function removeLayer(id) {
@@ -6774,8 +7079,6 @@ async function smartCutoutLayer(layer) {
   if (placeholder) {
     updateLayer(placeholderId, {
       name: `${layer.name || '图片'} 抠图`,
-      x: Number(layer.x || 0) + Number(layer.width || 0) + 48,
-      y: Number(layer.y || 0),
       statusText: '正在智能抠图…',
     })
   }
@@ -7377,6 +7680,11 @@ function saveCurrentComposerToPromptLibrary() {
     return
   }
   openPromptLibraryEditor({ content, source: 'INPUT' })
+}
+
+function selectPromptLibraryCategory(category) {
+  promptLibraryEditor.category = category
+  promptLibraryCategoryOpen.value = false
 }
 
 function saveAgentDraftToPromptLibrary(message) {
@@ -8049,7 +8357,7 @@ function escHtml(s) {
 
 function buildElementPill(el, order) {
   const layer = layers.value.find((l) => l.id === el.layerId)
-  const thumb = layer?.thumbnailUrl || layer?.url || ''
+  const thumb = canvasLayerThumbnailUrl(layer)
   const eId = el.object_name || el.name || el.id
   const box = el.box_2d || []
   const imgTag = thumb
@@ -10471,6 +10779,9 @@ function onGlobalKeydown(event) {
       // 然后才恢复 layers
       canvas.updateDocument(props.id, (draft) => {
         draft.payload.layers = layersData
+        if (!Array.isArray(snapshot) && snapshot.deletedAssetBatches) {
+          draft.payload.deletedAssetBatches = snapshot.deletedAssetBatches
+        }
         return draft
       })
       selectedLayerId.value = layersData[0]?.id || ''
@@ -10544,6 +10855,9 @@ function pushUndo() {
       connections: JSON.parse(JSON.stringify(connections.value)),
       detectedElements: JSON.parse(JSON.stringify(layerDetectedElements.value)),
       selectedDetectedElements: [...selectedDetectedElements.value],
+      deletedAssetBatches: JSON.parse(
+        JSON.stringify(doc.value.payload.deletedAssetBatches || []),
+      ),
     })
     if (undoStack.value.length > 50) undoStack.value.shift()
   }
@@ -10908,12 +11222,14 @@ const selectedMaterialReferenceCount = computed(
 )
 function addMaterialToCanvas(mat) {
   const maxZ = layers.value.reduce((max, l) => Math.max(max, l.zIndex || 0), 0)
+  const layerId = String(Date.now()).slice(-6)
   canvas.updateDocument(props.id, (draft) => {
     draft.payload.layers.push({
-      id: String(Date.now()).slice(-6),
+      id: layerId,
       type: 'image',
       name: mat.name,
       url: mat.url,
+      thumbnailUrl: buildCanvasThumbnailUrl(mat.url),
       x: Math.round(100 + Math.random() * 200),
       y: Math.round(100 + Math.random() * 200),
       width: mat.width || 400,
@@ -10927,6 +11243,7 @@ function addMaterialToCanvas(mat) {
     })
     return draft
   })
+  revealCanvasMedia(layerId)
 }
 
 const copyTargetDocuments = computed(() =>
@@ -11259,7 +11576,9 @@ function reversePromptCategoryLabel(category) {
 }
 
 const reversePromptFieldOrder = [
+  'content_role',
   'subject_and_elements',
+  'product_identity',
   'mattress_surface',
   'mattress_structure',
   'curtain_detail',
@@ -11268,13 +11587,17 @@ const reversePromptFieldOrder = [
   'bed_wood',
   'bed_structure',
   'composition_and_camera',
+  'scene_and_environment',
+  'people_and_actions',
   'lighting_and_color',
   'visual_style',
   'typography_layout',
 ]
 
 const reversePromptDefaultLabels = {
+  content_role: '本图职责',
   subject_and_elements: '主体与元素',
+  product_identity: '可见产品身份',
   core_subject: '核心主体',
   auxiliary_props: '辅助元素',
   mattress_surface: '床垫面层细节',
@@ -11285,6 +11608,8 @@ const reversePromptDefaultLabels = {
   bed_wood: '木材与工艺',
   bed_structure: '床架结构',
   composition_and_camera: '构图与镜头',
+  scene_and_environment: '场景与空间',
+  people_and_actions: '人物与动作',
   lighting_and_color: '光线与色彩',
   visual_style: '视觉风格',
   typography_layout: '文字排版',
@@ -11608,7 +11933,7 @@ async function contextMenuGetPrompt(category = 'general') {
       })
       updateLayer(layer.id, {
         url: imageUrl,
-        thumbnailUrl: imageUrl,
+        thumbnailUrl: buildCanvasThumbnailUrl(imageUrl),
         sourceType: promptSourceTypeForLayer(layer) || 'upload',
       })
     }
@@ -11903,7 +12228,7 @@ async function executeImageStitch() {
         id: replacementLayerId,
         name: `${directionLabel}拼接图`,
         url,
-        thumbnailUrl: url,
+        thumbnailUrl: buildCanvasThumbnailUrl(url),
         naturalWidth: outputWidth,
         naturalHeight: outputHeight,
         width: displayWidth,
@@ -11929,6 +12254,7 @@ async function executeImageStitch() {
     for (const sourceId of sourceIds) delete nextDetectedElements[sourceId]
     layerDetectedElements.value = nextDetectedElements
     connections.value = replacementConnections
+    revealCanvasMedia(replacementLayerId)
     selectedLayerId.value = replacementLayerId
     selectedLayerIds.value = [replacementLayerId]
     imageStitchDialog.visible = false
@@ -12065,7 +12391,7 @@ async function executeHorizontalCut() {
           : `horizontal-slice-${timestamp}-${index}-${Math.random().toString(36).slice(2, 7)}`
       slice.name = `${layer.name || '图片'}-${index + 1}`
       slice.url = segment.url
-      slice.thumbnailUrl = segment.url
+      slice.thumbnailUrl = buildCanvasThumbnailUrl(segment.url)
       slice.naturalWidth = naturalWidth
       slice.naturalHeight = segment.sourceHeight
       slice.width = displayWidth
@@ -12094,6 +12420,7 @@ async function executeHorizontalCut() {
     const nextDetected = { ...layerDetectedElements.value }
     delete nextDetected[layer.id]
     layerDetectedElements.value = nextDetected
+    revealCanvasMediaIds(newLayers.map((item) => item.id))
     selectedLayerIds.value = newLayers.map((item) => item.id)
     selectedLayerId.value = newLayers[0]?.id || ''
     void canvas.flushNow?.(props.id)
@@ -12395,6 +12722,7 @@ async function executeCrop() {
       type: 'image',
       name: `${layer.name || 'image'}_${cell.cellIdx}`,
       url: cell.url,
+      thumbnailUrl: buildCanvasThumbnailUrl(cell.url),
       naturalWidth: cell.naturalWidth,
       naturalHeight: cell.naturalHeight,
       width: Math.max(1, Math.round(childW)),
@@ -12413,6 +12741,7 @@ async function executeCrop() {
       draft.payload.layers.push(...newLayers)
       return draft
     })
+    revealCanvasMediaIds(newLayers.map((item) => item.id))
     selectedLayerIds.value = newLayers.map((item) => item.id)
     selectedLayerId.value = newLayers.at(-1)?.id || ''
     cropMode.progress = 100
@@ -12628,9 +12957,11 @@ async function loadImageForCropUncached(layer) {
             type="button"
             class="uc-canvas-media-deck"
             :class="{ expanded: canvasMediaExpanded }"
-            :title="canvasMediaExpanded ? '收起画布图片' : `展开并加载 ${canvasMediaCount} 张图片`"
+            :title="
+              canvasMediaExpanded ? '隐藏全部画布图片' : `显示全部 ${canvasMediaCount} 张图片`
+            "
             :aria-label="
-              canvasMediaExpanded ? '收起画布图片' : `展开并加载 ${canvasMediaCount} 张图片`
+              canvasMediaExpanded ? '隐藏全部画布图片' : `显示全部 ${canvasMediaCount} 张图片`
             "
             :aria-expanded="canvasMediaExpanded"
             @click.stop="toggleCanvasMedia"
@@ -12641,7 +12972,7 @@ async function loadImageForCropUncached(layer) {
               <i></i>
             </span>
             <span class="uc-media-deck-copy">
-              <strong>{{ canvasMediaExpanded ? '收起图片' : '展开图片' }}</strong>
+              <strong>{{ canvasMediaExpanded ? '隐藏全部' : '显示全部' }}</strong>
               <small>{{ canvasMediaCount }} 张</small>
             </span>
             <i
@@ -13146,7 +13477,7 @@ async function loadImageForCropUncached(layer) {
                   {{ layer.name }}
                   <small>{{ formatLayerTime(layer) }}</small>
                 </div>
-                <template v-if="layer.url">
+                <template v-if="layer.url && isCanvasMediaRevealed(layer)">
                   <!-- 有视频内容 -->
                   <div
                     class="uc-video-node-inner"
@@ -13180,6 +13511,22 @@ async function loadImageForCropUncached(layer) {
                       <i
                         :class="playingVideoLayerId === layer.id ? 'ri-pause-fill' : 'ri-play-fill'"
                       ></i>
+                    </button>
+                  </div>
+                </template>
+                <template v-else-if="layer.url">
+                  <div class="uc-canvas-media-deferred" @dblclick.stop>
+                    <i class="ri-video-line uc-deferred-media-type" aria-hidden="true"></i>
+                    <span>视频已收起</span>
+                    <button
+                      type="button"
+                      title="显示这个视频"
+                      aria-label="显示这个视频"
+                      @pointerdown.stop
+                      @click.stop="revealCanvasMedia(layer.id)"
+                    >
+                      <i class="ri-eye-line" aria-hidden="true"></i>
+                      <span>显示</span>
                     </button>
                   </div>
                 </template>
@@ -13237,39 +13584,55 @@ async function loadImageForCropUncached(layer) {
                   <small>{{ formatLayerTime(layer) }}</small>
                 </div>
                 <div class="uc-image-node-inner">
-                  <img
-                    v-if="!brokenImages.has(layer.id)"
-                    :src="layer.url"
-                    :alt="layer.name"
-                    draggable="false"
-                    @error="markImageBroken(layer.id)"
-                  />
-                  <div v-else class="uc-image-broken">
-                    <i class="ri-image-line"></i>
-                    <span>图片加载失败</span>
-                    <button type="button" class="uc-broken-retry" @click="retryImage(layer.id)">
-                      重试
-                    </button>
-                  </div>
-                  <div
-                    v-if="isHorizontalCutTarget(layer)"
-                    class="uc-horizontal-cut-overlay"
-                    :class="{ 'is-processing': horizontalCutMode.processing }"
-                    title="点击添加横向拆切线"
-                    @pointerdown.stop.prevent="addHorizontalCutLine($event, layer)"
-                  >
-                    <button
-                      v-for="position in horizontalCutMode.positions"
-                      :key="position"
-                      type="button"
-                      class="uc-horizontal-cut-line"
-                      :style="{ top: `${position * 100}%` }"
-                      title="双击删除拆切线"
-                      @pointerdown.stop.prevent
-                      @click.stop.prevent
-                      @dblclick.stop.prevent="removeHorizontalCutLine(position)"
+                  <template v-if="isCanvasMediaRevealed(layer)">
+                    <img
+                      v-if="!brokenImages.has(layer.id)"
+                      :src="canvasLayerRenderUrl(layer)"
+                      :alt="layer.name"
+                      draggable="false"
+                      @error="handleCanvasLayerImageError(layer)"
+                    />
+                    <div v-else class="uc-image-broken">
+                      <i class="ri-image-line"></i>
+                      <span>图片加载失败</span>
+                      <button type="button" class="uc-broken-retry" @click="retryImage(layer.id)">
+                        重试
+                      </button>
+                    </div>
+                    <div
+                      v-if="isHorizontalCutTarget(layer)"
+                      class="uc-horizontal-cut-overlay"
+                      :class="{ 'is-processing': horizontalCutMode.processing }"
+                      title="点击添加横向拆切线"
+                      @pointerdown.stop.prevent="addHorizontalCutLine($event, layer)"
                     >
-                      <span>双击删除</span>
+                      <button
+                        v-for="position in horizontalCutMode.positions"
+                        :key="position"
+                        type="button"
+                        class="uc-horizontal-cut-line"
+                        :style="{ top: `${position * 100}%` }"
+                        title="双击删除拆切线"
+                        @pointerdown.stop.prevent
+                        @click.stop.prevent
+                        @dblclick.stop.prevent="removeHorizontalCutLine(position)"
+                      >
+                        <span>双击删除</span>
+                      </button>
+                    </div>
+                  </template>
+                  <div v-else class="uc-canvas-media-deferred" @dblclick.stop>
+                    <i class="ri-image-line uc-deferred-media-type" aria-hidden="true"></i>
+                    <span>图片已收起</span>
+                    <button
+                      type="button"
+                      title="显示这张图片"
+                      aria-label="显示这张图片"
+                      @pointerdown.stop
+                      @click.stop="revealCanvasMedia(layer.id)"
+                    >
+                      <i class="ri-eye-line" aria-hidden="true"></i>
+                      <span>显示</span>
                     </button>
                   </div>
                 </div>
@@ -14145,6 +14508,19 @@ async function loadImageForCropUncached(layer) {
         </button>
         <button
           type="button"
+          class="uc-sidebar-tool-btn uc-asset-restore-button"
+          :disabled="!latestDeletedAssetCount"
+          :title="restoreDeletedAssetsTitle"
+          :aria-label="restoreDeletedAssetsTitle"
+          @click="restoreLastDeletedCanvasAssets"
+        >
+          <i class="ri-arrow-go-back-line" aria-hidden="true"></i>
+          <span v-if="latestDeletedAssetCount" class="uc-asset-action-count">
+            {{ latestDeletedAssetCount }}
+          </span>
+        </button>
+        <button
+          type="button"
           class="uc-sidebar-tool-btn uc-asset-cleanup-button"
           :disabled="!unmarkedMediaLayers.length"
           :title="deleteUnmarkedActionTitle"
@@ -14531,8 +14907,8 @@ async function loadImageForCropUncached(layer) {
               minHeight: `${panel.chatHeight + 24}px`,
             }"
           >
-            <div v-if="selectedLayer && canvasMediaExpanded" class="target-layer">
-              <img :src="selectedLayer.thumbnailUrl" alt="" />
+            <div v-if="selectedLayer && isCanvasMediaRevealed(selectedLayer)" class="target-layer">
+              <img :src="canvasLayerThumbnailUrl(selectedLayer)" alt="" />
               <span>{{ layerName(selectedLayerIndex) }}</span>
             </div>
             <div
@@ -15025,9 +15401,11 @@ async function loadImageForCropUncached(layer) {
             <span>◉</span>
             <img
               v-if="
-                canvasMediaExpanded && layer.thumbnailUrl && !brokenImages.has('thumb-' + layer.id)
+                isCanvasMediaRevealed(layer) &&
+                layer.thumbnailUrl &&
+                !brokenImages.has('thumb-' + layer.id)
               "
-              :src="layer.thumbnailUrl"
+              :src="canvasLayerThumbnailUrl(layer)"
               alt=""
               @error="markImageBroken('thumb-' + layer.id)"
             />
@@ -16045,10 +16423,7 @@ async function loadImageForCropUncached(layer) {
               @dragend="finishStitchSlotDrag"
             >
               <span class="uc-image-stitch-order">{{ index + 1 }}</span>
-              <img
-                :src="layer.thumbnailUrl || layer.url"
-                :alt="layer.name || `图片 ${index + 1}`"
-              />
+              <img :src="canvasLayerThumbnailUrl(layer)" :alt="layer.name || `图片 ${index + 1}`" />
               <span class="uc-image-stitch-slot-name">{{ layer.name || `图片 ${index + 1}` }}</span>
               <i class="ri-drag-move-2-line" aria-hidden="true"></i>
             </article>

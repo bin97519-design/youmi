@@ -67,6 +67,8 @@ export function makeCanvasDocument(id = String(Date.now()).slice(-4)) {
       connections: [],
       // 生图历史（含 model/ratio/resolution/createdAt/imageUrl，随 payload 持久化）
       generationHistory: [],
+      // 最近删除的画布素材批次，用于跨刷新恢复。
+      deletedAssetBatches: [],
       // 对话窗口选中的模型参数（随 payload 持久化）
       chatConfig: {},
       ui: { detectionVisible: true, autoDetectionEnabled: false },
@@ -505,6 +507,12 @@ export const useCanvasStore = defineStore('canvas', {
               if (rec && rec.id) _historyMap.set(rec.id, rec); // 本地优先：后写入覆盖
             }
             mergedDoc.payload.generationHistory = Array.from(_historyMap.values());
+            const localDeletedBatches = localDoc.payload.deletedAssetBatches || [];
+            const serverDeletedBatches = mergedDoc.payload.deletedAssetBatches || [];
+            const localIsNewer = (Number(localDoc.updatedAt) || 0) >= (Number(serverDoc.updatedAt) || 0);
+            mergedDoc.payload.deletedAssetBatches = [
+              ...(localIsNewer ? localDeletedBatches : serverDeletedBatches),
+            ].slice(-20);
             const localChatCfg = localDoc.payload.chatConfig;
             const serverChatCfg = mergedDoc.payload.chatConfig;
             if ((!serverChatCfg || !Object.keys(serverChatCfg).length) && localChatCfg && Object.keys(localChatCfg).length) {
