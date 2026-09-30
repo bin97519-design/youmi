@@ -47,7 +47,7 @@ public class ImageGenerationProperties {
   private String apimartDirectGenerationPath = "/v1/images/generations";
   private String apimartDirectTaskPath = "/v1/tasks";
   // TeamoRouter GPT Image 2.5 provider.
-  private String teamorouterBaseUrl = "https://api.teamorouter.cn/v1";
+  private String teamorouterBaseUrl = "https://api.teamorouter.com/v1";
   private String teamorouterApiKey = "";
   private String teamorouterGenerationPath = "/images/generations";
   private String teamorouterEditsPath = "/images/edits";
@@ -524,7 +524,7 @@ public class ImageGenerationProperties {
 
   public String normalizedTeamorouterBaseUrl() {
     if (teamorouterBaseUrl == null || teamorouterBaseUrl.isBlank()) {
-      return "https://api.teamorouter.cn/v1";
+      return "https://api.teamorouter.com/v1";
     }
     return teamorouterBaseUrl.endsWith("/")
         ? teamorouterBaseUrl.substring(0, teamorouterBaseUrl.length() - 1)

@@ -140,6 +140,7 @@ public class VideoGenerationDtos {
     private String taskId;
     private String status;
     private Integer progress;
+    private String stage;
     private List<String> videoUrls = new ArrayList<>();
     private String error;
     private JsonNode raw;
@@ -174,6 +175,14 @@ public class VideoGenerationDtos {
 
     public void setProgress(Integer progress) {
       this.progress = progress;
+    }
+
+    public String getStage() {
+      return stage;
+    }
+
+    public void setStage(String stage) {
+      this.stage = stage;
     }
 
     public List<String> getVideoUrls() {

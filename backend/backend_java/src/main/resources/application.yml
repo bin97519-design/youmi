@@ -63,7 +63,7 @@ youmi:
     apimart-direct-api-key: ${YOUMI_IMAGE_APIMART_DIRECT_API_KEY:${YOUMI_IMAGE_API_KEY:${APIMART_API_KEY:${APIMART_IMAGE_API_KEY:}}}}
     apimart-direct-generation-path: ${YOUMI_IMAGE_APIMART_DIRECT_GENERATION_PATH:/v1/images/generations}
     apimart-direct-task-path: ${YOUMI_IMAGE_APIMART_DIRECT_TASK_PATH:/v1/tasks}
-    teamorouter-base-url: ${TEAMOROUTER_IMAGE_BASE_URL:https://api.teamorouter.cn/v1}
+    teamorouter-base-url: ${TEAMOROUTER_IMAGE_BASE_URL:https://api.teamorouter.com/v1}
     teamorouter-api-key: ${TEAMOROUTER_IMAGE_API_KEY:${TEAMOROUTER_API_KEY:}}
     teamorouter-generation-path: ${TEAMOROUTER_IMAGE_GENERATION_PATH:/images/generations}
     teamorouter-edits-path: ${TEAMOROUTER_IMAGE_EDITS_PATH:/images/edits}
@@ -93,6 +93,42 @@ youmi:
     timeout-seconds: ${THQ_VIDEO_TIMEOUT_SECONDS:120}
     download-timeout-seconds: ${THQ_VIDEO_DOWNLOAD_TIMEOUT_SECONDS:600}
     persist-generated-videos: ${THQ_VIDEO_PERSIST_GENERATED:true}
+    chat-api-key: ${THQ_CHAT_VIDEO_API_KEY:}
+    chat-base-url: ${THQ_CHAT_VIDEO_BASE_URL:https://new.thqllm.com/v1}
+    chat-timeout-seconds: ${THQ_CHAT_VIDEO_TIMEOUT_SECONDS:1200}
+  video-enhance:
+    base-url: ${VIDEO_ENHANCE_BASE_URL:https://api.lk888.ai}
+    api-key: ${VIDEO_ENHANCE_API_KEY:}
+    base-mi-per-second: ${VIDEO_ENHANCE_BASE_MI_PER_SECOND:0.2}
+    max-input-bytes: ${VIDEO_ENHANCE_MAX_INPUT_BYTES:536870912}
+    max-output-bytes: ${VIDEO_ENHANCE_MAX_OUTPUT_BYTES:2147483648}
+  minimax-video:
+    base-url: ${MINIMAX_VIDEO_BASE_URL:https://api.lk888.ai}
+    api-key: ${MINIMAX_VIDEO_API_KEY:}
+    timeout-seconds: ${MINIMAX_VIDEO_TIMEOUT_SECONDS:120}
+    mi-per-second-by-resolution:
+      768p: ${MINIMAX_VIDEO_MI_PER_SECOND_768P:5}
+      1080p: ${MINIMAX_VIDEO_MI_PER_SECOND_1080P:10}
+      2k: ${MINIMAX_VIDEO_MI_PER_SECOND_2K:15}
+      4k: ${MINIMAX_VIDEO_MI_PER_SECOND_4K:30}
+    persist-generated-videos: ${MINIMAX_VIDEO_PERSIST_GENERATED:true}
+  anmiao-video:
+    base-url: ${ANMIAO_VIDEO_BASE_URL:https://api.lk888.ai/api/v3/anmiao}
+    api-key: ${ANMIAO_VIDEO_API_KEY:}
+    api-key-20: ${ANMIAO_VIDEO_20_API_KEY:}
+    api-key-25: ${ANMIAO_VIDEO_25_API_KEY:}
+    timeout-seconds: ${ANMIAO_VIDEO_TIMEOUT_SECONDS:120}
+    mi-per-second: ${ANMIAO_VIDEO_MI_PER_SECOND:5}
+    mi-per-second-by-resolution:
+      480p: ${ANMIAO_VIDEO_MI_PER_SECOND_480P:3}
+      720p: ${ANMIAO_VIDEO_MI_PER_SECOND_720P:0}
+      1080p: ${ANMIAO_VIDEO_MI_PER_SECOND_1080P:10}
+      4k: ${ANMIAO_VIDEO_MI_PER_SECOND_4K:20}
+    mi-per-second-25-by-resolution:
+      480p: ${ANMIAO_VIDEO_25_MI_PER_SECOND_480P:4}
+      720p: ${ANMIAO_VIDEO_25_MI_PER_SECOND_720P:7}
+      1080p: ${ANMIAO_VIDEO_25_MI_PER_SECOND_1080P:14}
+    persist-generated-videos: ${ANMIAO_VIDEO_PERSIST_GENERATED:true}
   credit:
     prices:
       IMAGE: 10
@@ -137,6 +173,11 @@ youmi:
     max-tokens: ${YOUMI_AGENT_MAX_TOKENS:4000}
     temperature: ${YOUMI_AGENT_TEMPERATURE:0.2}
     timeout-seconds: ${YOUMI_AGENT_TIMEOUT_SECONDS:90}
+  gem-agent:
+    base-url: ${GEM_AGENT_BASE_URL:https://api.lk888.ai}
+    api-key: ${GEM_AGENT_API_KEY:}
+    timeout-seconds: ${GEM_AGENT_TIMEOUT_SECONDS:120}
+    max-tokens: ${GEM_AGENT_MAX_TOKENS:8000}
   xfyun:
     base-url: ${XFYUN_VISION_BASE_URL:https://maas-coding-api.cn-huabei-1.xf-yun.com/v2}
     chat-path: ${XFYUN_VISION_CHAT_PATH:/chat/completions}

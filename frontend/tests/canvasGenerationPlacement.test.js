@@ -52,7 +52,7 @@ test('keeps every sequential batch card visible and avoids previous cards', () =
   }
 })
 
-test('uses a visible blank area when the first reference is outside the viewport', () => {
+test('centers the result when the first reference is outside the viewport', () => {
   const position = findVisibleGenerationPlacement({
     viewport,
     anchor: { x: 1800, y: 1200, width: 300, height: 300 },
@@ -61,7 +61,42 @@ test('uses a visible blank area when the first reference is outside the viewport
     height: 280,
   })
 
-  assert.ok(position.x >= 0 && position.y >= 0)
-  assert.ok(position.x + 240 <= viewport.width)
-  assert.ok(position.y + 280 <= viewport.height)
+  assert.deepEqual(position, { x: 480, y: 310 })
+})
+
+test('centers the result when its source layer is hidden', () => {
+  const position = findVisibleGenerationPlacement({
+    viewport,
+    anchor: { ...anchor, visible: false },
+    width: 240,
+    height: 280,
+  })
+  assert.deepEqual(position, { x: 480, y: 310 })
+})
+
+test('prefers the center when there is no room beside a visible source', () => {
+  const source = { x: 20, y: 20, width: 200, height: 200 }
+  const position = findVisibleGenerationPlacement({
+    viewport,
+    anchor: source,
+    occupied: [
+      source,
+      { x: 230, y: 20, width: 260, height: 220 },
+      { x: 20, y: 230, width: 240, height: 280 },
+    ],
+    width: 240,
+    height: 280,
+  })
+  assert.deepEqual(position, { x: 480, y: 310 })
+})
+
+test('uses the viewport center as the fallback on a full canvas', () => {
+  const position = findVisibleGenerationPlacement({
+    viewport,
+    anchor,
+    occupied: [viewport],
+    width: 240,
+    height: 280,
+  })
+  assert.deepEqual(position, { x: 480, y: 310 })
 })

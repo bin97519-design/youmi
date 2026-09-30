@@ -13,7 +13,6 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -28,7 +27,6 @@ import org.springframework.stereotype.Service;
 public class VideoGenerationClient {
   private static final String PROVIDER = "thq";
   private static final String TASK_PREFIX = "thq-video:";
-  private static final String CREATE_PATH = "/videos";
   private static final long MAX_REFERENCE_BYTES = 30L * 1024L * 1024L;
   private static final Set<String> RATIOS = Set.of("21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive");
   private static final Map<String, ModelSpec> MODELS = Map.of(
@@ -86,11 +84,8 @@ public class VideoGenerationClient {
   public VideoGenerationDtos.TaskStatusResponse getTask(String taskId, Long userId) throws Exception {
     String cleanTaskId = requireTaskId(taskId);
     String realTaskId = cleanTaskId.substring(TASK_PREFIX.length());
-    JsonNode root = sendJson(
-        "GET",
-        properties.normalizedBaseUrl() + CREATE_PATH + "/" + encodePath(realTaskId),
-        null,
-        "THQ video poll");
+    JsonNode root = send(ThqVideoProtocol.query(properties.normalizedBaseUrl(), properties.getApiKey(),
+        properties.getTimeoutSeconds(), realTaskId), "THQ video poll");
 
     String status = normalizeStatus(firstNonBlank(text(root, "status"), text(root.path("data"), "status")));
     if (isFailureEnvelope(root)) status = "failed";
@@ -177,30 +172,17 @@ public class VideoGenerationClient {
   }
 
   private JsonNode sendJsonCreate(NormalizedRequest request) throws Exception {
-    HttpRequest httpRequest = authorizedRequest(properties.normalizedBaseUrl() + CREATE_PATH)
-        .header("Accept", "application/json")
-        .header("Content-Type", "application/json")
-        .header("Idempotency-Key", request.idempotencyKey())
-        .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(textParameters(request))))
-        .build();
+    HttpRequest httpRequest = ThqVideoProtocol.create(objectMapper, properties.normalizedBaseUrl(),
+        properties.getApiKey(), properties.getTimeoutSeconds(), request.idempotencyKey(), textParameters(request));
     return send(httpRequest, "THQ video create");
   }
 
-  private Map<String, Object> textParameters(NormalizedRequest request) throws Exception {
-    Map<String, Object> body = new LinkedHashMap<>();
-    body.put("model", request.model());
-    body.put("prompt", promptWithReferenceBinding(request));
-    body.put("seconds", "15");
-    body.put("aspect_ratio", request.ratio());
+  private ThqVideoProtocol.CreateBody textParameters(NormalizedRequest request) throws Exception {
     // The official guide says the model suffix is sufficient, but the live priced-model
     // gateway currently rejects requests unless resolution (or size) is also present.
-    body.put("resolution", request.resolution());
-    body.put("generate_audio", request.generateAudio());
-    if (!request.negativePrompt().isBlank()) body.put("negative_prompt", request.negativePrompt());
-    if (request.seed() != null) body.put("seed", request.seed());
-    List<Map<String, String>> references = referenceParameters(request);
-    if (!references.isEmpty()) body.put("references", references);
-    return body;
+    return new ThqVideoProtocol.CreateBody(request.model(), promptWithReferenceBinding(request),
+        String.valueOf(request.duration()), request.ratio(), request.resolution(), request.generateAudio(),
+        referenceParameters(request), request.negativePrompt(), request.seed());
   }
 
   private List<Map<String, String>> referenceParameters(NormalizedRequest request) throws Exception {
@@ -214,7 +196,7 @@ public class VideoGenerationClient {
     return references;
   }
 
-  private String prepareReferenceSource(String source) throws Exception {
+  String prepareReferenceSource(String source) throws Exception {
     String value = source == null ? "" : source.trim();
     if (value.startsWith("data:image/")) return value;
 
@@ -244,7 +226,7 @@ public class VideoGenerationClient {
     return instruction + prompt;
   }
 
-  private DownloadedAsset downloadReference(String sourceUrl) throws Exception {
+  DownloadedAsset downloadReference(String sourceUrl) throws Exception {
     URI uri;
     try {
       uri = URI.create(sourceUrl);
@@ -280,7 +262,20 @@ public class VideoGenerationClient {
     return new DownloadedAsset(contentType, bytes);
   }
 
-  private String persistVideo(String taskId, String realTaskId, String providerUrl, Long userId) throws Exception {
+  String persistVideo(String taskId, String realTaskId, String providerUrl, Long userId) throws Exception {
+    return persistVideo(taskId, realTaskId, userId, () -> {
+      HttpRequest request = HttpRequest.newBuilder()
+          .uri(URI.create(providerUrl))
+          .timeout(Duration.ofSeconds(Math.max(120, properties.getDownloadTimeoutSeconds())))
+          .header("Accept", "video/*,application/octet-stream")
+          .header("User-Agent", "Youmi-Canvas/1.0")
+          .GET().build();
+      return httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+    });
+  }
+
+  String persistVideo(String taskId, String realTaskId, Long userId,
+      java.util.concurrent.Callable<HttpResponse<InputStream>> download) throws Exception {
     String cached = persistedVideoUrls.get(taskId);
     if (cached != null && !cached.isBlank()) return cached;
     if (ossStorageService == null || !ossStorageService.isConfigured()) {
@@ -293,14 +288,7 @@ public class VideoGenerationClient {
         cached = persistedVideoUrls.get(taskId);
         if (cached != null && !cached.isBlank()) return cached;
 
-        HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create(providerUrl))
-            .timeout(Duration.ofSeconds(Math.max(120, properties.getDownloadTimeoutSeconds())))
-            .header("Accept", "video/*,application/octet-stream")
-            .header("User-Agent", "Youmi-Canvas/1.0")
-            .GET()
-            .build();
-        HttpResponse<InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+        HttpResponse<InputStream> response = download.call();
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
           try (InputStream ignored = response.body()) {
             // Close the response body before retrying on a later poll.
@@ -326,17 +314,6 @@ public class VideoGenerationClient {
     }
   }
 
-  private JsonNode sendJson(String method, String endpoint, String body, String operation) throws Exception {
-    HttpRequest.Builder builder = authorizedRequest(endpoint).header("Accept", "application/json");
-    if ("POST".equals(method)) {
-      builder.header("Content-Type", "application/json")
-          .POST(HttpRequest.BodyPublishers.ofString(body == null ? "{}" : body));
-    } else {
-      builder.GET();
-    }
-    return send(builder.build(), operation);
-  }
-
   private JsonNode send(HttpRequest request, String operation) throws Exception {
     HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
     if (response.statusCode() < 200 || response.statusCode() >= 300) {
@@ -346,14 +323,6 @@ public class VideoGenerationClient {
       throw new ApiException(502, operation + " returned empty body");
     }
     return objectMapper.readTree(response.body());
-  }
-
-  private HttpRequest.Builder authorizedRequest(String endpoint) {
-    return HttpRequest.newBuilder()
-        .uri(URI.create(endpoint))
-        .timeout(Duration.ofSeconds(Math.max(30, properties.getTimeoutSeconds())))
-        .header("Authorization", "Bearer " + properties.getApiKey())
-        .header("User-Agent", "Youmi-Canvas/1.0");
   }
 
   private void ensureSuccessful(JsonNode root, String operation) {
@@ -477,10 +446,6 @@ public class VideoGenerationClient {
     return ".mp4";
   }
 
-  private String encodePath(String value) {
-    return value.replace("%", "%25").replace("/", "%2F").replace("?", "%3F").replace("#", "%23");
-  }
-
   private String compact(String body) {
     if (body == null || body.isBlank()) return "";
     String compacted = body.replaceAll("\\s+", " ").trim();
@@ -499,7 +464,7 @@ public class VideoGenerationClient {
 
   private record ModelSpec(String resolution) {}
 
-  private record DownloadedAsset(String contentType, byte[] bytes) {}
+  record DownloadedAsset(String contentType, byte[] bytes) {}
 
   private record NormalizedRequest(
       String prompt,

@@ -65,6 +65,7 @@ pnpm-debug.log*
 .parcel-cache/
 .cache
 .codex-run/
+/test-output/
 *.tsbuildinfo
 
 # IDE / OS

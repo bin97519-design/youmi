@@ -13,16 +13,25 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class ImageGenerationClientTeamorouterTest {
 
-  @Test
-  void generationUsesJsonEndpointAndConstrainedPixelSize() throws Exception {
+  @ParameterizedTest
+  @ValueSource(strings = {"gpt-image-2.5-sunburst", "gpt-image-2.5-flare"})
+  void generationUsesJsonEndpointAndConstrainedPixelSize(String model) throws Exception {
     ObjectMapper mapper = new ObjectMapper();
     AtomicReference<JsonNode> requestBody = new AtomicReference<>();
+    AtomicReference<String> authorization = new AtomicReference<>();
+    AtomicReference<String> contentType = new AtomicReference<>();
+    AtomicReference<String> method = new AtomicReference<>();
     HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
     server.createContext("/v1/images/generations", exchange -> {
       requestBody.set(mapper.readTree(exchange.getRequestBody()));
+      authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
+      contentType.set(exchange.getRequestHeaders().getFirst("Content-Type"));
+      method.set(exchange.getRequestMethod());
       respondJson(exchange, "{\"data\":[{\"b64_json\":\"aGVsbG8=\"}]}");
     });
     server.start();
@@ -30,16 +39,21 @@ class ImageGenerationClientTeamorouterTest {
     try {
       ImageGenerationClient client = createClient(server);
       ImageGenerationDtos.CreateTaskRequest request = request(
-          "gpt-image-2.5-sunburst", "21:9", "4K", List.of());
+          model, "21:9", "4K", List.of());
 
       ImageGenerationDtos.CreateTaskResponse created = client.createTask(request, 7L);
       ImageGenerationDtos.TaskStatusResponse status = awaitTerminal(client, created.tasks().get(0).taskId());
 
       assertEquals("teamorouter", created.provider());
       assertEquals("completed", status.status());
-      assertTrue(status.imageUrls().get(0).startsWith("data:image/png;base64,"));
+      assertEquals("data:image/png;base64,aGVsbG8=", status.imageUrls().get(0));
+      assertEquals("POST", method.get());
+      assertEquals("Bearer test-key", authorization.get());
+      assertEquals("application/json", contentType.get());
       JsonNode body = requestBody.get();
-      assertEquals("gpt-image-2.5-sunburst", body.path("model").asText());
+      assertEquals(model, body.path("model").asText());
+      assertEquals("a product", body.path("prompt").asText());
+      assertEquals(1, body.path("n").asInt());
       assertEquals("high", body.path("quality").asText());
       assertValidPixelSize(body.path("size").asText());
     } finally {

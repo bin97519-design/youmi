@@ -117,7 +117,7 @@ function Start-Frontend {
   $stderr = Join-Path $LogDir "frontend.err.log"
   Write-Host "[start] Frontend http://127.0.0.1:$FrontendPort"
   $process = Start-Process -FilePath $node `
-    -ArgumentList @("`"$vite`"", "--host", "127.0.0.1", "--port", "$FrontendPort") `
+    -ArgumentList @("`"$vite`"", "--port", "$FrontendPort") `
     -WorkingDirectory $FrontendDir `
     -WindowStyle Hidden `
     -RedirectStandardOutput $stdout `

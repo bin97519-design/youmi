@@ -2,6 +2,7 @@ package com.youmi.api.selection;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
@@ -60,6 +61,24 @@ class SelectionPoolRepositoryTest {
     assertEquals(2L, repository.count(7L, "窗帘", "TAOBAO", null, null, null, null));
     assertEquals(1L, repository.count(7L, "tm-bed", null, null, null, null, null));
     assertEquals(1L, repository.count(7L, null, null, "FAILED", "FAILED", null, false));
+  }
+
+  @Test
+  void appendsVideoWithoutLosingProductDataAndDoesNotDuplicate() throws Exception {
+    jdbcTemplate.execute("CREATE TABLE ym_selection_product_revision (product_id BIGINT, user_id BIGINT, revision_no INT, product_data CLOB, raw_snapshot CLOB, change_type VARCHAR(32))");
+    insertProduct(7L, "TMALL", "curtain", "窗帘", "COLLECTED", "UNPUBLISHED", false, 1);
+    jdbcTemplate.update("UPDATE ym_selection_product SET product_data = ? WHERE id = 1",
+        "{\"customField\":42,\"media\":{\"mainImages\":[\"image.png\"],\"mainVideos\":[\"old.mp4\"]},\"skuGroups\":[{\"name\":\"color\",\"values\":[{\"name\":\"green\"}]}]}");
+    var service = new SelectionPoolService(repository, new ObjectMapper());
+    var first = service.appendMainVideo(7L, 1L, "new.mp4");
+    var second = service.appendMainVideo(7L, 1L, "new.mp4");
+    assertEquals(42, first.productData().path("customField").asInt());
+    assertEquals("image.png", first.productData().path("media").path("mainImages").get(0).asText());
+    assertEquals(1, first.productData().path("skuGroups").size());
+    assertEquals(2, second.productData().path("media").path("mainVideos").size());
+    assertTrue(second.hasAiEdit());
+    assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ym_selection_product_revision", Integer.class));
+    assertThrows(com.youmi.api.common.ApiException.class, () -> service.appendMainVideo(8L, 1L, "other.mp4"));
   }
 
   private void insertProduct(

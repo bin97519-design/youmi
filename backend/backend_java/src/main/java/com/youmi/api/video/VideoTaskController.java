@@ -24,14 +24,21 @@ public class VideoTaskController {
   private final VideoGenerationClient videoGenerationClient;
   private final MiValueService miValueService;
   private final AdminAuthService adminAuthService;
+  private final ChatVideoJobs chatVideos;
+  private final AnmiaoVideoClient anmiaoVideos;
+  private final MinimaxVideoClient minimaxVideos;
 
   public VideoTaskController(
       VideoGenerationClient videoGenerationClient,
       MiValueService miValueService,
-      AdminAuthService adminAuthService) {
+      AdminAuthService adminAuthService, ChatVideoJobs chatVideos, AnmiaoVideoClient anmiaoVideos,
+      MinimaxVideoClient minimaxVideos) {
     this.videoGenerationClient = videoGenerationClient;
     this.miValueService = miValueService;
     this.adminAuthService = adminAuthService;
+    this.chatVideos = chatVideos;
+    this.anmiaoVideos = anmiaoVideos;
+    this.minimaxVideos = minimaxVideos;
   }
 
   @PostMapping
@@ -39,6 +46,27 @@ public class VideoTaskController {
       @RequestHeader(value = "Authorization", required = false) String authorization,
       @RequestBody VideoGenerationDtos.CreateTaskRequest request) throws Exception {
     Long userId = adminAuthService.requireUserId(authorization);
+    if (request != null && "minimax-h3-max".equals(request.model()))
+      throw new ApiException(400, "原视频模型已移除，请重新选择视频模型");
+    if (request != null && ChatVideoClient.MODEL.equals(request.model()))
+      return ApiResponse.ok(chatVideos.create(userId, request));
+    if (request != null && (AnmiaoVideoClient.MODEL.equals(request.model())
+        || AnmiaoVideoClient.MODEL25.equals(request.model()) || MinimaxVideoClient.supportsModel(request.model()))) {
+      boolean minimax = MinimaxVideoClient.supportsModel(request.model());
+      int price = minimax ? minimaxVideos.price(request) : anmiaoVideos.price(request);
+      MiValueDtos.DeductResult deduct = miValueService.checkAndDeduct(userId, MiBizType.VIDEO, price);
+      try {
+        VideoGenerationDtos.CreateTaskResponse response = minimax
+            ? minimaxVideos.createTask(request) : anmiaoVideos.createTask(request);
+        miValueService.linkTask(deduct.logId(), response.getTaskId());
+        response.setConsumedMi(deduct.price());
+        response.setBalance(miValueService.getBalance(userId));
+        return ApiResponse.ok(response);
+      } catch (Exception error) {
+        miValueService.rollback(userId, deduct.logId());
+        throw error;
+      }
+    }
     MiValueDtos.DeductResult deduct = miValueService.checkAndDeduct(userId, MiBizType.VIDEO);
     try {
       VideoGenerationDtos.CreateTaskResponse response = videoGenerationClient.createTask(request);
@@ -72,7 +100,12 @@ public class VideoTaskController {
     if (!miValueService.isTaskOwnedByUser(userId, taskId, MiBizType.VIDEO)) {
       throw new ApiException(404, "Video task not found");
     }
-    VideoGenerationDtos.TaskStatusResponse response = videoGenerationClient.getTask(taskId, userId);
+    VideoGenerationDtos.TaskStatusResponse response = taskId.startsWith(ChatVideoJobs.PREFIX)
+        ? chatVideos.get(userId, taskId)
+        : taskId.startsWith(AnmiaoVideoClient.PREFIX)
+            ? anmiaoVideos.getTask(taskId, userId)
+            : taskId.startsWith(MinimaxVideoClient.PREFIX)
+                ? minimaxVideos.getTask(taskId, userId) : videoGenerationClient.getTask(taskId, userId);
     if (isTerminalFailed(response.getStatus())) {
       miValueService.rollbackByTaskId(taskId);
     } else if (isTerminalSuccess(response.getStatus())) {

@@ -108,6 +108,28 @@ public class SelectionPoolService {
     return repository.softDelete(userId, distinct(ids));
   }
 
+  @Transactional
+  public SelectionPoolDtos.ProductView appendMainVideo(Long userId, Long id, String url) {
+    SelectionProduct current = repository.findByIdForUpdate(userId, id)
+        .orElseThrow(() -> new ApiException(404, "商品不存在"));
+    ObjectNode data = standardizeProductData(asObject(readJson(current.productData())),
+        current.sourcePlatform(), current.sourceProductId(), current.title(), current.sourceUrl(),
+        current.coverImageUrl(), current.collectSource());
+    ObjectNode media = (ObjectNode) data.path("media");
+    var videos = (com.fasterxml.jackson.databind.node.ArrayNode) firstArray(media.path("mainVideos"));
+    boolean exists = false;
+    for (JsonNode video : videos) {
+      if (url.equals(video.isTextual() ? video.asText() : video.path("url").asText())) exists = true;
+    }
+    if (!exists) videos.add(url);
+    media.set("mainVideos", videos);
+    String json = writeJson(data);
+    repository.updateWorkingCopy(userId, id, current.title(), current.coverImageUrl(), current.sourceUrl(),
+        json, true, calculateQuality(current.title(), current.coverImageUrl(), current.sourceUrl(), data));
+    if (!exists) repository.insertRevision(id, userId, json, current.rawSnapshot(), "AI_VIDEO");
+    return get(userId, id);
+  }
+
   public List<SelectionPoolDtos.TagView> listTags(Long userId) {
     return repository.listTags(userId);
   }
@@ -472,4 +494,3 @@ public class SelectionPoolService {
 
   private record UpsertResult(boolean created, SelectionPoolDtos.ProductView view) {}
 }
-

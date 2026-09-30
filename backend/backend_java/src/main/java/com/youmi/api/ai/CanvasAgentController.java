@@ -37,6 +37,13 @@ public class CanvasAgentController {
     this.adminAuthService = adminAuthService;
   }
 
+  @GetMapping("/models")
+  public ApiResponse<List<CanvasAgentDtos.AgentModelOption>> models(
+      @RequestHeader(value = "Authorization", required = false) String authorization) {
+    adminAuthService.requireUserId(authorization);
+    return ApiResponse.ok(canvasAgentService.models());
+  }
+
   @PostMapping("/plan")
   public ApiResponse<CanvasAgentDtos.PlanResponse> plan(
       @RequestHeader(value = "Authorization", required = false) String authorization,
@@ -65,6 +72,7 @@ public class CanvasAgentController {
           request == null ? "" : request.canvasId(),
           "",
           "PLAN",
+          request == null ? null : request.agentModel(),
           startedAt,
           request == null ? "" : request.instruction(),
           error);
@@ -102,6 +110,7 @@ public class CanvasAgentController {
           request == null ? "" : request.canvasId(),
           request == null ? "" : request.conversationId(),
           "CHAT",
+          request == null ? null : request.agentModel(),
           startedAt,
           request == null ? "" : request.instruction(),
           error);
@@ -137,6 +146,7 @@ public class CanvasAgentController {
           request == null ? "" : request.canvasId(),
           request == null ? "" : request.conversationId(),
           "ENHANCE",
+          request == null ? null : request.agentModel(),
           startedAt,
           request == null ? "" : request.prompt(),
           error);
@@ -192,6 +202,7 @@ public class CanvasAgentController {
       String canvasId,
       String conversationId,
       String operation,
+      String agentModel,
       long startedAt,
       String input,
       Exception error) {
@@ -200,8 +211,8 @@ public class CanvasAgentController {
         canvasId,
         conversationId,
         operation,
-        "teamorouter",
-        "",
+        GemAgentClient.MODEL.equals(agentModel) ? "lk888" : "teamorouter",
+        agentModel == null ? "" : agentModel,
         "FAILED",
         startedAt,
         length(input),

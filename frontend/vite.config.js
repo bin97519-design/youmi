@@ -10,7 +10,7 @@ export default defineConfig(({ mode }) => {
     base: env.VITE_APP_PUBLIC_PATH || '/',
     plugins: [vue()],
     server: {
-      host: env.VITE_APP_HOST || '127.0.0.1',
+      host: env.VITE_APP_HOST || '0.0.0.0',
       port: Number(env.VITE_APP_PORT) || 5173,
       open: false,
       proxy: {

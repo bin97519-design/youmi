@@ -19,6 +19,8 @@ const emit = defineEmits(['close', 'save'])
 const form = reactive(normalizeSelectionProduct(props.product))
 const assetInputs = reactive({ main: '', portrait: '', detail: '' })
 const editorNotice = ref('')
+const videoSection = ref(null)
+const videoErrors = reactive({})
 
 const assetSections = [
   {
@@ -62,12 +64,14 @@ const platformLabels = {
 const skuImages = computed(() =>
   uniqueUrls(form.skuGroups.flatMap((group) => group.values?.map((value) => value.imageUrl) || [])),
 )
-const mainVideoCount = computed(
-  () => videoUrls(String(form.mainVideoUrls || '').split(/\r?\n/)).length,
-)
-const detailVideoCount = computed(
-  () => videoUrls(String(form.detailVideoUrls || '').split(/\r?\n/)).length,
-)
+const mainVideos = computed(() => videoUrls(String(form.mainVideoUrls || '').split(/\r?\n/)))
+const detailVideos = computed(() => videoUrls(String(form.detailVideoUrls || '').split(/\r?\n/)))
+const mainVideoCount = computed(() => mainVideos.value.length)
+const detailVideoCount = computed(() => detailVideos.value.length)
+const videoPreviews = computed(() => [
+  ...mainVideos.value.map((url, index) => ({ url, label: `主图视频 ${index + 1}` })),
+  ...detailVideos.value.map((url, index) => ({ url, label: `详情视频 ${index + 1}` })),
+])
 const readiness = computed(() => {
   const errors = []
   const warnings = []
@@ -87,12 +91,31 @@ watch(
     Object.assign(form, normalizeSelectionProduct(product))
     Object.assign(assetInputs, { main: '', portrait: '', detail: '' })
     editorNotice.value = ''
+    Object.keys(videoErrors).forEach((url) => delete videoErrors[url])
   },
   { deep: false },
 )
 
 function platformName(value) {
   return platformLabels[String(value || '').toUpperCase()] || value || '--'
+}
+
+function showVideos() {
+  videoSection.value?.scrollIntoView({ block: 'start' })
+  videoSection.value?.focus({ preventScroll: true })
+}
+
+function pauseOtherVideos(event) {
+  videoSection.value?.querySelectorAll('video').forEach((video) => {
+    if (video !== event.target) video.pause()
+  })
+}
+
+function retryVideo(url) {
+  delete videoErrors[url]
+  videoSection.value?.querySelectorAll('video').forEach((video) => {
+    if (video.getAttribute('src') === url) video.load()
+  })
 }
 
 function addImages(section) {
@@ -264,10 +287,16 @@ function submit(afterSave = 'close') {
               <strong>{{ form.detailImages.length }}</strong>
               详情图
             </span>
-            <span>
+            <button
+              type="button"
+              title="查看商品视频"
+              aria-label="查看商品视频"
+              @click="showVideos"
+            >
+              <i aria-hidden="true" class="ri-video-line"></i>
               <strong>{{ mainVideoCount + detailVideoCount }}</strong>
               视频
-            </span>
+            </button>
             <span>{{ form.skuGroups.length }} 个规格组 · {{ form.skus.length }} 个 SKU 组合</span>
           </div>
 
@@ -345,14 +374,59 @@ function submit(afterSave = 'close') {
             </div>
           </section>
 
-          <section class="editor-section">
+          <section
+            ref="videoSection"
+            class="editor-section video-section"
+            aria-labelledby="product-videos-title"
+            tabindex="-1"
+          >
             <div class="section-heading">
               <div>
-                <h3>商品视频</h3>
-                <p>每行填写一个视频地址。</p>
+                <h3 id="product-videos-title">商品视频</h3>
               </div>
               <strong>{{ mainVideoCount + detailVideoCount }} 个</strong>
             </div>
+            <div v-if="videoPreviews.length" class="video-preview-grid">
+              <figure v-for="item in videoPreviews" :key="`${item.label}-${item.url}`">
+                <video
+                  :src="item.url"
+                  :aria-label="item.label"
+                  controls
+                  playsinline
+                  preload="metadata"
+                  @error="videoErrors[item.url] = true"
+                  @loadedmetadata="delete videoErrors[item.url]"
+                  @play="pauseOtherVideos"
+                ></video>
+                <figcaption>
+                  <span>{{ item.label }}</span>
+                  <div class="video-actions">
+                    <button
+                      v-if="videoErrors[item.url]"
+                      type="button"
+                      :title="`重新加载${item.label}`"
+                      :aria-label="`重新加载${item.label}`"
+                      @click="retryVideo(item.url)"
+                    >
+                      <i aria-hidden="true" class="ri-refresh-line"></i>
+                    </button>
+                    <a
+                      :href="item.url"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      :title="`新窗口打开${item.label}`"
+                      :aria-label="`新窗口打开${item.label}`"
+                    >
+                      <i aria-hidden="true" class="ri-external-link-line"></i>
+                    </a>
+                  </div>
+                </figcaption>
+                <p v-if="videoErrors[item.url]" class="video-error" role="status">
+                  视频暂时无法播放，原站链接可能已失效或限制访问。
+                </p>
+              </figure>
+            </div>
+            <p v-else class="empty-state">暂无商品视频</p>
             <div class="video-fields">
               <label>
                 <span>主图视频</span>
@@ -754,13 +828,25 @@ label small {
   padding: 12px 0 4px;
 }
 
-.asset-summary span {
+.asset-summary span,
+.asset-summary button {
   padding: 5px 9px;
   border: 1px solid var(--canvas-accent-border);
   border-radius: 999px;
   color: var(--canvas-text-muted);
   background: var(--canvas-accent-soft);
   font-size: 12px;
+}
+
+.asset-summary button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.asset-summary button:hover {
+  color: var(--canvas-accent);
+  border-color: var(--canvas-accent);
 }
 
 .asset-summary strong {
@@ -911,6 +997,74 @@ label small {
   color: #fff;
   border-color: rgba(255, 255, 255, 0.2);
   background: rgba(15, 23, 42, 0.72);
+}
+
+.video-section {
+  scroll-margin-top: 16px;
+}
+
+.video-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.video-preview-grid figure {
+  min-width: 0;
+  margin: 0;
+}
+
+.video-preview-grid video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: 360px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: #101114;
+}
+
+.video-preview-grid figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+  color: var(--canvas-text-muted);
+  font-size: 12px;
+}
+
+.video-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.video-actions a,
+.video-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--canvas-border);
+  border-radius: 6px;
+  color: var(--canvas-text-muted);
+  background: var(--canvas-surface);
+  text-decoration: none;
+}
+
+.video-actions a:hover,
+.video-actions button:hover {
+  color: var(--canvas-accent);
+  border-color: var(--canvas-accent-border);
+}
+
+.video-error {
+  margin: 6px 0 0;
+  color: var(--canvas-danger, #ef4444);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .video-fields {

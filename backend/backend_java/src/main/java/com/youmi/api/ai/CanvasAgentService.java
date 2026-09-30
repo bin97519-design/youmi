@@ -3,6 +3,7 @@ package com.youmi.api.ai;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.core.json.JsonReadFeature;
+import com.youmi.api.common.ApiException;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -11,6 +12,7 @@ import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 
 @Service
 public class CanvasAgentService {
@@ -28,16 +30,45 @@ public class CanvasAgentService {
   private final ObjectMapper objectMapper;
   private final ObjectMapper agentResponseMapper;
   private final AgentChatClient agentChatClient;
+  private final GemAgentClient gemAgentClient;
 
   public CanvasAgentService(
       ObjectMapper objectMapper,
       AgentChatClient agentChatClient) {
+    this(objectMapper, agentChatClient, new GemAgentClient(objectMapper, new GemAgentProperties()));
+  }
+
+  @Autowired
+  public CanvasAgentService(
+      ObjectMapper objectMapper, AgentChatClient agentChatClient, GemAgentClient gemAgentClient) {
     this.objectMapper = objectMapper;
     this.agentResponseMapper = objectMapper.copy()
         .enable(JsonReadFeature.ALLOW_TRAILING_COMMA.mappedFeature())
         .enable(JsonReadFeature.ALLOW_UNESCAPED_CONTROL_CHARS.mappedFeature())
         .enable(JsonReadFeature.ALLOW_SINGLE_QUOTES.mappedFeature());
     this.agentChatClient = agentChatClient;
+    this.gemAgentClient = gemAgentClient;
+  }
+
+  public List<CanvasAgentDtos.AgentModelOption> models() {
+    return List.of(
+        new CanvasAgentDtos.AgentModelOption("default", agentChatClient.model(), agentChatClient.isConfigured()),
+        new CanvasAgentDtos.AgentModelOption(GemAgentClient.MODEL, "GEM 3.8 flash", gemAgentClient.isConfigured()));
+  }
+
+  private boolean useGem(String model) {
+    if (GemAgentClient.MODEL.equals(model)) return true;
+    if (model == null || model.isBlank() || "default".equals(model) || model.equals(agentChatClient.model())) return false;
+    throw new ApiException(400, "不支持的 Agent 模型，请重新选择");
+  }
+
+  private AiChatDtos.CompletionResult completeText(
+      String agentModel, String systemPrompt, String userPrompt, double temperature,
+      boolean jsonResponse) throws Exception {
+    if (useGem(agentModel)) return gemAgentClient.complete(systemPrompt, userPrompt, List.of(), temperature, jsonResponse);
+    if (!agentChatClient.isConfigured()) throw new IllegalStateException("Canvas Agent language model is not configured");
+    return agentChatClient.complete(List.of(
+        new AiChatDtos.Message("system", systemPrompt), new AiChatDtos.Message("user", userPrompt)), temperature);
   }
 
   public CanvasAgentDtos.EnhancePromptResponse enhancePrompt(
@@ -46,21 +77,14 @@ public class CanvasAgentService {
     if (prompt.isBlank()) {
       throw new IllegalArgumentException("请先输入需要增强的提示词");
     }
-    if (!agentChatClient.isConfigured()) {
-      throw new IllegalStateException("Canvas Agent language model is not configured");
-    }
-
     String systemPrompt = """
-        你是有米 AI 画布的提示词润色助手。请把用户输入润色为更清晰、更完整、可执行的中文生图提示词。
+        你是有米 AI 画布的提示词润色助手。按用户原意润色图片提示词或视频脚本，让内容更清晰、完整、可执行。
         必须保留用户原意、数量、主体、产品特征和所有明确限制，不得擅自改变需求。
         可以补充合理的画面结构、构图、光线、材质、色彩和摄影表达，但不得虚构品牌、Logo、文字或用户没有要求的关键内容。
-        只输出润色后的提示词正文，不要解释，不要标题，不要 Markdown，不要引号，也不要触发生图。
+        视频脚本必须保留总时长、时间轴、动作、运镜、镜头衔接和已有声音要求，不得改写为静态生图提示词，不擅自添加对白。
+        只输出润色后的提示词正文，不要解释，不要标题，不要 Markdown，不要引号，也不要触发图片或视频生成。
         """;
-    AiChatDtos.CompletionResult result = agentChatClient.complete(
-        List.of(
-            new AiChatDtos.Message("system", systemPrompt),
-            new AiChatDtos.Message("user", prompt)),
-        0.3);
+    AiChatDtos.CompletionResult result = completeText(request.agentModel(), systemPrompt, prompt, 0.3, false);
     String enhancedPrompt = clean(result.content(), 8000);
     if (enhancedPrompt.isBlank()) {
       throw new IllegalStateException("Agent model returned empty enhanced prompt");
@@ -93,25 +117,34 @@ public class CanvasAgentService {
     String defaultResolution = allowedOrDefault(
         normalizeResolution(request.resolution()), ALLOWED_RESOLUTIONS, "2K");
     int defaultCount = clampCount(request.count());
+    int defaultVideoDuration = request.video() != null && request.video().duration() != null
+        ? Math.max(4, Math.min(30, request.video().duration())) : 15;
 
     String systemPrompt = """
-        你是有米 AI 画布中的视觉创作顾问。你只负责正常对话、看图分析、澄清需求和优化生图提示词。
+        你是有米 AI 画布中的视觉创作顾问。你只负责正常对话、看图分析、澄清需求、图片提示词和视频脚本策划。
 
         重要规则：
-        1. 你绝对不能开始生图、提交任务或声称图片正在生成。
-        2. 即使用户说“确认”“开始”“生成吧”，也只能整理好草稿并提醒用户点击界面中的“确认生图”。
+        1. 你绝对不能开始生成图片或视频、提交任务或声称媒体正在生成。
+        2. 即使用户说“确认”“开始”“生成吧”，也只能整理草稿。图片需点击“确认生图”，视频需点击“确认生成视频”，文字回复不算生成授权。
         3. 信息不足时继续提问，draftPrompt 留空，readyToGenerate=false。
-        4. 信息充分时给出可直接用于生图的完整中文提示词，readyToGenerate=true，但仍需用户点击确认按钮。
+        4. 信息充分且用户要求创作时给出完整中文提示词，readyToGenerate=true，但仍需用户点击确认按钮。普通问答或仅讨论功能时不要创建草稿。
         5. 只有请求明确附带参考图时才能看图。没有参考图时，不得声称看过、识别过或分析过图片，只根据文字正常沟通。
         6. 有参考图时，要围绕用户当前提出的问题识别图片，给出针对性的分析和创作方案，不要输出与问题无关的泛泛描述。
         7. 参考图只能使用请求中明确提交且真实可用的图层 ID，不能自行选择画布中的其他图片。
         8. 要结合对话上下文持续修改上一版草稿，回复自然、简洁，像正常的创作沟通。
         9. 不得执行删除、移动、下载、付款、修改账号等画布操作。
-        10. 用户明确要求 N 条或 N 个提示词时，draftPrompts 必须返回 N 个彼此独立、可单独生图的完整提示词，不能把多条堆进一个字符串。未要求多条时也用数组返回一条。
+        10. 图片需求中用户明确要求 N 条或 N 个提示词时，draftPrompts 必须返回 N 个彼此独立、可单独生图的完整提示词，不能把多条堆进一个字符串。未要求多条时也用数组返回一条。
+        11. 根据当前要求和上下文判断 generationType：图片为 image，视频脚本、运镜、按脚本生成视频为 video；不能把视频当作一张静态图片。
+        12. 视频每条 draftPrompts 是一条完整视频方案，内部多个镜头必须保留在同一个字符串，不能拆成多次视频任务。只有明确要求多个独立视频才返回多条。
+        13. 视频脚本保留用户的剧情、产品、人物与声音要求，按时间段展开每镜画面、主体动作、景别、运镜、衔接，说明外观连续性；每条最多 2500 字符，不要过度简写。不擅自添加旁白、对白或音乐。
+        14. 视频 durationSeconds 是整条视频总秒数，有明确时长时遵从要求，否则使用当前视频时长；镜头时间轴必须覆盖整条时长。超过当前模型能力时提示用户调整模型/时长，不截短剧情或自动拆单。
+        15. 视频模型、清晰度、计费由界面控制，不能声称更换模型或承诺精确音画同步效果。
 
         只输出 JSON 对象，不要 Markdown，不要附加说明：
         {
           "reply": "给用户的自然语言回复",
+          "generationType": "image",
+          "durationSeconds": 15,
           "draftPrompt": "兼容字段，填写第一条提示词；尚未明确时为空字符串",
           "draftPrompts": ["第一条完整提示词", "第二条完整提示词"],
           "referenceLayerIds": ["真实图层ID"],
@@ -134,8 +167,11 @@ public class CanvasAgentService {
         defaultRatio,
         defaultResolution,
         defaultCount);
+    if (request.video() != null) {
+      userPrompt += "\n当前视频参数（与生图参数独立）：" + objectMapper.writeValueAsString(request.video());
+    }
     AiChatDtos.CompletionResult result = completePlan(
-        systemPrompt, userPrompt, referenceImageUrls);
+        systemPrompt, userPrompt, referenceImageUrls, request.agentModel());
     ParsedChat parsed = parseChat(
         result.content(),
         defaultReferences,
@@ -143,10 +179,11 @@ public class CanvasAgentService {
         defaultModels,
         defaultRatio,
         defaultResolution,
-        defaultCount);
+        defaultCount,
+        defaultVideoDuration);
     if (!parsed.valid()) {
       try {
-        AiChatDtos.CompletionResult repairedResult = repairChatResponse(result.content());
+        AiChatDtos.CompletionResult repairedResult = repairChatResponse(result.content(), request.agentModel());
         ParsedChat repaired = parseChat(
             repairedResult.content(),
             defaultReferences,
@@ -154,7 +191,8 @@ public class CanvasAgentService {
             defaultModels,
             defaultRatio,
             defaultResolution,
-            defaultCount);
+            defaultCount,
+            defaultVideoDuration);
         if (repaired.valid()) {
           result = repairedResult;
           parsed = repaired;
@@ -178,7 +216,9 @@ public class CanvasAgentService {
         parsed.ratio(),
         parsed.resolution(),
         parsed.count(),
-        parsed.readyToGenerate());
+        parsed.readyToGenerate(),
+        parsed.generationType(),
+        parsed.durationSeconds());
   }
 
   public CanvasAgentDtos.PlanResponse plan(CanvasAgentDtos.PlanRequest request) throws Exception {
@@ -249,7 +289,7 @@ public class CanvasAgentService {
         defaultCount);
 
     AiChatDtos.CompletionResult result = completePlan(
-        systemPrompt, userPrompt, referenceImageUrls);
+        systemPrompt, userPrompt, referenceImageUrls, request.agentModel());
 
     ParsedPlan parsed = parsePlan(
         result.content(),
@@ -267,7 +307,8 @@ public class CanvasAgentService {
   private AiChatDtos.CompletionResult completePlan(
       String systemPrompt,
       String userPrompt,
-      List<String> referenceImageUrls) throws Exception {
+      List<String> referenceImageUrls, String agentModel) throws Exception {
+    if (useGem(agentModel)) return gemAgentClient.complete(systemPrompt, userPrompt, referenceImageUrls, 0.2, true);
     if (!agentChatClient.isConfigured()) {
       throw new IllegalStateException("Canvas Agent language model is not configured");
     }
@@ -282,7 +323,7 @@ public class CanvasAgentService {
         0.2);
   }
 
-  private AiChatDtos.CompletionResult repairChatResponse(String malformedContent) throws Exception {
+  private AiChatDtos.CompletionResult repairChatResponse(String malformedContent, String agentModel) throws Exception {
     String repairPrompt = """
         请把下面内容修复为一个合法 JSON 对象。只修复格式，不删除、合并或改写任何提示词内容。
         draftPrompts 必须是字符串数组，每条提示词保持独立；删除数组和对象末尾多余逗号。
@@ -290,11 +331,7 @@ public class CanvasAgentService {
 
         待修复内容：
         """ + clean(malformedContent, 20000);
-    return agentChatClient.complete(
-        List.of(
-            new AiChatDtos.Message("system", "你是严格的 JSON 格式修复器。"),
-            new AiChatDtos.Message("user", repairPrompt)),
-        0.0);
+    return completeText(agentModel, "你是严格的 JSON 格式修复器。", repairPrompt, 0.0, true);
   }
 
   private List<String> referenceImageUrls(
@@ -401,7 +438,7 @@ public class CanvasAgentService {
           .append("，位置=").append(number(layer.x())).append(',').append(number(layer.y()))
           .append('\n');
     }
-    prompt.append("请继续沟通并更新提示词草稿。无论如何都不要开始生图。");
+    prompt.append("请继续沟通并更新图片或视频草稿。无论如何都不要开始生成媒体。");
     return prompt.toString();
   }
 
@@ -412,7 +449,8 @@ public class CanvasAgentService {
       List<String> defaultModels,
       String defaultRatio,
       String defaultResolution,
-      int defaultCount) {
+      int defaultCount,
+      int defaultVideoDuration) {
     try {
       JsonNode root = agentResponseMapper.readTree(extractJsonObject(content));
       String draftPrompt = clean(root.path("draftPrompt").asText(""), 8000);
@@ -430,10 +468,19 @@ public class CanvasAgentService {
       }
       boolean readyToGenerate = root.path("readyToGenerate").asBoolean(false)
           && !draftPrompts.isEmpty();
+      String generationType = root.path("generationType").asText("image");
+      if (!Set.of("image", "video").contains(generationType)) readyToGenerate = false;
+      Integer durationSeconds = "video".equals(generationType)
+          ? root.path("durationSeconds").asInt(defaultVideoDuration) : null;
+      if ("video".equals(generationType)
+          && (durationSeconds < 4 || durationSeconds > 30
+              || draftPrompts.stream().anyMatch(prompt -> prompt.length() > 2500))) {
+        readyToGenerate = false;
+      }
       String reply = clean(root.path("reply").asText(""), 2000);
       if (reply.isBlank()) {
         reply = readyToGenerate
-            ? "我已经整理好一版提示词。你可以继续告诉我怎么改，满意后再点“确认生图”。"
+            ? "我已经整理好一版方案。你可以继续告诉我怎么改，满意后再点击界面中的确认按钮。"
             : "请再告诉我一些画面要求，我会继续帮你完善提示词。";
       }
       List<String> references = cleanLayerIds(
@@ -456,11 +503,13 @@ public class CanvasAgentService {
               defaultResolution),
           clampCount(root.path("count").asInt(defaultCount)),
           readyToGenerate,
-          true);
+          true,
+          generationType,
+          durationSeconds);
     } catch (Exception error) {
       log.warn("Canvas Agent returned invalid chat response: {}", error.getMessage());
       return new ParsedChat(
-          "我这次没有正确整理出提示词。请再发一次要求，我不会在你确认前开始生图。",
+          "我这次没有正确整理出提示词。请再发一次要求，我不会在你点击确认按钮前生成图片或视频。",
           "",
           List.of(),
           defaultReferences,
@@ -470,7 +519,9 @@ public class CanvasAgentService {
           defaultResolution,
           defaultCount,
           false,
-          false);
+          false,
+          "image",
+          null);
     }
   }
 
@@ -705,5 +756,7 @@ public class CanvasAgentService {
       String resolution,
       int count,
       boolean readyToGenerate,
-      boolean valid) {}
+      boolean valid,
+      String generationType,
+      Integer durationSeconds) {}
 }

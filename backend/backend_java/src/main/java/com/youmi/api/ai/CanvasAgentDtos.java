@@ -25,7 +25,15 @@ public final class CanvasAgentDtos {
       String model,
       String ratio,
       String resolution,
-      Integer count) {}
+      Integer count,
+      String agentModel) {
+    public PlanRequest(String canvasId, String instruction, List<LayerContext> layers,
+        List<String> selectedLayerIds, List<String> referenceLayerIds, String model,
+        String ratio, String resolution, Integer count) {
+      this(canvasId, instruction, layers, selectedLayerIds, referenceLayerIds, model,
+          ratio, resolution, count, null);
+    }
+  }
 
   public record PlanStep(
       String action,
@@ -49,9 +57,13 @@ public final class CanvasAgentDtos {
   public record EnhancePromptRequest(
       String canvasId,
       String conversationId,
-      String prompt) {
+      String prompt,
+      String agentModel) {
+    public EnhancePromptRequest(String canvasId, String conversationId, String prompt) {
+      this(canvasId, conversationId, prompt, null);
+    }
     public EnhancePromptRequest(String prompt) {
-      this("", "", prompt);
+      this("", "", prompt, null);
     }
   }
 
@@ -72,7 +84,23 @@ public final class CanvasAgentDtos {
       String resolution,
       Integer count,
       List<String> models,
-      String conversationId) {
+      String conversationId,
+      String agentModel,
+      VideoDraftSettings video) {
+    public ChatRequest(String canvasId, String instruction, List<ChatMessage> history,
+        List<LayerContext> layers, List<String> selectedLayerIds, List<String> referenceLayerIds,
+        String model, String ratio, String resolution, Integer count, List<String> models,
+        String conversationId, String agentModel) {
+      this(canvasId, instruction, history, layers, selectedLayerIds, referenceLayerIds,
+          model, ratio, resolution, count, models, conversationId, agentModel, null);
+    }
+    public ChatRequest(String canvasId, String instruction, List<ChatMessage> history,
+        List<LayerContext> layers, List<String> selectedLayerIds, List<String> referenceLayerIds,
+        String model, String ratio, String resolution, Integer count, List<String> models,
+        String conversationId) {
+      this(canvasId, instruction, history, layers, selectedLayerIds, referenceLayerIds,
+          model, ratio, resolution, count, models, conversationId, null);
+    }
     public ChatRequest(
         String canvasId,
         String instruction,
@@ -96,9 +124,13 @@ public final class CanvasAgentDtos {
           resolution,
           count,
           List.of(),
-          "");
+          "", null);
     }
   }
+
+  public record VideoDraftSettings(
+      String model, String ratio, String resolution, Integer duration,
+      Boolean generateAudio, String referenceMode) {}
 
   public record ChatResponse(
       String provider,
@@ -113,7 +145,11 @@ public final class CanvasAgentDtos {
       String ratio,
       String resolution,
       int count,
-      boolean readyToGenerate) {}
+      boolean readyToGenerate,
+      String generationType,
+      Integer durationSeconds) {}
+
+  public record AgentModelOption(String value, String label, boolean configured) {}
 
   public record ConversationSyncRequest(
       String canvasId,

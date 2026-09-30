@@ -70,6 +70,18 @@ public class AgentChatClient {
       String userPrompt,
       List<String> imageUrls,
       Double temperature) throws Exception {
+    return completeVision(systemPrompt, userPrompt, imageUrls, temperature, null);
+  }
+
+  public AiChatDtos.CompletionResult completeVision(
+      String systemPrompt, String userPrompt, List<String> imageUrls,
+      Double temperature, Integer maxTokens) throws Exception {
+    return completeVision(systemPrompt, userPrompt, imageUrls, temperature, maxTokens, null);
+  }
+
+  public AiChatDtos.CompletionResult completeVision(
+      String systemPrompt, String userPrompt, List<String> imageUrls,
+      Double temperature, Integer maxTokens, Duration timeout) throws Exception {
     requireConfigured();
     List<Map<String, Object>> content = new ArrayList<>();
     content.add(Map.of("type", "text", "text", userPrompt == null ? "" : userPrompt));
@@ -89,21 +101,27 @@ public class AgentChatClient {
       messages.add(Map.of("role", "system", "content", systemPrompt));
     }
     messages.add(Map.of("role", "user", "content", content));
-    return completeRaw(messages, temperature);
+    return completeRaw(messages, temperature, maxTokens, timeout);
   }
 
   private AiChatDtos.CompletionResult completeRaw(
       List<Map<String, Object>> rawMessages, Double temperature) throws Exception {
+    return completeRaw(rawMessages, temperature, null, null);
+  }
+
+  private AiChatDtos.CompletionResult completeRaw(
+      List<Map<String, Object>> rawMessages, Double temperature, Integer maxTokens, Duration timeout) throws Exception {
     Map<String, Object> body = new LinkedHashMap<>();
     body.put("model", properties.getModel());
-    body.put("max_tokens", Math.max(200, properties.getMaxTokens()));
+    body.put("max_tokens", maxTokens == null ? Math.max(200, properties.getMaxTokens())
+        : Math.max(200, Math.min(16000, maxTokens)));
     body.put("temperature", temperature == null ? properties.getTemperature() : temperature);
     body.put("messages", rawMessages);
 
     String endpoint = properties.normalizedBaseUrl() + properties.normalizedChatPath();
     HttpRequest request = HttpRequest.newBuilder()
         .uri(URI.create(endpoint))
-        .timeout(Duration.ofSeconds(Math.max(8, properties.getTimeoutSeconds())))
+        .timeout(timeout == null ? Duration.ofSeconds(Math.max(8, properties.getTimeoutSeconds())) : timeout)
         .header("Authorization", "Bearer " + properties.getApiKey())
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))

@@ -12,6 +12,34 @@ class CanvasPayloadExtensionFieldsTest {
   private final ObjectMapper objectMapper = new ObjectMapper();
 
   @Test
+  void preservesMultipleVideoTasksAndTheirIndependentAssets() throws Exception {
+    String json = """
+        {"productVideo":{"version":2,"tasks":[
+          {"id":"task-a","title":"Curtain","createdAt":100,"updatedAt":200,
+            "references":[{"id":"a","url":"a.png"}],"shots":[{"id":"shot-a","approvedImageId":"frame-a","videos":[{"taskId":"remote-a","status":"processing"}]}]},
+          {"id":"task-b","title":"Mattress","references":[],"shots":[],"composition":{"id":"render-b","status":"completed","url":"b.mp4"}}
+        ]}}
+        """;
+    var payload = objectMapper.readValue(json, CanvasPayload.class);
+    var result = objectMapper.readTree(objectMapper.writeValueAsString(payload));
+    assertEquals(objectMapper.readTree(json).path("productVideo"), result.path("productVideo"));
+  }
+
+  @Test
+  void preservesProductVideoWorkflowApprovalsVersionsAndTasks() throws Exception {
+    String json = """
+        {"productVideo":{"version":1,"references":[{"id":"local-upload","url":"image.png"}],
+        "shots":[{"id":"shot-1","approvedImageId":"image-1","kept":true,
+        "images":[{"id":"image-1","url":"frame.png"}],
+        "videos":[{"id":"video-1","taskId":"remote-1","status":"processing","request":{"first_frame_url":"frame.png"}}]}],
+        "composition":{"id":"render-1","status":"processing"}}}
+        """;
+    var payload = objectMapper.readValue(json, CanvasPayload.class);
+    var result = objectMapper.readTree(objectMapper.writeValueAsString(payload));
+    assertEquals(objectMapper.readTree(json).path("productVideo"), result.path("productVideo"));
+  }
+
+  @Test
   void preservesReversePromptFieldsAcrossCanvasPayloadRoundTrip() throws Exception {
     String json = """
         {

@@ -40,6 +40,12 @@ public class SelectionPoolRepository {
     return rows.stream().findFirst();
   }
 
+  public Optional<SelectionProduct> findByIdForUpdate(Long userId, Long id) {
+    return jdbcTemplate.query(
+        "SELECT " + PRODUCT_COLUMNS + " FROM ym_selection_product WHERE user_id = ? AND id = ? AND deleted_at IS NULL FOR UPDATE",
+        this::mapProduct, userId, id).stream().findFirst();
+  }
+
   public Optional<SelectionProduct> findBySourceKey(Long userId, String platform, String productId) {
     List<SelectionProduct> rows = jdbcTemplate.query(
         "SELECT " + PRODUCT_COLUMNS + " FROM ym_selection_product WHERE user_id = ? AND source_platform = ? AND source_product_id = ?",
@@ -413,4 +419,3 @@ public class SelectionPoolRepository {
 
   private record SqlAndArgs(StringBuilder sql, List<Object> args) {}
 }
-

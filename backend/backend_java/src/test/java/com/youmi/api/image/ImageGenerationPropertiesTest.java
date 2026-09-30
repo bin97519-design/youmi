@@ -2,12 +2,24 @@ package com.youmi.api.image;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
 class ImageGenerationPropertiesTest {
 
   private final ImageGenerationProperties properties = new ImageGenerationProperties();
+
+  @Test
+  void teamorouterImagesUseDocumentedComEndpointAndKeepExplicitOverrides() {
+    assertEquals("https://api.teamorouter.com/v1/images/generations",
+        properties.normalizedTeamorouterBaseUrl() + properties.normalizedTeamorouterGenerationPath());
+    properties.setTeamorouterBaseUrl(" ");
+    assertEquals("https://api.teamorouter.com/v1", properties.normalizedTeamorouterBaseUrl());
+    properties.setTeamorouterBaseUrl("https://images.example/v1/");
+    assertEquals("https://images.example/v1", properties.normalizedTeamorouterBaseUrl());
+    assertEquals("/images/edits", properties.normalizedTeamorouterEditsPath());
+  }
 
   @ParameterizedTest
   @CsvSource({

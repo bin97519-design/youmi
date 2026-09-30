@@ -50,7 +50,7 @@ function releaseHtml(release, index) {
         <div class="meta"><b>v${escapeHtml(release.version)}</b><small>最新版本</small></div>
         <h2>${escapeHtml(release.title)}</h2>
         <p>${escapeHtml(release.summary)}</p>
-        ${visualGallery}
+${visualGallery}
         <div class="sections">${sections}</div>
       </article>`
   }

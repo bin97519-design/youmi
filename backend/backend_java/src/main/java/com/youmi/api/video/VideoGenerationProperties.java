@@ -11,6 +11,16 @@ public class VideoGenerationProperties {
   private int timeoutSeconds = 120;
   private int downloadTimeoutSeconds = 600;
   private boolean persistGeneratedVideos = true;
+  private String chatApiKey = "";
+  private String chatBaseUrl = "https://new.thqllm.com/v1";
+  private int chatTimeoutSeconds = 1200;
+
+  public String getChatApiKey() { return chatApiKey == null || chatApiKey.isBlank() ? apiKey : chatApiKey; }
+  public void setChatApiKey(String value) { chatApiKey = value; }
+  public String getChatBaseUrl() { return chatBaseUrl; }
+  public void setChatBaseUrl(String value) { chatBaseUrl = value; }
+  public int getChatTimeoutSeconds() { return chatTimeoutSeconds; }
+  public void setChatTimeoutSeconds(int value) { chatTimeoutSeconds = value; }
 
   public String getBaseUrl() {
     return baseUrl;

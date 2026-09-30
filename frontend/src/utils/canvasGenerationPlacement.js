@@ -42,7 +42,8 @@ export function findVisibleGenerationPlacement({
   const minY = view.y + safeMargin
   const maxX = Math.max(minX, view.x + view.width - safeMargin - cardWidth)
   const maxY = Math.max(minY, view.y + view.height - safeMargin - cardHeight)
-  const normalizedAnchor = anchor ? normalizeRect(anchor) : null
+  const anchorRect = anchor && anchor.visible !== false ? normalizeRect(anchor) : null
+  const normalizedAnchor = anchorRect && overlaps(anchorRect, view, 0) ? anchorRect : null
   const normalizedOccupied = occupied
     .map(normalizeRect)
     .filter(
@@ -101,7 +102,9 @@ export function findVisibleGenerationPlacement({
     seen.add(key)
     candidates.push(next)
   }
-  preferred.forEach(addCandidate)
+  preferred.filter(isInside).forEach(addCandidate)
+  addCandidate(centerCandidate)
+  const directCount = candidates.length
 
   const stepX = Math.max(24, Math.min(cardWidth + safeGap, 72))
   const stepY = Math.max(24, Math.min(cardHeight + safeGap, 72))
@@ -119,7 +122,6 @@ export function findVisibleGenerationPlacement({
         x: view.x + view.width / 2,
         y: view.y + view.height / 2,
       }
-  const directCount = preferred.length
   const direct = candidates.slice(0, directCount).find(isFree)
   if (direct) return { x: direct.x, y: direct.y }
 
@@ -137,6 +139,6 @@ export function findVisibleGenerationPlacement({
 
   // When the visible area is completely full, staying visible is more useful
   // than silently placing the result outside the viewport.
-  const fallback = clampCandidate(preferred[0] || centerCandidate)
+  const fallback = clampCandidate(centerCandidate)
   return { x: fallback.x, y: fallback.y }
 }

@@ -94,6 +94,20 @@ public class OssStorageService {
     }
   }
 
+  public String uploadLocalFile(java.nio.file.Path file, String objectName, String contentType) {
+    try {
+      ObjectMetadata metadata = new ObjectMetadata();
+      metadata.setContentType(contentType);
+      metadata.setContentLength(java.nio.file.Files.size(file));
+      var request = new com.aliyun.oss.model.PutObjectRequest(properties.getBucketName(), objectName, file.toFile());
+      request.setMetadata(metadata);
+      ossClient().putObject(request);
+      return objectName;
+    } catch (Exception error) {
+      throw new ApiException(502, "OSS file upload failed");
+    }
+  }
+
   /** 将输入流完整读入 byte[]，避免流式上传时无法 reset 导致的静默失败 */
   private static byte[] toByteArray(InputStream inputStream) throws Exception {
     ByteArrayOutputStream out = new ByteArrayOutputStream();

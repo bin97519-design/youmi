@@ -18,6 +18,7 @@ public class GlobalExceptionHandler {
       case 426 -> HttpStatus.UPGRADE_REQUIRED;
       case 502 -> HttpStatus.BAD_GATEWAY;
       case 503 -> HttpStatus.SERVICE_UNAVAILABLE;
+      case 504 -> HttpStatus.GATEWAY_TIMEOUT;
       default -> HttpStatus.BAD_REQUEST;
     };
     return ResponseEntity.status(status).body(ApiResponse.fail(exception.getCode(), exception.getMessage()));
