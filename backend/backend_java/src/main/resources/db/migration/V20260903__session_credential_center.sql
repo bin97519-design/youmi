@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS ym_session_credential (
   credential_version BIGINT NOT NULL DEFAULT 1,
   environment_json TEXT NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'CAPTURED',
+  disabled_at DATETIME NULL,
   max_concurrency INT NOT NULL DEFAULT 1,
   captured_at DATETIME NOT NULL,
   expires_at DATETIME NULL,

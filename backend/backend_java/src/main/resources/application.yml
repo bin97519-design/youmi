@@ -63,7 +63,7 @@ youmi:
     apimart-direct-api-key: ${YOUMI_IMAGE_APIMART_DIRECT_API_KEY:${YOUMI_IMAGE_API_KEY:${APIMART_API_KEY:${APIMART_IMAGE_API_KEY:}}}}
     apimart-direct-generation-path: ${YOUMI_IMAGE_APIMART_DIRECT_GENERATION_PATH:/v1/images/generations}
     apimart-direct-task-path: ${YOUMI_IMAGE_APIMART_DIRECT_TASK_PATH:/v1/tasks}
-    teamorouter-base-url: ${TEAMOROUTER_IMAGE_BASE_URL:https://api.teamorouter.com/v1}
+    teamorouter-base-url: ${TEAMOROUTER_IMAGE_BASE_URL:https://api.teamorouter.cn/v1}
     teamorouter-api-key: ${TEAMOROUTER_IMAGE_API_KEY:${TEAMOROUTER_API_KEY:}}
     teamorouter-generation-path: ${TEAMOROUTER_IMAGE_GENERATION_PATH:/images/generations}
     teamorouter-edits-path: ${TEAMOROUTER_IMAGE_EDITS_PATH:/images/edits}
@@ -142,6 +142,10 @@ youmi:
         1K: 13
         2K: 15
         4K: 21
+      "[banana-2.1]":
+        1K: 8
+        2K: 9
+        4K: 12
       gpt-image-2:
         1K: 6
         2K: 10
@@ -150,10 +154,6 @@ youmi:
         1K: 11
         2K: 11
         4K: 18
-      "[gpt-image-2.5-flare]":
-        1K: 11
-        2K: 11
-        4K: 13
       qwen-multi-angle:
         1K: 20
         2K: 20

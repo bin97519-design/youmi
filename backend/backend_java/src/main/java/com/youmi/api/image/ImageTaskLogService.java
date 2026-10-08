@@ -3,10 +3,12 @@ package com.youmi.api.image;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -160,15 +162,20 @@ public class ImageTaskLogService {
         e.n <= 0 ? 1 : e.n, tasks, null);
   }
 
-  public void recordStatus(ImageGenerationDtos.TaskStatusResponse response) {
-    if (response == null || response.taskId() == null || response.taskId().isBlank()) return;
+  public Optional<ProviderCost> recordStatus(ImageGenerationDtos.TaskStatusResponse response) {
+    if (response == null || response.taskId() == null || response.taskId().isBlank()) {
+      return Optional.empty();
+    }
     List<String> imageUrls = response.imageUrls() == null ? List.of() : response.imageUrls();
     boolean failed = isFailed(response.status());
     // A persisting response already means generation succeeded. Freeze generation
     // metrics now while result_urls still waits for the permanent OSS copy.
     boolean imageGenerated = !failed && !imageUrls.isEmpty();
     int imageCount = imageGenerated ? imageUrls.size() : 0;
-    BigDecimal moneyCost = extractMoneyCost(response.raw());
+    Optional<ProviderCost> providerCost = extractProviderCost(response.raw());
+    int hasProviderCost = providerCost.isPresent() ? 1 : 0;
+    int actualMiCost = providerCost.map(ProviderCost::miCost).orElse(0);
+    BigDecimal moneyCost = providerCost.map(ProviderCost::moneyCost).orElse(BigDecimal.ZERO);
     Timestamp completedAt = imageGenerated ? Timestamp.valueOf(LocalDateTime.now()) : null;
     String storedStatus = imageGenerated ? "completed" : normalizeStatus(response.status(), "unknown");
     String persistStatus = response.persistStatus() == null
@@ -185,7 +192,16 @@ public class ImageTaskLogService {
         UPDATE ym_image_task
         SET provider = COALESCE(NULLIF(?, ''), provider),
             status = ?, progress = ?, image_count = ?,
-            mi_cost = CASE WHEN ? = 1 THEN 0 ELSE mi_cost END, money_cost = ?,
+            mi_cost = CASE
+              WHEN ? = 1 THEN 0
+              WHEN ? = 1 THEN ?
+              ELSE mi_cost
+            END,
+            money_cost = CASE
+              WHEN ? = 1 THEN 0
+              WHEN ? = 1 THEN ?
+              ELSE money_cost
+            END,
             image_urls = ?,
             result_urls = CASE WHEN ? = 'DONE' THEN ? ELSE result_urls END,
             persist_status = CASE WHEN ? IN ('DONE', 'FAILED') THEN ? ELSE persist_status END,
@@ -197,6 +213,10 @@ public class ImageTaskLogService {
         storedProgress,
         imageCount,
         failed ? 1 : 0,
+        hasProviderCost,
+        actualMiCost,
+        failed ? 1 : 0,
+        hasProviderCost,
         moneyCost,
         rawString(objectMapper.valueToTree(imageUrls)),
         persistStatus,
@@ -207,6 +227,7 @@ public class ImageTaskLogService {
         rawString(response.raw()),
         completedAt,
         response.taskId());
+    return providerCost;
   }
 
   private boolean isDone(String status) {
@@ -226,22 +247,30 @@ public class ImageTaskLogService {
     return status == null || status.isBlank() ? fallback : status.trim().toLowerCase();
   }
 
-  private BigDecimal extractMoneyCost(JsonNode raw) {
-    if (raw == null || raw.isMissingNode() || raw.isNull()) return BigDecimal.ZERO;
-    JsonNode data = raw.path("data");
-    if (data.isArray() && data.size() > 0) data = data.get(0);
-    if (data.isMissingNode() || data.isNull()) data = raw;
-    JsonNode cost = data.path("cost");
-    if (cost.isNumber()) return cost.decimalValue();
-    if (cost.isTextual()) {
-      try {
-        return new BigDecimal(cost.asText().trim());
-      } catch (NumberFormatException ignored) {
-        return BigDecimal.ZERO;
-      }
+  public Optional<ProviderCost> extractProviderCost(JsonNode raw) {
+    if (raw == null || raw.isMissingNode() || raw.isNull()) return Optional.empty();
+    JsonNode cost = raw.findValue("cost");
+    if (cost == null || cost.isMissingNode() || cost.isNull()) return Optional.empty();
+    BigDecimal moneyCost;
+    try {
+      moneyCost = cost.isNumber()
+          ? cost.decimalValue()
+          : new BigDecimal(cost.asText().trim());
+    } catch (NumberFormatException ignored) {
+      return Optional.empty();
     }
-    return BigDecimal.ZERO;
+    if (moneyCost.signum() < 0) return Optional.empty();
+    try {
+      int miCost = moneyCost.movePointRight(2)
+          .setScale(0, RoundingMode.HALF_UP)
+          .intValueExact();
+      return Optional.of(new ProviderCost(moneyCost, miCost));
+    } catch (ArithmeticException ignored) {
+      return Optional.empty();
+    }
   }
+
+  public record ProviderCost(BigDecimal moneyCost, int miCost) {}
 
   private String rawString(JsonNode node) {
     if (node == null || node.isMissingNode() || node.isNull()) return null;

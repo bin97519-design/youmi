@@ -40,7 +40,7 @@ async function request(path, userStore, options = {}) {
 }
 
 export function fetchSelectionProducts(userStore, filters) {
-  return request(`/products${queryString(filters)}`, userStore)
+  return request(`/products${queryString({ ...filters, compact: true })}`, userStore)
 }
 
 export function fetchSelectionProduct(userStore, id) {
@@ -53,6 +53,13 @@ export function fetchSelectionTags(userStore) {
 
 export function fetchMigrationTasks(userStore) {
   return request('/migration-tasks', userStore)
+}
+
+export function deleteMigrationTasks(userStore, body) {
+  return request('/migration-tasks/delete', userStore, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
 }
 
 export function createMigrationTask(userStore, body) {
@@ -71,6 +78,13 @@ export function claimMigrationTask(userStore, taskId) {
 
 export function createSelectionProduct(userStore, body) {
   return request('/products', userStore, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export function createSelectionSplitProducts(userStore, body) {
+  return request('/products/bulk', userStore, {
     method: 'POST',
     body: JSON.stringify(body),
   })

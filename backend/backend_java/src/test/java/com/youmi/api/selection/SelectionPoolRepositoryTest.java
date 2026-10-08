@@ -1,11 +1,17 @@
 package com.youmi.api.selection;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
+import java.util.ArrayList;
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.lang.reflect.Proxy;
+import java.lang.reflect.InvocationTargetException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -14,10 +20,21 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 class SelectionPoolRepositoryTest {
   private JdbcTemplate jdbcTemplate;
   private SelectionPoolRepository repository;
+  private final List<String> queries = new ArrayList<>();
 
   @BeforeEach
   void setUp() {
-    DriverManagerDataSource dataSource = new DriverManagerDataSource();
+    DriverManagerDataSource dataSource = new DriverManagerDataSource() {
+      @Override public Connection getConnection() throws SQLException {
+        Connection delegate = super.getConnection();
+        return (Connection) Proxy.newProxyInstance(Connection.class.getClassLoader(),
+            new Class<?>[] {Connection.class}, (proxy, method, args) -> {
+              if (method.getName().equals("prepareStatement") && args[0] instanceof String sql) queries.add(sql);
+              try { return method.invoke(delegate, args); }
+              catch (InvocationTargetException error) { throw error.getCause(); }
+            });
+      }
+    };
     dataSource.setDriverClassName("org.h2.Driver");
     dataSource.setUrl(
         "jdbc:h2:mem:selectionPool;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE");
@@ -26,6 +43,7 @@ class SelectionPoolRepositoryTest {
     jdbcTemplate = new JdbcTemplate(dataSource);
     resetSchema();
     repository = new SelectionPoolRepository(jdbcTemplate, new ObjectMapper());
+    queries.clear();
   }
 
   @Test
@@ -61,6 +79,76 @@ class SelectionPoolRepositoryTest {
     assertEquals(2L, repository.count(7L, "窗帘", "TAOBAO", null, null, null, null));
     assertEquals(1L, repository.count(7L, "tm-bed", null, null, null, null, null));
     assertEquals(1L, repository.count(7L, null, null, "FAILED", "FAILED", null, false));
+    assertEquals(1, repository.listSummaries(7L, "亚麻", "TAOBAO", "COLLECTED", "PUBLISHED", 11L, true, 1, 20).size());
+  }
+
+  @Test
+  void compactPageUsesThreeQueriesNoRawSnapshotAndReturnsOnlyMetadata() throws Exception {
+    ObjectMapper mapper = new ObjectMapper();
+    var data = mapper.createObjectNode();
+    data.put("productType", "COLLECTED");
+    data.putObject("category").put("name", "椰棕床垫");
+    data.putObject("skuSplit").put("part", 1).put("groupName", "颜色分类");
+    var groups = data.putArray("skuGroups");
+    groups.addObject().put("name", "尺寸"); groups.addObject().put("name", "颜色分类");
+    var skus = data.putArray("skus");
+    for (int i = 0; i < 495; i++) {
+      skus.addObject().put("skuId", "sku-" + i).put("quantity", i).put("price", "98.5")
+          .put("imageUrl", "https://images.test/" + i).put("name", "尺寸和颜色测试组合-" + i);
+    }
+    data.set("sku", skus.deepCopy()); data.set("skuList", skus.deepCopy());
+    data.putArray("images").add("https://images.test/cover.jpg");
+    for (int i = 1; i <= 20; i++) {
+      insertProduct(7L, "TMALL", "tm-" + i, "床垫" + i, "COLLECTED", "UNPUBLISHED", false, i);
+    }
+    jdbcTemplate.update("UPDATE ym_selection_product SET product_data=?, raw_snapshot=?", data.toString(), data.toString());
+    insertProduct(8L, "TMALL", "foreign", "其他账号", "COLLECTED", "UNPUBLISHED", false, 21);
+    jdbcTemplate.update("INSERT INTO ym_selection_tag (id,user_id,name,color) VALUES (11,7,'我的标签','#fff'), (12,8,'他人标签','#000')");
+    jdbcTemplate.update("INSERT INTO ym_selection_product_tag_rel (product_id,tag_id) VALUES (20,11),(20,12),(21,11)");
+    var service = new SelectionPoolService(repository, mapper);
+    queries.clear();
+    var compact = service.listCompact(7L, null, null, null, null, null, null, 1, 20);
+    assertEquals(3, queries.size(), queries.toString());
+    assertTrue(queries.stream().noneMatch(sql -> sql.contains("raw_snapshot")));
+    assertEquals(20, compact.total());
+    assertEquals(20, compact.items().size());
+    var first = compact.items().get(0);
+    assertEquals(495, first.listMeta().skuCount());
+    assertEquals(2, first.listMeta().skuGroupCount());
+    assertEquals("椰棕床垫", first.listMeta().categoryName());
+    assertEquals("颜色分类", first.listMeta().skuSplit().groupName());
+    assertEquals("https://images.test/cover.jpg", first.coverImageUrl());
+    assertEquals(List.of("我的标签"), first.tags().stream().map(SelectionPoolDtos.TagView::name).toList());
+    assertFalse(repository.listTagsForProducts(7L, List.of(20L, 21L)).containsKey(21L));
+    var json = mapper.valueToTree(compact);
+    assertFalse(json.path("items").get(0).has("productData"));
+    assertFalse(json.path("items").get(0).has("rawSnapshot"));
+    queries.clear();
+    var full = service.list(7L, null, null, null, null, null, null, 1, 20);
+    assertEquals(3, queries.size(), "Even legacy full lists use batched tags");
+    int compactBytes = mapper.writeValueAsBytes(compact).length;
+    int fullBytes = mapper.writeValueAsBytes(full).length;
+    assertTrue(compactBytes < fullBytes / 20, compactBytes + " vs " + fullBytes);
+    System.out.printf("SELECTION_LIST_FIXTURE: rows=20 skuEach=495 queries=3 compactBytes=%d fullBytes=%d%n", compactBytes, fullBytes);
+    var detail = service.get(7L, first.id());
+    assertEquals(495, detail.productData().path("skus").size());
+    assertEquals(data, detail.rawSnapshot());
+    assertTrue(repository.findById(8L, first.id()).isEmpty());
+  }
+
+  @Test
+  void summaryPaginationIsStableAndSoftDeletesRemainHidden() {
+    for (int i = 0; i < 4; i++) insertProduct(7L, "TMALL", "p" + i, "商品", "COLLECTED", "UNPUBLISHED", false, 1);
+    repository.softDelete(7L, List.of(3L));
+    var service = new SelectionPoolService(repository, new ObjectMapper());
+    assertEquals(List.of(4L, 2L), service.listCompact(7L, null, null, null, null, null, null, 1, 2)
+        .items().stream().map(SelectionPoolDtos.ProductSummaryView::id).toList());
+    assertEquals(List.of(1L), service.listCompact(7L, null, null, null, null, null, null, 2, 2)
+        .items().stream().map(SelectionPoolDtos.ProductSummaryView::id).toList());
+    queries.clear();
+    assertTrue(service.listCompact(7L, null, null, null, null, null, null, 50, 2).items().isEmpty());
+    assertEquals(2, queries.size(), "Empty pages don't query tags");
+    assertEquals(100, service.listCompact(7L, null, null, null, null, null, null, 0, 500).pageSize());
   }
 
   @Test

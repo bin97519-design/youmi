@@ -131,7 +131,7 @@ public class CredentialRepository {
             encrypted_payload = ?, encrypted_dek = ?, encryption_key_version = ?,
             credential_version = credential_version + 1, environment_json = ?, status = ?,
             captured_at = ?, expires_at = ?, last_error_code = NULL, last_error_message_masked = NULL,
-            updated_at = CURRENT_TIMESTAMP
+            disabled_at = NULL, updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
         """, accountId, accountName, shopId, shopName, sourceDeviceId,
         vaultPayload.encryptedPayload(), vaultPayload.encryptedDek(), vaultPayload.keyVersion(),
@@ -157,7 +157,8 @@ public class CredentialRepository {
                c.source_device_id, c.encrypted_payload, c.encrypted_dek,
                c.encryption_key_version, c.credential_version
         FROM ym_session_credential c
-        INNER JOIN ym_credential_device d ON d.id = c.source_device_id
+        INNER JOIN ym_credential_device d
+          ON d.id = c.source_device_id AND d.user_id = c.user_id
         WHERE c.user_id = ?
           AND c.platform = ?
           AND c.shop_id = ?
@@ -253,6 +254,36 @@ public class CredentialRepository {
         """, reason, credentialId, credentialVersion);
   }
 
+  public Optional<OwnedCredentialRow> findOwnedCredentialForUpdate(
+      long userId, String credentialId) {
+    List<OwnedCredentialRow> rows = jdbcTemplate.query("""
+        SELECT id, source_device_id, status, disabled_at
+        FROM ym_session_credential
+        WHERE user_id = ? AND id = ?
+        FOR UPDATE
+        """, (rs, rowNum) -> new OwnedCredentialRow(
+            rs.getString("id"), rs.getString("source_device_id"), rs.getString("status"),
+            timestamp(rs.getTimestamp("disabled_at"))), userId, credentialId);
+    return rows.stream().findFirst();
+  }
+
+  public int invalidateActiveLeasesForCredential(
+      long userId, String credentialId, LocalDateTime releasedAt, String reason) {
+    return jdbcTemplate.update("""
+        UPDATE ym_session_credential_lease
+        SET status = 'INVALIDATED', released_at = ?, invalidate_reason = ?
+        WHERE user_id = ? AND credential_id = ? AND status = 'ACTIVE'
+        """, Timestamp.valueOf(releasedAt), reason, userId, credentialId);
+  }
+
+  public int disableCredential(long userId, String credentialId, LocalDateTime disabledAt) {
+    return jdbcTemplate.update("""
+        UPDATE ym_session_credential
+        SET status = 'DISABLED', disabled_at = ?, updated_at = ?
+        WHERE user_id = ? AND id = ?
+        """, Timestamp.valueOf(disabledAt), Timestamp.valueOf(disabledAt), userId, credentialId);
+  }
+
   public List<CredentialDtos.CredentialView> listForUser(
       long userId, LocalDateTime onlineCutoff, LocalDateTime now) {
     return list("WHERE c.user_id = ?", userId, onlineCutoff, now);
@@ -269,9 +300,18 @@ public class CredentialRepository {
         SELECT c.id, c.platform, c.account_id, c.account_name, c.shop_id, c.shop_name,
                c.status AS credential_status, c.credential_version, c.captured_at,
                c.expires_at, c.last_validated_at, c.updated_at, d.status AS device_status,
-               d.last_seen_at AS device_last_seen_at
+               d.id AS device_id, d.device_name, d.last_seen_at AS device_last_seen_at,
+               c.max_concurrency,
+               (
+                 SELECT COUNT(*)
+                 FROM ym_session_credential_lease l
+                 WHERE l.credential_id = c.id
+                   AND l.status = 'ACTIVE'
+                   AND l.expires_at > ?
+               ) AS active_lease_count
         FROM ym_session_credential c
-        LEFT JOIN ym_credential_device d ON d.id = c.source_device_id
+        LEFT JOIN ym_credential_device d
+          ON d.id = c.source_device_id AND d.user_id = c.user_id
         """ + where + " ORDER BY c.updated_at DESC", (rs, rowNum) -> {
           String storedStatus = rs.getString("credential_status");
           String storedDeviceStatus = rs.getString("device_status");
@@ -284,16 +324,19 @@ public class CredentialRepository {
               && !credentialExpiry.toLocalDateTime().isAfter(now);
           String deviceStatus = !"ACTIVE".equals(storedDeviceStatus)
               ? "REVOKED" : online ? "ONLINE" : "OFFLINE";
-          String effectiveStatus = online ? (expired ? "EXPIRED" : storedStatus) : deviceStatus;
+          String effectiveStatus = "DISABLED".equals(storedStatus)
+              ? "DISABLED" : expired ? "EXPIRED" : online ? storedStatus : deviceStatus;
           boolean available = online && !expired
-              && ("CAPTURED".equals(storedStatus) || "HEALTHY".equals(storedStatus));
+              && ("CAPTURED".equals(storedStatus) || "HEALTHY".equals(storedStatus))
+              && rs.getInt("active_lease_count") < rs.getInt("max_concurrency");
           return new CredentialDtos.CredentialView(
               rs.getString("id"), rs.getString("platform"), rs.getString("account_id"),
               rs.getString("account_name"), rs.getString("shop_id"), rs.getString("shop_name"),
-              effectiveStatus, deviceStatus, available, rs.getLong("credential_version"),
+              effectiveStatus, rs.getString("device_id"), rs.getString("device_name"),
+              deviceStatus, available, rs.getLong("credential_version"),
               iso(rs.getTimestamp("captured_at")), iso(rs.getTimestamp("last_validated_at")),
               iso(lastSeen), iso(rs.getTimestamp("updated_at")));
-        }, argument);
+        }, Timestamp.valueOf(now), argument);
   }
 
   public void audit(long userId, String deviceId, String credentialId, String action, String detail) {
@@ -324,6 +367,9 @@ public class CredentialRepository {
       String status, LocalDateTime lastSeenAt) {}
 
   public record CredentialRow(String id, long version) {}
+
+  public record OwnedCredentialRow(
+      String id, String sourceDeviceId, String status, LocalDateTime disabledAt) {}
 
   public record LeasableCredentialRow(
       String id, String platform, String accountId, String accountName,

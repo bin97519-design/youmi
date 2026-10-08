@@ -1,3 +1,5 @@
+import { cleanSelectionSkuGroups, selectionSkuImageUrls } from './selectionSkuSync.js'
+
 const FORMAT_VERSION = 'YOUMI_PRODUCT_V1'
 
 function clone(value, fallback) {
@@ -258,11 +260,9 @@ export function serializeSelectionProduct(form) {
   const detailVideos = videoUrls(String(form.detailVideoUrls || '').split(/\r?\n/)).map((url) => ({
     url,
   }))
-  const skuGroups = clone(form.skuGroups, [])
+  const skuGroups = cleanSelectionSkuGroups(form.skuGroups)
   const skus = clone(form.skus, [])
-  const skuImages = uniqueUrls(
-    skuGroups.flatMap((group) => group.values?.map((value) => value.imageUrl) || []),
-  )
+  const skuImages = selectionSkuImageUrls(skuGroups, skus)
   const category = {
     ...objectValue(current.category),
     id: String(form.category.id || '').trim(),

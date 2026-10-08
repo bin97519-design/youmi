@@ -51,6 +51,8 @@ public final class CredentialDtos {
       String shopId,
       String shopName,
       String status,
+      String deviceId,
+      String deviceName,
       String deviceStatus,
       boolean available,
       long credentialVersion,
@@ -58,6 +60,12 @@ public final class CredentialDtos {
       String lastValidatedAt,
       String deviceLastSeenAt,
       String updatedAt) {}
+
+  public record DisableCredentialView(
+      String credentialId,
+      String status,
+      boolean available,
+      String disabledAt) {}
 
   public record LeaseCredentialRequest(
       String platform,

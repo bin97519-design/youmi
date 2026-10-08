@@ -69,6 +69,26 @@ CREATE TABLE IF NOT EXISTS ym_image_task (
   INDEX idx_ym_image_task_model (model)
 );
 
+CREATE TABLE IF NOT EXISTS ym_model_api_key (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  name VARCHAR(128) NOT NULL,
+  model VARCHAR(128) NOT NULL,
+  provider VARCHAR(64) NOT NULL DEFAULT 'youmi888',
+  base_url VARCHAR(512) NOT NULL,
+  generation_path VARCHAR(255) NOT NULL DEFAULT '/v1/media/generate',
+  task_path VARCHAR(255) NOT NULL DEFAULT '/v1/media/status',
+  encrypted_api_key TEXT NOT NULL,
+  encrypted_dek TEXT NOT NULL,
+  encryption_key_version VARCHAR(32) NOT NULL,
+  enabled TINYINT(1) NOT NULL DEFAULT 1,
+  priority INT NOT NULL DEFAULT 100,
+  created_by BIGINT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_ym_model_api_key_lookup (model, enabled, priority),
+  INDEX idx_ym_model_api_key_provider (provider)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS ym_canvas_document (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   doc_id VARCHAR(64) NOT NULL,
@@ -582,6 +602,7 @@ CREATE TABLE IF NOT EXISTS ym_session_credential (
   credential_version BIGINT NOT NULL DEFAULT 1,
   environment_json TEXT NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'CAPTURED',
+  disabled_at DATETIME NULL,
   max_concurrency INT NOT NULL DEFAULT 1,
   captured_at DATETIME NOT NULL,
   expires_at DATETIME NULL,
@@ -595,6 +616,10 @@ CREATE TABLE IF NOT EXISTS ym_session_credential (
   INDEX idx_session_credential_user_status (user_id, platform, status),
   INDEX idx_session_credential_device (source_device_id, updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @has_session_credential_disabled_at = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ym_session_credential' AND COLUMN_NAME='disabled_at');
+SET @sql = IF(@has_session_credential_disabled_at=0, 'ALTER TABLE ym_session_credential ADD COLUMN disabled_at DATETIME NULL AFTER status', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS ym_session_credential_lease (
   id VARCHAR(64) PRIMARY KEY,

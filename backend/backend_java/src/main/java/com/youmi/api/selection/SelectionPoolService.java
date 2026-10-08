@@ -68,8 +68,30 @@ public class SelectionPoolService {
         tagId, hasAiEdit, safePage, safePageSize);
     long total = repository.count(
         userId, safeKeyword, safePlatform, safeCollectStatus, safePublishStatus, tagId, hasAiEdit);
+    var tags = repository.listTagsForProducts(userId, rows.stream().map(SelectionProduct::id).toList());
     return new SelectionPoolDtos.ProductPage(
-        rows.stream().map(product -> toView(userId, product)).toList(), total, safePage, safePageSize);
+        rows.stream().map(product -> toView(product, tags.getOrDefault(product.id(), List.of()))).toList(),
+        total, safePage, safePageSize);
+  }
+
+  public SelectionPoolDtos.ProductSummaryPage listCompact(
+      Long userId, String keyword, String platform, String collectStatus, String publishStatus,
+      Long tagId, Boolean hasAiEdit, Integer page, Integer pageSize) {
+    int safePage = page == null ? 1 : Math.max(1, page);
+    int safePageSize = pageSize == null ? 20 : Math.max(1, Math.min(100, pageSize));
+    String safeKeyword = optional(keyword);
+    String safePlatform = upperOptional(platform);
+    String safeCollectStatus = upperOptional(collectStatus);
+    String safePublishStatus = upperOptional(publishStatus);
+    var rows = repository.listSummaries(userId, safeKeyword, safePlatform, safeCollectStatus,
+        safePublishStatus, tagId, hasAiEdit, safePage, safePageSize);
+    long total = repository.count(userId, safeKeyword, safePlatform, safeCollectStatus,
+        safePublishStatus, tagId, hasAiEdit);
+    var tags = repository.listTagsForProducts(userId,
+        rows.stream().map(SelectionPoolDtos.ProductSummaryView::id).toList());
+    return new SelectionPoolDtos.ProductSummaryPage(
+        rows.stream().map(row -> row.withTags(tags.getOrDefault(row.id(), List.of()))).toList(),
+        total, safePage, safePageSize);
   }
 
   public SelectionPoolDtos.ProductView get(Long userId, Long id) {
@@ -203,9 +225,28 @@ public class SelectionPoolService {
     return repository.listMigrationTasks(userId);
   }
 
+  @Transactional
+  public SelectionPoolDtos.MigrationDeleteResult deleteMigrationTasks(
+      Long userId, SelectionPoolDtos.MigrationDeleteRequest request) {
+    if (request == null) throw new ApiException(400, "请选择待删除任务");
+    boolean all = Boolean.TRUE.equals(request.clearAll());
+    List<String> ids = request.taskIds() == null ? List.of() : request.taskIds();
+    if (all && !ids.isEmpty()) throw new ApiException(400, "清空任务与指定任务不能同时使用");
+    if (!all && (ids.isEmpty() || ids.size() > 200))
+      throw new ApiException(400, "单次请选择 1 至 200 个任务");
+    for (String id : ids) {
+      if (id == null || !id.matches("[A-Za-z0-9_-]{1,128}"))
+        throw new ApiException(400, "任务编号无效");
+    }
+    return new SelectionPoolDtos.MigrationDeleteResult(
+        repository.deleteMigrationTasks(userId, ids.stream().distinct().sorted().toList(), all));
+  }
+
   public SelectionPoolDtos.MigrationHandoffView getMigrationHandoff(
       Long userId, String taskId) {
     SelectionPoolDtos.MigrationTaskView task = getMigrationTask(userId, taskId);
+    if (!List.of("QUEUED", "PUBLISHING").contains(task.status()))
+      throw new ApiException(400, "该任务已结束或删除，不能继续发布");
     List<SelectionPoolDtos.MigrationItemHandoff> items =
         repository.listMigrationHandoffItems(userId, taskId);
     if (items.isEmpty()) throw new ApiException(400, "该任务没有等待发布的商品");
@@ -300,6 +341,10 @@ public class SelectionPoolService {
   }
 
   private SelectionPoolDtos.ProductView toView(Long userId, SelectionProduct product) {
+    return toView(product, repository.listTagsForProduct(userId, product.id()));
+  }
+
+  private SelectionPoolDtos.ProductView toView(SelectionProduct product, List<SelectionPoolDtos.TagView> tags) {
     return new SelectionPoolDtos.ProductView(
         product.id(), product.sourcePlatform(), product.sourceProductId(), product.sourceUrl(),
         product.title(), product.coverImageUrl(), readJson(product.productData()),
@@ -307,7 +352,7 @@ public class SelectionPoolService {
         product.publishStatus(), product.hasAiEdit(), product.qualityScore(),
         product.originProductRowId(), product.originProductId(), product.lastCollectError(),
         time(product.lastCollectedAt()), time(product.createdAt()), time(product.updatedAt()),
-        repository.listTagsForProduct(userId, product.id()));
+        tags);
   }
 
   private int calculateQuality(String title, String cover, String sourceUrl, JsonNode data) {

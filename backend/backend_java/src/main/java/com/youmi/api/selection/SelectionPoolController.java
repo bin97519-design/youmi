@@ -42,7 +42,7 @@ public class SelectionPoolController {
   }
 
   @GetMapping("/products")
-  public ApiResponse<SelectionPoolDtos.ProductPage> list(
+  public ApiResponse<?> list(
       @RequestHeader(value = "Authorization", required = false) String authorization,
       @RequestParam(required = false) String keyword,
       @RequestParam(required = false) String platform,
@@ -51,9 +51,13 @@ public class SelectionPoolController {
       @RequestParam(required = false) Long tagId,
       @RequestParam(required = false) Boolean hasAiEdit,
       @RequestParam(defaultValue = "1") Integer page,
-      @RequestParam(defaultValue = "20") Integer pageSize) {
-    return ApiResponse.ok(service.list(
-        authService.requireUserId(authorization), keyword, platform, collectStatus,
+      @RequestParam(defaultValue = "20") Integer pageSize,
+      @RequestParam(defaultValue = "true") boolean compact) {
+    Long userId = authService.requireUserId(authorization);
+    if (compact) return ApiResponse.ok(service.listCompact(userId, keyword, platform, collectStatus,
+        publishStatus, tagId, hasAiEdit, page, pageSize));
+    // Explicit compatibility escape hatch; normal lists and the plugin use compact responses.
+    return ApiResponse.ok(service.list(userId, keyword, platform, collectStatus,
         publishStatus, tagId, hasAiEdit, page, pageSize));
   }
 
@@ -127,6 +131,23 @@ public class SelectionPoolController {
   public ApiResponse<List<SelectionPoolDtos.MigrationTaskView>> listMigrationTasks(
       @RequestHeader(value = "Authorization", required = false) String authorization) {
     return ApiResponse.ok(service.listMigrationTasks(authService.requireUserId(authorization)));
+  }
+
+  @PostMapping("/migration-tasks/delete")
+  public ApiResponse<SelectionPoolDtos.MigrationDeleteResult> deleteMigrationTasks(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @RequestBody SelectionPoolDtos.MigrationDeleteRequest request) {
+    return ApiResponse.ok("任务已从待发布队列移除", service.deleteMigrationTasks(
+        authService.requireUserId(authorization), request));
+  }
+
+  @DeleteMapping("/migration-tasks/{taskId}")
+  public ApiResponse<SelectionPoolDtos.MigrationDeleteResult> deleteMigrationTask(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @PathVariable String taskId) {
+    return ApiResponse.ok("任务已从待发布队列移除", service.deleteMigrationTasks(
+        authService.requireUserId(authorization),
+        new SelectionPoolDtos.MigrationDeleteRequest(List.of(taskId), false)));
   }
 
   @GetMapping("/migration-tasks/{taskId}")

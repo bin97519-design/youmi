@@ -49,7 +49,7 @@ async function load() {
 
 async function forwardTmallImages(payload) {
   const tabs = await chrome.tabs.query({
-    url: ['http://127.0.0.1:5173/*', 'http://127.0.0.1:5174/*', 'http://localhost:5173/*', 'http://localhost:5174/*'],
+    url: ['http://127.0.0.1:5173/*', 'http://localhost:5173/*'],
   });
 
   await Promise.allSettled(
@@ -87,7 +87,7 @@ async function sendMessageWithContentScript(tab, message) {
 
 async function forwardReversePromptResult(payload) {
   const tabs = await chrome.tabs.query({
-    url: ['http://127.0.0.1:5173/*', 'http://127.0.0.1:5174/*', 'http://localhost:5173/*', 'http://localhost:5174/*'],
+    url: ['http://127.0.0.1:5173/*', 'http://localhost:5173/*'],
   });
 
   await Promise.allSettled(
@@ -106,10 +106,10 @@ function delay(ms) {
 
 async function openReversePromptCanvasIfNeeded() {
   const tabs = await chrome.tabs.query({
-    url: ['http://127.0.0.1:5173/*', 'http://127.0.0.1:5174/*', 'http://localhost:5173/*', 'http://localhost:5174/*'],
+    url: ['http://127.0.0.1:5173/*', 'http://localhost:5173/*'],
   });
   if (tabs.length) return tabs.length;
-  await chrome.tabs.create({ url: 'http://127.0.0.1:5174/reverse-prompt', active: true });
+  await chrome.tabs.create({ url: 'http://127.0.0.1:5173/reverse-prompt', active: true });
   return 1;
 }
 

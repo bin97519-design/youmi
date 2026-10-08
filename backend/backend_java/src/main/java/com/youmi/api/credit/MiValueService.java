@@ -58,6 +58,13 @@ public class MiValueService {
         .ifPresent(row -> repository.setLogStatus(row.logId(), "SUCCESS"));
   }
 
+  /** 按供应商返回的实际成本修正任务消费；米值账户已取消，因此不受预估价格上限约束。 */
+  public void settleActualByTaskId(String taskId, int settledPrice) {
+    if (taskId == null || taskId.isBlank()) return;
+    if (settledPrice < 0) throw new IllegalArgumentException("Mi value price must not be negative");
+    repository.settleActualByTaskId(taskId, settledPrice);
+  }
+
   /** 生成失败：幂等标记为 ROLLBACK，不计入消费。 */
   public void rollback(Long userId, Long logId) {
     repository.markRollback(logId);

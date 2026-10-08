@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
@@ -97,6 +98,34 @@ class ImageTaskLogIsolationTest {
     assertTrue(jdbcTemplate.queryForObject(
         "SELECT result_urls FROM ym_image_task WHERE task_id = 'task-done'", String.class)
         .contains(permanentUrl));
+  }
+
+  @Test
+  void providerCostUpdatesMiValueAndSurvivesLaterPersistedResponse() throws Exception {
+    insert("task-cost", "client-cost", 101L, "banana-2.1");
+    jdbcTemplate.update(
+        "UPDATE ym_image_task SET mi_cost = 12, money_cost = 0 WHERE task_id = 'task-cost'");
+    ObjectMapper mapper = new ObjectMapper();
+
+    service.recordStatus(new ImageGenerationDtos.TaskStatusResponse(
+        "youmi888", "task-cost", "persisting", 100,
+        List.of("https://cdn.example.com/result.png"), "PENDING", null,
+        mapper.readTree("{\"data\":{\"result\":{\"cost\":0.07}}}")));
+
+    assertEquals(7, jdbcTemplate.queryForObject(
+        "SELECT mi_cost FROM ym_image_task WHERE task_id = 'task-cost'", Integer.class));
+    assertEquals(0, new BigDecimal("0.07").compareTo(jdbcTemplate.queryForObject(
+        "SELECT money_cost FROM ym_image_task WHERE task_id = 'task-cost'", BigDecimal.class)));
+
+    service.recordStatus(new ImageGenerationDtos.TaskStatusResponse(
+        "model-api", "task-cost", "completed", 100,
+        List.of("https://oss.example.com/result.png"), "DONE", null,
+        mapper.readTree("{\"source\":\"persisted_oss\"}")));
+
+    assertEquals(7, jdbcTemplate.queryForObject(
+        "SELECT mi_cost FROM ym_image_task WHERE task_id = 'task-cost'", Integer.class));
+    assertEquals(0, new BigDecimal("0.07").compareTo(jdbcTemplate.queryForObject(
+        "SELECT money_cost FROM ym_image_task WHERE task_id = 'task-cost'", BigDecimal.class)));
   }
 
   @Test

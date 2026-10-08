@@ -11,6 +11,8 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Map;
+import java.util.HashMap;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
@@ -21,6 +23,13 @@ public class SelectionPoolRepository {
   private static final String PRODUCT_COLUMNS = """
       id, user_id, source_platform, source_product_id, source_url, title, cover_image_url,
       product_data, raw_snapshot, collect_source, collect_status, publish_status, has_ai_edit,
+      quality_score, origin_product_row_id, origin_product_id, last_collect_error,
+      last_collected_at, created_at, updated_at
+      """;
+
+  private static final String SUMMARY_COLUMNS = """
+      id, user_id, source_platform, source_product_id, source_url, title, cover_image_url,
+      product_data, collect_source, collect_status, publish_status, has_ai_edit,
       quality_score, origin_product_row_id, origin_product_id, last_collect_error,
       last_collected_at, created_at, updated_at
       """;
@@ -116,25 +125,52 @@ public class SelectionPoolRepository {
       Long userId, String keyword, String platform, String collectStatus, String publishStatus,
       Long tagId, Boolean hasAiEdit, int page, int pageSize) {
     SqlAndArgs query = productFilter(userId, keyword, platform, collectStatus, publishStatus, tagId, hasAiEdit);
-    query.sql.append(" ORDER BY p.updated_at DESC LIMIT ? OFFSET ?");
+    query.sql.append(" ORDER BY p.updated_at DESC, p.id DESC LIMIT ? OFFSET ?");
     query.args.add(pageSize);
     query.args.add((page - 1) * pageSize);
     return jdbcTemplate.query(query.sql.toString(), this::mapProduct, query.args.toArray());
   }
 
+  public List<SelectionPoolDtos.ProductSummaryView> listSummaries(
+      Long userId, String keyword, String platform, String collectStatus, String publishStatus,
+      Long tagId, Boolean hasAiEdit, int page, int pageSize) {
+    SqlAndArgs query = productFilter(SUMMARY_COLUMNS,
+        userId, keyword, platform, collectStatus, publishStatus, tagId, hasAiEdit);
+    query.sql.append(" ORDER BY p.updated_at DESC, p.id DESC LIMIT ? OFFSET ?");
+    query.args.add(pageSize);
+    query.args.add((long) (page - 1) * pageSize);
+    return jdbcTemplate.query(query.sql.toString(), (rs, rowNum) -> {
+      var meta = SelectionProductListMetaReader.read(objectMapper, rs.getCharacterStream("product_data"));
+      String cover = rs.getString("cover_image_url");
+      return new SelectionPoolDtos.ProductSummaryView(
+          rs.getLong("id"), rs.getString("source_platform"), rs.getString("source_product_id"),
+          rs.getString("source_url"), rs.getString("title"),
+          cover == null || cover.isBlank() ? meta.fallbackCoverImageUrl() : cover,
+          rs.getString("collect_source"), rs.getString("collect_status"), rs.getString("publish_status"),
+          rs.getBoolean("has_ai_edit"), rs.getInt("quality_score"), nullableLong(rs, "origin_product_row_id"),
+          rs.getString("origin_product_id"), rs.getString("last_collect_error"),
+          time(rs, "last_collected_at"), time(rs, "created_at"), time(rs, "updated_at"), meta, List.of());
+    }, query.args.toArray());
+  }
+
   public long count(
       Long userId, String keyword, String platform, String collectStatus, String publishStatus,
       Long tagId, Boolean hasAiEdit) {
-    SqlAndArgs query = productFilter(userId, keyword, platform, collectStatus, publishStatus, tagId, hasAiEdit);
-    String sql = query.sql.toString().replace("SELECT " + PRODUCT_COLUMNS + " FROM", "SELECT COUNT(*) FROM");
-    Long count = jdbcTemplate.queryForObject(sql, Long.class, query.args.toArray());
+    SqlAndArgs query = productFilter("COUNT(*)", userId, keyword, platform, collectStatus, publishStatus, tagId, hasAiEdit);
+    Long count = jdbcTemplate.queryForObject(query.sql.toString(), Long.class, query.args.toArray());
     return count == null ? 0 : count;
   }
 
   private SqlAndArgs productFilter(
       Long userId, String keyword, String platform, String collectStatus, String publishStatus,
       Long tagId, Boolean hasAiEdit) {
-    StringBuilder sql = new StringBuilder("SELECT ").append(PRODUCT_COLUMNS)
+    return productFilter(PRODUCT_COLUMNS, userId, keyword, platform, collectStatus, publishStatus, tagId, hasAiEdit);
+  }
+
+  private SqlAndArgs productFilter(
+      String columns, Long userId, String keyword, String platform, String collectStatus, String publishStatus,
+      Long tagId, Boolean hasAiEdit) {
+    StringBuilder sql = new StringBuilder("SELECT ").append(columns)
         .append(" FROM ym_selection_product p WHERE p.user_id = ? AND p.deleted_at IS NULL");
     List<Object> args = new ArrayList<>();
     args.add(userId);
@@ -294,13 +330,75 @@ public class SelectionPoolRepository {
         userId);
   }
 
+  public List<String> deleteMigrationTasks(Long userId, List<String> ids, boolean clearAll) {
+    List<Object> args = new ArrayList<>();
+    args.add(userId);
+    String filter;
+    if (clearAll) {
+      filter = "status IN ('QUEUED', 'PUBLISHING')";
+    } else {
+      if (ids.isEmpty()) return List.of();
+      filter = "status IN ('QUEUED', 'PUBLISHING', 'DELETED') AND task_id IN ("
+          + String.join(",", java.util.Collections.nCopies(ids.size(), "?")) + ")";
+      args.addAll(ids);
+    }
+    List<String> owned = jdbcTemplate.queryForList(
+        "SELECT task_id FROM ym_product_migration_task WHERE user_id = ? AND " + filter
+            + " ORDER BY task_id FOR UPDATE", String.class, args.toArray());
+    for (String taskId : owned) {
+      List<Long> products = jdbcTemplate.queryForList(
+          "SELECT product_id FROM ym_product_migration_item WHERE task_id = ?",
+          Long.class, taskId);
+      // Keep snapshots/results as an audit record; only remove queue eligibility.
+      jdbcTemplate.update("""
+          UPDATE ym_product_migration_task SET status = 'DELETED', updated_at = CURRENT_TIMESTAMP
+          WHERE user_id = ? AND task_id = ?
+          """, userId, taskId);
+      for (Long productId : products) {
+        jdbcTemplate.update("""
+            UPDATE ym_selection_product SET publish_status = CASE
+              WHEN EXISTS (SELECT 1 FROM ym_product_migration_item i
+                JOIN ym_product_migration_task t ON t.task_id = i.task_id
+                WHERE t.user_id = ? AND i.product_id = ? AND i.status = 'PUBLISHED')
+              THEN 'PUBLISHED' ELSE 'UNPUBLISHED' END
+            WHERE user_id = ? AND id = ? AND publish_status = 'QUEUED'
+              AND NOT EXISTS (SELECT 1 FROM ym_product_migration_item i
+                JOIN ym_product_migration_task t ON t.task_id = i.task_id
+                WHERE t.user_id = ? AND i.product_id = ? AND t.status IN ('QUEUED', 'PUBLISHING'))
+            """, userId, productId, userId, productId, userId, productId);
+      }
+    }
+    return owned;
+  }
+
+  public Map<Long, List<SelectionPoolDtos.TagView>> listTagsForProducts(Long userId, List<Long> productIds) {
+    Map<Long, List<SelectionPoolDtos.TagView>> tags = new HashMap<>();
+    if (productIds.isEmpty()) return tags;
+    String marks = String.join(",", java.util.Collections.nCopies(productIds.size(), "?"));
+    List<Object> args = new ArrayList<>();
+    args.add(userId);
+    args.addAll(productIds);
+    jdbcTemplate.query("""
+        SELECT r.product_id, t.id, t.name, t.color FROM ym_selection_tag t
+        INNER JOIN ym_selection_product_tag_rel r ON r.tag_id = t.id
+        INNER JOIN ym_selection_product p ON p.id = r.product_id AND p.user_id = t.user_id
+        WHERE t.user_id = ? AND p.deleted_at IS NULL AND r.product_id IN (%s)
+        ORDER BY t.created_at ASC, t.id ASC
+        """.formatted(marks), (org.springframework.jdbc.core.RowCallbackHandler) rs ->
+        tags.computeIfAbsent(rs.getLong("product_id"), ignored -> new ArrayList<>()).add(
+            new SelectionPoolDtos.TagView(rs.getLong("id"), rs.getString("name"), rs.getString("color"), 0)),
+        args.toArray());
+    return tags;
+  }
+
   public List<SelectionPoolDtos.MigrationItemHandoff> listMigrationHandoffItems(
       Long userId, String taskId) {
     return jdbcTemplate.query("""
         SELECT i.product_id, i.sequence_no, i.status, i.source_snapshot
         FROM ym_product_migration_item i
         JOIN ym_product_migration_task t ON t.task_id = i.task_id
-        WHERE t.user_id = ? AND i.task_id = ? AND i.status IN ('PENDING', 'NEEDS_REVIEW')
+        WHERE t.user_id = ? AND i.task_id = ? AND t.status IN ('QUEUED', 'PUBLISHING')
+          AND i.status IN ('PENDING', 'NEEDS_REVIEW')
         ORDER BY i.sequence_no
         """, (rs, rowNum) -> new SelectionPoolDtos.MigrationItemHandoff(
             rs.getLong("product_id"), rs.getInt("sequence_no"), rs.getString("status"),
@@ -319,6 +417,13 @@ public class SelectionPoolRepository {
   public void updateMigrationItemResult(
       Long userId, String taskId, int sequenceNo, String status,
       String targetProductId, String targetUrl, String errorCode, String errorMessage) {
+    // Serialize result callbacks with deletion, so a late callback cannot revive
+    // a removed task or change product status after removal.
+    List<String> states = jdbcTemplate.queryForList(
+        "SELECT status FROM ym_product_migration_task WHERE user_id = ? AND task_id = ? FOR UPDATE",
+        String.class, userId, taskId);
+    if (states.isEmpty() || "DELETED".equals(states.get(0)))
+      throw new com.youmi.api.common.ApiException(400, "任务已删除或不存在");
     List<Long> productIds = jdbcTemplate.queryForList("""
         SELECT i.product_id
         FROM ym_product_migration_item i

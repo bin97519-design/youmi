@@ -23,9 +23,9 @@ class ImageMiValuePricingServiceTest {
     properties.setImagePrices(Map.of(
         "banana2", Map.of("1K", 8, "2K", 9, "4K", 12),
         "banana-pro", Map.of("1K", 13, "2K", 15, "4K", 21),
+        "banana-2.1", Map.of("1K", 8, "2K", 9, "4K", 12),
         "gpt-image-2", Map.of("1K", 6, "2K", 10, "4K", 15),
         "gpt-image-2.5-sunburst", Map.of("1K", 11, "2K", 11, "4K", 18),
-        "gpt-image-2.5-flare", Map.of("1K", 11, "2K", 11, "4K", 13),
         "qwen-multi-angle", Map.of("1K", 20, "2K", 20, "4K", 20)));
     service = new ImageMiValuePricingService(properties);
   }
@@ -34,9 +34,11 @@ class ImageMiValuePricingServiceTest {
   void appliesModelResolutionAndCountMatrix() {
     assertEquals(8, service.quote("banana2", "1K", 1).requestedPrice());
     assertEquals(30, service.quote("banana-pro", "2K", 2).requestedPrice());
+    assertEquals(18, service.quote("banana-2.1", "2K", 2).requestedPrice());
     assertEquals(60, service.quote("gpt-image-2", "4K", 4).requestedPrice());
+    assertEquals(15, service.quote("GPT-image2.5", "4K", 1).requestedPrice());
     assertEquals(36, service.quote("gpt-image-2.5-sunburst", "4K", 2).requestedPrice());
-    assertEquals(26, service.quote("gpt-image-2.5-flare", "4K", 2).requestedPrice());
+    assertEquals(18, service.quote("gpt-image2.5-sunburst-api", "4K", 1).requestedPrice());
     assertEquals(
         20,
         service.quote("wavespeed-ai/qwen-image/edit-multiple-angles", "1K", 1)
@@ -58,7 +60,7 @@ class ImageMiValuePricingServiceTest {
   }
 
   @Test
-  void bindsTeamorouterPricesFromApplicationYaml() throws Exception {
+  void bindsSunburstPriceFromApplicationYaml() throws Exception {
     MutablePropertySources propertySources = new MutablePropertySources();
     for (PropertySource<?> source : new YamlPropertySourceLoader()
         .load("application", new ClassPathResource("application.yml"))) {
@@ -69,6 +71,7 @@ class ImageMiValuePricingServiceTest {
         .orElseThrow(() -> new IllegalStateException("youmi.credit configuration is missing"));
 
     assertEquals(18, properties.getImagePrice("gpt-image-2.5-sunburst", "4K"));
-    assertEquals(13, properties.getImagePrice("gpt-image-2.5-flare", "4K"));
+    assertEquals(12, properties.getImagePrice("banana-2.1", "4K"));
   }
+
 }

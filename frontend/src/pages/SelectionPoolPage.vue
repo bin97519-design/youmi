@@ -1,16 +1,28 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import ThemedSelect from '../components/common/ThemedSelect.vue'
 import SelectionProductEditor from '../components/selection/SelectionProductEditor.vue'
+import { createCopier } from '../utils/selectionProductCopy'
+import { copyRecoveryStore } from '../utils/selectionCopyStorage'
+import { apiPath } from '../utils/apiBase'
+import JdSkuLengthConfirm from '../components/selection/JdSkuLengthConfirm.vue'
+import { assertJdSkuPreflightAvailable } from '../utils/jdSkuPreflightFlow'
 import { useTheme } from '../composables/useTheme'
 import { useUserStore } from '../stores/user'
+import {
+  assertProductMoverStorageReady,
+  productMoverStorageLabel,
+  productMoverErrorMessage,
+} from '../utils/productMoverStorage'
 import {
   assignSelectionTags,
   claimMigrationTask,
   createMigrationTask,
   createSelectionProduct,
+  createSelectionSplitProducts,
   deleteSelectionProducts,
+  deleteMigrationTasks,
   fetchMigrationTasks,
   fetchSelectionProduct,
   fetchSelectionProducts,
@@ -22,13 +34,14 @@ import {
   prepareProductMoverMigration,
   probeProductMover,
   productMoverApiBase,
+  removeProductMoverTaskCache,
 } from '../utils/productMoverBridge'
 
 const router = useRouter()
 const userStore = useUserStore()
 const { cycle: cycleTheme, isDark } = useTheme()
 
-const pageSize = 20
+const pageSize = 10
 const products = ref([])
 const tags = ref([])
 const migrationTasks = ref([])
@@ -38,21 +51,91 @@ const refreshing = ref(false)
 const actionLoading = ref(false)
 const errorMessage = ref('')
 const page = ref(1)
+const pageJump = ref('1')
+watch(page, (value) => {
+  pageJump.value = String(value)
+})
 const total = ref(0)
 const detailProduct = ref(null)
 const detailLoading = ref(false)
 const detailSaving = ref(false)
+const copyingProductId = ref(null)
+const deletingProductIds = ref([])
+const productCopier = createCopier({
+  getScope: () =>
+    userStore.profile?.id
+      ? JSON.stringify([apiPath('/api/v1/selection-pool'), userStore.profile.id])
+      : '',
+  readPending: copyRecoveryStore.read,
+  writePending: copyRecoveryStore.write,
+  removePending: copyRecoveryStore.remove,
+  fetchProduct: (id) => fetchSelectionProduct(userStore, id),
+  createProduct: (body) => createSelectionProduct(userStore, body),
+  assignTags: (id, tagIds) => assignSelectionTags(userStore, [id], tagIds),
+})
+const splitError = ref('')
 const taskDialogOpen = ref(false)
 const migrationDialogOpen = ref(false)
 const tagDialogOpen = ref(false)
 const manualDialogOpen = ref(false)
 const migrationStarting = ref(false)
+const jdSkuWarning = ref(null)
+let resolveJdSkuWarning = null
+function finishJdSkuWarning(confirmed) {
+  const resolve = resolveJdSkuWarning
+  resolveJdSkuWarning = null
+  jdSkuWarning.value = null
+  resolve?.(confirmed === true)
+}
+function confirmJdSkuNames(report) {
+  finishJdSkuWarning(false)
+  jdSkuWarning.value = report
+  return new Promise((resolve) => {
+    resolveJdSkuWarning = resolve
+  })
+}
+onBeforeUnmount(() => finishJdSkuWarning(false))
 const taskActionId = ref('')
+const selectedTaskIds = ref(new Set())
+const deletingTasks = ref(false)
+const taskDeleteNotice = ref('')
+const pendingTaskCacheIds = ref([])
+const taskCacheRecoveryKey = computed(
+  () => `youmi_task_cache_cleanup_${userStore.profile?.id || 'unknown'}`,
+)
+watch(
+  taskCacheRecoveryKey,
+  (key) => {
+    try {
+      const ids = JSON.parse(sessionStorage.getItem(key) || '[]')
+      pendingTaskCacheIds.value = Array.isArray(ids)
+        ? ids.filter((id) => typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id))
+        : []
+    } catch {
+      pendingTaskCacheIds.value = []
+    }
+  },
+  { immediate: true },
+)
+watch(pendingTaskCacheIds, (ids) => {
+  try {
+    sessionStorage.setItem(taskCacheRecoveryKey.value, JSON.stringify(ids))
+  } catch {
+    /* Cloud deletion remains valid if session storage is full. */
+  }
+})
+const allTasksSelected = computed(
+  () =>
+    migrationTasks.value.length > 0 &&
+    migrationTasks.value.every((task) => selectedTaskIds.value.has(task.taskId)),
+)
 const pluginState = ref('checking')
 const pluginInfo = ref(null)
 const activeTagIds = ref(new Set())
 const toast = ref({ visible: false, type: 'success', message: '' })
 let toastTimer = null
+let listLoadSequence = 0
+let detailLoadSequence = 0
 
 const filters = reactive({
   keyword: '',
@@ -205,9 +288,10 @@ function productImages(product) {
 
 function productMeta(product) {
   const data = unwrapProductData(product)
-  const skuGroups = data.skuGroups?.length || data.specGroups?.length || 0
-  const skus = data.skus?.length || data.skuList?.length || 0
-  const category = data.category?.name || data.categoryName || ''
+  const skuGroups =
+    product.listMeta?.skuGroupCount ?? (data.skuGroups?.length || data.specGroups?.length || 0)
+  const skus = product.listMeta?.skuCount ?? (data.skus?.length || data.skuList?.length || 0)
+  const category = product.listMeta?.categoryName || data.category?.name || data.categoryName || ''
   return [
     product.sourceProductId ? `ID ${product.sourceProductId}` : '自定义商品',
     category,
@@ -215,6 +299,10 @@ function productMeta(product) {
   ]
     .filter(Boolean)
     .join(' · ')
+}
+
+function productSplit(product) {
+  return product.listMeta?.skuSplit || product.productData?.skuSplit
 }
 
 function platformName(value) {
@@ -244,6 +332,7 @@ function formatTime(value) {
 }
 
 async function loadData({ reset = false, quiet = false } = {}) {
+  const sequence = ++listLoadSequence
   if (reset) {
     page.value = 1
     selectedIds.value = new Set()
@@ -252,31 +341,35 @@ async function loadData({ reset = false, quiet = false } = {}) {
   else loading.value = true
   errorMessage.value = ''
   try {
-    const [productResult, tagResult, taskResult] = await Promise.allSettled([
-      fetchSelectionProducts(userStore, {
-        ...filters,
-        page: page.value,
-        pageSize,
-      }),
-      fetchSelectionTags(userStore),
-      fetchMigrationTasks(userStore),
-    ])
-    if (productResult.status === 'rejected') throw productResult.reason
-
-    const productPage = productResult.value
-    const tagList = tagResult.status === 'fulfilled' ? tagResult.value : []
-    const tasks = taskResult.status === 'fulfilled' ? taskResult.value : []
+    // Auxiliary requests must not hold the product table behind a slow task/tag response.
+    void fetchSelectionTags(userStore)
+      .then((value) => {
+        if (sequence === listLoadSequence) tags.value = value || []
+      })
+      .catch(() => {})
+    void fetchMigrationTasks(userStore)
+      .then((value) => {
+        if (sequence === listLoadSequence) migrationTasks.value = value || []
+      })
+      .catch(() => {})
+    const productPage = await fetchSelectionProducts(userStore, {
+      ...filters,
+      page: page.value,
+      pageSize,
+    })
+    if (sequence !== listLoadSequence) return
     products.value = productPage?.items || []
     total.value = Number(productPage?.total || 0)
-    tags.value = tagList || []
-    migrationTasks.value = tasks || []
   } catch (error) {
+    if (sequence !== listLoadSequence) return
     errorMessage.value = error?.message || '选品库加载失败'
     products.value = []
     total.value = 0
   } finally {
-    loading.value = false
-    refreshing.value = false
+    if (sequence === listLoadSequence) {
+      loading.value = false
+      refreshing.value = false
+    }
   }
 }
 
@@ -310,27 +403,88 @@ function toggleSelectAll() {
 }
 
 function changePage(nextPage) {
-  if (nextPage < 1 || nextPage > pageCount.value || nextPage === page.value) return
+  if (deletingProductIds.value.length) return
+  if (
+    !Number.isSafeInteger(nextPage) ||
+    nextPage < 1 ||
+    nextPage > pageCount.value ||
+    nextPage === page.value
+  )
+    return
   page.value = nextPage
   selectedIds.value = new Set()
   void loadData()
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
+function jumpToPage() {
+  if (deletingProductIds.value.length) return
+  const text = String(pageJump.value).trim()
+  const target = Number(text)
+  if (
+    !/^\d+$/.test(text) ||
+    !Number.isSafeInteger(target) ||
+    target < 1 ||
+    target > pageCount.value
+  ) {
+    showToast(`请输入 1 到 ${pageCount.value} 之间的整数页码`, 'error')
+    return
+  }
+  pageJump.value = String(target)
+  changePage(target)
+}
+
 async function openProduct(product) {
+  if (detailSaving.value || deletingProductIds.value.length) return
+  const sequence = ++detailLoadSequence
+  splitError.value = ''
   detailProduct.value = product
   detailLoading.value = true
   try {
-    detailProduct.value = (await fetchSelectionProduct(userStore, product.id)) || product
+    const detail = await fetchSelectionProduct(userStore, product.id)
+    if (sequence !== detailLoadSequence || detailProduct.value?.id !== product.id) return
+    if (
+      !detail?.productData ||
+      typeof detail.productData !== 'object' ||
+      Array.isArray(detail.productData)
+    ) {
+      throw new Error('未读取到完整商品资料，请重试')
+    }
+    detailProduct.value = detail
   } catch (error) {
+    if (sequence !== detailLoadSequence) return
+    detailProduct.value = null
     showToast(error?.message || '商品详情加载失败', 'error')
   } finally {
-    detailLoading.value = false
+    if (sequence === detailLoadSequence) detailLoading.value = false
+  }
+}
+
+async function copyProduct(product) {
+  if (copyingProductId.value !== null || deletingProductIds.value.length) return
+  copyingProductId.value = product.id
+  try {
+    const saved = await productCopier.copy(product.id)
+    Object.assign(filters, {
+      keyword: '',
+      platform: '',
+      collectStatus: '',
+      publishStatus: '',
+      tagId: '',
+    })
+    page.value = 1
+    await loadData({ quiet: true })
+    selectedIds.value = new Set([saved.id])
+    showToast('已复制商品，原商品保留；副本未开始搬家')
+  } catch (error) {
+    showToast(`${error?.message || '复制失败'}。请再次点击“复制”重试，沿用同一份副本。`, 'error')
+  } finally {
+    copyingProductId.value = null
   }
 }
 
 async function saveProductEdits({ payload, afterSave }) {
-  if (!detailProduct.value || detailSaving.value) return
+  if (!detailProduct.value?.productData || detailLoading.value || detailSaving.value) return
   detailSaving.value = true
   try {
     const saved = await updateSelectionProduct(userStore, detailProduct.value.id, payload)
@@ -340,6 +494,34 @@ async function saveProductEdits({ payload, afterSave }) {
     if (afterSave === 'canvas') sendToCanvas(saved)
   } catch (error) {
     showToast(error?.message || '商品资料保存失败', 'error')
+  } finally {
+    detailSaving.value = false
+  }
+}
+
+async function splitProductEdits(body) {
+  if (!detailProduct.value?.productData || detailLoading.value || detailSaving.value) return
+  detailSaving.value = true
+  splitError.value = ''
+  try {
+    const result = await createSelectionSplitProducts(userStore, body)
+    if (result?.items?.length !== 2) throw new Error('拆分返回结果不完整，请重试同一批资料确认结果')
+    detailProduct.value = null
+    // Show and select the two children, never the original 459-SKU product.
+    Object.assign(filters, {
+      keyword: '',
+      platform: '',
+      collectStatus: '',
+      publishStatus: '',
+      tagId: '',
+    })
+    page.value = 1
+    await loadData({ quiet: true })
+    selectedIds.value = new Set(result.items.map((item) => item.id))
+    showToast('已生成并勾选两份商品，原商品保留。可继续点击“开始搬家”')
+  } catch (error) {
+    splitError.value = error?.message || '商品拆分失败，请重试'
+    showToast(splitError.value, 'error')
   } finally {
     detailSaving.value = false
   }
@@ -382,17 +564,65 @@ async function saveTags() {
 }
 
 async function removeSelected() {
-  if (!selectedCount.value || actionLoading.value) return
-  if (!window.confirm(`确定把选中的 ${selectedCount.value} 个商品移入回收站吗？`)) return
+  return removeProducts([...selectedIds.value])
+}
+
+async function removeProduct(product) {
+  if (!products.value.some((item) => item.id === product.id)) return
+  return removeProducts([product.id], product.title)
+}
+
+async function removeProducts(productIds, title = '') {
+  if (
+    actionLoading.value ||
+    deletingProductIds.value.length ||
+    copyingProductId.value !== null ||
+    detailSaving.value
+  )
+    return
+  // Freeze exactly the confirmed IDs; later selection changes must not expand the deletion.
+  const ids = [...new Set(productIds)].filter((id) => Number.isSafeInteger(id) && id > 0)
+  if (!ids.length) return
+  if (ids.length > 200) return showToast('一次最多删除 200 个商品，请减少勾选数量', 'error')
+  const scope = title ? `商品“${title}”` : `选中的 ${ids.length} 个商品`
+  if (
+    !window.confirm(
+      `确定删除${scope}并移入回收站吗？\n仅删除选品库记录，不删除平台商品，也不会取消已创建的搬家任务。`,
+    )
+  )
+    return
   actionLoading.value = true
+  deletingProductIds.value = ids
+  let deleted = false
   try {
-    await deleteSelectionProducts(userStore, [...selectedIds.value])
-    selectedIds.value = new Set()
-    showToast('商品已移入回收站')
+    const count = await deleteSelectionProducts(userStore, ids)
+    deleted = true
+    selectedIds.value = new Set([...selectedIds.value].filter((id) => !ids.includes(id)))
+    if (ids.includes(detailProduct.value?.id)) detailProduct.value = null
     await loadData({ quiet: true })
+    if (!errorMessage.value) {
+      const lastPage = Math.max(1, Math.ceil(total.value / pageSize))
+      if (page.value > lastPage) {
+        page.value = lastPage
+        await loadData({ quiet: true })
+      }
+    }
+    const message = Number.isInteger(count)
+      ? count > 0
+        ? `已将 ${count} 个商品移入回收站`
+        : '没有新增删除记录，商品可能已被删除'
+      : '删除请求已完成'
+    showToast(
+      message + (errorMessage.value ? '；列表刷新失败，请刷新页面' : ''),
+      errorMessage.value ? 'info' : 'success',
+    )
   } catch (error) {
-    showToast(error?.message || '删除失败', 'error')
+    showToast(
+      deleted ? '删除请求已完成，但列表刷新失败，请刷新页面' : error?.message || '删除失败',
+      'error',
+    )
   } finally {
+    deletingProductIds.value = []
     actionLoading.value = false
   }
 }
@@ -480,17 +710,21 @@ async function handoffMigrationToPlugin(task, handoff) {
   const options = resolvedTask?.options || {}
   const productRowIds = (handoff?.items || []).map((item) => item.productRowId).filter(Boolean)
   if (!productRowIds.length) throw new Error('搬家任务没有等待发布的商品')
+  assertJdSkuPreflightAvailable(resolvedTask.targetPlatform, pluginInfo.value)
 
-  return prepareProductMoverMigration({
-    taskId: resolvedTask.taskId,
-    productRowIds,
-    frozenItems: handoff.items || [],
-    targetPlatform: resolvedTask.targetPlatform,
-    submitMode: options.submitMode || migrationForm.submitMode,
-    defaultStock: options.defaultStock ?? migrationForm.defaultStock,
-    apiBase: productMoverApiBase(),
-    token: userStore.token,
-  })
+  return prepareProductMoverMigration(
+    {
+      taskId: resolvedTask.taskId,
+      productRowIds,
+      frozenItems: handoff.items || [],
+      targetPlatform: resolvedTask.targetPlatform,
+      submitMode: options.submitMode || migrationForm.submitMode,
+      defaultStock: options.defaultStock ?? migrationForm.defaultStock,
+      apiBase: productMoverApiBase(),
+      token: userStore.token,
+    },
+    confirmJdSkuNames,
+  )
 }
 
 async function createAndStartMigration() {
@@ -500,7 +734,9 @@ async function createAndStartMigration() {
   try {
     if (!(await refreshPluginConnection({ quiet: true })))
       throw new Error('未检测到搬家插件，请启用插件并刷新当前页面')
+    assertProductMoverStorageReady(pluginInfo.value)
     if (!userStore.token) throw new Error('请先登录有米账号')
+    assertJdSkuPreflightAvailable(migrationForm.targetPlatform, pluginInfo.value)
 
     createdTask = await createMigrationTask(userStore, {
       productRowIds: [...selectedIds.value],
@@ -516,7 +752,13 @@ async function createAndStartMigration() {
       },
     })
     const handoff = await claimMigrationTask(userStore, createdTask.taskId)
-    await handoffMigrationToPlugin(createdTask, handoff)
+    const result = await handoffMigrationToPlugin(createdTask, handoff)
+    if (result.cancelled) {
+      showToast('已取消启动京东上架，任务保留在“待发布任务”，未打开发布页', 'info')
+      migrationDialogOpen.value = false
+      await loadData({ quiet: true })
+      return
+    }
 
     migrationDialogOpen.value = false
     selectedIds.value = new Set()
@@ -525,8 +767,8 @@ async function createAndStartMigration() {
   } catch (error) {
     showToast(
       createdTask
-        ? `任务已保留，可在“待发布任务”中重试：${error?.message || '插件接管失败'}`
-        : error?.message || '搬家任务创建失败',
+        ? `任务已保留，可在“待发布任务”中重试：${productMoverErrorMessage(error)}`
+        : productMoverErrorMessage(error, '搬家任务创建失败'),
       'error',
     )
     if (createdTask) await loadData({ quiet: true })
@@ -536,20 +778,99 @@ async function createAndStartMigration() {
 }
 
 async function claimExistingTask(task) {
-  if (!task?.taskId || taskActionId.value) return
+  if (!task?.taskId || taskActionId.value || deletingTasks.value) return
   taskActionId.value = task.taskId
   try {
     if (!(await refreshPluginConnection({ quiet: true })))
       throw new Error('未检测到搬家插件，请启用插件并刷新当前页面')
+    assertProductMoverStorageReady(pluginInfo.value)
+    assertJdSkuPreflightAvailable(task.targetPlatform, pluginInfo.value)
     const handoff = await claimMigrationTask(userStore, task.taskId)
-    await handoffMigrationToPlugin(task, handoff)
+    const result = await handoffMigrationToPlugin(task, handoff)
+    if (result.cancelled) {
+      showToast('已取消继续发布，未打开京东发布页', 'info')
+      await loadData({ quiet: true })
+      return
+    }
     taskDialogOpen.value = false
     showToast('任务已由当前浏览器接管，正在打开官方发布页')
     await loadData({ quiet: true })
   } catch (error) {
-    showToast(error?.message || '任务接管失败', 'error')
+    taskDeleteNotice.value = productMoverErrorMessage(error, '任务接管失败')
+    showToast(taskDeleteNotice.value, 'error')
   } finally {
     taskActionId.value = ''
+  }
+}
+
+function toggleTaskSelection(taskId) {
+  const next = new Set(selectedTaskIds.value)
+  if (next.has(taskId)) next.delete(taskId)
+  else next.add(taskId)
+  selectedTaskIds.value = next
+}
+
+async function cleanDeletedTaskCache() {
+  while (pendingTaskCacheIds.value.length) {
+    const ids = pendingTaskCacheIds.value.slice(0, 200)
+    await removeProductMoverTaskCache({
+      taskIds: ids,
+      token: userStore.token,
+      apiBase: productMoverApiBase(),
+    })
+    pendingTaskCacheIds.value = pendingTaskCacheIds.value.slice(ids.length)
+  }
+}
+
+async function retryTaskCacheCleanup() {
+  if (deletingTasks.value || taskActionId.value) return
+  deletingTasks.value = true
+  try {
+    await cleanDeletedTaskCache()
+    taskDeleteNotice.value = '对应插件任务缓存已清理。'
+  } catch (error) {
+    taskDeleteNotice.value = `云端任务已删除，但插件缓存未清理：${error.message}。请重新加载新版插件并刷新页面后，再重试清理。`
+  } finally {
+    deletingTasks.value = false
+  }
+}
+
+async function removeQueuedTasks(clearAll = false) {
+  if (deletingTasks.value || taskActionId.value || migrationStarting.value) return
+  const ids = migrationTasks.value
+    .filter((task) => selectedTaskIds.value.has(task.taskId))
+    .map((task) => task.taskId)
+  if (!clearAll && !ids.length) return
+  const scope = clearAll
+    ? '当前账号全部待发布任务（包含未显示的任务）'
+    : `选中的 ${ids.length} 个任务`
+  if (
+    !window.confirm(
+      `确定删除${scope}吗？\n删除后不能继续接管这些任务，同时尝试清理插件对应缓存。\n不会删除选品库商品或平台商品。正在执行的发布页请先停止操作；已发送的请求无法撤回。`,
+    )
+  )
+    return
+  deletingTasks.value = true
+  taskDeleteNotice.value = ''
+  try {
+    const result = await deleteMigrationTasks(
+      userStore,
+      clearAll ? { clearAll: true } : { taskIds: ids },
+    )
+    const removed = result?.taskIds || []
+    pendingTaskCacheIds.value = [...new Set([...pendingTaskCacheIds.value, ...removed])]
+    selectedTaskIds.value = new Set()
+    await loadData({ quiet: true })
+    try {
+      await cleanDeletedTaskCache()
+      taskDeleteNotice.value = `已删除 ${removed.length} 个任务，并清理对应插件缓存。选品库商品保持不变。`
+    } catch (error) {
+      taskDeleteNotice.value = `已删除 ${removed.length} 个云端任务；插件缓存尚未清理：${error.message}。请加载新版插件后重试清理缓存。`
+    }
+  } catch (error) {
+    taskDeleteNotice.value = error?.message || '任务删除失败'
+  } finally {
+    deletingTasks.value = false
   }
 }
 
@@ -729,22 +1050,36 @@ onMounted(() => {
 
       <div class="batch-bar">
         <label class="select-all">
-          <input type="checkbox" :checked="allCurrentSelected" @change="toggleSelectAll" />
+          <input
+            type="checkbox"
+            :checked="allCurrentSelected"
+            :disabled="deletingProductIds.length > 0"
+            @change="toggleSelectAll"
+          />
           <span>{{ selectedCount ? `已选择 ${selectedCount} 个商品` : '全选本页' }}</span>
         </label>
         <div>
-          <button type="button" :disabled="!selectedCount" @click="openTags">
+          <button type="button" :disabled="!selectedCount || actionLoading" @click="openTags">
             <i class="ri-price-tag-3-line"></i>
             设置标签
           </button>
-          <button type="button" :disabled="!selectedCount" @click="removeSelected">
+          <button
+            class="delete-action"
+            type="button"
+            :disabled="!selectedCount || actionLoading || copyingProductId !== null"
+            @click="removeSelected"
+          >
             <i class="ri-delete-bin-6-line"></i>
-            移入回收站
+            {{
+              deletingProductIds.length
+                ? '删除中…'
+                : `批量删除${selectedCount ? `（${selectedCount}）` : ''}`
+            }}
           </button>
           <button
             class="batch-primary"
             type="button"
-            :disabled="!selectedCount"
+            :disabled="!selectedCount || actionLoading"
             @click="prepareMigration"
           >
             <i class="ri-truck-line"></i>
@@ -752,6 +1087,45 @@ onMounted(() => {
           </button>
         </div>
       </div>
+
+      <nav
+        v-if="!loading && !errorMessage"
+        class="pagination pagination-top"
+        aria-label="商品列表顶部分页"
+      >
+        <span>共 {{ total }} 条 · 每页 {{ pageSize }} 条</span>
+        <div>
+          <button
+            type="button"
+            :disabled="page <= 1 || deletingProductIds.length > 0"
+            @click="changePage(page - 1)"
+          >
+            上一页
+          </button>
+          <strong>第 {{ page }} / {{ pageCount }} 页</strong>
+          <button
+            type="button"
+            :disabled="page >= pageCount || deletingProductIds.length > 0"
+            @click="changePage(page + 1)"
+          >
+            下一页
+          </button>
+          <form class="page-jump" @submit.prevent="jumpToPage">
+            <label>
+              跳至
+              <input
+                v-model="pageJump"
+                type="text"
+                inputmode="numeric"
+                aria-label="顶部分页跳转页码"
+                :disabled="deletingProductIds.length > 0"
+              />
+              页
+            </label>
+            <button type="submit" :disabled="deletingProductIds.length > 0">跳转</button>
+          </form>
+        </div>
+      </nav>
 
       <div v-if="loading" class="state-panel">
         <i class="ri-loader-4-line spinning"></i>
@@ -802,11 +1176,17 @@ onMounted(() => {
                 <input
                   type="checkbox"
                   :checked="selectedIds.has(product.id)"
+                  :disabled="deletingProductIds.length > 0"
                   @change="toggleSelect(product.id)"
                 />
               </td>
               <td>
-                <button class="product-cell" type="button" @click="openProduct(product)">
+                <button
+                  class="product-cell"
+                  type="button"
+                  :disabled="deletingProductIds.length > 0"
+                  @click="openProduct(product)"
+                >
                   <span class="product-cover">
                     <img
                       v-if="productImages(product)[0]"
@@ -818,6 +1198,17 @@ onMounted(() => {
                   </span>
                   <span>
                     <strong :title="product.title">{{ product.title }}</strong>
+                    <small
+                      v-if="product.sourceProductId?.startsWith('copy_')"
+                      class="split-product-label"
+                    >
+                      商品副本
+                    </small>
+                    <small v-if="productSplit(product)" class="split-product-label">
+                      裂变 {{ productSplit(product).part }}/2 · 按{{
+                        productSplit(product).groupName
+                      }}拆分
+                    </small>
                     <small>{{ productMeta(product) }}</small>
                   </span>
                 </button>
@@ -865,23 +1256,72 @@ onMounted(() => {
                 <time>{{ formatTime(product.updatedAt) }}</time>
               </td>
               <td>
-                <button class="table-action" type="button" @click="openProduct(product)">
-                  编辑
-                </button>
+                <div class="product-row-actions">
+                  <button
+                    class="table-action delete-action"
+                    type="button"
+                    :disabled="actionLoading || copyingProductId !== null || detailSaving"
+                    title="删除此商品并移入回收站，不删除平台商品"
+                    @click.stop="removeProduct(product)"
+                  >
+                    {{ deletingProductIds.includes(product.id) ? '删除中…' : '删除' }}
+                  </button>
+                  <button
+                    class="table-action"
+                    type="button"
+                    :disabled="copyingProductId !== null || deletingProductIds.length > 0"
+                    title="复制完整商品资料和全部 SKU，保留原商品"
+                    @click.stop="copyProduct(product)"
+                  >
+                    {{ copyingProductId === product.id ? '复制中…' : '复制' }}
+                  </button>
+                  <button
+                    class="table-action"
+                    type="button"
+                    :disabled="deletingProductIds.length > 0"
+                    @click="openProduct(product)"
+                  >
+                    编辑
+                  </button>
+                </div>
               </td>
             </tr>
           </tbody>
         </table>
       </div>
 
-      <footer v-if="!loading && !errorMessage && products.length" class="pagination">
-        <span>共 {{ total }} 条</span>
+      <footer v-if="!loading && !errorMessage" class="pagination" aria-label="商品列表底部分页">
+        <span>共 {{ total }} 条 · 每页 {{ pageSize }} 条</span>
         <div>
-          <button type="button" :disabled="page <= 1" @click="changePage(page - 1)">上一页</button>
-          <strong>{{ page }} / {{ pageCount }}</strong>
-          <button type="button" :disabled="page >= pageCount" @click="changePage(page + 1)">
+          <button
+            type="button"
+            :disabled="page <= 1 || deletingProductIds.length > 0"
+            @click="changePage(page - 1)"
+          >
+            上一页
+          </button>
+          <strong>第 {{ page }} / {{ pageCount }} 页</strong>
+          <button
+            type="button"
+            :disabled="page >= pageCount || deletingProductIds.length > 0"
+            @click="changePage(page + 1)"
+          >
             下一页
           </button>
+          <form class="page-jump" @submit.prevent="jumpToPage">
+            <label>
+              跳至
+              <input
+                v-model="pageJump"
+                type="text"
+                inputmode="numeric"
+                aria-label="底部分页跳转页码"
+                :disabled="deletingProductIds.length > 0"
+              />
+              页
+            </label>
+            <button type="submit" :disabled="deletingProductIds.length > 0">跳转</button>
+          </form>
         </div>
       </footer>
     </section>
@@ -891,8 +1331,10 @@ onMounted(() => {
       :product="detailProduct"
       :loading="detailLoading"
       :saving="detailSaving"
-      @close="detailProduct = null"
+      :split-error="splitError"
+      @close="!detailSaving && (detailProduct = null)"
       @save="saveProductEdits"
+      @split="splitProductEdits"
     />
 
     <div v-if="taskDialogOpen" class="dialog-backdrop" @mousedown.self="taskDialogOpen = false">
@@ -911,8 +1353,59 @@ onMounted(() => {
             <i class="ri-close-line"></i>
           </button>
         </header>
+        <div class="task-toolbar">
+          <label>
+            <input
+              type="checkbox"
+              :checked="allTasksSelected"
+              :disabled="deletingTasks || !!taskActionId || !migrationTasks.length"
+              @change="
+                selectedTaskIds = allTasksSelected
+                  ? new Set()
+                  : new Set(migrationTasks.map((task) => task.taskId))
+              "
+            />
+            全选当前列表
+          </label>
+          <button
+            type="button"
+            :disabled="deletingTasks || !!taskActionId || !selectedTaskIds.size"
+            @click="removeQueuedTasks(false)"
+          >
+            批量删除（{{ selectedTaskIds.size }}）
+          </button>
+          <button
+            type="button"
+            :disabled="deletingTasks || !!taskActionId || !migrationTasks.length"
+            @click="removeQueuedTasks(true)"
+          >
+            清空任务
+          </button>
+        </div>
+        <p v-if="taskDeleteNotice" class="task-delete-notice" role="status">
+          {{ taskDeleteNotice }}
+        </p>
+        <p v-if="pluginConnected" class="task-delete-notice">
+          {{ productMoverStorageLabel(pluginInfo) }}
+        </p>
+        <button
+          v-if="pendingTaskCacheIds.length"
+          class="cache-retry"
+          type="button"
+          :disabled="deletingTasks || !!taskActionId"
+          @click="retryTaskCacheCleanup"
+        >
+          重试清理插件缓存（{{ pendingTaskCacheIds.length }} 个任务）
+        </button>
         <div class="task-list">
           <article v-for="task in migrationTasks" :key="task.taskId">
+            <input
+              type="checkbox"
+              :aria-label="`选择${platformName(task.targetPlatform)}任务 ${task.taskId}`"
+              :checked="selectedTaskIds.has(task.taskId)"
+              :disabled="deletingTasks || !!taskActionId"
+              @change="toggleTaskSelection(task.taskId)"
+            />
             <span class="task-platform"><i class="ri-truck-line"></i></span>
             <div>
               <strong>
@@ -926,7 +1419,7 @@ onMounted(() => {
               </span>
               <button
                 type="button"
-                :disabled="Boolean(taskActionId)"
+                :disabled="Boolean(taskActionId) || deletingTasks"
                 @click="claimExistingTask(task)"
               >
                 <i
@@ -1009,7 +1502,7 @@ onMounted(() => {
             <span>
               {{
                 pluginConnected
-                  ? '搬家插件已连接，可以接管任务'
+                  ? productMoverStorageLabel(pluginInfo)
                   : '尚未检测到搬家插件，请启用插件并刷新页面'
               }}
             </span>
@@ -1134,6 +1627,13 @@ onMounted(() => {
         </form>
       </section>
     </div>
+
+    <JdSkuLengthConfirm
+      v-if="jdSkuWarning"
+      :report="jdSkuWarning"
+      @confirm="finishJdSkuWarning(true)"
+      @cancel="finishJdSkuWarning(false)"
+    />
 
     <Transition name="toast">
       <div v-if="toast.visible" class="selection-toast" :class="`is-${toast.type}`" role="status">
@@ -1570,7 +2070,7 @@ input[type='checkbox'] {
   width: 150px;
 }
 .product-table th:nth-child(9) {
-  width: 70px;
+  width: 200px;
 }
 .product-table td {
   height: 78px;
@@ -1726,6 +2226,23 @@ input[type='checkbox'] {
   color: var(--canvas-accent);
 }
 
+.product-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.batch-bar .delete-action,
+.table-action.delete-action {
+  color: #ef4444;
+}
+
+.delete-action:not(:disabled):hover {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.1);
+}
+
 .state-panel {
   display: flex;
   min-height: 360px;
@@ -1760,6 +2277,8 @@ input[type='checkbox'] {
 
 .pagination {
   display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
   align-items: center;
   justify-content: space-between;
   min-height: 50px;
@@ -1772,6 +2291,32 @@ input[type='checkbox'] {
 .pagination button {
   min-height: 32px;
   padding: 0 10px;
+}
+.pagination-top {
+  border-bottom: 1px solid var(--canvas-border);
+  background: var(--canvas-surface);
+}
+.pagination > div {
+  flex-wrap: wrap;
+}
+.page-jump,
+.page-jump label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.page-jump {
+  margin: 0;
+}
+.page-jump input {
+  width: 58px;
+  min-height: 32px;
+  padding: 0 6px;
+  border: 1px solid var(--canvas-border);
+  border-radius: 6px;
+  color: var(--canvas-text);
+  background: var(--canvas-surface);
+  text-align: center;
 }
 .pagination strong {
   min-width: 62px;
@@ -1846,12 +2391,47 @@ input[type='checkbox'] {
 }
 .task-list article {
   display: grid;
-  grid-template-columns: 36px 1fr auto;
+  grid-template-columns: 18px 36px minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   min-height: 66px;
   padding: 8px;
   border-bottom: 1px solid var(--canvas-border);
+}
+.task-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--canvas-border);
+}
+.task-toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: auto;
+}
+.task-toolbar button,
+.cache-retry {
+  padding: 7px 10px;
+  border: 1px solid var(--canvas-border-strong);
+  border-radius: 5px;
+  color: var(--canvas-text);
+  background: var(--canvas-surface);
+}
+.task-toolbar button {
+  color: #ef7474;
+}
+.task-delete-notice {
+  padding: 0 18px;
+  color: var(--canvas-text-muted);
+  line-height: 1.6;
+  font-size: 12px;
+}
+.cache-retry {
+  margin: 8px 18px;
+  color: var(--canvas-accent);
 }
 .task-platform {
   display: grid;

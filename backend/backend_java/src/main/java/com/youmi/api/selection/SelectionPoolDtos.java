@@ -53,6 +53,30 @@ public final class SelectionPoolDtos {
 
   public record ProductPage(List<ProductView> items, long total, int page, int pageSize) {}
 
+  public record SkuSplitSummary(int part, String groupName) {}
+
+  public record ProductListMeta(
+      String productType, String categoryName, int skuGroupCount, int skuCount,
+      SkuSplitSummary skuSplit, String fallbackCoverImageUrl) {}
+
+  // Deliberately excludes productData/rawSnapshot: only the detail endpoint returns those blobs.
+  public record ProductSummaryView(
+      Long id, String sourcePlatform, String sourceProductId, String sourceUrl,
+      String title, String coverImageUrl, String collectSource, String collectStatus,
+      String publishStatus, boolean hasAiEdit, int qualityScore,
+      Long originProductRowId, String originProductId, String lastCollectError,
+      String lastCollectedAt, String createdAt, String updatedAt,
+      ProductListMeta listMeta, List<TagView> tags) {
+    public ProductSummaryView withTags(List<TagView> value) {
+      return new ProductSummaryView(id, sourcePlatform, sourceProductId, sourceUrl, title,
+          coverImageUrl, collectSource, collectStatus, publishStatus, hasAiEdit, qualityScore,
+          originProductRowId, originProductId, lastCollectError, lastCollectedAt, createdAt,
+          updatedAt, listMeta, value);
+    }
+  }
+
+  public record ProductSummaryPage(List<ProductSummaryView> items, long total, int page, int pageSize) {}
+
   public record BulkUpsertResult(int created, int updated, List<ProductView> items) {}
 
   public record TagSaveRequest(String name, String color) {}
@@ -68,6 +92,10 @@ public final class SelectionPoolDtos {
       String targetPlatform,
       String targetShopRef,
       JsonNode options) {}
+
+  public record MigrationDeleteRequest(List<String> taskIds, Boolean clearAll) {}
+
+  public record MigrationDeleteResult(List<String> taskIds) {}
 
   public record MigrationTaskView(
       String taskId,

@@ -1,3 +1,5 @@
+import { prepareMigrationWithConfirmation } from './jdSkuPreflightFlow'
+
 const REQUEST_CHANNEL = 'YOUMI_PRODUCT_MOVER_REQUEST'
 const RESPONSE_CHANNEL = 'YOUMI_PRODUCT_MOVER_RESPONSE'
 const PAGE_SOURCE = 'youmi-selection-pool'
@@ -74,6 +76,14 @@ export function openProductMoverWorkbench() {
   return sendProductMoverRequest('OPEN_WORKBENCH')
 }
 
-export function prepareProductMoverMigration(payload) {
-  return sendProductMoverRequest('PREPARE_MIGRATION', payload, { timeout: 120000 })
+export function prepareProductMoverMigration(payload, confirm) {
+  return prepareMigrationWithConfirmation(
+    payload,
+    (request) => sendProductMoverRequest('PREPARE_MIGRATION', request, { timeout: 120000 }),
+    confirm,
+  )
+}
+
+export function removeProductMoverTaskCache(payload) {
+  return sendProductMoverRequest('REMOVE_TASK_CACHE', payload, { timeout: 120000 })
 }

@@ -492,7 +492,7 @@ public class AdminService {
   }
 
   private List<AdminDtos.DimensionImageTrend> modelDailyTrends(Long scopeUserId) {
-    String where = scopeUserId == null ? "" : " AND t.user_id = ?";
+    String where = scopeUserId == null ? "" : " AND t.user_id = ? ";
     String sql = """
         SELECT COALESCE(t.requested_model, t.model, 'unknown') AS dimension_key,
                COALESCE(t.requested_model, t.model, 'unknown') AS dimension_label,
@@ -512,7 +512,7 @@ public class AdminService {
   }
 
   private List<AdminDtos.DimensionImageTrend> shopDailyTrends(Long scopeUserId) {
-    String where = scopeUserId == null ? "" : " AND t.user_id = ?";
+    String where = scopeUserId == null ? "" : " AND t.user_id = ? ";
     String sql = """
         SELECT COALESCE(CAST(s.id AS CHAR), 'unbound') AS dimension_key,
                CASE
@@ -539,7 +539,7 @@ public class AdminService {
   }
 
   private List<AdminDtos.DimensionImageTrend> userDailyTrends(Long scopeUserId) {
-    String where = scopeUserId == null ? "" : " AND t.user_id = ?";
+    String where = scopeUserId == null ? "" : " AND t.user_id = ? ";
     String sql = """
         SELECT COALESCE(u.account, CONCAT('user-', t.user_id), 'unknown') AS dimension_key,
                COALESCE(NULLIF(u.nickname, ''), u.account, CONCAT('用户 #', t.user_id), '未知用户') AS dimension_label,

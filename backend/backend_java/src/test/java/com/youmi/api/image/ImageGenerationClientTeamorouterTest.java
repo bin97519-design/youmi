@@ -13,14 +13,12 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
 
 class ImageGenerationClientTeamorouterTest {
 
-  @ParameterizedTest
-  @ValueSource(strings = {"gpt-image-2.5-sunburst", "gpt-image-2.5-flare"})
-  void generationUsesJsonEndpointAndConstrainedPixelSize(String model) throws Exception {
+  @Test
+  void generationUsesJsonEndpointAndConstrainedPixelSize() throws Exception {
+    String model = "gpt-image-2.5-sunburst";
     ObjectMapper mapper = new ObjectMapper();
     AtomicReference<JsonNode> requestBody = new AtomicReference<>();
     AtomicReference<String> authorization = new AtomicReference<>();
@@ -89,7 +87,7 @@ class ImageGenerationClientTeamorouterTest {
       ImageGenerationClient client = createClient(server);
       String referenceUrl = "http://127.0.0.1:" + server.getAddress().getPort() + "/source.png";
       ImageGenerationDtos.CreateTaskRequest request = request(
-          "gpt-image-2.5-flare", "3:4", "2K", List.of(referenceUrl));
+          "gpt-image-2.5-sunburst", "3:4", "2K", List.of(referenceUrl));
 
       ImageGenerationDtos.CreateTaskResponse created = client.createTask(request, 8L);
       ImageGenerationDtos.TaskStatusResponse status = awaitTerminal(client, created.tasks().get(0).taskId());
@@ -98,7 +96,7 @@ class ImageGenerationClientTeamorouterTest {
       assertEquals(0, generationCalls.get());
       assertTrue(editContentType.get().startsWith("multipart/form-data; boundary="));
       assertTrue(editBody.get().contains("name=\"model\""));
-      assertTrue(editBody.get().contains("gpt-image-2.5-flare"));
+      assertTrue(editBody.get().contains("gpt-image-2.5-sunburst"));
       assertTrue(editBody.get().contains("name=\"image\"; filename="));
       assertTrue(editBody.get().contains("name=\"size\""));
     } finally {

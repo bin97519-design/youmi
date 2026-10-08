@@ -1325,14 +1325,48 @@ async function recordGenerationToHistory(record) {
 // 注意：model 字符串必须和后端 alias 表（ImageGenerationProperties.defaultModelAliases）保持一致
 // 后端会对空格/横线/下划线做归一化容错，但 UI 上用标准写法更专业
 const WAVESPEED_MULTI_ANGLE_MODEL = 'wavespeed-ai/qwen-image/edit-multiple-angles'
-const chatModelOptions = [
+const RETIRED_IMAGE_MODELS = new Set(['gpt-image-2.5-sunburst', 'agnes-image-2.1-flash'])
+const MODEL_API_BANANA_PRO_OPTION = 'banana-pro-api'
+const MODEL_API_GPT_IMAGE_25_FLARE_OPTION = 'GPT-image2.5'
+const MODEL_API_GPT_IMAGE_25_SUNBURST_OPTION = 'gpt-image2.5-sunburst-api'
+const IMAGE_MODEL_LABELS = {
+  [MODEL_API_BANANA_PRO_OPTION]: '香蕉 Pro',
+  [MODEL_API_GPT_IMAGE_25_FLARE_OPTION]: 'GPT-image2.5快速',
+  [MODEL_API_GPT_IMAGE_25_SUNBURST_OPTION]: 'GPT-image2.5高质',
+}
+const BUILT_IN_CHAT_MODEL_OPTIONS = [
   'banana2',
   'banana-pro',
+  'banana-2.1',
   'gpt-image-2',
-  'gpt-image-2.5-sunburst',
-  'gpt-image-2.5-flare',
-  'agnes-image-2.1-flash',
 ]
+const chatModelOptions = reactive([...BUILT_IN_CHAT_MODEL_OPTIONS])
+
+async function loadImageModels() {
+  try {
+    const status = await readApiResponse(
+      await fetch(apiPath('/api/image-tasks/status'), {
+        headers: userStore.authHeaders(),
+      }),
+    )
+    const configured = Array.isArray(status?.configuredModels) ? status.configuredModels : []
+    const configuredOptions = configured.flatMap((model) => {
+      const normalized = String(model || '').trim().toLowerCase()
+      if (normalized === 'banana-pro') return [MODEL_API_BANANA_PRO_OPTION]
+      if (normalized === 'gpt-image2.5') {
+        return [model, MODEL_API_GPT_IMAGE_25_SUNBURST_OPTION]
+      }
+      return [model]
+    })
+    const nextModels = [...new Set([...BUILT_IN_CHAT_MODEL_OPTIONS, ...configuredOptions])]
+      .map((model) => String(model || '').trim())
+      .filter((model) => model && !RETIRED_IMAGE_MODELS.has(model.toLowerCase()))
+    chatModelOptions.splice(0, chatModelOptions.length, ...nextModels)
+    chatModels.value = normalizeChatModelSelection(chatModels.value)
+  } catch (error) {
+    console.warn('[image] 模型配置暂时无法读取', error?.message || error)
+  }
+}
 const chatRatioOptions = [
   'auto',
   '1:1',
@@ -1421,9 +1455,14 @@ function normalizeChatModelSelection(value, fallback = 'banana2') {
   return [chatModelOptions.includes(fallback) ? fallback : chatModelOptions[0]]
 }
 
+function imageModelLabel(model) {
+  return IMAGE_MODEL_LABELS[model] || model
+}
+
 function formatSelectedModelLabel(models) {
   const selected = normalizeChatModelSelection(models)
-  return selected.length > 1 ? `${selected[0]} +${selected.length - 1}` : selected[0]
+  const firstLabel = imageModelLabel(selected[0])
+  return selected.length > 1 ? `${firstLabel} +${selected.length - 1}` : firstLabel
 }
 
 const chatModels = ref(
@@ -1438,7 +1477,9 @@ const chatModel = computed({
   },
 })
 const chatModelLabel = computed(() => formatSelectedModelLabel(chatModels.value))
-const chatModelTitle = computed(() => normalizeChatModelSelection(chatModels.value).join('、'))
+const chatModelTitle = computed(() =>
+  normalizeChatModelSelection(chatModels.value).map(imageModelLabel).join('、'),
+)
 const inlineDialogModelLabel = computed(() =>
   formatSelectedModelLabel(
     inlineDialogModification.models.length
@@ -1451,7 +1492,7 @@ const inlineDialogModelTitle = computed(() =>
     inlineDialogModification.models.length
       ? inlineDialogModification.models
       : inlineDialogModification.model,
-  ).join('、'),
+  ).map(imageModelLabel).join('、'),
 )
 const chatRatio = ref(initialChatConfig.ratio || '9:16')
 const chatResolution = ref(initialChatConfig.resolution || '2K')
@@ -11676,6 +11717,7 @@ onMounted(() => {
   selectedLayerId.value = ''
   selectedLayerIds.value = []
   _mounted.value = true
+  void loadImageModels()
   if (
     chatMode.value === 'agent' ||
     (chatMode.value === 'video' && isPerSecondVideoModel(videoModel.value))
@@ -11690,6 +11732,7 @@ onMounted(() => {
   window.addEventListener('blur', disarmInternalClipboard)
   window.addEventListener('blur', resetTemporaryPanShortcut)
   window.addEventListener('copy', handleNativeCopy, true)
+  document.addEventListener('fullscreenchange', syncCanvasFullscreenState)
   loadTodayGlobalImageCount()
   todayGlobalImageCountTimer = window.setInterval(loadTodayGlobalImageCount, 60_000)
   loadUILayout()
@@ -11820,6 +11863,7 @@ onMounted(() => {
     window.removeEventListener('blur', disarmInternalClipboard)
     window.removeEventListener('blur', resetTemporaryPanShortcut)
     window.removeEventListener('copy', handleNativeCopy, true)
+    document.removeEventListener('fullscreenchange', syncCanvasFullscreenState)
     window.removeEventListener('message', handleCanvasReversePromptBridgeMessage)
     if (_pillObserver) {
       _pillObserver.disconnect()
@@ -11888,11 +11932,36 @@ watch(
 // ============ 主题切换 ============
 import { useTheme } from '../composables/useTheme'
 const { cycle: cycleTheme, isDark } = useTheme()
+const isCanvasFullscreen = ref(Boolean(document.fullscreenElement))
+
 function themeIcon() {
   return isDark() ? '☀' : '☾'
 }
 function themeLabel() {
   return isDark() ? '开灯（切换到浅色）' : '关灯（切换到深色）'
+}
+
+function syncCanvasFullscreenState() {
+  isCanvasFullscreen.value = Boolean(document.fullscreenElement)
+}
+
+function canvasFullscreenLabel() {
+  return isCanvasFullscreen.value ? '退出全屏' : '全屏'
+}
+
+async function toggleCanvasFullscreen() {
+  try {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen()
+    } else {
+      await document.documentElement.requestFullscreen()
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error || '')
+    showCopyPasteToast(`无法切换全屏${message ? `：${message}` : ''}`)
+  } finally {
+    syncCanvasFullscreenState()
+  }
 }
 
 // ========== 我的素材库 ==========
@@ -13717,6 +13786,20 @@ async function loadImageForCropUncached(layer) {
         </button>
         <button
           class="panel-visibility-btn"
+          :class="{ active: isCanvasFullscreen }"
+          type="button"
+          :title="canvasFullscreenLabel()"
+          :aria-label="canvasFullscreenLabel()"
+          :aria-pressed="isCanvasFullscreen"
+          @click="toggleCanvasFullscreen"
+        >
+          <i
+            :class="isCanvasFullscreen ? 'ri-fullscreen-exit-line' : 'ri-fullscreen-line'"
+            aria-hidden="true"
+          ></i>
+        </button>
+        <button
+          class="panel-visibility-btn"
           :class="{ active: getDetectionVisible() }"
           :title="getDetectionVisible() ? '隐藏视觉框' : '显示视觉框'"
           @click="setDetectionVisible(!getDetectionVisible())"
@@ -14744,7 +14827,7 @@ async function loadImageForCropUncached(layer) {
                                   class="ri-check-line"
                                 ></i>
                               </span>
-                              <span>{{ option }}</span>
+                              <span>{{ imageModelLabel(option) }}</span>
                             </button>
                           </div>
                         </div>
@@ -15724,7 +15807,7 @@ async function loadImageForCropUncached(layer) {
                   </footer>
                 </section>
                 <div v-if="message.role === 'assistant' && message.model" class="uc-chat-msg-meta">
-                  {{ message.model }} · {{ message.ratio }} · {{ message.resolution }}
+                  {{ imageModelLabel(message.model) }} · {{ message.ratio }} · {{ message.resolution }}
                   <template v-if="message.videoGeneration && message.duration">
                     · {{ message.duration }}秒
                   </template>
@@ -15984,7 +16067,7 @@ async function loadImageForCropUncached(layer) {
                         <span class="uc-model-option-check" aria-hidden="true">
                           <i v-if="chatModels.includes(model)" class="ri-check-line"></i>
                         </span>
-                        <span>{{ model }}</span>
+                        <span>{{ imageModelLabel(model) }}</span>
                       </button>
                     </div>
                   </div>
@@ -16413,7 +16496,7 @@ async function loadImageForCropUncached(layer) {
               alt=""
               @error="markImageBroken('rec-' + record.id)"
             />
-            <strong>{{ record.model }} · {{ record.ratio }}</strong>
+            <strong>{{ imageModelLabel(record.model) }} · {{ record.ratio }}</strong>
             <p>{{ record.prompt }}</p>
             <small v-if="record.referenceImageUrls?.length">
               参考图 {{ record.referenceImageUrls.length }} 张
@@ -16823,7 +16906,7 @@ async function loadImageForCropUncached(layer) {
                 @error="markImageBroken('rec-' + record.id)"
               />
               <div class="uc-history-card-footer">
-                <span class="uc-history-model">{{ record.model }}</span>
+                <span class="uc-history-model">{{ imageModelLabel(record.model) }}</span>
                 <span class="uc-history-ratio">{{ record.ratio }}</span>
                 <div class="uc-history-actions">
                   <button

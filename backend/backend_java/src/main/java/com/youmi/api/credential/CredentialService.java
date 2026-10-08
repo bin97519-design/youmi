@@ -160,6 +160,29 @@ public class CredentialService {
   }
 
   @Transactional
+  public CredentialDtos.DisableCredentialView disable(long userId, String requestedCredentialId) {
+    String credentialId = required(requestedCredentialId, "凭证 ID", 64);
+    if (!credentialId.matches("[A-Za-z0-9_-]{1,64}")) {
+      throw new ApiException(400, "凭证 ID 无效");
+    }
+
+    CredentialRepository.OwnedCredentialRow credential = repository
+        .findOwnedCredentialForUpdate(userId, credentialId)
+        .orElseThrow(() -> new ApiException(404, "凭证不存在或已删除"));
+    if ("DISABLED".equals(credential.status()) && credential.disabledAt() != null) {
+      return disabledView(credentialId, credential.disabledAt());
+    }
+
+    LocalDateTime disabledAt = utcNow();
+    repository.invalidateActiveLeasesForCredential(
+        userId, credentialId, disabledAt, "credential disabled by user");
+    repository.disableCredential(userId, credentialId, disabledAt);
+    repository.audit(userId, credential.sourceDeviceId(), credentialId,
+        "CREDENTIAL_DISABLED_BY_USER", "credential=" + mask(credentialId));
+    return disabledView(credentialId, disabledAt);
+  }
+
+  @Transactional
   public CredentialDtos.CredentialLeaseView lease(
       long userId, CredentialDtos.LeaseCredentialRequest request) {
     if (request == null) throw new ApiException(400, "凭证租用请求无效");
@@ -299,6 +322,12 @@ public class CredentialService {
       CredentialRepository.LeaseRow lease) {
     return new CredentialDtos.CredentialLeaseStatusView(
         lease.id(), lease.status(), lease.heartbeatAt().toString(), lease.expiresAt().toString());
+  }
+
+  private CredentialDtos.DisableCredentialView disabledView(
+      String credentialId, LocalDateTime disabledAt) {
+    return new CredentialDtos.DisableCredentialView(
+        credentialId, "DISABLED", false, disabledAt.toString());
   }
 
   private boolean isDeviceOnline(CredentialRepository.LeaseRow lease) {

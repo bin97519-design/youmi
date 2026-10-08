@@ -26,6 +26,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -40,12 +41,17 @@ public class ImageGenerationClient {
   private static final String PROVIDER_ANNES = "agnes";
   private static final String PROVIDER_WAVESPEED = "wavespeed";
   private static final String PROVIDER_TEAMOROUTER = "teamorouter";
+  private static final String PROVIDER_MODEL_API = "model-api";
+  private static final String MODEL_API_BANANA_PRO_REQUEST_MODEL = "banana-pro-api";
+  private static final String MODEL_API_GPT_IMAGE_25_SUNBURST_REQUEST_MODEL =
+      "gpt-image2.5-sunburst-api";
   private static final String GETTOKEN_TASK_PREFIX = PROVIDER_GETTOKEN + ":";
   private static final String LK888_TASK_PREFIX = PROVIDER_LK888 + ":";
   private static final String PROXY_TASK_PREFIX = PROVIDER_PROXY + ":";
   private static final String AGNES_TASK_PREFIX = PROVIDER_ANNES + ":";
   private static final String WAVESPEED_TASK_PREFIX = PROVIDER_WAVESPEED + ":";
   private static final String TEAMOROUTER_TASK_PREFIX = PROVIDER_TEAMOROUTER + ":";
+  private static final String MODEL_API_TASK_PREFIX = PROVIDER_MODEL_API + ":";
   private static final String APIMART_DIRECT_TASK_PREFIX = "apimart-direct:";
   private static final long PROVIDER_TIMEOUT_MS = 180_000L; // 3 分钟超时阈值（自任务创建起算）
   private static final String BROWSER_USER_AGENT =
@@ -64,6 +70,7 @@ public class ImageGenerationClient {
   // 下列依赖为字段注入（required=false）：测试构造时可为 null，运行时由 Spring 注入。
   @Autowired(required = false)
   private JdbcTemplate jdbcTemplate;
+  private ModelApiKeyService modelApiKeyService;
   // 异步持久化去重：标记正在持久化的复合 taskId（其值 = ym_image_task.task_id）
   private final ConcurrentHashMap<String, Boolean> persistingTaskIds = new ConcurrentHashMap<>();
   private final ThreadLocal<Long> requestUserId = new ThreadLocal<>();
@@ -91,6 +98,11 @@ public class ImageGenerationClient {
 
   ImageGenerationClient(ObjectMapper objectMapper, ImageGenerationProperties properties) {
     this(objectMapper, properties, null);
+  }
+
+  @Autowired(required = false)
+  void setModelApiKeyService(ModelApiKeyService modelApiKeyService) {
+    this.modelApiKeyService = modelApiKeyService;
   }
 
   /** 构建持久化专用线程池（有界，避免无限制创建线程） */
@@ -133,7 +145,8 @@ public class ImageGenerationClient {
   public ImageGenerationDtos.StatusResponse status() {
     boolean configured = properties.isConfigured() || properties.isGetTokenConfigured()
         || properties.isLk888Configured() || isProxyConfigured() || properties.isAgnesConfigured()
-        || properties.isWaveSpeedConfigured() || properties.isTeamorouterConfigured();
+        || properties.isWaveSpeedConfigured() || properties.isTeamorouterConfigured()
+        || (modelApiKeyService != null && modelApiKeyService.hasAnyEnabled());
     return new ImageGenerationDtos.StatusResponse(
         configured,
         properties.normalizedBaseUrl(),
@@ -142,7 +155,8 @@ public class ImageGenerationClient {
         properties.getModel(),
         properties.getDefaultSize(),
         properties.getDefaultResolution(),
-        properties.getModelAliases());
+        properties.getModelAliases(),
+        modelApiKeyService == null ? List.of() : modelApiKeyService.enabledModels());
   }
 
   /** 中转站模式：baseUrl 指向代理服务器且有 generation-path=/api/images/jobs */
@@ -173,6 +187,9 @@ public class ImageGenerationClient {
     }
     request = ImagePromptPresets.expand(request);
 
+    Optional<ModelApiKeyService.ResolvedModelApiKey> modelCredential =
+        resolveModelApiCredential(request.model());
+
     if (!properties.isConfigured()
         && !properties.isApimartDirectConfigured()
         && !properties.isGetTokenConfigured()
@@ -180,6 +197,7 @@ public class ImageGenerationClient {
         && !properties.isAgnesConfigured()
         && !properties.isWaveSpeedConfigured()
         && !properties.isTeamorouterConfigured()
+        && modelCredential.isEmpty()
         && !isProxyConfigured()) {
       throw new ApiException(400, "Image generation api key is not configured");
     }
@@ -192,8 +210,12 @@ public class ImageGenerationClient {
       return createWaveSpeedMultiAngleTask(request);
     }
 
-    // Keep GPT Image 2.5 models on their dedicated TeamoRouter route. This must run
-    // before the generic gpt-image proxy matcher below.
+    // Database credentials are model-specific and take precedence over global provider keys.
+    if (modelCredential.isPresent()) {
+      return createModelApiTask(request, modelCredential.get().model(), modelCredential.get());
+    }
+
+    // Sunburst uses the dedicated TeamoRouter Images API route.
     if (properties.isTeamorouterModel(resolvedModel)) {
       if (!properties.isTeamorouterConfigured()) {
         throw new ApiException(400, "TeamoRouter image api key is not configured");
@@ -1020,6 +1042,147 @@ public class ImageGenerationClient {
         root);
   }
 
+  private ImageGenerationDtos.CreateTaskResponse createModelApiTask(
+      ImageGenerationDtos.CreateTaskRequest request,
+      String resolvedModel,
+      ModelApiKeyService.ResolvedModelApiKey credential) throws Exception {
+    String upstreamModel = normalizeModelApiUpstreamModel(resolvedModel);
+    String aspectRatio = normalizeModelApiAspectRatio(request.size(), request.ratio());
+    String resolution = properties.normalizeResolution(upstreamModel, request.resolution());
+    int count = request.requestedCount();
+    List<String> imageUrls = request.normalizedImageUrls();
+    if (imageUrls.size() > 14) imageUrls = imageUrls.subList(0, 14);
+
+    List<ImageGenerationDtos.TaskRef> tasks = new ArrayList<>();
+    ArrayNode rawResponses = objectMapper.createArrayNode();
+    for (int index = 0; index < count; index++) {
+      Map<String, Object> params = new LinkedHashMap<>();
+      if (isTtImage25Model(upstreamModel)) {
+        params.put("version", isModelApiSunburstRequest(request.model()) ? "sunburst" : "flare");
+        params.put("aspect_ratio", aspectRatio);
+        params.put("resolution", resolution);
+        params.put("quality", "high");
+        params.put("background", "opaque");
+      } else if (isBananaProModel(upstreamModel)) {
+        params.put("aspectRatio", aspectRatio);
+        params.put("imageSize", resolution);
+        params.put("n", 1);
+      } else {
+        params.put("aspectRatio", aspectRatio);
+        params.put("imageSize", resolution);
+        params.put("web_search", true);
+        params.put("thinkingLevel", "minimal");
+      }
+      if (!imageUrls.isEmpty()) params.put("images", imageUrls);
+
+      Map<String, Object> body = new LinkedHashMap<>();
+      body.put("model", upstreamModel);
+      body.put("prompt", request.prompt().trim());
+      body.put("params", params);
+      putIfPresent(body, "notify_url", request.webhookUrl());
+
+      JsonNode root = sendModelApiPost(credential, body);
+      rawResponses.add(root);
+      List<ImageGenerationDtos.TaskRef> created = extractModelApiTasks(root);
+      if (created.isEmpty()) {
+        throw new ApiException(502, modelApiCreateError(credential.provider(), root));
+      }
+      for (ImageGenerationDtos.TaskRef task : created) {
+        tasks.add(new ImageGenerationDtos.TaskRef(
+            modelApiTaskId(credential.id(), task.taskId()),
+            task.status() == null || task.status().isBlank() ? "submitted" : task.status()));
+      }
+    }
+
+    return new ImageGenerationDtos.CreateTaskResponse(
+        credential.provider(),
+        request.model(),
+        upstreamModel,
+        aspectRatio,
+        resolution,
+        count,
+        tasks,
+        rawResponses);
+  }
+
+  private Optional<ModelApiKeyService.ResolvedModelApiKey> resolveModelApiCredential(
+      String requestedModel) {
+    if (modelApiKeyService == null || requestedModel == null) return Optional.empty();
+    String normalized = requestedModel.trim();
+    if (normalized.equalsIgnoreCase(MODEL_API_BANANA_PRO_REQUEST_MODEL)) {
+      return modelApiKeyService.resolve("banana-pro");
+    }
+    if (normalized.equalsIgnoreCase(MODEL_API_GPT_IMAGE_25_SUNBURST_REQUEST_MODEL)) {
+      return modelApiKeyService.resolve("GPT-image2.5");
+    }
+    // Keep the original banana-pro option on its existing GetToken/LK888 route.
+    if (normalized.equalsIgnoreCase("banana-pro")) return Optional.empty();
+    return modelApiKeyService.resolve(normalized);
+  }
+
+  private String normalizeModelApiUpstreamModel(String model) {
+    if (model == null) return "";
+    String trimmed = model.trim();
+    if (trimmed.equalsIgnoreCase("GPT-image2.5")) return "tt-image-2.5";
+    return trimmed;
+  }
+
+  private boolean isTtImage25Model(String model) {
+    if (model == null) return false;
+    String normalized = model.trim().toLowerCase();
+    return normalized.equals("tt-image-2.5") || normalized.equals("gpt-image-2.5");
+  }
+
+  private boolean isModelApiSunburstRequest(String model) {
+    return model != null
+        && model.trim().equalsIgnoreCase(MODEL_API_GPT_IMAGE_25_SUNBURST_REQUEST_MODEL);
+  }
+
+  private boolean isBananaProModel(String model) {
+    return model != null && model.trim().equalsIgnoreCase("banana-pro");
+  }
+
+  private String modelApiCreateError(String provider, JsonNode root) {
+    String message = firstNonBlank(
+        text(root, "msg"),
+        text(root, "message"),
+        text(root, "error"),
+        text(root.path("data"), "msg"),
+        text(root.path("data"), "message"),
+        text(root.path("data"), "error"));
+    if (!message.isBlank()) {
+      return provider + " create task failed: " + message;
+    }
+    return provider + " did not return task_id: " + compact(root == null ? "" : root.toString());
+  }
+
+  private String normalizeModelApiAspectRatio(String requestedSize, String requestedRatio) {
+    String value = requestedSize == null || requestedSize.isBlank() ? requestedRatio : requestedSize;
+    if (value == null || value.isBlank()) return "auto";
+    String normalized = value.trim().toLowerCase();
+    return normalized.contains("智能") || normalized.equals("source") ? "auto" : normalized;
+  }
+
+  private List<ImageGenerationDtos.TaskRef> extractModelApiTasks(JsonNode root) {
+    List<ImageGenerationDtos.TaskRef> tasks = extractTasks(root);
+    if (!tasks.isEmpty()) return tasks;
+    JsonNode data = root.path("data");
+    JsonNode ids = data.path("任务ids");
+    if (!ids.isArray()) ids = data.path("task_ids");
+    if (!ids.isArray()) return tasks;
+    String status = firstNonBlank(text(data, "status"), text(root, "status"), "submitted");
+    for (JsonNode id : ids) {
+      if (id.isValueNode() && !id.asText().isBlank()) {
+        tasks.add(new ImageGenerationDtos.TaskRef(id.asText(), status));
+      }
+    }
+    return tasks;
+  }
+
+  private String modelApiTaskId(long credentialId, String upstreamTaskId) {
+    return MODEL_API_TASK_PREFIX + credentialId + ":" + upstreamTaskId;
+  }
+
   public ImageGenerationDtos.TaskStatusResponse getTask(String taskId) throws Exception {
     if (taskId == null || taskId.isBlank()) {
       throw new ApiException(400, "taskId is required");
@@ -1268,6 +1431,9 @@ public class ImageGenerationClient {
   /** 纯查询（不含故障转移逻辑）：根据 taskId 前缀分发到各 provider 查询实现 */
   private ImageGenerationDtos.TaskStatusResponse getTaskInternal(String taskId) throws Exception {
     String cleanTaskId = taskId.trim();
+    if (cleanTaskId.startsWith(MODEL_API_TASK_PREFIX)) {
+      return getModelApiTask(cleanTaskId);
+    }
     if (cleanTaskId.startsWith(TEAMOROUTER_TASK_PREFIX)) {
       return getTeamorouterTask(cleanTaskId);
     }
@@ -1508,6 +1674,85 @@ public class ImageGenerationClient {
         root);
   }
 
+  private ImageGenerationDtos.TaskStatusResponse getModelApiTask(String taskId) throws Exception {
+    if (modelApiKeyService == null) {
+      throw new ApiException(503, "模型 API Key 服务未启用");
+    }
+    String encoded = taskId.substring(MODEL_API_TASK_PREFIX.length());
+    int separator = encoded.indexOf(':');
+    if (separator <= 0 || separator >= encoded.length() - 1) {
+      throw new ApiException(400, "Invalid model API task id");
+    }
+    long credentialId;
+    try {
+      credentialId = Long.parseLong(encoded.substring(0, separator));
+    } catch (NumberFormatException error) {
+      throw new ApiException(400, "Invalid model API credential id");
+    }
+    String upstreamTaskId = encoded.substring(separator + 1);
+    ModelApiKeyService.ResolvedModelApiKey credential =
+        modelApiKeyService.resolveById(credentialId);
+    String endpoint = credential.taskEndpoint()
+        + (credential.taskEndpoint().contains("?") ? "&" : "?")
+        + "task_id=" + encode(upstreamTaskId);
+    JsonNode root = sendModelApiGet(credential, endpoint);
+    JsonNode data = root.path("data").isObject() ? root.path("data") : root;
+    String state = firstNonBlank(
+        text(data, "state"), text(root, "state"), text(data, "status"),
+        text(root, "status"), "unknown").toLowerCase();
+    boolean isFinal = data.path("is_final").asBoolean(root.path("is_final").asBoolean(false));
+    Integer progress = intValue(data, "progress");
+    if (progress == null) progress = intValue(root, "progress");
+    String error = firstNonBlank(
+        text(data, "error"),
+        data.path("error").isObject() ? text(data.path("error"), "message") : "",
+        text(root, "error"),
+        root.path("error").isObject() ? text(root.path("error"), "message") : "",
+        text(root, "message"));
+
+    List<String> imageUrls = new ArrayList<>();
+    collectImageUrls(data.path("result_url"), imageUrls);
+    collectImageUrls(data.path("result"), imageUrls);
+    collectImageUrls(data.path("output"), imageUrls);
+    if (data != root) {
+      collectImageUrls(root.path("result_url"), imageUrls);
+      collectImageUrls(root.path("result"), imageUrls);
+    }
+
+    boolean succeeded = state.equals("success") || isDoneStatus(state);
+    boolean failed = state.equals("failed") || state.equals("error")
+        || state.equals("cancelled") || state.equals("canceled");
+    String persistStatus = null;
+    if ((isFinal || succeeded) && !imageUrls.isEmpty()) {
+      if (properties.isPersistGeneratedImages()) {
+        PollResult result = decidePollResponse(taskId, imageUrls);
+        imageUrls = result.imageUrls();
+        state = result.status();
+        persistStatus = result.persistStatus();
+      } else {
+        state = "completed";
+      }
+      if (progress == null) progress = 100;
+    } else if (isFinal && failed) {
+      state = "failed";
+      if (error.isBlank()) error = credential.provider() + " image generation failed";
+    } else if (state.equals("pending") || state.equals("queued")) {
+      state = "submitted";
+    } else if (state.equals("running")) {
+      state = "processing";
+    }
+
+    return new ImageGenerationDtos.TaskStatusResponse(
+        credential.provider(),
+        taskId,
+        state,
+        progress,
+        imageUrls,
+        persistStatus,
+        error.isBlank() ? null : error,
+        root);
+  }
+
   /** GetToken 会同时返回 previewUrl 与 results；previewUrl 只是预览图，不能计入生成结果。 */
   private void collectGetTokenResultUrls(JsonNode root, List<String> imageUrls) {
     JsonNode results = root.path("results");
@@ -1694,6 +1939,30 @@ public class ImageGenerationClient {
         .GET()
         .build();
     return send(request, "LK888");
+  }
+
+  private JsonNode sendModelApiPost(
+      ModelApiKeyService.ResolvedModelApiKey credential,
+      Map<String, Object> body) throws Exception {
+    HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create(credential.generationEndpoint()))
+        .timeout(Duration.ofSeconds(Math.max(5, properties.getTimeoutSeconds())))
+        .header("Authorization", "Bearer " + credential.apiKey())
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
+        .build();
+    return send(request, credential.provider());
+  }
+
+  private JsonNode sendModelApiGet(
+      ModelApiKeyService.ResolvedModelApiKey credential, String endpoint) throws Exception {
+    HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create(endpoint))
+        .timeout(Duration.ofSeconds(Math.max(5, properties.getTimeoutSeconds())))
+        .header("Authorization", "Bearer " + credential.apiKey())
+        .GET()
+        .build();
+    return send(request, credential.provider());
   }
 
   private JsonNode sendProxyPost(String endpoint, Map<String, Object> body) throws Exception {
@@ -2078,6 +2347,7 @@ public class ImageGenerationClient {
     else if (taskId.startsWith(AGNES_TASK_PREFIX)) provider = PROVIDER_ANNES;
     else if (taskId.startsWith(TEAMOROUTER_TASK_PREFIX)) provider = PROVIDER_TEAMOROUTER;
     else if (taskId.startsWith(WAVESPEED_TASK_PREFIX)) provider = PROVIDER_WAVESPEED;
+    else if (taskId.startsWith(MODEL_API_TASK_PREFIX)) provider = PROVIDER_MODEL_API;
 
     JsonNode raw = objectMapper.createObjectNode()
         .put("source", "persisted_oss")

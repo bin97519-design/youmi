@@ -19,7 +19,7 @@ public class CanvasAgentService {
   private static final Logger log = LoggerFactory.getLogger(CanvasAgentService.class);
   private static final Set<String> ALLOWED_MODELS = Set.of(
       "banana2", "banana-pro", "gpt-image-2", "gpt-image-2.5-sunburst",
-      "gpt-image-2.5-flare", "agnes-image-2.1-flash");
+      "agnes-image-2.1-flash");
   private static final Set<String> ALLOWED_RATIOS = Set.of(
       "auto", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9");
   private static final Set<String> ALLOWED_RESOLUTIONS = Set.of("1K", "2K", "4K");

@@ -88,6 +88,16 @@ public class MiValueRepository {
         settledPrice, logId);
   }
 
+  /** 使用供应商成功响应中的实际成本修正消费流水，允许覆盖创建时的预估价格。 */
+  public int settleActualByTaskId(String taskId, int settledPrice) {
+    return jdbcTemplate.update(
+        "UPDATE ym_mi_value_log"
+            + " SET price = ?, before_balance = 0, after_balance = 0, status = 'SUCCESS',"
+            + " updated_at = CURRENT_TIMESTAMP"
+            + " WHERE task_id = ? AND status IN ('PENDING', 'SUCCESS')",
+        settledPrice, taskId);
+  }
+
   /** Total successful consumption for a user. Failed and rolled-back tasks are excluded. */
   public int getConsumedMi(Long userId) {
     Integer total = jdbcTemplate.queryForObject(

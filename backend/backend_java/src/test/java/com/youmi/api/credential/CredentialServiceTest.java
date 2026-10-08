@@ -18,6 +18,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Base64;
+import java.util.List;
 import javax.crypto.Cipher;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.OAEPParameterSpec;
@@ -69,6 +70,8 @@ class CredentialServiceTest {
         signature(device.deviceToken(), NOW.toEpochMilli(), nonce, body), body);
 
     assertEquals("CAPTURED", first.status());
+    assertEquals(device.deviceId(), first.deviceId());
+    assertEquals("测试浏览器", first.deviceName());
     assertEquals("ONLINE", first.deviceStatus());
     assertTrue(first.available());
     assertEquals(1L, first.credentialVersion());
@@ -129,6 +132,33 @@ class CredentialServiceTest {
     assertEquals("CAPTURED", restored.status());
     assertEquals("ONLINE", restored.deviceStatus());
     assertTrue(restored.available());
+  }
+
+  @Test
+  void listsTheSourceDeviceForEachCredential() throws Exception {
+    CredentialDtos.PairingCodeView firstPairing = service.createPairingCode(42L, "办公室电脑-A");
+    CredentialDtos.PairDeviceView firstDevice = service.pair(new CredentialDtos.PairDeviceRequest(
+        firstPairing.pairingCode(), "device-a", "办公室电脑-A"));
+    CredentialDtos.PairingCodeView secondPairing = service.createPairingCode(42L, "仓库电脑-B");
+    CredentialDtos.PairDeviceView secondDevice = service.pair(new CredentialDtos.PairDeviceRequest(
+        secondPairing.pairingCode(), "device-b", "仓库电脑-B"));
+    String body = uploadBody();
+
+    service.upload(firstDevice.deviceToken(), String.valueOf(NOW.toEpochMilli()),
+        "nonce_device_a_upload_12",
+        signature(firstDevice.deviceToken(), NOW.toEpochMilli(),
+            "nonce_device_a_upload_12", body), body);
+    service.upload(secondDevice.deviceToken(), String.valueOf(NOW.toEpochMilli()),
+        "nonce_device_b_upload_12",
+        signature(secondDevice.deviceToken(), NOW.toEpochMilli(),
+            "nonce_device_b_upload_12", body), body);
+
+    List<CredentialDtos.CredentialView> credentials = service.listForUser(42L);
+    assertEquals(2, credentials.size());
+    assertTrue(credentials.stream().anyMatch(item -> firstDevice.deviceId().equals(item.deviceId())
+        && "办公室电脑-A".equals(item.deviceName())));
+    assertTrue(credentials.stream().anyMatch(item -> secondDevice.deviceId().equals(item.deviceId())
+        && "仓库电脑-B".equals(item.deviceName())));
   }
 
   @Test
@@ -211,6 +241,7 @@ class CredentialServiceTest {
         "sycm", "shop-1", null, "sycm-report", "task-1", "run-1", 120);
     CredentialDtos.CredentialLeaseView lease = service.lease(42L, request);
     assertEquals("secret-cookie-value", lease.session().path("cookies").get(0).path("value").asText());
+    assertFalse(service.listForUser(42L).get(0).available());
     assertEquals(
         LocalDateTime.ofInstant(NOW.plusSeconds(120), ZoneOffset.UTC).toString(),
         lease.expiresAt());
@@ -229,6 +260,7 @@ class CredentialServiceTest {
 
     CredentialDtos.CredentialLeaseStatusView released = service.releaseLease(42L, lease.leaseId());
     assertEquals("RELEASED", released.status());
+    assertTrue(service.listForUser(42L).get(0).available());
     CredentialDtos.CredentialLeaseView next = service.lease(
         42L, new CredentialDtos.LeaseCredentialRequest(
             "sycm", "shop-1", "account-1", "sycm-report", "task-2", "run-2", 120));
@@ -289,6 +321,98 @@ class CredentialServiceTest {
         42L, new CredentialDtos.LeaseCredentialRequest(
             "sycm", "shop-1", null, "sycm-report", "task-4", "run-4", 120)));
     assertEquals(409, offline.getCode());
+  }
+
+  @Test
+  void disablesCredentialInvalidatesLeaseAndIsIdempotent() throws Exception {
+    CredentialDtos.PairingCodeView pairing = service.createPairingCode(42L, "停用测试浏览器");
+    CredentialDtos.PairDeviceView device = service.pair(new CredentialDtos.PairDeviceRequest(
+        pairing.pairingCode(), "disable-instance", "办公室电脑-A"));
+    String body = uploadBody();
+    String nonce = "nonce_disable_upload_123";
+    CredentialDtos.CredentialView uploaded = service.upload(
+        device.deviceToken(), String.valueOf(NOW.toEpochMilli()), nonce,
+        signature(device.deviceToken(), NOW.toEpochMilli(), nonce, body), body);
+    CredentialDtos.CredentialLeaseView lease = service.lease(
+        42L, new CredentialDtos.LeaseCredentialRequest(
+            "sycm", "shop-1", null, "sycm-report", "task-disable", "run-disable", 120));
+
+    CredentialDtos.DisableCredentialView disabled = service.disable(42L, uploaded.credentialId());
+    assertEquals(uploaded.credentialId(), disabled.credentialId());
+    assertEquals("DISABLED", disabled.status());
+    assertFalse(disabled.available());
+    assertEquals(LocalDateTime.ofInstant(NOW, ZoneOffset.UTC).toString(), disabled.disabledAt());
+    assertEquals("INVALIDATED", jdbcTemplate.queryForObject(
+        "SELECT status FROM ym_session_credential_lease WHERE id = ?", String.class,
+        lease.leaseId()));
+
+    CredentialDtos.CredentialView listed = service.listForUser(42L).get(0);
+    assertEquals("DISABLED", listed.status());
+    assertFalse(listed.available());
+    assertEquals("办公室电脑-A", listed.deviceName());
+
+    CredentialDtos.DisableCredentialView repeated = service.disable(42L, uploaded.credentialId());
+    assertEquals(disabled.disabledAt(), repeated.disabledAt());
+    assertEquals(1, jdbcTemplate.queryForObject("""
+        SELECT COUNT(*) FROM ym_credential_audit_log
+        WHERE credential_id = ? AND action = 'CREDENTIAL_DISABLED_BY_USER'
+        """, Integer.class, uploaded.credentialId()));
+
+    ApiException heartbeat = assertThrows(ApiException.class, () -> service.heartbeatLease(
+        42L, lease.leaseId(), new CredentialDtos.ExtendLeaseRequest(120)));
+    assertEquals(409, heartbeat.getCode());
+    ApiException unavailable = assertThrows(ApiException.class, () -> service.lease(
+        42L, new CredentialDtos.LeaseCredentialRequest(
+            "sycm", "shop-1", null, "sycm-report", "task-next", "run-next", 120)));
+    assertEquals(409, unavailable.getCode());
+    ApiException foreignUser = assertThrows(
+        ApiException.class, () -> service.disable(99L, uploaded.credentialId()));
+    assertEquals(404, foreignUser.getCode());
+  }
+
+  @Test
+  void disablesOfflineCredentialWithoutUnbindingDevice() throws Exception {
+    CredentialDtos.PairingCodeView pairing = service.createPairingCode(42L, "离线停用测试");
+    CredentialDtos.PairDeviceView device = service.pair(new CredentialDtos.PairDeviceRequest(
+        pairing.pairingCode(), "offline-disable-instance", "仓库电脑-B"));
+    String body = uploadBody();
+    String nonce = "nonce_offline_disable_12";
+    CredentialDtos.CredentialView uploaded = service.upload(
+        device.deviceToken(), String.valueOf(NOW.toEpochMilli()), nonce,
+        signature(device.deviceToken(), NOW.toEpochMilli(), nonce, body), body);
+
+    CredentialService offlineService = new CredentialService(
+        repository, transportCrypto, vault, new SycmCredentialPolicy(objectMapper),
+        new WdtCredentialPolicy(objectMapper, Clock.fixed(NOW.plusSeconds(301), ZoneOffset.UTC)),
+        objectMapper, Clock.fixed(NOW.plusSeconds(301), ZoneOffset.UTC));
+    CredentialDtos.DisableCredentialView disabled =
+        offlineService.disable(42L, uploaded.credentialId());
+
+    assertEquals("DISABLED", disabled.status());
+    assertEquals("ACTIVE", jdbcTemplate.queryForObject(
+        "SELECT status FROM ym_credential_device WHERE id = ?", String.class, device.deviceId()));
+  }
+
+  @Test
+  void aNewUploadRestoresADisabledCredential() throws Exception {
+    CredentialDtos.PairingCodeView pairing = service.createPairingCode(42L, "重新同步测试");
+    CredentialDtos.PairDeviceView device = service.pair(new CredentialDtos.PairDeviceRequest(
+        pairing.pairingCode(), "resync-instance", "重新同步测试"));
+    String body = uploadBody();
+    CredentialDtos.CredentialView uploaded = service.upload(
+        device.deviceToken(), String.valueOf(NOW.toEpochMilli()), "nonce_resync_upload_123",
+        signature(device.deviceToken(), NOW.toEpochMilli(), "nonce_resync_upload_123", body), body);
+    service.disable(42L, uploaded.credentialId());
+
+    CredentialDtos.CredentialView restored = service.upload(
+        device.deviceToken(), String.valueOf(NOW.toEpochMilli()), "nonce_resync_upload_456",
+        signature(device.deviceToken(), NOW.toEpochMilli(), "nonce_resync_upload_456", body), body);
+
+    assertEquals("CAPTURED", restored.status());
+    assertTrue(restored.available());
+    assertEquals(null, jdbcTemplate.queryForObject(
+        "SELECT disabled_at FROM ym_session_credential WHERE id = ?",
+        LocalDateTime.class, uploaded.credentialId()));
   }
 
   private String uploadBody() throws Exception {
@@ -410,6 +534,7 @@ class CredentialServiceTest {
           source_device_id VARCHAR(64) NOT NULL, encrypted_payload CLOB NOT NULL, encrypted_dek CLOB NOT NULL,
           encryption_key_version VARCHAR(32) NOT NULL, credential_version BIGINT NOT NULL,
           environment_json CLOB, status VARCHAR(32) NOT NULL, max_concurrency INT NOT NULL,
+          disabled_at TIMESTAMP,
           captured_at TIMESTAMP NOT NULL, expires_at TIMESTAMP, last_validated_at TIMESTAMP,
           last_used_at TIMESTAMP, last_error_code VARCHAR(64), last_error_message_masked VARCHAR(512),
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

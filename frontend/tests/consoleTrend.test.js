@@ -1,6 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildDailyTopSeries, buildTotalTrendSeries } from '../src/utils/consoleTrend.js'
+import {
+  buildFixedTrendSeries,
+  buildTopEntityTrendSeries,
+  buildTotalTrendSeries,
+} from '../src/utils/consoleTrend.js'
 
 function trend(key, dailyImages) {
   return {
@@ -10,55 +14,42 @@ function trend(key, dailyImages) {
   }
 }
 
-test('builds five rank lines whose members can change every day', () => {
-  const rows = [
-    trend('A', { '2026-07-29': 10, '2026-07-30': 1 }),
-    trend('B', { '2026-07-29': 9, '2026-07-30': 9 }),
-    trend('C', { '2026-07-29': 8, '2026-07-30': 8 }),
-    trend('D', { '2026-07-29': 7, '2026-07-30': 7 }),
-    trend('E', { '2026-07-29': 6, '2026-07-30': 6 }),
-    trend('F', { '2026-07-29': 1, '2026-07-30': 9 }),
-  ]
-
-  const result = buildDailyTopSeries(rows, ['2026-07-29', '2026-07-30'])
-
-  assert.equal(result.length, 5)
-  assert.equal(result[0].label, '第 1 名')
-  assert.deepEqual(
-    result[0].daily.map((point) => point.entityLabel),
-    ['A', 'B'],
-  )
-  assert.deepEqual(
-    result[1].daily.map((point) => point.entityLabel),
-    ['B', 'F'],
-  )
-  assert.equal(result[0].todayLabel, 'B')
-  assert.equal(result[0].todayValue, 9)
-  assert.equal(result[0].dailyTopOnly, true)
-})
-
-test('does not add zero-task rows to a daily ranking', () => {
-  const result = buildDailyTopSeries(
-    [trend('A', { '2026-07-30': 3 }), trend('B', { '2026-07-30': 0 })],
-    ['2026-07-30'],
+test('builds a fixed user line and fills missing days with zero', () => {
+  const result = buildFixedTrendSeries(
+    [trend('王慕怡', { '2026-09-19': 37 })],
+    ['2026-09-19', '2026-09-20', '2026-09-21'],
   )
 
   assert.equal(result.length, 1)
-  assert.equal(result[0].daily[0].entityLabel, 'A')
-  assert.equal(result[0].daily[0].value, 3)
+  assert.equal(result[0].label, '王慕怡')
+  assert.deepEqual(
+    result[0].daily.map((point) => point.images),
+    [37, 0, 0],
+  )
+  assert.equal(result[0].dailyTopOnly, undefined)
 })
 
-test('ranks by generated image count instead of submitted task count', () => {
-  const result = buildDailyTopSeries(
+test('keeps top entities fixed across the whole trend', () => {
+  const result = buildTopEntityTrendSeries(
     [
-      { key: 'A', label: 'A', daily: [{ day: '2026-07-30', tasks: 10, images: 1 }] },
-      { key: 'B', label: 'B', daily: [{ day: '2026-07-30', tasks: 2, images: 4 }] },
+      trend('A', { '2026-09-18': 20, '2026-09-19': 2 }),
+      trend('B', { '2026-09-18': 1, '2026-09-19': 12 }),
+      trend('C', { '2026-09-18': 8, '2026-09-19': 9 }),
     ],
-    ['2026-07-30'],
+    ['2026-09-18', '2026-09-19', '2026-09-20'],
+    2,
   )
 
-  assert.equal(result[0].daily[0].entityLabel, 'B')
-  assert.equal(result[0].daily[0].value, 4)
+  assert.deepEqual(
+    result.map((series) => series.label),
+    ['B', 'C'],
+  )
+  assert.deepEqual(
+    result[0].daily.map((point) => point.images),
+    [1, 12, 0],
+  )
+  assert.equal(result[0].rankingDay, '2026-09-19')
+  assert.equal(result[0].dailyTopOnly, undefined)
 })
 
 test('builds total and failed task lines from real daily metrics', () => {

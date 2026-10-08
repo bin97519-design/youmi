@@ -87,6 +87,14 @@ class MiValueServiceTest {
   }
 
   @Test
+  @DisplayName("供应商实际成本可以覆盖已成功的预估消费")
+  void settlesActualConsumptionByTaskId() {
+    service.settleActualByTaskId("task-cost", 7);
+
+    verify(repository).settleActualByTaskId("task-cost", 7);
+  }
+
+  @Test
   @DisplayName("余额调账已停用")
   void balanceAdjustmentIsDisabled() {
     assertThrows(UnsupportedOperationException.class,

@@ -26,7 +26,7 @@ function isTmallDetailPage() {
 }
 
 function isYoumiLocalPage() {
-  return ['127.0.0.1', 'localhost'].includes(location.hostname) && ['5173', '5174'].includes(location.port);
+  return ['127.0.0.1', 'localhost'].includes(location.hostname) && location.port === '5173';
 }
 
 function now() {

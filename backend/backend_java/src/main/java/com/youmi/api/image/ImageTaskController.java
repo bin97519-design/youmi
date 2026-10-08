@@ -13,6 +13,7 @@ import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
+import java.util.Optional;
 import java.util.Map;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.HttpHeaders;
@@ -164,13 +165,15 @@ public class ImageTaskController {
       throw new ApiException(404, "Image task not found");
     }
     ImageGenerationDtos.TaskStatusResponse response = imageGenerationClient.getTask(taskId);
+    Optional<ImageTaskLogService.ProviderCost> providerCost = imageTaskLogService.recordStatus(response);
     // 异步轮询到终态：失败则回退米值，成功则确认流水
     if (isTerminalFailed(response.status())) {
       miValueService.rollbackByTaskId(taskId);
+    } else if (providerCost.isPresent()) {
+      miValueService.settleActualByTaskId(taskId, providerCost.get().miCost());
     } else if (isTerminalSuccess(response)) {
       miValueService.commitByTaskId(taskId);
     }
-    imageTaskLogService.recordStatus(response);
     return ApiResponse.ok(response);
   }
 

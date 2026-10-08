@@ -38,14 +38,36 @@ const selectedRatio = ref('智能比例')
 const ratioOptions = ['1:1', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
 const modelOpen = ref(false)
 const selectedModel = ref('gpt-image-2')
-const modelOptions = [
+const RETIRED_IMAGE_MODELS = new Set(['gpt-image-2.5-sunburst', 'agnes-image-2.1-flash'])
+const BUILT_IN_IMAGE_MODELS = [
   'banana2',
   'banana-pro',
+  'banana-2.1',
   'gpt-image-2',
-  'gpt-image-2.5-sunburst',
-  'gpt-image-2.5-flare',
-  'agnes-image-2.1-flash',
 ]
+const modelOptions = ref([...BUILT_IN_IMAGE_MODELS])
+
+async function loadImageModels() {
+  try {
+    const response = await fetch(apiPath('/api/image-tasks/status'), {
+      headers: userStore.authHeaders(),
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || payload?.code !== 0) return
+    const configured = Array.isArray(payload.data?.configuredModels)
+      ? payload.data.configuredModels
+      : []
+    modelOptions.value = [...new Set([...BUILT_IN_IMAGE_MODELS, ...configured])]
+      .map((model) => String(model || '').trim())
+      .filter((model) => model && !RETIRED_IMAGE_MODELS.has(model.toLowerCase()))
+    if (!modelOptions.value.includes(selectedModel.value)) selectedModel.value = modelOptions.value[0]
+    if (!modelOptions.value.includes(detailDraft.value.model)) {
+      detailDraft.value.model = modelOptions.value[0]
+    }
+  } catch {
+    // 保留内置模型，配置接口恢复后重新进入页面即可同步。
+  }
+}
 const qualityOpen = ref(false)
 const selectedQuality = ref('2K')
 const qualityOptions = ['1K', '2K', '4K']
@@ -223,6 +245,7 @@ onMounted(() => {
   document.addEventListener('click', closeAllMenus)
   window.addEventListener('message', handleTmallExtractMessage)
   pingCloneBridge()
+  void loadImageModels()
 })
 
 onBeforeUnmount(() => {
@@ -1791,11 +1814,9 @@ async function submitCloneGenerate() {
               <label class="yh-detail-field">
                 <span>模型</span>
                 <select v-model="detailDraft.model">
-                  <option>gpt-image-2</option>
-                  <option>gpt-image-2.5-sunburst</option>
-                  <option>gpt-image-2.5-flare</option>
-                  <option>banana2</option>
-                  <option>agnes-image-2.1-flash</option>
+                  <option v-for="model in modelOptions" :key="model" :value="model">
+                    {{ model }}
+                  </option>
                 </select>
               </label>
               <label class="yh-detail-field">

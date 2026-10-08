@@ -22,10 +22,8 @@ const props = defineProps({
     default: () => [
       'banana2',
       'banana-pro',
+      'banana-2.1',
       'gpt-image-2',
-      'gpt-image-2.5-sunburst',
-      'gpt-image-2.5-flare',
-      'agnes-image-2.1-flash',
     ],
   },
   ratioOptions: {
@@ -99,6 +97,12 @@ const availableModelOptions = computed(() => {
   const options = props.modelOptions.map((item) => String(item || '').trim()).filter(Boolean)
   return options.length ? options : ['banana2']
 })
+const imageModelLabel = (model) => {
+  if (model === 'banana-pro-api') return '香蕉 Pro'
+  if (String(model).toLowerCase() === 'gpt-image2.5') return 'GPT-image2.5快速'
+  if (model === 'gpt-image2.5-sunburst-api') return 'GPT-image2.5高质'
+  return model
+}
 const normalizedSelectedModels = computed(() => {
   const selected = selectedModels.value.filter((model) =>
     availableModelOptions.value.includes(model),
@@ -108,10 +112,12 @@ const normalizedSelectedModels = computed(() => {
 const selectedModel = computed(() => normalizedSelectedModels.value[0])
 const selectedModelLabel = computed(() =>
   normalizedSelectedModels.value.length > 1
-    ? `${selectedModel.value} +${normalizedSelectedModels.value.length - 1}`
-    : selectedModel.value,
+    ? `${imageModelLabel(selectedModel.value)} +${normalizedSelectedModels.value.length - 1}`
+    : imageModelLabel(selectedModel.value),
 )
-const selectedModelTitle = computed(() => normalizedSelectedModels.value.join('、'))
+const selectedModelTitle = computed(() =>
+  normalizedSelectedModels.value.map(imageModelLabel).join('、'),
+)
 const availableRatioOptions = computed(() => [
   'source',
   ...props.ratioOptions
@@ -142,7 +148,10 @@ const generationSelectConfigs = computed(() => [
     displayValue: selectedModelLabel.value,
     title: selectedModelTitle.value,
     multiple: true,
-    options: availableModelOptions.value.map((value) => ({ value, label: value })),
+    options: availableModelOptions.value.map((value) => ({
+      value,
+      label: imageModelLabel(value),
+    })),
   },
   {
     key: 'ratio',

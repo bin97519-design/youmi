@@ -96,6 +96,16 @@ public class CredentialController {
     return ApiResponse.ok(service.listForUser(user.id()));
   }
 
+  @PostMapping("/session-credentials/{credentialId}/disable")
+  public ApiResponse<CredentialDtos.DisableCredentialView> disable(
+      HttpServletRequest servletRequest,
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @PathVariable String credentialId) {
+    requireSecureTransport(servletRequest);
+    UserAccount user = authService.requireLogin(authorization);
+    return ApiResponse.ok(service.disable(user.id(), credentialId));
+  }
+
   @PostMapping("/session-credential-leases")
   public ApiResponse<CredentialDtos.CredentialLeaseView> lease(
       HttpServletRequest servletRequest,

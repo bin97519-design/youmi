@@ -18,7 +18,8 @@ public class ImageGenerationDtos {
       String defaultModel,
       String defaultSize,
       String defaultResolution,
-      Map<String, String> modelAliases) {}
+      Map<String, String> modelAliases,
+      List<String> configuredModels) {}
 
   public record CreateTaskRequest(
       String prompt,

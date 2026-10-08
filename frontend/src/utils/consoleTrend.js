@@ -33,69 +33,61 @@ export function buildTotalTrendSeries(daily) {
   ]
 }
 
-export function buildDailyTopSeries(rows, days, limit = 5, metric = 'images') {
+export function buildFixedTrendSeries(rows, days, limit = 1, metric = 'images') {
+  const candidates = Array.isArray(rows) ? rows : []
+  const visibleDays = Array.isArray(days) ? days : []
+  const seriesLimit = Math.max(1, Number(limit) || 1)
+
+  return candidates.slice(0, seriesLimit).map((row) => ({
+    ...row,
+    metric,
+    daily: visibleDays.map((day) => {
+      const point = pointForDay(row, day)
+      if (point) return { ...point, day }
+      return {
+        day,
+        tasks: 0,
+        failedTasks: 0,
+        images: 0,
+        miCost: 0,
+        moneyCost: 0,
+        [metric]: 0,
+      }
+    }),
+  }))
+}
+
+export function buildTopEntityTrendSeries(rows, days, limit = 5, metric = 'images') {
   const candidates = Array.isArray(rows) ? rows : []
   const visibleDays = Array.isArray(days) ? days : []
   const topLimit = Math.max(1, Number(limit) || 5)
+  const rankingDay = [...visibleDays]
+    .reverse()
+    .find((day) => candidates.some((row) => metricValue(pointForDay(row, day), metric) > 0))
 
-  const rankings = visibleDays.map((day) =>
-    candidates
-      .map((row) => {
-        const point = pointForDay(row, day)
-        return {
-          row,
-          point,
-          value: metricValue(point, metric),
-        }
-      })
-      .filter((item) => item.value > 0)
-      .sort(
-        (left, right) =>
-          right.value - left.value ||
-          totalMetricValue(right.row, metric) - totalMetricValue(left.row, metric) ||
-          String(left.row?.label || left.row?.key || '').localeCompare(
-            String(right.row?.label || right.row?.key || ''),
-            'zh-CN',
-          ),
-      )
-      .slice(0, topLimit),
-  )
+  if (!rankingDay) return []
 
-  return Array.from({ length: topLimit }, (_, index) => {
-    const rank = index + 1
-    const daily = visibleDays.map((day, dayIndex) => {
-      const ranked = rankings[dayIndex]?.[index]
-      if (!ranked) {
-        return {
-          day,
-          value: null,
-          tasks: 0,
-          images: 0,
-          entityKey: '',
-          entityLabel: '',
-          rank,
-        }
-      }
-      return {
-        ...(ranked.point || {}),
-        day,
-        value: ranked.value,
-        entityKey: String(ranked.row?.key || ''),
-        entityLabel: ranked.row?.label || ranked.row?.key || '',
-        rank,
-      }
-    })
-    const today = daily[daily.length - 1]
+  const rankedRows = candidates
+    .map((row) => ({
+      row,
+      rankingValue: metricValue(pointForDay(row, rankingDay), metric),
+      totalValue: totalMetricValue(row, metric),
+    }))
+    .filter((item) => item.rankingValue > 0)
+    .sort(
+      (left, right) =>
+        right.rankingValue - left.rankingValue ||
+        right.totalValue - left.totalValue ||
+        String(left.row?.label || left.row?.key || '').localeCompare(
+          String(right.row?.label || right.row?.key || ''),
+          'zh-CN',
+        ),
+    )
+    .slice(0, topLimit)
+    .map((item) => item.row)
 
-    return {
-      key: `daily-rank-${rank}`,
-      label: `第 ${rank} 名`,
-      rank,
-      daily,
-      dailyTopOnly: true,
-      todayLabel: today?.entityLabel || '',
-      todayValue: Number(today?.value || 0),
-      totalValue: daily.reduce((sum, point) => sum + Number(point.value || 0), 0),
-    }
-  }).filter((series) => series.daily.some((point) => point.value != null))
+  return buildFixedTrendSeries(rankedRows, visibleDays, topLimit, metric).map((series) => ({
+    ...series,
+    rankingDay,
+  }))
 }

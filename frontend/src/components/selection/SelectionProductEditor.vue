@@ -1,5 +1,11 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
+import SelectionSkuSplitPanel from './SelectionSkuSplitPanel.vue'
+import {
+  syncSelectionSkus,
+  cleanSelectionSkuGroups,
+  selectionSkuImageUrls,
+} from '../../utils/selectionSkuSync'
 import {
   buildSelectionSkuMatrix,
   normalizeSelectionProduct,
@@ -12,15 +18,18 @@ const props = defineProps({
   product: { type: Object, required: true },
   loading: { type: Boolean, default: false },
   saving: { type: Boolean, default: false },
+  splitError: { type: String, default: '' },
 })
 
-const emit = defineEmits(['close', 'save'])
+const emit = defineEmits(['close', 'save', 'split'])
 
 const form = reactive(normalizeSelectionProduct(props.product))
 const assetInputs = reactive({ main: '', portrait: '', detail: '' })
 const editorNotice = ref('')
 const videoSection = ref(null)
 const videoErrors = reactive({})
+const skuSyncError = ref('')
+let skuSyncSnapshot = cleanSelectionSkuGroups(form.skuGroups)
 
 const assetSections = [
   {
@@ -61,9 +70,7 @@ const platformLabels = {
   LOCAL: '自定义',
 }
 
-const skuImages = computed(() =>
-  uniqueUrls(form.skuGroups.flatMap((group) => group.values?.map((value) => value.imageUrl) || [])),
-)
+const skuImages = computed(() => selectionSkuImageUrls(form.skuGroups, form.skus))
 const mainVideos = computed(() => videoUrls(String(form.mainVideoUrls || '').split(/\r?\n/)))
 const detailVideos = computed(() => videoUrls(String(form.detailVideoUrls || '').split(/\r?\n/)))
 const mainVideoCount = computed(() => mainVideos.value.length)
@@ -89,6 +96,8 @@ watch(
   () => props.product,
   (product) => {
     Object.assign(form, normalizeSelectionProduct(product))
+    skuSyncSnapshot = cleanSelectionSkuGroups(form.skuGroups)
+    skuSyncError.value = ''
     Object.assign(assetInputs, { main: '', portrait: '', detail: '' })
     editorNotice.value = ''
     Object.keys(videoErrors).forEach((url) => delete videoErrors[url])
@@ -144,6 +153,7 @@ function addSkuGroup() {
     name: '',
     values: [],
   })
+  syncSkuMatrix()
 }
 
 function addSkuValue(group, groupIndex) {
@@ -153,6 +163,47 @@ function addSkuValue(group, groupIndex) {
     name: '',
     imageUrl: '',
   })
+  syncSkuMatrix()
+}
+
+function removeSkuGroup(index) {
+  form.skuGroups.splice(index, 1)
+  syncSkuMatrix()
+}
+
+function removeSkuValue(group, index) {
+  group.values.splice(index, 1)
+  syncSkuMatrix()
+}
+
+function syncSkuMatrix(event) {
+  if (event?.isComposing || event?.target?.composing) return false
+  try {
+    const result = syncSelectionSkus(
+      form.skuGroups,
+      form.skus,
+      skuSyncSnapshot,
+      buildSelectionSkuMatrix,
+      {
+        price: form.price,
+        originalPrice: form.originalPrice,
+        defaultStock: form.defaultStock,
+      },
+    )
+    form.skus = result.rows
+    skuSyncError.value = result.error
+    if (!result.error) skuSyncSnapshot = result.groups
+    editorNotice.value =
+      result.error ||
+      (result.review
+        ? `已同步 ${form.skus.length} 个组合；${result.review} 个合并组合的差异字段已留空，请核对价格、库存和编码`
+        : `已自动同步 ${form.skus.length} 个 SKU 组合`)
+    return !result.error
+  } catch (error) {
+    skuSyncError.value = error.message
+    editorNotice.value = error.message
+    return false
+  }
 }
 
 function rebuildSkuMatrix() {
@@ -167,11 +218,13 @@ function rebuildSkuMatrix() {
     return
   }
   try {
+    if (!syncSkuMatrix()) return
     form.skus = buildSelectionSkuMatrix(form.skuGroups, form.skus, {
       price: form.price,
       originalPrice: form.originalPrice,
       defaultStock: form.defaultStock,
     })
+    skuSyncSnapshot = cleanSelectionSkuGroups(form.skuGroups)
     editorNotice.value = `已生成 ${form.skus.length} 个 SKU 组合`
   } catch (error) {
     editorNotice.value = error?.message || 'SKU 组合生成失败'
@@ -179,10 +232,12 @@ function rebuildSkuMatrix() {
 }
 
 function submit(afterSave = 'close') {
+  if (props.saving) return
   if (!form.title.trim()) {
     editorNotice.value = '请填写商品标题'
     return
   }
+  if (!syncSkuMatrix()) return
   emit('save', { payload: serializeSelectionProduct(form), afterSave })
 }
 </script>
@@ -213,6 +268,15 @@ function submit(afterSave = 'close') {
 
       <form v-else class="editor-form" @submit.prevent="submit('close')">
         <div class="editor-scroll">
+          <SelectionSkuSplitPanel
+            :key="product.id"
+            :form="form"
+            :product="product"
+            :saving="saving"
+            :error="splitError"
+            :sync-error="skuSyncError"
+            @split="emit('split', $event)"
+          />
           <section class="basic-fields">
             <label>
               <span>来源平台</span>
@@ -475,7 +539,9 @@ function submit(afterSave = 'close') {
             <div class="section-heading">
               <div>
                 <h3>SKU 规格</h3>
-                <p>修改规格后点击“重新生成组合”，已有价格和库存会尽量保留。</p>
+                <p>
+                  修改名称或删除规格会自动同步组合，保留未受影响的价格和库存；新增规格值自动生成对应组合。
+                </p>
               </div>
               <div class="section-actions">
                 <button type="button" @click="rebuildSkuMatrix">
@@ -488,7 +554,7 @@ function submit(afterSave = 'close') {
                 </button>
               </div>
             </div>
-            <div class="sku-groups">
+            <div class="sku-groups" @input="syncSkuMatrix" @change="syncSkuMatrix">
               <div
                 v-for="(group, groupIndex) in form.skuGroups"
                 :key="group.propertyId"
@@ -501,11 +567,7 @@ function submit(afterSave = 'close') {
                     <i class="ri-add-line"></i>
                     规格值
                   </button>
-                  <button
-                    type="button"
-                    title="删除规格组"
-                    @click="form.skuGroups.splice(groupIndex, 1)"
-                  >
+                  <button type="button" title="删除规格组" @click="removeSkuGroup(groupIndex)">
                     <i class="ri-close-line"></i>
                   </button>
                 </div>
@@ -532,7 +594,7 @@ function submit(afterSave = 'close') {
                     <button
                       type="button"
                       title="删除规格值"
-                      @click="group.values.splice(valueIndex, 1)"
+                      @click="removeSkuValue(group, valueIndex)"
                     >
                       <i class="ri-close-line"></i>
                     </button>

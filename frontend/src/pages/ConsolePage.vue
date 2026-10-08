@@ -8,7 +8,11 @@ import { useUserStore } from '../stores/user'
 import { useTheme } from '../composables/useTheme'
 import { apiPath } from '../utils/apiBase'
 import { writeTextToClipboard } from '../utils/clipboard'
-import { buildDailyTopSeries, buildTotalTrendSeries } from '../utils/consoleTrend'
+import {
+  buildFixedTrendSeries,
+  buildTopEntityTrendSeries,
+  buildTotalTrendSeries,
+} from '../utils/consoleTrend'
 import { subscribeImageTaskPersistence } from '../utils/imageTaskSync'
 
 const userStore = useUserStore()
@@ -19,6 +23,7 @@ const saving = ref(false)
 const errorText = ref('')
 const users = ref([])
 const roles = ref([])
+const modelApiKeys = ref([])
 const stats = ref(null)
 const financeRefreshKey = ref(0)
 const elapsedClock = ref(Date.now())
@@ -585,6 +590,7 @@ const tabs = computed(() => {
   if (isAdmin.value) {
     list.push({ key: 'accounts', label: '账号管理', icon: 'ri-user-settings-line' })
     list.push({ key: 'roles', label: '角色管理', icon: 'ri-shield-user-line' })
+    list.push({ key: 'api-keys', label: '模型密钥', icon: 'ri-key-2-line' })
     list.push({ key: 'finance', label: '财务统计', icon: 'ri-funds-line' })
   }
   list.push({ key: 'stats', label: '生图统计', icon: 'ri-bar-chart-box-line' })
@@ -609,6 +615,19 @@ const roleForm = reactive({
   code: '',
   name: '',
   permissionsText: 'image:generate',
+})
+
+const modelApiKeyForm = reactive({
+  id: null,
+  name: 'Banana 2.1 主线路',
+  model: 'banana-2.1',
+  provider: 'youmi888',
+  baseUrl: '',
+  generationPath: '/v1/media/generate',
+  taskPath: '/v1/media/status',
+  apiKey: '',
+  enabled: true,
+  priority: 100,
 })
 
 const roleOptions = computed(() => roles.value.map((role) => role.code))
@@ -687,6 +706,7 @@ async function loadConsole() {
         api('/api/admin/roles').catch(() => []),
         api('/api/admin/shops').catch(() => []),
         api('/api/admin/platforms').catch(() => []),
+        api('/api/admin/model-api-keys').catch(() => modelApiKeys.value),
       )
     }
     const [
@@ -695,6 +715,7 @@ async function loadConsole() {
       roleRows = [],
       shopRows = [],
       platformRows = [],
+      modelApiKeyRows = [],
     ] = await Promise.all(requests)
     stats.value = normalizeImageStats(imageStats)
     if (isAdmin.value) {
@@ -702,6 +723,7 @@ async function loadConsole() {
       users.value = userRows.map(normalizeUser)
       shops.value = shopRows
       platforms.value = platformRows
+      modelApiKeys.value = modelApiKeyRows
     }
   } catch (error) {
     /* 非管理员请求 admin 接口返回 403 是预期行为，不必提示 */
@@ -917,6 +939,99 @@ async function deleteRole(role) {
   } catch (error) {
     errorText.value = error.message || '删除失败'
     showToast(error.message || '删除失败', 'error')
+  } finally {
+    saving.value = false
+  }
+}
+
+function resetModelApiKeyForm() {
+  Object.assign(modelApiKeyForm, {
+    id: null,
+    name: 'Banana 2.1 主线路',
+    model: 'banana-2.1',
+    provider: 'youmi888',
+    baseUrl: '',
+    generationPath: '/v1/media/generate',
+    taskPath: '/v1/media/status',
+    apiKey: '',
+    enabled: true,
+    priority: 100,
+  })
+}
+
+function editModelApiKey(row) {
+  Object.assign(modelApiKeyForm, {
+    id: row.id,
+    name: row.name,
+    model: row.model,
+    provider: row.provider,
+    baseUrl: row.baseUrl,
+    generationPath: row.generationPath,
+    taskPath: row.taskPath,
+    apiKey: '',
+    enabled: row.enabled,
+    priority: row.priority,
+  })
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+async function saveModelApiKey() {
+  saving.value = true
+  errorText.value = ''
+  try {
+    const editing = Boolean(modelApiKeyForm.id)
+    const saved = await api(
+      editing
+        ? `/api/admin/model-api-keys/${modelApiKeyForm.id}`
+        : '/api/admin/model-api-keys',
+      {
+        method: editing ? 'PUT' : 'POST',
+        body: JSON.stringify({
+          name: modelApiKeyForm.name,
+          model: modelApiKeyForm.model,
+          provider: modelApiKeyForm.provider,
+          baseUrl: modelApiKeyForm.baseUrl,
+          generationPath: modelApiKeyForm.generationPath,
+          taskPath: modelApiKeyForm.taskPath,
+          apiKey: modelApiKeyForm.apiKey,
+          enabled: modelApiKeyForm.enabled,
+          priority: Number(modelApiKeyForm.priority) || 0,
+        }),
+      },
+    )
+    // Reflect the successful write immediately, then reconcile with the database.
+    // A transient read failure must not make a successful save look unsuccessful.
+    modelApiKeys.value = editing
+      ? modelApiKeys.value.map((item) => (String(item.id) === String(saved.id) ? saved : item))
+      : [...modelApiKeys.value, saved]
+    try {
+      const refreshedRows = await api('/api/admin/model-api-keys')
+      if (Array.isArray(refreshedRows)) modelApiKeys.value = refreshedRows
+    } catch (refreshError) {
+      console.warn('模型密钥已保存，但列表重新读取失败，将保留本次保存结果。', refreshError)
+    }
+    resetModelApiKeyForm()
+    showToast(editing ? '模型密钥已更新' : '模型密钥已添加')
+  } catch (error) {
+    errorText.value = error.message || '模型密钥保存失败'
+    showToast(error.message || '模型密钥保存失败', 'error')
+  } finally {
+    saving.value = false
+  }
+}
+
+async function disableModelApiKey(row) {
+  if (!confirm(`确定停用「${row.name}」？正在运行的任务仍可继续查询。`)) return
+  saving.value = true
+  try {
+    await api(`/api/admin/model-api-keys/${row.id}`, { method: 'DELETE' })
+    modelApiKeys.value = modelApiKeys.value.map((item) =>
+      item.id === row.id ? { ...item, enabled: false } : item,
+    )
+    if (modelApiKeyForm.id === row.id) resetModelApiKeyForm()
+    showToast('模型密钥已停用')
+  } catch (error) {
+    showToast(error.message || '停用失败', 'error')
   } finally {
     saving.value = false
   }
@@ -1280,7 +1395,7 @@ function matchesTrendOption(row, rawQuery) {
   return Boolean(matchPinyin(label, query))
 }
 
-const trendUsesDailyTop = computed(() => ['model', 'shop', 'user'].includes(trendDimension.value))
+const trendShowsCurrentUser = computed(() => !isAdmin.value && trendDimension.value === 'user')
 
 function trendPointValue(point, metric = trendDimensionConfig.value.metric) {
   if (point?.value === null) return null
@@ -1315,16 +1430,29 @@ const trendFilterOptions = computed(() => {
 })
 
 const trendVisibleSeries = computed(() => {
+  if (trendShowsCurrentUser.value) {
+    return buildFixedTrendSeries(
+      trendDimensionConfig.value.rows,
+      trendDayLabels.value,
+      1,
+      trendDimensionConfig.value.metric,
+    )
+  }
   if (trendSelectedKeys.value.length) {
     const rowsByKey = new Map(
       trendDimensionConfig.value.rows.map((row) => [String(row.key), row]),
     )
-    return trendSelectedKeys.value.map((key) => rowsByKey.get(key)).filter(Boolean)
+    return buildFixedTrendSeries(
+      trendSelectedKeys.value.map((key) => rowsByKey.get(key)).filter(Boolean),
+      trendDayLabels.value,
+      5,
+      trendDimensionConfig.value.metric,
+    )
   }
   if (trendDimension.value === 'total') {
     return trendDimensionConfig.value.rows
   }
-  return buildDailyTopSeries(
+  return buildTopEntityTrendSeries(
     trendDimensionConfig.value.rows,
     trendDayLabels.value,
     5,
@@ -1336,7 +1464,17 @@ const trendFilterCount = computed(() => {
   if (trendSelectedKeys.value.length) return `${trendSelectedKeys.value.length}/5`
   if (trendFilter.value.trim()) return trendFilterOptions.value.length
   if (trendDimension.value === 'total') return trendDimensionConfig.value.rows.length
-  return trendUsesDailyTop.value ? '5/日' : trendDimensionConfig.value.rows.length
+  return `${trendVisibleSeries.value.length}/5`
+})
+
+const trendSubtitle = computed(() => {
+  if (trendDimension.value === 'total') return '按生图任务数统计'
+  if (trendShowsCurrentUser.value) return '本人近 14 天生图量'
+  if (trendSelectedKeys.value.length) return '所选对象完整趋势'
+  const rankingDay = trendVisibleSeries.value[0]?.rankingDay
+  const today = trendDayLabels.value[trendDayLabels.value.length - 1]
+  if (rankingDay && rankingDay !== today) return `${rankingDay.slice(5)} 前 5 名完整趋势`
+  return '今日前 5 名完整趋势'
 })
 
 async function updateTrendDropdownHeight() {
@@ -1668,7 +1806,12 @@ onMounted(() => {
   elapsedTimer = window.setInterval(() => {
     elapsedClock.value = Date.now()
   }, 1000)
-  taskRefreshTimer = window.setInterval(refreshTaskStatsSilently, 5000)
+  // 新任务可能在画布页或其他浏览器标签中创建。控制台即使当前没有进行中任务，
+  // 也要定期同步，确保“最近生图任务”及时出现新增记录。
+  taskRefreshTimer = window.setInterval(
+    () => refreshTaskStatsSilently({ force: true }),
+    5000,
+  )
   unsubscribeTaskPersistence = subscribeImageTaskPersistence(onImageTaskPersistence)
   document.addEventListener('visibilitychange', onVisibilityChange)
   document.addEventListener('click', onDocClick)
@@ -1754,7 +1897,7 @@ onUnmounted(() => {
     <p v-if="errorText" class="console-error">{{ errorText }}</p>
 
     <!-- Metrics with skeleton -->
-    <section v-if="activeTab !== 'finance'" class="console-metrics">
+    <section v-if="!['finance', 'api-keys'].includes(activeTab)" class="console-metrics">
       <template v-if="loading && !users.length">
         <article v-for="i in isAdmin ? 5 : 3" :key="i" class="console-skeleton-metric">
           <span class="console-skeleton-bar" style="width: 48px"></span>
@@ -2287,6 +2430,130 @@ onUnmounted(() => {
       </section>
     </section>
 
+    <!-- Model API Keys Tab -->
+    <section v-if="activeTab === 'api-keys'" class="console-grid console-api-key-grid">
+      <form class="console-card console-form" @submit.prevent="saveModelApiKey">
+        <div class="console-form-head">
+          <i class="ri-key-2-line" aria-hidden="true"></i>
+          <h2>{{ modelApiKeyForm.id ? '编辑模型密钥' : '新增模型密钥' }}</h2>
+        </div>
+        <label>
+          <span>配置名称</span>
+          <input v-model.trim="modelApiKeyForm.name" required />
+        </label>
+        <div class="console-form-row">
+          <label>
+            <span>模型</span>
+            <input v-model.trim="modelApiKeyForm.model" required />
+          </label>
+          <label>
+            <span>通道</span>
+            <input v-model.trim="modelApiKeyForm.provider" required />
+          </label>
+        </div>
+        <label>
+          <span>Base URL</span>
+          <input
+            v-model.trim="modelApiKeyForm.baseUrl"
+            type="url"
+            placeholder="https://api.example.com"
+            required
+          />
+        </label>
+        <div class="console-form-row">
+          <label>
+            <span>提交路径</span>
+            <input v-model.trim="modelApiKeyForm.generationPath" required />
+          </label>
+          <label>
+            <span>查询路径</span>
+            <input v-model.trim="modelApiKeyForm.taskPath" required />
+          </label>
+        </div>
+        <label>
+          <span>API Key</span>
+          <input
+            v-model.trim="modelApiKeyForm.apiKey"
+            type="password"
+            autocomplete="new-password"
+            :placeholder="modelApiKeyForm.id ? '留空则保留原 Key' : '请输入 API Key'"
+            :required="!modelApiKeyForm.id"
+          />
+        </label>
+        <div class="console-form-row">
+          <label>
+            <span>优先级</span>
+            <input v-model.number="modelApiKeyForm.priority" type="number" min="-10000" max="10000" />
+          </label>
+          <label class="console-check-label">
+            <input v-model="modelApiKeyForm.enabled" type="checkbox" />
+            <span>启用</span>
+          </label>
+        </div>
+        <div class="console-form-actions">
+          <button class="console-primary" type="submit" :disabled="saving">
+            <i class="ri-save-3-line" aria-hidden="true"></i>
+            {{ saving ? '保存中...' : '保存配置' }}
+          </button>
+          <button
+            v-if="modelApiKeyForm.id"
+            class="console-btn-ghost"
+            type="button"
+            @click="resetModelApiKeyForm"
+          >
+            取消编辑
+          </button>
+        </div>
+      </form>
+
+      <section class="console-card console-table-card">
+        <div class="console-card-head">
+          <h2>模型密钥列表</h2>
+          <span class="console-card-note">{{ modelApiKeys.length }} 条配置</span>
+        </div>
+        <div class="console-table api-key-table">
+          <div class="console-row console-row-head">
+            <span>模型 / 通道</span>
+            <span>接口</span>
+            <span>密钥</span>
+            <span>状态</span>
+            <span>操作</span>
+          </div>
+          <div v-for="row in modelApiKeys" :key="row.id" class="console-row">
+            <span>
+              <strong>{{ row.model }}</strong>
+              <small>{{ row.name }} · {{ row.provider }}</small>
+            </span>
+            <span class="console-api-endpoint">
+              <strong>{{ row.baseUrl }}</strong>
+              <small>{{ row.generationPath }}</small>
+            </span>
+            <span><code>{{ row.apiKeyMasked }}</code></span>
+            <span>
+              <b :class="['console-status', row.enabled ? 'is-active' : 'is-disabled']">
+                {{ row.enabled ? '启用' : '停用' }}
+              </b>
+              <small>优先级 {{ row.priority }}</small>
+            </span>
+            <span class="console-row-actions">
+              <button type="button" @click="editModelApiKey(row)">
+                <i class="ri-edit-line"></i>编辑
+              </button>
+              <button
+                v-if="row.enabled"
+                type="button"
+                class="console-btn-danger"
+                @click="disableModelApiKey(row)"
+              >
+                <i class="ri-stop-circle-line"></i>停用
+              </button>
+            </span>
+          </div>
+          <p v-if="!loading && !modelApiKeys.length" class="console-empty">暂无模型密钥</p>
+        </div>
+      </section>
+    </section>
+
     <!-- Finance Tab -->
     <FinancePanel
       v-if="activeTab === 'finance'"
@@ -2339,21 +2606,23 @@ onUnmounted(() => {
             <h3>中转站成功率</h3>
             <span>成功任务 / 已结束任务</span>
           </div>
-          <div
-            v-for="provider in stats?.providers || []"
-            :key="provider.provider"
-            class="console-provider-rate-row"
-          >
-            <strong>{{ providerLabel(provider.provider) }}</strong>
-            <div class="console-provider-rate-track" aria-hidden="true">
-              <span :style="{ width: `${provider.successRate || 0}%` }"></span>
+          <div class="console-provider-rate-list">
+            <div
+              v-for="provider in stats?.providers || []"
+              :key="provider.provider"
+              class="console-provider-rate-row"
+            >
+              <strong>{{ providerLabel(provider.provider) }}</strong>
+              <div class="console-provider-rate-track" aria-hidden="true">
+                <span :style="{ width: `${provider.successRate || 0}%` }"></span>
+              </div>
+              <span class="console-provider-rate-count">
+                {{ provider.successfulTasks }} / {{ provider.finishedTasks }}
+              </span>
+              <b>{{ provider.successRate == null ? '--' : `${Number(provider.successRate).toFixed(1)}%` }}</b>
             </div>
-            <span class="console-provider-rate-count">
-              {{ provider.successfulTasks }} / {{ provider.finishedTasks }}
-            </span>
-            <b>{{ provider.successRate == null ? '--' : `${Number(provider.successRate).toFixed(1)}%` }}</b>
+            <p v-if="!stats?.providers?.length" class="console-empty">暂无中转站统计。</p>
           </div>
-          <p v-if="!stats?.providers?.length" class="console-empty">暂无中转站统计。</p>
         </div>
       </section>
 
@@ -2362,15 +2631,7 @@ onUnmounted(() => {
         <div class="console-trend-head">
           <div>
             <h2>近 14 天趋势</h2>
-            <p>
-              {{
-                trendDimension === 'total'
-                  ? '按生图任务数统计'
-                  : trendSelectedKeys.length
-                    ? '所选对象完整趋势'
-                    : '每天生图量前 5 名'
-              }}
-            </p>
+            <p>{{ trendSubtitle }}</p>
           </div>
         </div>
         <div class="console-trend-controls">
@@ -2388,7 +2649,7 @@ onUnmounted(() => {
             </button>
           </div>
           <div
-            v-if="trendDimension !== 'total'"
+            v-if="trendDimension !== 'total' && !trendShowsCurrentUser"
             ref="trendFilterRow"
             class="console-trend-filter-row"
             @click.stop
@@ -2440,7 +2701,7 @@ onUnmounted(() => {
                 :class="{ active: !trendSelectedKeys.length }"
                 @click="selectTrendOption(null)"
               >
-                <span>全部（每天展示前 5 名）</span>
+                <span>全部（默认前 5 名）</span>
                 <i v-if="!trendSelectedKeys.length" class="ri-check-line" aria-hidden="true"></i>
               </button>
               <button
@@ -4535,6 +4796,86 @@ onUnmounted(() => {
   margin-top: 14px;
 }
 
+.console-api-key-grid {
+  grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
+}
+
+.console-form-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.console-form-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.console-form-actions .console-primary,
+.console-form-actions .console-btn-ghost {
+  flex: 1;
+}
+
+.console-check-label {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 8px;
+  align-self: end;
+}
+
+.console-check-label input {
+  width: 16px;
+  min-height: 16px;
+}
+
+.console-card-note {
+  color: var(--console-muted);
+  font-size: 12px;
+}
+
+.api-key-table .console-row {
+  grid-template-columns: minmax(150px, 0.9fr) minmax(220px, 1.45fr) minmax(110px, 0.7fr) 100px 150px;
+}
+
+.api-key-table .console-row > span,
+.console-api-endpoint {
+  min-width: 0;
+}
+
+.api-key-table strong,
+.api-key-table small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.api-key-table code {
+  color: var(--console-text);
+  font-size: 12px;
+}
+
+.console-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 7px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.console-status.is-active {
+  color: var(--console-success);
+  background: color-mix(in srgb, var(--console-success) 12%, transparent);
+}
+
+.console-status.is-disabled {
+  color: var(--console-muted);
+  background: var(--console-surface-hover);
+}
+
 .console-stats {
   grid-template-columns: minmax(420px, 1.03fr) minmax(500px, 1.2fr);
   gap: 14px;
@@ -4871,6 +5212,18 @@ onUnmounted(() => {
 
 .console-models-viz {
   gap: 16px;
+  height: 260px;
+  min-height: 0;
+  align-items: center;
+}
+
+.console-model-legend {
+  min-width: 0;
+  max-height: 100%;
+  overflow-y: auto;
+  align-content: start;
+  padding-right: 8px;
+  scrollbar-gutter: stable;
 }
 
 .console-model-legend-item {
@@ -4878,7 +5231,26 @@ onUnmounted(() => {
 }
 
 .console-provider-rates {
+  height: 220px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   border-color: var(--console-border);
+}
+
+.console-provider-rates-head {
+  flex: 0 0 auto;
+}
+
+.console-provider-rate-list {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  overflow-y: auto;
+  padding-right: 8px;
+  scrollbar-gutter: stable;
 }
 
 .console-provider-rate-track {
@@ -4897,6 +5269,23 @@ onUnmounted(() => {
 }
 
 @media (max-width: 700px) {
+  .console-models-viz {
+    height: 390px;
+    align-items: stretch;
+  }
+
+  .console-donut {
+    align-self: center;
+  }
+
+  .console-model-legend {
+    width: 100%;
+  }
+
+  .console-provider-rates {
+    height: 260px;
+  }
+
   .console-trend-card .console-trend-wrap {
     height: 220px;
     min-height: 220px;

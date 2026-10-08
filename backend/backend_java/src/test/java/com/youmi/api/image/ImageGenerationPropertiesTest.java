@@ -11,11 +11,11 @@ class ImageGenerationPropertiesTest {
   private final ImageGenerationProperties properties = new ImageGenerationProperties();
 
   @Test
-  void teamorouterImagesUseDocumentedComEndpointAndKeepExplicitOverrides() {
-    assertEquals("https://api.teamorouter.com/v1/images/generations",
+  void teamorouterImagesUseConfiguredCnEndpointAndKeepExplicitOverrides() {
+    assertEquals("https://api.teamorouter.cn/v1/images/generations",
         properties.normalizedTeamorouterBaseUrl() + properties.normalizedTeamorouterGenerationPath());
     properties.setTeamorouterBaseUrl(" ");
-    assertEquals("https://api.teamorouter.com/v1", properties.normalizedTeamorouterBaseUrl());
+    assertEquals("https://api.teamorouter.cn/v1", properties.normalizedTeamorouterBaseUrl());
     properties.setTeamorouterBaseUrl("https://images.example/v1/");
     assertEquals("https://images.example/v1", properties.normalizedTeamorouterBaseUrl());
     assertEquals("/images/edits", properties.normalizedTeamorouterEditsPath());
@@ -28,9 +28,10 @@ class ImageGenerationPropertiesTest {
       "banana-pro, banana-pro",
       "bananapro, banana-pro",
       "'banana pro', banana-pro",
+      "banana-2.1, banana-2.1",
+      "banana21, banana-2.1",
       "gpt-image-2, gpt-image-2",
       "gpt-image-2.5-sunburst, gpt-image-2.5-sunburst",
-      "gpt-image-2.5-flare, gpt-image-2.5-flare",
       "'GPT imag 2', gpt-image-2",
       "'gpt image 2', gpt-image-2",
       "agnes-image-2.1-flash, agnes-image-2.1-flash",
