@@ -14,11 +14,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import com.youmi.api.common.ApiException;
+import com.youmi.api.image.ModelApiKeyDtos;
+import com.youmi.api.image.ModelApiKeyService;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -103,6 +106,65 @@ class AnmiaoVideoClientTest {
     assertEquals("anmiao-video:99936297", response.getTaskId());
     assertEquals("queued", response.getStatus());
     verifyNoInteractions(media);
+  }
+
+  @Test void configuredSeedanceAliasesUseDocumentedProviderModelIds() throws Exception {
+    start();
+    AtomicReference<JsonNode> body = new AtomicReference<>();
+    server.createContext("/contents/generations/tasks", exchange -> {
+      body.set(mapper.readTree(exchange.getRequestBody()));
+      respond(exchange, 200, body.get().path("model").asText().equals(AnmiaoVideoClient.MODEL25)
+          ? "{\"data\":{\"task_id\":\"task_123\"}}"
+          : "{\"id\":\"123\"}");
+    });
+    var keys = mock(ModelApiKeyService.class);
+    var properties = new AnmiaoVideoProperties();
+    properties.setMiPerSecondByResolution(Map.of("480p", 1));
+    properties.setMiPerSecond25ByResolution(Map.of("480p", 1));
+    var client = client(properties, keys);
+
+    Map<String, String> models = Map.of(
+        "seedance-2.0-guanfang-anmiao", AnmiaoVideoClient.MODEL,
+        "seedance-2.5-guanfang-anmiao", AnmiaoVideoClient.MODEL25);
+    for (var entry : models.entrySet()) {
+      String configuredModel = entry.getKey();
+      var credential = new ModelApiKeyService.ResolvedModelApiKey(31, configuredModel, "灵科AI",
+          "http://127.0.0.1:" + server.getAddress().getPort(),
+          "/contents/generations/tasks", "/contents/generations/tasks/{id}", "test-key");
+      when(keys.resolve(configuredModel, ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "canvas-video"))
+          .thenReturn(Optional.of(credential));
+      var request = new VideoGenerationDtos.CreateTaskRequest("测试视频", configuredModel,
+          "16:9", 4, "480p", List.of(), null, null, null, true, null, null, null);
+
+      var created = client.createTask(request);
+
+      assertEquals(entry.getValue(), body.get().path("model").asText());
+      if (AnmiaoVideoClient.MODEL25.equals(entry.getValue()))
+        assertEquals("anmiao-video:key:31:task_123", created.getTaskId());
+    }
+  }
+
+  @Test void readsTaskIdFromNestedProviderResponse() throws Exception {
+    start();
+    server.createContext("/contents/generations/tasks", exchange ->
+        respond(exchange, 200, "{\"data\":{\"task\":{\"id\":\"task_nested_123\"}}}"));
+
+    var response = client(3).createTask(request(4));
+
+    assertEquals("anmiao-video:task_nested_123", response.getTaskId());
+  }
+
+  @Test void capabilitiesRecognizeConfiguredProviderModelIdsAndAliases() throws Exception {
+    start();
+    var keys = mock(ModelApiKeyService.class);
+    var client = client(new AnmiaoVideoProperties(), keys);
+    when(keys.enabledModelOptions(ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "canvas-video"))
+        .thenReturn(List.of(
+            new ModelApiKeyDtos.ModelOption("doubao-seedance-2-0-260128", "SD2", "灵科AI"),
+            new ModelApiKeyDtos.ModelOption("seedance-2.5-guanfang-anmiao", "SD2.5", "灵科AI")));
+
+    assertTrue(client.hasConfiguredModelVersion(false));
+    assertTrue(client.hasConfiguredModelVersion(true));
   }
 
   @Test void allStandardResolutionsUseTheirOwnPerSecondRateAndRequestValue() throws Exception {
@@ -298,6 +360,12 @@ class AnmiaoVideoClientTest {
     properties.setBaseUrl(server == null ? "http://127.0.0.1:1" : "http://127.0.0.1:" + server.getAddress().getPort());
     properties.setTimeoutSeconds(5);
     return new AnmiaoVideoClient(properties, media, mapper);
+  }
+
+  private AnmiaoVideoClient client(AnmiaoVideoProperties properties, ModelApiKeyService keys) {
+    properties.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+    properties.setTimeoutSeconds(5);
+    return new AnmiaoVideoClient(properties, media, mapper, keys, null);
   }
 
   private void start() throws IOException {

@@ -8,6 +8,7 @@ import com.youmi.api.credit.MiValueProperties;
 import com.youmi.api.selection.SelectionPoolService;
 import java.util.Map;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.beans.factory.annotation.Autowired;
 
 @RestController
 @RequestMapping("/api/product-videos")
@@ -19,10 +20,18 @@ public class ProductVideoController {
   private final MiValueProperties pricing;
   private final AnmiaoVideoProperties anmiao;
   private final MinimaxVideoProperties minimax;
+  private final AnmiaoVideoClient anmiaoClient;
 
   public ProductVideoController(AdminAuthService auth, ProductVideoPlanService plans,
       VideoCompositionService compositions, SelectionPoolService products, MiValueProperties pricing,
       AnmiaoVideoProperties anmiao, MinimaxVideoProperties minimax) {
+    this(auth, plans, compositions, products, pricing, anmiao, minimax, null);
+  }
+
+  @Autowired
+  public ProductVideoController(AdminAuthService auth, ProductVideoPlanService plans,
+      VideoCompositionService compositions, SelectionPoolService products, MiValueProperties pricing,
+      AnmiaoVideoProperties anmiao, MinimaxVideoProperties minimax, AnmiaoVideoClient anmiaoClient) {
     this.auth = auth;
     this.plans = plans;
     this.compositions = compositions;
@@ -30,11 +39,14 @@ public class ProductVideoController {
     this.pricing = pricing;
     this.anmiao = anmiao;
     this.minimax = minimax;
+    this.anmiaoClient = anmiaoClient;
   }
 
   @GetMapping("/capabilities")
   public ApiResponse<?> capabilities(@RequestHeader(value = "Authorization", required = false) String token) {
     auth.requireUserId(token);
+    boolean configured20 = anmiaoClient != null && anmiaoClient.hasConfiguredModelVersion(false);
+    boolean configured25 = anmiaoClient != null && anmiaoClient.hasConfiguredModelVersion(true);
     return ApiResponse.ok(Map.ofEntries(
         Map.entry("composition", compositions.available()),
         Map.entry("videoPrice", pricing.getPrice(MiBizType.VIDEO)),
@@ -48,10 +60,10 @@ public class ProductVideoController {
         Map.entry("fixedContinuity", true),
         Map.entry("fixedContinuityImages", true),
         Map.entry("wholeVideoOptionalContinuity", true),
-        Map.entry("anmiaoVideo", anmiao.isAvailable()),
-        Map.entry("anmiaoMiPerSecondByResolution", anmiao.availableRates()),
-        Map.entry("anmiao25Video", anmiao.isAvailable25()),
-        Map.entry("anmiao25MiPerSecondByResolution", anmiao.availableRates25()),
+        Map.entry("anmiaoVideo", anmiao.isAvailable() || configured20),
+        Map.entry("anmiaoMiPerSecondByResolution", anmiao.availableRates(configured20)),
+        Map.entry("anmiao25Video", anmiao.isAvailable25() || configured25),
+        Map.entry("anmiao25MiPerSecondByResolution", anmiao.availableRates25(configured25)),
         Map.entry("minimaxVideo", minimax.isAvailable()),
         Map.entry("minimaxMiPerSecondByResolution", minimax.availableRates())));
   }

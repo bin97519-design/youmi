@@ -36,6 +36,7 @@ public class GemAgentClient {
   private final ObjectMapper mapper;
   private final GemAgentProperties properties;
   private final GemAgentImagePreparer imagePreparer;
+  private AiCallLogService aiCallLogService;
   private final HttpClient http = HttpClient.newBuilder()
       .connectTimeout(Duration.ofSeconds(15)).build();
 
@@ -49,6 +50,9 @@ public class GemAgentClient {
     this.properties = properties;
     this.imagePreparer = imagePreparer;
   }
+
+  @Autowired(required = false)
+  void setAiCallLogService(AiCallLogService service) { this.aiCallLogService = service; }
 
   public boolean isConfigured() { return properties.isConfigured(); }
 
@@ -117,7 +121,16 @@ public class GemAgentClient {
         .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)))
         .build();
     // Do not retry generation automatically: a lost response may still be billable upstream.
-    HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    long started = System.nanoTime();
+    HttpResponse<String> response;
+    try {
+      response = http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    } catch (Exception error) {
+      recordCall(false, null, started, error);
+      throw error;
+    }
+    recordCall(response.statusCode() >= 200 && response.statusCode() < 300,
+        response.statusCode(), started, null);
     JsonNode root;
     try { root = mapper.readTree(response.body()); }
     catch (Exception error) { throw new ApiException(502, "GEM 接口返回格式异常（HTTP " + response.statusCode() + "）"); }
@@ -143,6 +156,12 @@ public class GemAgentClient {
     }
     if (text.toString().isBlank()) throw new ApiException(502, "GEM 返回内容为空，请检查中转站记录");
     return new AiChatDtos.CompletionResult("lk888", MODEL, text.toString().trim());
+  }
+
+  private void recordCall(boolean success, Integer httpStatus, long started, Exception error) {
+    if (aiCallLogService != null) aiCallLogService.record("canvas-agent", "chat", "gem",
+        MODEL, null, "dropdown", success, httpStatus, (System.nanoTime() - started) / 1_000_000L,
+        error == null ? null : error.getClass().getSimpleName());
   }
 
   private ImageData readImage(String value) throws Exception {

@@ -2,6 +2,10 @@ package com.youmi.api.admin;
 
 import com.youmi.api.auth.UserAccount;
 import com.youmi.api.common.ApiResponse;
+import com.youmi.api.ai.AiCallLogDtos;
+import com.youmi.api.ai.AiCallLogService;
+import com.youmi.api.admin.AiFeatureMappingDtos;
+import org.springframework.beans.factory.annotation.Autowired;
 import java.util.List;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -19,10 +23,49 @@ import org.springframework.web.bind.annotation.RestController;
 public class AdminController {
   private final AdminAuthService adminAuthService;
   private final AdminService adminService;
+  private AiCallLogService aiCallLogService;
+  private AiFeatureMappingService aiFeatureMappingService;
 
   public AdminController(AdminAuthService adminAuthService, AdminService adminService) {
     this.adminAuthService = adminAuthService;
     this.adminService = adminService;
+  }
+
+  @Autowired(required = false)
+  void setAiCallLogService(AiCallLogService aiCallLogService) {
+    this.aiCallLogService = aiCallLogService;
+  }
+
+  @Autowired(required = false)
+  void setAiFeatureMappingService(AiFeatureMappingService aiFeatureMappingService) {
+    this.aiFeatureMappingService = aiFeatureMappingService;
+  }
+
+  @GetMapping("/ai-feature-mappings")
+  public ApiResponse<List<AiFeatureMappingDtos.Mapping>> aiFeatureMappings(
+      @RequestHeader(value = "Authorization", required = false) String authorization) {
+    adminAuthService.requireAdmin(authorization);
+    return ApiResponse.ok(aiFeatureMappingService == null ? List.of() : aiFeatureMappingService.list());
+  }
+
+  @PutMapping("/ai-feature-mappings/{featureCode}")
+  public ApiResponse<AiFeatureMappingDtos.Mapping> saveAiFeatureMapping(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @PathVariable String featureCode,
+      @RequestBody AiFeatureMappingDtos.SaveRequest request) {
+    adminAuthService.requireAdmin(authorization);
+    return ApiResponse.ok("AI 功能映射已保存", aiFeatureMappingService.save(featureCode, request));
+  }
+
+  @GetMapping("/ai-call-logs")
+  public ApiResponse<List<AiCallLogDtos.Row>> aiCallLogs(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @RequestParam(defaultValue = "200") int limit,
+      @RequestParam(required = false) String source,
+      @RequestParam(required = false) String status) {
+    adminAuthService.requireAdmin(authorization);
+    if (aiCallLogService == null) return ApiResponse.ok(List.of());
+    return ApiResponse.ok(aiCallLogService.listRecent(limit, source, status));
   }
 
   @GetMapping("/overview")

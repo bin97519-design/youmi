@@ -3,6 +3,7 @@ package com.youmi.api.video;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.youmi.api.common.ApiException;
+import com.youmi.api.ai.AiCallLogService;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -12,6 +13,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 
 /** Separate credentials and video-task transport for THQ's 30-second model. */
 @Service
@@ -24,12 +26,16 @@ public class ChatVideoClient {
   private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(ChatVideoClient.class);
   private final HttpClient http = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1)
       .connectTimeout(Duration.ofSeconds(15)).build();
+  private AiCallLogService aiCallLogService;
 
   public ChatVideoClient(ObjectMapper mapper, VideoGenerationProperties config, VideoGenerationClient media) {
     this.mapper = mapper;
     this.config = config;
     this.media = media;
   }
+
+  @Autowired(required = false)
+  void setAiCallLogService(AiCallLogService service) { this.aiCallLogService = service; }
 
   void validate(VideoGenerationDtos.CreateTaskRequest input) {
     if (input == null || !MODEL.equals(input.model()) || input.durationSeconds() == null
@@ -81,7 +87,7 @@ public class ChatVideoClient {
     log.info("THQ chat video submit: task={}, endpoint={}, model={}, references={}, bytes={}",
         input.clientTaskId(), safeEndpoint(request.uri()), MODEL, references(input).size(),
         request.bodyPublisher().orElseThrow().contentLength());
-    var response = http.send(request, HttpResponse.BodyHandlers.ofString());
+    var response = sendTracked(request, "video_generate");
     log.info("THQ chat video response: task={}, status={}, requestId={}",
         input.clientTaskId(), response.statusCode(), requestId(response));
     if (response.statusCode() < 200 || response.statusCode() >= 300) jsonResponse(response, "提交视频", 502);
@@ -92,7 +98,7 @@ public class ChatVideoClient {
     if (taskId == null || !taskId.matches("[A-Za-z0-9._:-]{1,256}"))
       throw new ApiException(502, "中转站返回的视频任务编号无效");
     var request = ThqVideoProtocol.query(config.getChatBaseUrl(), config.getChatApiKey(), 60, taskId);
-    var response = http.send(request, HttpResponse.BodyHandlers.ofString());
+    var response = sendTracked(request, "video_query");
     if (response.statusCode() < 200 || response.statusCode() >= 300) jsonResponse(response, "查询视频", 502);
     var root = mapper.readTree(response.body());
     // Save terminal failure responses before interpreting them in the job runner.
@@ -101,6 +107,22 @@ public class ChatVideoClient {
         && root.path("data").path("task_id").asText("").isBlank())
       ((com.fasterxml.jackson.databind.node.ObjectNode) root).put("id", taskId);
     return mapper.writeValueAsString(root);
+  }
+
+  private HttpResponse<String> sendTracked(HttpRequest request, String operation) throws Exception {
+    long started = System.nanoTime();
+    try {
+      HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+      if (aiCallLogService != null) aiCallLogService.record("chat-video", operation, "thq",
+          MODEL, null, response.statusCode() >= 200 && response.statusCode() < 300,
+          response.statusCode(), (System.nanoTime() - started) / 1_000_000L, null);
+      return response;
+    } catch (Exception error) {
+      if (aiCallLogService != null) aiCallLogService.record("chat-video", operation, "thq",
+          MODEL, null, false, null, (System.nanoTime() - started) / 1_000_000L,
+          error.getClass().getSimpleName());
+      throw error;
+    }
   }
 
   record TaskState(String id, String status, Integer progress) {

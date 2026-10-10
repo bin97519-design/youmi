@@ -17,6 +17,7 @@ import java.util.concurrent.Semaphore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 
 @Service
 public class XfyunVisionClient {
@@ -27,6 +28,7 @@ public class XfyunVisionClient {
   private final XfyunVisionProperties properties;
   private final HttpClient httpClient;
   private final Semaphore requestGate = new Semaphore(1, true);
+  private AiCallLogService aiCallLogService;
 
   public XfyunVisionClient(ObjectMapper objectMapper, XfyunVisionProperties properties) {
     this.objectMapper = objectMapper;
@@ -36,6 +38,9 @@ public class XfyunVisionClient {
         .connectTimeout(Duration.ofSeconds(Math.max(3, properties.getTimeoutSeconds())))
         .build();
   }
+
+  @Autowired(required = false)
+  void setAiCallLogService(AiCallLogService service) { this.aiCallLogService = service; }
 
   public boolean isConfigured() {
     return properties.isConfigured();
@@ -201,7 +206,16 @@ public class XfyunVisionClient {
         .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
         .build();
 
-    HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    long started = System.nanoTime();
+    HttpResponse<String> response;
+    try {
+      response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    } catch (Exception error) {
+      recordCall(false, null, started, error);
+      throw error;
+    }
+    recordCall(response.statusCode() >= 200 && response.statusCode() < 300,
+        response.statusCode(), started, null);
     log.info("Xfyun vision response status: {}", response.statusCode());
     if (response.statusCode() >= 300) {
       log.error("Xfyun vision error body: {}", compact(response.body()));
@@ -223,6 +237,13 @@ public class XfyunVisionClient {
       throw new IllegalStateException("Xfyun vision returned empty content");
     }
     return content;
+  }
+
+  private void recordCall(boolean success, Integer httpStatus, long started, Exception error) {
+    if (aiCallLogService != null) aiCallLogService.record("xfyun-vision", "vision", "xfyun",
+        properties.getModel(), null, success, httpStatus,
+        (System.nanoTime() - started) / 1_000_000L,
+        error == null ? null : error.getClass().getSimpleName());
   }
 
   private String readContent(JsonNode root) {

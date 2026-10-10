@@ -14,6 +14,12 @@ import {
   buildTotalTrendSeries,
 } from '../utils/consoleTrend'
 import { subscribeImageTaskPersistence } from '../utils/imageTaskSync'
+import {
+  canonicalModelApiProvider,
+  filterModelApiKeys,
+  modelApiProviderOptions,
+  summarizeModelApiKeys,
+} from '../utils/modelApiKeyList'
 
 const userStore = useUserStore()
 const { cycle: cycleTheme, isDark } = useTheme()
@@ -24,6 +30,18 @@ const errorText = ref('')
 const users = ref([])
 const roles = ref([])
 const modelApiKeys = ref([])
+const aiFeatureMappings = ref([])
+const aiFeatureMappingLoading = ref(false)
+const aiFeatureMappingSaving = reactive({})
+const aiFeatureDropdownOpen = ref('')
+const aiFeatureDropdownStyle = ref({})
+const aiFeatureMenuRef = ref(null)
+const activeAiFeatureDropdown = computed(() => aiFeatureMappings.value.find((row) => row.featureCode === aiFeatureDropdownOpen.value) || null)
+const modelApiKeySearch = ref('')
+const modelApiKeyStatusFilter = ref('all')
+const modelApiKeyProviderFilter = ref('all')
+const modelApiKeyTypeFilter = ref('all')
+const modelApiKeyDialogOpen = ref(false)
 const stats = ref(null)
 const financeRefreshKey = ref(0)
 const elapsedClock = ref(Date.now())
@@ -174,10 +192,22 @@ const providerLabelMap = {
   apimart: 'APIMart',
   'apimart-direct': 'APIMart',
   gettoken: 'GetToken',
-  lk888: 'LK888',
+  lingke: '灵科AI',
+  lk888: '灵科AI',
+  youmi888: '灵科AI',
+  'model-api': '灵科AI',
   proxy: 'Proxy 兜底',
   agnes: 'Agnes',
   unknown: '其他通道',
+}
+
+const modelApiKeyTypeOptions = [
+  { value: 'image_generation', label: '图片' },
+  { value: 'video_generation', label: '视频' },
+  { value: 'vision_reasoning', label: '识图推理' },
+]
+function modelApiKeyTypeLabel(value) {
+  return modelApiKeyTypeOptions.find((option) => option.value === value)?.label || '图片'
 }
 
 function providerLabel(provider) {
@@ -590,12 +620,104 @@ const tabs = computed(() => {
   if (isAdmin.value) {
     list.push({ key: 'accounts', label: '账号管理', icon: 'ri-user-settings-line' })
     list.push({ key: 'roles', label: '角色管理', icon: 'ri-shield-user-line' })
-    list.push({ key: 'api-keys', label: '模型密钥', icon: 'ri-key-2-line' })
+    list.push({ key: 'api-keys', label: '模型管理', icon: 'ri-key-2-line' })
+    list.push({ key: 'ai-feature-mappings', label: 'AI功能映射', icon: 'ri-node-tree' })
     list.push({ key: 'finance', label: '财务统计', icon: 'ri-funds-line' })
   }
   list.push({ key: 'stats', label: '生图统计', icon: 'ri-bar-chart-box-line' })
   return list
 })
+
+function aiFeatureTypeLabel(type) {
+  return ({
+    image_generation: '生图模型',
+    video_generation: '视频模型',
+    vision_reasoning: '识图推理模型',
+  })[type] || type || '-'
+}
+
+function aiFeatureSelectionLabel(mode) {
+  return mode === 'dropdown' ? '下拉选择' : '系统默认'
+}
+
+async function refreshAiFeatureMappings() {
+  if (!isAdmin.value || aiFeatureMappingLoading.value) return
+  aiFeatureMappingLoading.value = true
+  try {
+    aiFeatureMappings.value = await api('/api/admin/ai-feature-mappings') || []
+  } catch (error) {
+    showToast(error.message || 'AI 功能映射加载失败', 'error')
+  } finally {
+    aiFeatureMappingLoading.value = false
+  }
+}
+
+function toggleFeatureKey(row, keyId, checked) {
+  const selected = new Set(row.selectedApiKeyIds || [])
+  if (checked) selected.add(keyId)
+  else selected.delete(keyId)
+  row.selectedApiKeyIds = [...selected]
+}
+
+function setAllFeatureKeys(row, checked) {
+  row.selectedApiKeyIds = checked
+    ? row.keyRoutes.filter((route) => route.enabled).map((route) => route.apiKeyId)
+    : []
+}
+
+function placeAiFeatureDropdown(anchor, menuHeight) {
+  const margin = 8
+  const width = Math.min(300, anchor.width, window.innerWidth - margin * 2)
+  const belowSpace = window.innerHeight - anchor.bottom - margin
+  const openUp = belowSpace < menuHeight + 5 && anchor.top > belowSpace
+  const left = Math.max(margin, Math.min(anchor.left, window.innerWidth - width - margin))
+  const desiredTop = openUp ? anchor.top - menuHeight - 5 : anchor.bottom + 5
+  const top = Math.max(margin, Math.min(desiredTop, window.innerHeight - menuHeight - margin))
+  aiFeatureDropdownStyle.value = {
+    position: 'fixed',
+    zIndex: 10000,
+    top: `${top}px`,
+    left: `${left}px`,
+    width: `${width}px`,
+  }
+}
+
+async function toggleAiFeatureDropdown(row, event) {
+  if (aiFeatureDropdownOpen.value === row.featureCode) {
+    aiFeatureDropdownOpen.value = ''
+    return
+  }
+  aiFeatureDropdownOpen.value = row.featureCode
+  const anchor = event.currentTarget.getBoundingClientRect()
+  placeAiFeatureDropdown(anchor, Math.min(320, 48 + row.keyRoutes.length * 76))
+  await nextTick()
+  if (aiFeatureDropdownOpen.value !== row.featureCode || !aiFeatureMenuRef.value) return
+  placeAiFeatureDropdown(anchor, aiFeatureMenuRef.value.offsetHeight)
+}
+
+function closeAiFeatureDropdownOnScroll(event) {
+  if (event.target?.closest?.('.ai-feature-multi-menu')) return
+  aiFeatureDropdownOpen.value = ''
+}
+
+async function saveAiFeatureMapping(row) {
+  aiFeatureMappingSaving[row.featureCode] = true
+  try {
+    const saved = await api(`/api/admin/ai-feature-mappings/${encodeURIComponent(row.featureCode)}`, {
+      method: 'PUT',
+      body: JSON.stringify(row.selectionMode === 'system_default'
+        ? { defaultApiKeyId: row.defaultApiKeyId || null }
+        : { selectedApiKeyIds: row.selectedApiKeyIds || [] }),
+    })
+    const index = aiFeatureMappings.value.findIndex((item) => item.featureCode === row.featureCode)
+    if (index >= 0) aiFeatureMappings.value[index] = saved
+    showToast('功能映射已保存并生效')
+  } catch (error) {
+    showToast(error.message || '功能映射保存失败', 'error')
+  } finally {
+    aiFeatureMappingSaving[row.featureCode] = false
+  }
+}
 
 const userForm = reactive({
   account: '',
@@ -621,18 +743,29 @@ const modelApiKeyForm = reactive({
   id: null,
   name: 'Banana 2.1 主线路',
   model: 'banana-2.1',
+  modelType: 'image_generation',
   provider: 'youmi888',
   baseUrl: '',
   generationPath: '/v1/media/generate',
   taskPath: '/v1/media/status',
   apiKey: '',
+  defaultData: [],
   enabled: true,
   priority: 100,
 })
 
 const roleOptions = computed(() => roles.value.map((role) => role.code))
 const summary = computed(() => stats.value?.summary || {})
-
+const modelApiKeyOverview = computed(() => summarizeModelApiKeys(modelApiKeys.value))
+const modelApiKeyProviders = computed(() => modelApiProviderOptions(modelApiKeys.value))
+const filteredModelApiKeys = computed(() =>
+  filterModelApiKeys(modelApiKeys.value, {
+    search: modelApiKeySearch.value,
+    status: modelApiKeyStatusFilter.value,
+    provider: modelApiKeyProviderFilter.value,
+    modelType: modelApiKeyTypeFilter.value,
+  }),
+)
 /** 解析用户输入的店铺值：返回 { shopId, shopName } */
 function resolveShopInput(input) {
   const name = (input || '').trim()
@@ -949,11 +1082,13 @@ function resetModelApiKeyForm() {
     id: null,
     name: 'Banana 2.1 主线路',
     model: 'banana-2.1',
+    modelType: 'image_generation',
     provider: 'youmi888',
     baseUrl: '',
     generationPath: '/v1/media/generate',
     taskPath: '/v1/media/status',
     apiKey: '',
+    defaultData: [],
     enabled: true,
     priority: 100,
   })
@@ -964,15 +1099,38 @@ function editModelApiKey(row) {
     id: row.id,
     name: row.name,
     model: row.model,
+    modelType: row.modelType || 'image_generation',
     provider: row.provider,
     baseUrl: row.baseUrl,
     generationPath: row.generationPath,
     taskPath: row.taskPath,
     apiKey: '',
+    defaultData: Array.isArray(row.defaultData)
+      ? row.defaultData.map((entry) => ({ name: entry.name || '', value: entry.value || '' }))
+      : [],
     enabled: row.enabled,
     priority: row.priority,
   })
-  window.scrollTo({ top: 0, behavior: 'smooth' })
+  modelApiKeyDialogOpen.value = true
+}
+
+function addModelDefaultParameter() {
+  if (modelApiKeyForm.defaultData.length >= 50) return
+  modelApiKeyForm.defaultData.push({ name: '', value: '' })
+}
+
+function removeModelDefaultParameter(index) {
+  modelApiKeyForm.defaultData.splice(index, 1)
+}
+
+function openNewModelApiKey() {
+  resetModelApiKeyForm()
+  modelApiKeyDialogOpen.value = true
+}
+
+function closeModelApiKeyDialog() {
+  modelApiKeyDialogOpen.value = false
+  resetModelApiKeyForm()
 }
 
 async function saveModelApiKey() {
@@ -989,6 +1147,7 @@ async function saveModelApiKey() {
         body: JSON.stringify({
           name: modelApiKeyForm.name,
           model: modelApiKeyForm.model,
+          modelType: modelApiKeyForm.modelType,
           provider: modelApiKeyForm.provider,
           baseUrl: modelApiKeyForm.baseUrl,
           generationPath: modelApiKeyForm.generationPath,
@@ -996,6 +1155,7 @@ async function saveModelApiKey() {
           apiKey: modelApiKeyForm.apiKey,
           enabled: modelApiKeyForm.enabled,
           priority: Number(modelApiKeyForm.priority) || 0,
+          defaultData: modelApiKeyForm.defaultData.filter((entry) => entry.name.trim() || entry.value.trim()),
         }),
       },
     )
@@ -1011,6 +1171,7 @@ async function saveModelApiKey() {
       console.warn('模型密钥已保存，但列表重新读取失败，将保留本次保存结果。', refreshError)
     }
     resetModelApiKeyForm()
+    modelApiKeyDialogOpen.value = false
     showToast(editing ? '模型密钥已更新' : '模型密钥已添加')
   } catch (error) {
     errorText.value = error.message || '模型密钥保存失败'
@@ -1020,18 +1181,37 @@ async function saveModelApiKey() {
   }
 }
 
-async function disableModelApiKey(row) {
-  if (!confirm(`确定停用「${row.name}」？正在运行的任务仍可继续查询。`)) return
+function modelApiKeyProviderName(row) {
+  return providerLabel(canonicalModelApiProvider(row?.provider))
+}
+
+async function toggleModelApiKey(row) {
+  const enabled = !row.enabled
+  if (!enabled && !confirm(`确定停用「${row.name}」？正在运行的任务仍可继续查询。`)) return
   saving.value = true
   try {
-    await api(`/api/admin/model-api-keys/${row.id}`, { method: 'DELETE' })
+    const updated = await api(`/api/admin/model-api-keys/${row.id}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        name: row.name,
+        model: row.model,
+        modelType: row.modelType || 'image_generation',
+        provider: row.provider,
+        baseUrl: row.baseUrl,
+        generationPath: row.generationPath,
+        taskPath: row.taskPath,
+        apiKey: '',
+        enabled,
+        priority: row.priority,
+      }),
+    })
     modelApiKeys.value = modelApiKeys.value.map((item) =>
-      item.id === row.id ? { ...item, enabled: false } : item,
+      item.id === row.id ? updated : item,
     )
-    if (modelApiKeyForm.id === row.id) resetModelApiKeyForm()
-    showToast('模型密钥已停用')
+    if (modelApiKeyForm.id === row.id) modelApiKeyForm.enabled = enabled
+    showToast(enabled ? '模型密钥已启用' : '模型密钥已停用')
   } catch (error) {
-    showToast(error.message || '停用失败', 'error')
+    showToast(error.message || (enabled ? '启用失败' : '停用失败'), 'error')
   } finally {
     saving.value = false
   }
@@ -1320,8 +1500,9 @@ function selectTaskUser(userId = '') {
   closeDropdown('filterTaskUser')
 }
 
-function onDocClick() {
+function onDocClick(event) {
   Object.keys(dropdownOpen).forEach((k) => (dropdownOpen[k] = false))
+  if (!event?.target?.closest?.('.ai-feature-multi-select')) aiFeatureDropdownOpen.value = ''
   showDatePicker.value = false
   trendDropdownOpen.value = false
 }
@@ -1796,9 +1977,14 @@ watch([activeTab, stats, trendDimension, trendFilter, trendSelectedKeys], () => 
   })
 })
 
+watch(activeTab, (tab) => {
+  if (tab === 'ai-feature-mappings') refreshAiFeatureMappings()
+})
+
 function handleTrendResize() {
   drawTrendChart()
   if (trendDropdownOpen.value) updateTrendDropdownHeight()
+  aiFeatureDropdownOpen.value = ''
 }
 
 onMounted(() => {
@@ -1816,6 +2002,7 @@ onMounted(() => {
   document.addEventListener('visibilitychange', onVisibilityChange)
   document.addEventListener('click', onDocClick)
   window.addEventListener('resize', handleTrendResize)
+  window.addEventListener('scroll', closeAiFeatureDropdownOnScroll, true)
 })
 
 onUnmounted(() => {
@@ -1826,6 +2013,7 @@ onUnmounted(() => {
   document.removeEventListener('visibilitychange', onVisibilityChange)
   document.removeEventListener('click', onDocClick)
   window.removeEventListener('resize', handleTrendResize)
+  window.removeEventListener('scroll', closeAiFeatureDropdownOnScroll, true)
 })
 </script>
 
@@ -1897,7 +2085,7 @@ onUnmounted(() => {
     <p v-if="errorText" class="console-error">{{ errorText }}</p>
 
     <!-- Metrics with skeleton -->
-    <section v-if="!['finance', 'api-keys'].includes(activeTab)" class="console-metrics">
+    <section v-if="!['finance', 'api-keys', 'ai-feature-mappings'].includes(activeTab)" class="console-metrics">
       <template v-if="loading && !users.length">
         <article v-for="i in isAdmin ? 5 : 3" :key="i" class="console-skeleton-metric">
           <span class="console-skeleton-bar" style="width: 48px"></span>
@@ -2432,22 +2620,34 @@ onUnmounted(() => {
 
     <!-- Model API Keys Tab -->
     <section v-if="activeTab === 'api-keys'" class="console-grid console-api-key-grid">
-      <form class="console-card console-form" @submit.prevent="saveModelApiKey">
+      <div v-if="modelApiKeyDialogOpen" class="model-api-key-dialog" @click.self="closeModelApiKeyDialog">
+      <form class="console-card console-form" role="dialog" aria-modal="true" @submit.prevent="saveModelApiKey">
         <div class="console-form-head">
           <i class="ri-key-2-line" aria-hidden="true"></i>
           <h2>{{ modelApiKeyForm.id ? '编辑模型密钥' : '新增模型密钥' }}</h2>
+          <button class="model-api-key-dialog-close" type="button" aria-label="关闭" @click="closeModelApiKeyDialog">
+            ×
+          </button>
         </div>
         <label>
-          <span>配置名称</span>
+          <span>模型别名</span>
           <input v-model.trim="modelApiKeyForm.name" required />
+        </label>
+        <label>
+          <span>模型标识</span>
+          <input v-model.trim="modelApiKeyForm.model" required />
         </label>
         <div class="console-form-row">
           <label>
-            <span>模型</span>
-            <input v-model.trim="modelApiKeyForm.model" required />
+            <span>模型类型</span>
+            <select v-model="modelApiKeyForm.modelType" required>
+              <option v-for="option in modelApiKeyTypeOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
           </label>
           <label>
-            <span>通道</span>
+            <span>中转站标识</span>
             <input v-model.trim="modelApiKeyForm.provider" required />
           </label>
         </div>
@@ -2480,6 +2680,22 @@ onUnmounted(() => {
             :required="!modelApiKeyForm.id"
           />
         </label>
+        <div class="model-default-data">
+          <div class="model-default-data-head">
+            <span>默认数据</span>
+            <button type="button" :disabled="modelApiKeyForm.defaultData.length >= 50" @click="addModelDefaultParameter">
+              <i class="ri-add-line" aria-hidden="true"></i>添加参数
+            </button>
+          </div>
+          <div v-for="(entry, index) in modelApiKeyForm.defaultData" :key="index" class="model-default-data-row">
+            <input v-model.trim="entry.name" aria-label="参数名" placeholder="参数名" />
+            <input v-model.trim="entry.value" aria-label="参数值" placeholder="参数值" />
+            <button type="button" :aria-label="`删除参数 ${index + 1}`" @click="removeModelDefaultParameter(index)">
+              <i class="ri-delete-bin-line" aria-hidden="true"></i>
+            </button>
+          </div>
+          <small v-if="!modelApiKeyForm.defaultData.length">未配置</small>
+        </div>
         <div class="console-form-row">
           <label>
             <span>优先级</span>
@@ -2495,63 +2711,220 @@ onUnmounted(() => {
             <i class="ri-save-3-line" aria-hidden="true"></i>
             {{ saving ? '保存中...' : '保存配置' }}
           </button>
-          <button
-            v-if="modelApiKeyForm.id"
-            class="console-btn-ghost"
-            type="button"
-            @click="resetModelApiKeyForm"
-          >
-            取消编辑
+          <button class="console-btn-ghost" type="button" @click="closeModelApiKeyDialog">
+            取消
           </button>
         </div>
       </form>
+      </div>
 
-      <section class="console-card console-table-card">
-        <div class="console-card-head">
-          <h2>模型密钥列表</h2>
-          <span class="console-card-note">{{ modelApiKeys.length }} 条配置</span>
+      <section class="console-card console-table-card model-api-key-list">
+        <div class="console-card-head model-api-key-list-head">
+          <div>
+            <h2>模型管理列表</h2>
+            <span class="console-card-note">
+              显示 {{ filteredModelApiKeys.length }} / {{ modelApiKeyOverview.total }} 条配置
+            </span>
+          </div>
+          <button class="console-primary" type="button" @click="openNewModelApiKey">
+            <i class="ri-add-line" aria-hidden="true"></i>新增模型密钥
+          </button>
         </div>
+
+        <div class="model-api-key-summary">
+          <div>
+            <span>启用</span>
+            <strong>{{ modelApiKeyOverview.enabled }}</strong>
+          </div>
+          <div>
+            <span>停用</span>
+            <strong>{{ modelApiKeyOverview.disabled }}</strong>
+          </div>
+          <div>
+            <span>图片</span>
+            <strong>{{ modelApiKeyOverview.imageGeneration }}</strong>
+          </div>
+          <div>
+            <span>视频模型</span>
+            <strong>{{ modelApiKeyOverview.videoGeneration }}</strong>
+          </div>
+          <div>
+            <span>识图推理</span>
+            <strong>{{ modelApiKeyOverview.visionReasoning }}</strong>
+          </div>
+        </div>
+
+        <div class="model-api-key-filters">
+          <label class="console-search-box model-api-key-search">
+            <i class="ri-search-line" aria-hidden="true"></i>
+            <input v-model="modelApiKeySearch" placeholder="搜索名称、模型、中转站或接口" />
+          </label>
+          <select v-model="modelApiKeyTypeFilter" aria-label="按模型类型筛选">
+            <option value="all">全部类型</option>
+            <option v-for="option in modelApiKeyTypeOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+          <select v-model="modelApiKeyStatusFilter" aria-label="按状态筛选">
+            <option value="all">全部状态</option>
+            <option value="enabled">已启用</option>
+            <option value="disabled">已停用</option>
+          </select>
+          <select v-model="modelApiKeyProviderFilter" aria-label="按中转站筛选">
+            <option value="all">全部中转站</option>
+            <option v-for="provider in modelApiKeyProviders" :key="provider" :value="provider">
+              {{ providerLabel(provider) }}
+            </option>
+          </select>
+        </div>
+
         <div class="console-table api-key-table">
           <div class="console-row console-row-head">
-            <span>模型 / 通道</span>
-            <span>接口</span>
-            <span>密钥</span>
-            <span>状态</span>
+            <span>模型别名</span>
+            <span>中转站</span>
+            <span>模型</span>
+            <span>类型</span>
+            <span>API Key 值</span>
+            <span>默认数据</span>
+            <span>创建时间</span>
+            <span>更新时间</span>
             <span>操作</span>
           </div>
-          <div v-for="row in modelApiKeys" :key="row.id" class="console-row">
-            <span>
-              <strong>{{ row.model }}</strong>
-              <small>{{ row.name }} · {{ row.provider }}</small>
+          <div v-for="row in filteredModelApiKeys" :key="row.id" class="console-row model-api-key-row">
+            <span class="model-api-key-identity">
+              <strong :title="row.name">{{ row.name }}</strong>
             </span>
-            <span class="console-api-endpoint">
-              <strong>{{ row.baseUrl }}</strong>
-              <small>{{ row.generationPath }}</small>
+            <span class="model-api-key-provider">
+              <strong>{{ modelApiKeyProviderName(row) }}</strong>
             </span>
-            <span><code>{{ row.apiKeyMasked }}</code></span>
-            <span>
-              <b :class="['console-status', row.enabled ? 'is-active' : 'is-disabled']">
-                {{ row.enabled ? '启用' : '停用' }}
-              </b>
-              <small>优先级 {{ row.priority }}</small>
+            <span class="model-api-key-model">
+              <code :title="row.model">{{ row.model }}</code>
             </span>
-            <span class="console-row-actions">
-              <button type="button" @click="editModelApiKey(row)">
-                <i class="ri-edit-line"></i>编辑
+            <span class="model-api-key-type">{{ modelApiKeyTypeLabel(row.modelType) }}</span>
+            <span class="model-api-key-secret">
+              <code :title="row.apiKeyMasked">{{ row.hasApiKey ? row.apiKeyMasked : '未配置' }}</code>
+            </span>
+            <span
+              class="model-api-key-default-data"
+              :title="(row.defaultData || []).map((entry) => `${entry.name}=${entry.value}`).join('\n')"
+            >
+              <code v-for="entry in (row.defaultData || []).slice(0, 3)" :key="entry.name">
+                {{ entry.name }}: {{ entry.value }}
+              </code>
+              <small v-if="(row.defaultData || []).length > 3">+{{ row.defaultData.length - 3 }}</small>
+              <small v-if="!(row.defaultData || []).length">未配置</small>
+            </span>
+            <span class="model-api-key-time">{{ formatTime(row.createdAt) }}</span>
+            <span class="model-api-key-time">{{ formatTime(row.updatedAt) }}</span>
+            <span class="console-row-actions model-api-key-actions">
+              <button type="button" :disabled="saving" @click="editModelApiKey(row)">
+                <i class="ri-edit-line" aria-hidden="true"></i>编辑
               </button>
               <button
-                v-if="row.enabled"
                 type="button"
-                class="console-btn-danger"
-                @click="disableModelApiKey(row)"
+                :disabled="saving"
+                :class="{ 'console-btn-danger': row.enabled }"
+                @click="toggleModelApiKey(row)"
               >
-                <i class="ri-stop-circle-line"></i>停用
+                <i :class="row.enabled ? 'ri-stop-circle-line' : 'ri-play-circle-line'" aria-hidden="true"></i>
+                {{ row.enabled ? '停用' : '启用' }}
               </button>
             </span>
           </div>
-          <p v-if="!loading && !modelApiKeys.length" class="console-empty">暂无模型密钥</p>
+          <p v-if="!loading && !filteredModelApiKeys.length" class="console-empty">
+            {{ modelApiKeys.length ? '没有符合筛选条件的配置' : '暂无模型密钥' }}
+          </p>
         </div>
       </section>
+    </section>
+
+    <section v-if="activeTab === 'ai-feature-mappings'" class="console-card console-table-card ai-feature-map-card">
+      <div class="console-card-head">
+        <div>
+          <h2>AI 功能映射</h2>
+          <span class="console-card-note">配置各画布 AI 功能可使用的模型</span>
+        </div>
+        <button class="console-refresh" type="button" :disabled="aiFeatureMappingLoading" @click="refreshAiFeatureMappings">
+          <i :class="aiFeatureMappingLoading ? 'ri-loader-4-line console-spin' : 'ri-refresh-line'" aria-hidden="true"></i>
+          {{ aiFeatureMappingLoading ? '刷新中...' : '刷新映射' }}
+        </button>
+      </div>
+      <div class="ai-feature-map-list">
+        <div class="ai-feature-map-table-head" role="row">
+          <span>功能名称</span>
+          <span>功能埋点</span>
+          <span>模型类型</span>
+          <span>选择方式</span>
+          <span>映射规则</span>
+          <span>模型选择</span>
+          <span>操作</span>
+        </div>
+        <article v-for="row in aiFeatureMappings" :key="row.featureCode" class="ai-feature-map-row">
+          <div class="ai-feature-map-cell ai-feature-map-name"><strong>{{ row.featureName }}</strong></div>
+          <div class="ai-feature-map-cell ai-feature-map-code"><code>{{ row.featureCode }}</code></div>
+          <div class="ai-feature-map-cell ai-feature-map-type">{{ aiFeatureTypeLabel(row.modelType) }}</div>
+          <div class="ai-feature-map-cell ai-feature-map-selection">{{ aiFeatureSelectionLabel(row.selectionMode) }}</div>
+          <div class="ai-feature-map-cell ai-feature-map-policy">{{ row.modelPolicy }}</div>
+          <div class="ai-feature-map-config">
+            <template v-if="row.selectionMode === 'system_default'">
+              <label class="ai-feature-default-picker">
+                <select v-model.number="row.defaultApiKeyId">
+                  <option :value="null" disabled>选择默认模型</option>
+                  <option v-for="route in row.keyRoutes" :key="route.apiKeyId" :value="route.apiKeyId" :disabled="!route.enabled && route.apiKeyId !== row.defaultApiKeyId">
+                    {{ route.apiKeyName }}
+                  </option>
+                </select>
+              </label>
+              <p class="ai-feature-fallback">{{ row.fallbackRoute }}</p>
+            </template>
+            <template v-else>
+              <div v-if="row.keyRoutes?.length" class="ai-feature-multi-select" @click.stop>
+                <button
+                  class="ai-feature-multi-trigger"
+                  type="button"
+                  :aria-expanded="aiFeatureDropdownOpen === row.featureCode"
+                  @click.stop="toggleAiFeatureDropdown(row, $event)"
+                >
+                  <span>{{ row.selectedApiKeyIds?.length ? `已选择 ${row.selectedApiKeyIds.length} 个模型` : '请选择模型' }}</span>
+                  <i :class="aiFeatureDropdownOpen === row.featureCode ? 'ri-arrow-up-s-line' : 'ri-arrow-down-s-line'" aria-hidden="true"></i>
+                </button>
+              </div>
+              <p v-else class="ai-feature-no-keys">暂无可选模型</p>
+            </template>
+            <span v-if="row.selectionMode !== 'system_default'" class="ai-feature-key-count">{{ row.keyRoutes?.filter((item) => item.enabled).length || 0 }} 个模型可选</span>
+          </div>
+          <div class="ai-feature-map-actions">
+            <span :class="row.configured ? 'is-mapped' : ''">{{ row.configured ? '已生效' : '尚未保存' }}</span>
+            <button class="console-primary" type="button" :disabled="aiFeatureMappingSaving[row.featureCode]" @click="saveAiFeatureMapping(row)">
+              {{ aiFeatureMappingSaving[row.featureCode] ? '保存中...' : '保存映射' }}
+            </button>
+          </div>
+        </article>
+        <p v-if="!aiFeatureMappingLoading && !aiFeatureMappings.length" class="console-empty">
+          暂无 AI 功能映射
+        </p>
+      </div>
+      <Teleport to="body">
+        <div
+          v-if="activeAiFeatureDropdown"
+          ref="aiFeatureMenuRef"
+          class="ai-feature-multi-menu"
+          :style="aiFeatureDropdownStyle"
+          @click.stop
+        >
+          <div class="ai-feature-multi-menu-head">
+            <span>选择此功能可用的模型</span>
+            <div>
+              <button type="button" @click="setAllFeatureKeys(activeAiFeatureDropdown, true)">全选</button>
+              <button type="button" @click="setAllFeatureKeys(activeAiFeatureDropdown, false)">清空</button>
+            </div>
+          </div>
+          <label v-for="route in activeAiFeatureDropdown.keyRoutes" :key="route.apiKeyId" class="ai-feature-key-option" :class="{ 'is-disabled': !route.enabled }">
+            <input type="checkbox" :disabled="!route.enabled && !(activeAiFeatureDropdown.selectedApiKeyIds || []).includes(route.apiKeyId)" :checked="(activeAiFeatureDropdown.selectedApiKeyIds || []).includes(route.apiKeyId)" @change="toggleFeatureKey(activeAiFeatureDropdown, route.apiKeyId, $event.target.checked)">
+            <span class="ai-feature-key-main"><strong>{{ route.apiKeyName }}</strong></span>
+          </label>
+        </div>
+      </Teleport>
     </section>
 
     <!-- Finance Tab -->
@@ -4797,7 +5170,92 @@ onUnmounted(() => {
 }
 
 .console-api-key-grid {
-  grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.model-api-key-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(0 0 0 / 58%);
+}
+
+.model-api-key-dialog .console-form {
+  position: relative;
+  width: min(520px, 100%);
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+}
+
+.model-default-data {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--console-border);
+  border-radius: 6px;
+}
+
+.model-default-data-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--console-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.model-default-data-head button,
+.model-default-data-row button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--console-border);
+  border-radius: 5px;
+  color: var(--console-muted);
+  background: var(--console-surface-hover);
+}
+
+.model-default-data-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr) 32px;
+  gap: 7px;
+}
+
+.model-default-data-row input {
+  min-width: 0;
+}
+
+.model-default-data > small,
+.model-api-key-default-data > small {
+  color: var(--console-muted);
+}
+
+.model-api-key-dialog-close {
+  display: grid;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  margin-left: auto;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--console-border);
+  border-radius: 6px;
+  color: var(--console-muted);
+  background: var(--console-surface-hover);
+  font-size: 22px;
+  line-height: 1;
+}
+
+.model-api-key-dialog-close:hover {
+  border-color: var(--console-accent);
+  color: var(--console-accent);
+  background: var(--console-accent-soft);
 }
 
 .console-form-row {
@@ -4834,26 +5292,455 @@ onUnmounted(() => {
   font-size: 12px;
 }
 
-.api-key-table .console-row {
-  grid-template-columns: minmax(150px, 0.9fr) minmax(220px, 1.45fr) minmax(110px, 0.7fr) 100px 150px;
+.model-api-key-list-head > div {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 10px;
 }
 
-.api-key-table .console-row > span,
-.console-api-endpoint {
+.model-api-key-list-head {
+  align-items: center;
+}
+
+.model-api-key-summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(92px, 1fr));
+  margin-bottom: 12px;
+  overflow-x: auto;
+  border: 1px solid var(--console-border);
+  border-radius: 7px;
+  background: var(--console-input);
+}
+
+.model-api-key-summary > div {
+  display: flex;
+  min-height: 54px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 11px;
+  border-right: 1px solid var(--console-border);
+}
+
+.model-api-key-summary > div:last-child {
+  border-right: 0;
+}
+
+.model-api-key-summary span {
+  color: var(--console-muted);
+  font-size: 11px;
+}
+
+.model-api-key-summary strong {
+  font-size: 18px;
+}
+
+.model-api-key-filters {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(150px, auto) minmax(120px, auto) minmax(140px, auto);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.model-api-key-filters .console-search-box {
+  display: flex;
+  width: auto;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+}
+
+.model-api-key-filters select {
+  min-width: 0;
+  padding: 0 28px 0 10px;
+}
+
+.api-key-table {
+  overflow-x: auto;
+}
+
+.ai-feature-map-list {
+  min-width: 0;
+  overflow-x: auto;
+  border: 1px solid var(--console-border);
+  border-radius: 6px;
+}
+
+.ai-feature-map-table-head,
+.ai-feature-map-row {
+  display: grid;
+  grid-template-columns: 170px 125px 105px 105px minmax(220px, 1fr) minmax(280px, 1.2fr) 140px;
+  min-width: 1240px;
+  align-items: stretch;
+}
+
+.ai-feature-map-table-head {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  background: var(--console-surface-raised);
+  color: var(--console-muted);
+  font-size: 11px;
+}
+
+.ai-feature-map-table-head > span {
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--console-border);
+}
+
+.ai-feature-map-row {
+  padding: 0;
+  border-bottom: 1px solid var(--console-border);
+}
+
+.ai-feature-map-row:last-of-type {
+  border-bottom: 0;
+}
+
+.ai-feature-map-cell,
+.ai-feature-map-config {
   min-width: 0;
 }
 
-.api-key-table strong,
-.api-key-table small {
+.ai-feature-map-cell {
+  display: flex;
+  align-items: center;
+  padding: 14px 12px;
+  color: var(--console-text);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.ai-feature-map-name strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ai-feature-map-code code {
+  color: var(--console-accent-strong);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.ai-feature-map-type,
+.ai-feature-map-selection {
+  color: var(--console-muted);
+}
+
+.ai-feature-map-policy {
+  color: var(--console-muted);
+}
+
+.ai-feature-map-config {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 6px;
+  padding: 12px;
+}
+
+.ai-feature-map-code {
+  color: var(--console-muted);
+  font-size: 11px;
+}
+
+.ai-feature-fallback {
+  margin: 0;
+  color: var(--console-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.ai-feature-key-count {
+  color: var(--console-muted);
+  font-size: 10px;
+}
+
+.ai-feature-map-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+}
+
+.ai-feature-map-actions > span {
+  color: var(--console-muted);
+  font-size: 11px;
+}
+
+.ai-feature-map-actions > span.is-mapped {
+  color: var(--console-success, #20c997);
+}
+
+.ai-feature-map-actions .console-primary {
+  min-width: 112px;
+}
+
+.ai-feature-multi-select {
+  position: relative;
+  width: min(100%, 300px);
+}
+
+.ai-feature-multi-trigger {
+  display: flex;
+  width: 100%;
+  min-height: 42px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px;
+  border: 1px solid var(--console-border-strong);
+  border-radius: 6px;
+  background: var(--console-input);
+  color: var(--console-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-feature-multi-trigger:hover,
+.ai-feature-multi-trigger[aria-expanded='true'] {
+  border-color: var(--console-accent);
+}
+
+.ai-feature-multi-trigger > span {
+  overflow: hidden;
+  color: var(--console-muted);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-feature-multi-trigger i {
+  color: var(--console-muted);
+  font-size: 16px;
+}
+
+.ai-feature-multi-menu {
+  position: fixed;
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--console-border-strong);
+  border-radius: 6px;
+  background: var(--console-surface-raised);
+  box-shadow: var(--console-shadow);
+}
+
+.ai-feature-multi-menu-head {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--console-border);
+  background: var(--console-surface-raised);
+}
+
+.ai-feature-multi-menu-head > span {
+  color: var(--console-muted);
+  font-size: 11px;
+}
+
+.ai-feature-multi-menu-head > div {
+  display: flex;
+  gap: 10px;
+}
+
+.ai-feature-multi-menu-head button {
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--console-accent-strong);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ai-feature-key-option {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  column-gap: 8px;
+  min-width: 0;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--console-border);
+  color: var(--console-text);
+  cursor: pointer;
+}
+
+.ai-feature-key-option:last-child {
+  border-bottom: 0;
+}
+
+.ai-feature-key-option:has(input:checked) {
+  background: var(--console-accent-soft);
+}
+
+.ai-feature-key-option:hover {
+  background: var(--console-surface-hover);
+}
+
+.ai-feature-key-option input {
+  width: 15px;
+  height: 15px;
+  margin: 2px 0 0;
+  accent-color: var(--console-accent-strong);
+}
+
+.ai-feature-key-option.is-disabled {
+  opacity: 0.62;
+  cursor: not-allowed;
+}
+
+.ai-feature-key-main {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.ai-feature-key-main strong {
+  overflow: hidden;
+  color: var(--console-text);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-feature-default-picker {
   display: block;
+  width: min(100%, 300px);
+}
+
+.console-page .ai-feature-default-picker select {
+  width: 100%;
+  color: var(--console-muted);
+  font: 400 13px/1.4 Inter, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif !important;
+}
+
+.console-page .ai-feature-default-picker select option {
+  font: 400 13px/1.4 Inter, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+}
+
+.ai-feature-no-keys {
+  margin: 0;
+  padding: 12px;
+  border: 1px dashed var(--console-border);
+  border-radius: 6px;
+  color: var(--console-muted);
+  font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .ai-feature-map-table-head,
+  .ai-feature-map-row {
+    min-width: 1180px;
+  }
+
+  .ai-feature-map-table-head {
+    position: static;
+  }
+}
+
+@media (max-width: 640px) {
+  .ai-feature-multi-menu {
+    max-height: min(320px, 50vh);
+  }
+
+}
+
+.ai-call-selection {
+  color: var(--console-text);
+}
+
+.ai-call-selection.is-dropdown {
+  color: var(--console-accent-strong);
+}
+
+.api-key-table .console-row {
+  grid-template-columns: minmax(165px, 1.1fr) minmax(130px, 0.85fr) minmax(140px, 0.95fr) minmax(100px, 0.65fr) minmax(130px, 0.85fr) minmax(150px, 1fr) minmax(135px, 0.9fr) minmax(135px, 0.9fr) 150px;
+  min-width: 1410px;
+}
+
+.api-key-table .console-row > span {
+  min-width: 0;
+}
+
+.model-api-key-identity,
+.model-api-key-provider,
+.model-api-key-model,
+.model-api-key-secret,
+.model-api-key-default-data {
+  display: grid;
+  min-width: 0;
+  align-content: center;
+  justify-items: start;
+  gap: 5px;
+}
+
+.model-api-key-identity > strong,
+.model-api-key-provider > strong,
+.model-api-key-provider > code,
+.model-api-key-model > code,
+.model-api-key-secret > code,
+.model-api-key-default-data > code {
+  display: block;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.model-api-key-default-data {
+  max-height: 58px;
+  overflow: auto;
+  align-content: start;
+  gap: 3px;
+}
+
+.model-api-key-default-data > code {
+  font-size: 11px;
+}
+
 .api-key-table code {
   color: var(--console-text);
   font-size: 12px;
+}
+
+.model-api-key-provider > code,
+.model-api-key-model > code {
+  color: var(--console-accent);
+}
+
+.model-api-key-type {
+  align-self: center;
+  color: var(--console-accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.model-api-key-secret > code {
+  font-weight: 600;
+}
+
+.model-api-key-time {
+  align-self: center;
+  color: var(--console-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.model-api-key-actions {
+  align-content: center;
 }
 
 .console-status {
@@ -4874,6 +5761,12 @@ onUnmounted(() => {
 .console-status.is-disabled {
   color: var(--console-muted);
   background: var(--console-surface-hover);
+}
+
+@media (max-width: 1280px) {
+  .console-api-key-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .console-stats {
@@ -5551,6 +6444,14 @@ onUnmounted(() => {
   .console-form {
     position: static;
   }
+
+  .model-api-key-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .model-api-key-search {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 560px) {
@@ -5579,6 +6480,14 @@ onUnmounted(() => {
   .console-filter-select,
   .task-user-filter {
     width: 100% !important;
+  }
+
+  .model-api-key-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .model-api-key-search {
+    grid-column: auto;
   }
 }
 </style>

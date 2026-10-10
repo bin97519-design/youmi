@@ -48,9 +48,9 @@ class CanvasAgentModelSelectionTest {
     assertEquals("enhanced", response.prompt());
     verifyNoInteractions(legacy);
     when(legacy.isConfigured()).thenReturn(true);
-    when(legacy.complete(anyList(), anyDouble())).thenReturn(new AiChatDtos.CompletionResult("teamorouter", "old-model", "old result"));
+    when(legacy.completeCanvasAgent(anyList(), anyDouble())).thenReturn(new AiChatDtos.CompletionResult("teamorouter", "old-model", "old result"));
     assertEquals("old-model", service.enhancePrompt(new CanvasAgentDtos.EnhancePromptRequest("prompt")).model());
-    verify(legacy).complete(anyList(), eq(0.3));
+    verify(legacy).completeCanvasAgent(anyList(), eq(0.3));
   }
 
   @Test void missingGemKeyDoesNotFallbackToLegacy() throws Exception {

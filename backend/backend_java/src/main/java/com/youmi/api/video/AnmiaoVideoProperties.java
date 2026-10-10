@@ -73,16 +73,25 @@ public class AnmiaoVideoProperties {
   }
 
   public Map<String, Integer> availableRates() {
+    return availableRates(false);
+  }
+
+  public Map<String, Integer> availableRates(boolean configuredModelKey) {
     String key = apiKeyForModel(AnmiaoVideoClient.MODEL);
-    if (key == null || key.isBlank())
+    if (!configuredModelKey && (key == null || key.isBlank()))
       return Map.of("480p", 0, "720p", 0, "1080p", 0, "4k", 0);
     return Map.of("480p", miPerSecond("480p"), "720p", miPerSecond("720p"),
         "1080p", miPerSecond("1080p"), "4k", miPerSecond("4k"));
   }
 
   public Map<String, Integer> availableRates25() {
+    return availableRates25(false);
+  }
+
+  public Map<String, Integer> availableRates25(boolean configuredModelKey) {
     String key = apiKeyForModel(AnmiaoVideoClient.MODEL25);
-    if (key == null || key.isBlank()) return Map.of("480p", 0, "720p", 0, "1080p", 0);
+    if (!configuredModelKey && (key == null || key.isBlank()))
+      return Map.of("480p", 0, "720p", 0, "1080p", 0);
     return Map.of("480p", miPerSecond25("480p"), "720p", miPerSecond25("720p"),
         "1080p", miPerSecond25("1080p"));
   }

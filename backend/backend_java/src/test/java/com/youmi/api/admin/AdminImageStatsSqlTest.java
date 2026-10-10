@@ -19,6 +19,15 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 
 class AdminImageStatsSqlTest {
+  @Test
+  void lingkeProviderAliasesShareOneStatisticsKey() {
+    assertEquals("lingke", AdminService.canonicalProvider("LK888"));
+    assertEquals("lingke", AdminService.canonicalProvider("youmi888"));
+    assertEquals("lingke", AdminService.canonicalProvider("youmi888-backup"));
+    assertEquals("lingke", AdminService.canonicalProvider("model-api"));
+    assertEquals("lingke", AdminService.canonicalProvider("model-api:42"));
+  }
+
   @SuppressWarnings({"rawtypes", "unchecked"})
   @Test
   void ordinaryUserTrendQueriesKeepWhitespaceBeforeGroupBy() {

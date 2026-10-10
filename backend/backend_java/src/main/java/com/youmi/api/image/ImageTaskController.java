@@ -38,6 +38,7 @@ public class ImageTaskController {
   private final AdminAuthService adminAuthService;
   private final MiValueService miValueService;
   private final ImageMiValuePricingService pricingService;
+  private ModelApiKeyService modelApiKeyService;
 
   public ImageTaskController(
       ImageGenerationClient imageGenerationClient,
@@ -52,9 +53,34 @@ public class ImageTaskController {
     this.pricingService = pricingService;
   }
 
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  void setModelApiKeyService(ModelApiKeyService modelApiKeyService) {
+    this.modelApiKeyService = modelApiKeyService;
+  }
+
   @GetMapping("/status")
   public ApiResponse<ImageGenerationDtos.StatusResponse> status() {
     return ApiResponse.ok(imageGenerationClient.status());
+  }
+
+  @GetMapping("/canvas-models")
+  public ApiResponse<CanvasModelsResponse> canvasModels() {
+    if (modelApiKeyService == null) return ApiResponse.ok(new CanvasModelsResponse(false, java.util.List.of()));
+    java.util.List<ModelApiKeyDtos.ModelOption> options = modelApiKeyService.enabledModelOptions(
+        ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, "canvas-image");
+    return ApiResponse.ok(new CanvasModelsResponse(
+        modelApiKeyService.isFeatureMappingConfigured("canvas-image"),
+        options.stream().map(ModelApiKeyDtos.ModelOption::value).distinct().toList(),
+        options));
+  }
+
+  public record CanvasModelsResponse(
+      boolean mappingConfigured,
+      java.util.List<String> models,
+      java.util.List<ModelApiKeyDtos.ModelOption> options) {
+    public CanvasModelsResponse(boolean mappingConfigured, java.util.List<String> models) {
+      this(mappingConfigured, models, java.util.List.of());
+    }
   }
 
   @GetMapping("/today-global-count")

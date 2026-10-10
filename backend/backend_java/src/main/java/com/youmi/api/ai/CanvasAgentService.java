@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.core.json.JsonReadFeature;
 import com.youmi.api.common.ApiException;
+import com.youmi.api.image.ModelApiKeyDtos;
+import com.youmi.api.image.ModelApiKeyService;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -31,6 +33,7 @@ public class CanvasAgentService {
   private final ObjectMapper agentResponseMapper;
   private final AgentChatClient agentChatClient;
   private final GemAgentClient gemAgentClient;
+  private final ModelApiKeyService modelApiKeyService;
 
   public CanvasAgentService(
       ObjectMapper objectMapper,
@@ -38,9 +41,17 @@ public class CanvasAgentService {
     this(objectMapper, agentChatClient, new GemAgentClient(objectMapper, new GemAgentProperties()));
   }
 
-  @Autowired
   public CanvasAgentService(
       ObjectMapper objectMapper, AgentChatClient agentChatClient, GemAgentClient gemAgentClient) {
+    this(objectMapper, agentChatClient, gemAgentClient, null);
+  }
+
+  @Autowired
+  public CanvasAgentService(
+      ObjectMapper objectMapper,
+      AgentChatClient agentChatClient,
+      GemAgentClient gemAgentClient,
+      ModelApiKeyService modelApiKeyService) {
     this.objectMapper = objectMapper;
     this.agentResponseMapper = objectMapper.copy()
         .enable(JsonReadFeature.ALLOW_TRAILING_COMMA.mappedFeature())
@@ -48,12 +59,28 @@ public class CanvasAgentService {
         .enable(JsonReadFeature.ALLOW_SINGLE_QUOTES.mappedFeature());
     this.agentChatClient = agentChatClient;
     this.gemAgentClient = gemAgentClient;
+    this.modelApiKeyService = modelApiKeyService;
   }
 
   public List<CanvasAgentDtos.AgentModelOption> models() {
-    return List.of(
-        new CanvasAgentDtos.AgentModelOption("default", agentChatClient.model(), agentChatClient.isConfigured()),
-        new CanvasAgentDtos.AgentModelOption(GemAgentClient.MODEL, "GEM 3.8 flash", gemAgentClient.isConfigured()));
+    List<CanvasAgentDtos.AgentModelOption> options = new ArrayList<>();
+    options.add(new CanvasAgentDtos.AgentModelOption(
+        "default", agentChatClient.model(), agentChatClient.isConfigured()));
+    boolean configuredGem = modelApiKeyService != null && modelApiKeyService
+        .resolve(GemAgentClient.MODEL, ModelApiKeyService.MODEL_TYPE_VISION_REASONING, "canvas-agent").isPresent();
+    if (!configuredGem && (modelApiKeyService == null
+        || !modelApiKeyService.isFeatureMappingConfigured("canvas-agent"))) {
+      options.add(new CanvasAgentDtos.AgentModelOption(
+          GemAgentClient.MODEL, "GEM 3.8 flash", gemAgentClient.isConfigured()));
+    }
+    if (modelApiKeyService != null) {
+      for (ModelApiKeyDtos.ModelOption option : modelApiKeyService.enabledModelOptions(
+          ModelApiKeyService.MODEL_TYPE_VISION_REASONING, "canvas-agent")) {
+        options.add(new CanvasAgentDtos.AgentModelOption(
+            option.value(), option.label() + " · " + option.value(), true));
+      }
+    }
+    return options;
   }
 
   private boolean useGem(String model) {
@@ -65,9 +92,14 @@ public class CanvasAgentService {
   private AiChatDtos.CompletionResult completeText(
       String agentModel, String systemPrompt, String userPrompt, double temperature,
       boolean jsonResponse) throws Exception {
+    var configured = resolveConfiguredAgent(agentModel);
+    if (configured != null) {
+      return agentChatClient.completeConfiguredModel(
+          configured, systemPrompt, userPrompt, List.of(), temperature);
+    }
     if (useGem(agentModel)) return gemAgentClient.complete(systemPrompt, userPrompt, List.of(), temperature, jsonResponse);
     if (!agentChatClient.isConfigured()) throw new IllegalStateException("Canvas Agent language model is not configured");
-    return agentChatClient.complete(List.of(
+    return agentChatClient.completeCanvasAgent(List.of(
         new AiChatDtos.Message("system", systemPrompt), new AiChatDtos.Message("user", userPrompt)), temperature);
   }
 
@@ -308,19 +340,35 @@ public class CanvasAgentService {
       String systemPrompt,
       String userPrompt,
       List<String> referenceImageUrls, String agentModel) throws Exception {
+    var configured = resolveConfiguredAgent(agentModel);
+    if (configured != null) {
+      return agentChatClient.completeConfiguredModel(
+          configured, systemPrompt, userPrompt, referenceImageUrls, 0.2);
+    }
     if (useGem(agentModel)) return gemAgentClient.complete(systemPrompt, userPrompt, referenceImageUrls, 0.2, true);
     if (!agentChatClient.isConfigured()) {
       throw new IllegalStateException("Canvas Agent language model is not configured");
     }
     if (referenceImageUrls != null && !referenceImageUrls.isEmpty()) {
-      return agentChatClient.completeVision(
+      return agentChatClient.completeCanvasAgentVision(
           systemPrompt, userPrompt, referenceImageUrls, 0.2);
     }
-    return agentChatClient.complete(
+    return agentChatClient.completeCanvasAgent(
         List.of(
             new AiChatDtos.Message("system", systemPrompt),
             new AiChatDtos.Message("user", userPrompt)),
         0.2);
+  }
+
+  private ModelApiKeyService.ResolvedModelApiKey resolveConfiguredAgent(String model) {
+    if (modelApiKeyService == null || model == null || model.isBlank()) return null;
+    var resolved = modelApiKeyService.resolve(model, ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
+        "canvas-agent");
+    if (resolved.isEmpty() && modelApiKeyService.isFeatureMappingConfigured("canvas-agent")
+        && modelApiKeyService.hasEnabledModel(model, ModelApiKeyService.MODEL_TYPE_VISION_REASONING)) {
+      throw new ApiException(400, "所选 Agent 模型未映射到画布功能");
+    }
+    return resolved.orElse(null);
   }
 
   private AiChatDtos.CompletionResult repairChatResponse(String malformedContent, String agentModel) throws Exception {

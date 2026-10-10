@@ -43,8 +43,12 @@ export const MINIMAX_VIDEO_RESOLUTIONS = [
   { value: '2k', label: '2K' },
   { value: '4k', label: '4K' },
 ]
+export const isAnmiao25VideoModel = (model) =>
+  model === ANMIAO25_VIDEO_MODEL || String(model || '').toLowerCase().includes('seedance-2.5-guanfang-anmiao')
 export const isPerSecondVideoModel = (model) =>
-  [ANMIAO_VIDEO_MODEL, ANMIAO25_VIDEO_MODEL, MINIMAX_VIDEO_MODEL].includes(model)
+  [ANMIAO_VIDEO_MODEL, ANMIAO25_VIDEO_MODEL, MINIMAX_VIDEO_MODEL].includes(model) ||
+  String(model || '').toLowerCase().includes('seedance-2.0-guanfang-anmiao') ||
+  isAnmiao25VideoModel(model)
 export const WHOLE_VIDEO_30_MODELS = [
   { value: WHOLE_VIDEO_30_MODEL, label: 'SD2.5 整片 30 秒' },
   { value: ANMIAO25_VIDEO_MODEL, label: 'SD2.5 满血按秒 · 30 秒' },

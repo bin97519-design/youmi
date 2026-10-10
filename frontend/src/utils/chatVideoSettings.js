@@ -7,11 +7,15 @@ import {
   MINIMAX_VIDEO_RESOLUTIONS,
   isRetiredVideoModel,
   isPerSecondVideoModel,
+  isAnmiao25VideoModel,
 } from './productVideo.js'
+
+const isAnmiao20VideoModel = (model) =>
+  model === ANMIAO_VIDEO_MODEL || String(model || '').toLowerCase().includes('seedance-2.0-guanfang-anmiao')
 
 export function videoResolutionForModel(model) {
   if (model === MINIMAX_VIDEO_MODEL) return '768p'
-  return [ANMIAO_VIDEO_MODEL, ANMIAO25_VIDEO_MODEL].includes(model) ||
+  return isAnmiao20VideoModel(model) || isAnmiao25VideoModel(model) ||
     String(model).endsWith('-720p')
     ? '720p'
     : '480p'
@@ -20,17 +24,17 @@ export function videoResolutionForModel(model) {
 export function videoResolutionOptions(model) {
   if (isRetiredVideoModel(model)) return []
   if (model === MINIMAX_VIDEO_MODEL) return MINIMAX_VIDEO_RESOLUTIONS.map((option) => option.value)
-  if (model === ANMIAO_VIDEO_MODEL) return ANMIAO_VIDEO_RESOLUTIONS.map((option) => option.value)
-  if (model === ANMIAO25_VIDEO_MODEL)
+  if (isAnmiao20VideoModel(model)) return ANMIAO_VIDEO_RESOLUTIONS.map((option) => option.value)
+  if (isAnmiao25VideoModel(model))
     return ANMIAO25_VIDEO_RESOLUTIONS.map((option) => option.value)
   return [videoResolutionForModel(model)]
 }
 
 export function videoDurationOptions(model) {
   if (isRetiredVideoModel(model)) return []
-  if ([ANMIAO_VIDEO_MODEL, MINIMAX_VIDEO_MODEL].includes(model))
+  if (isAnmiao20VideoModel(model) || model === MINIMAX_VIDEO_MODEL)
     return Array.from({ length: 12 }, (_, index) => index + 4)
-  if (model === ANMIAO25_VIDEO_MODEL) return Array.from({ length: 27 }, (_, index) => index + 4)
+  if (isAnmiao25VideoModel(model)) return Array.from({ length: 27 }, (_, index) => index + 4)
   return [15]
 }
 
@@ -43,14 +47,14 @@ export function validVideoDuration(model, duration) {
 }
 
 export function videoRatioForRequest(model, referenceCount, ratio) {
-  return model === ANMIAO25_VIDEO_MODEL && referenceCount === 1 ? 'adaptive' : ratio
+  return isAnmiao25VideoModel(model) && referenceCount === 1 ? 'adaptive' : ratio
 }
 
 export function estimatedVideoMiCost(model, resolution, duration, capabilities) {
   if (!model || isRetiredVideoModel(model)) return null
   if (!isPerSecondVideoModel(model)) return 50
   if (!validVideoResolution(model, resolution) || !validVideoDuration(model, duration)) return null
-  const model25 = model === ANMIAO25_VIDEO_MODEL
+  const model25 = isAnmiao25VideoModel(model)
   const minimax = model === MINIMAX_VIDEO_MODEL
   const rates = minimax
     ? capabilities?.minimaxMiPerSecondByResolution
@@ -69,7 +73,7 @@ export function estimatedVideoMiCost(model, resolution, duration, capabilities) 
 export function videoReferenceLimit(model, mode) {
   if (isRetiredVideoModel(model)) return 0
   if (model === MINIMAX_VIDEO_MODEL) return mode === 'shouweizhen' ? 2 : 9
-  return model === ANMIAO25_VIDEO_MODEL ? 30 : model === ANMIAO_VIDEO_MODEL ? 9 : 15
+  return isAnmiao25VideoModel(model) ? 30 : isAnmiao20VideoModel(model) ? 9 : 15
 }
 
 export function videoReferencePayload(model, mode, imageUrls) {

@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.TextNode;
 import com.youmi.api.common.ApiException;
+import com.youmi.api.ai.AiCallLogService;
 import com.youmi.api.file.OssStorageService;
 import java.io.ByteArrayInputStream;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -71,9 +72,12 @@ public class ImageGenerationClient {
   @Autowired(required = false)
   private JdbcTemplate jdbcTemplate;
   private ModelApiKeyService modelApiKeyService;
+  private AiCallLogService aiCallLogService;
   // 异步持久化去重：标记正在持久化的复合 taskId（其值 = ym_image_task.task_id）
   private final ConcurrentHashMap<String, Boolean> persistingTaskIds = new ConcurrentHashMap<>();
   private final ThreadLocal<Long> requestUserId = new ThreadLocal<>();
+  private final ThreadLocal<String> telemetryModel = new ThreadLocal<>();
+  private final ThreadLocal<Long> telemetryApiKeyId = new ThreadLocal<>();
   // 持久化专用线程池：避免轮询请求内同步阻塞，且不引入自注入造成的循环依赖
   private final ThreadPoolTaskExecutor persistExecutor = buildPersistExecutor();
   // Agnes 上游是同步接口；用独立线程池包装成内部异步任务，避免一次生成阻塞后续提交。
@@ -103,6 +107,11 @@ public class ImageGenerationClient {
   @Autowired(required = false)
   void setModelApiKeyService(ModelApiKeyService modelApiKeyService) {
     this.modelApiKeyService = modelApiKeyService;
+  }
+
+  @Autowired(required = false)
+  void setAiCallLogService(AiCallLogService aiCallLogService) {
+    this.aiCallLogService = aiCallLogService;
   }
 
   /** 构建持久化专用线程池（有界，避免无限制创建线程） */
@@ -179,6 +188,21 @@ public class ImageGenerationClient {
     if (request == null) {
       throw new ApiException(400, "request is required");
     }
+    Optional<ModelApiKeyService.ResolvedModelApiKey> credential = resolveModelApiCredential(
+        request.model(), request.featureCode());
+    telemetryModel.set(request.model());
+    if (credential.isPresent()) telemetryApiKeyId.set(credential.get().id());
+    try {
+      return createTaskInternal(request, credential);
+    } finally {
+      telemetryModel.remove();
+      telemetryApiKeyId.remove();
+    }
+  }
+
+  private ImageGenerationDtos.CreateTaskResponse createTaskInternal(
+      ImageGenerationDtos.CreateTaskRequest request,
+      Optional<ModelApiKeyService.ResolvedModelApiKey> modelCredential) throws Exception {
     String resolvedModel = properties.resolveModel(request.model());
     boolean waveSpeedMultiAngle = properties.isWaveSpeedMultiAngleModel(resolvedModel);
     if (!waveSpeedMultiAngle
@@ -186,9 +210,6 @@ public class ImageGenerationClient {
       throw new ApiException(400, "prompt is required");
     }
     request = ImagePromptPresets.expand(request);
-
-    Optional<ModelApiKeyService.ResolvedModelApiKey> modelCredential =
-        resolveModelApiCredential(request.model());
 
     if (!properties.isConfigured()
         && !properties.isApimartDirectConfigured()
@@ -1062,7 +1083,7 @@ public class ImageGenerationClient {
         params.put("aspect_ratio", aspectRatio);
         params.put("resolution", resolution);
         params.put("quality", "high");
-        params.put("background", "opaque");
+        params.put("background", "auto");
       } else if (isBananaProModel(upstreamModel)) {
         params.put("aspectRatio", aspectRatio);
         params.put("imageSize", resolution);
@@ -1073,6 +1094,7 @@ public class ImageGenerationClient {
         params.put("web_search", true);
         params.put("thinkingLevel", "minimal");
       }
+      credential.defaultData().forEach(params::putIfAbsent);
       if (!imageUrls.isEmpty()) params.put("images", imageUrls);
 
       Map<String, Object> body = new LinkedHashMap<>();
@@ -1106,9 +1128,17 @@ public class ImageGenerationClient {
   }
 
   private Optional<ModelApiKeyService.ResolvedModelApiKey> resolveModelApiCredential(
-      String requestedModel) {
+      String requestedModel, String featureCode) {
     if (modelApiKeyService == null || requestedModel == null) return Optional.empty();
     String normalized = requestedModel.trim();
+    if ("canvas-image".equals(featureCode)) {
+      Optional<ModelApiKeyService.ResolvedModelApiKey> mapped = modelApiKeyService.resolve(
+          normalized, ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, "canvas-image");
+      if (mapped.isPresent()) return mapped;
+      if (modelApiKeyService.isFeatureMappingConfigured("canvas-image")) {
+        throw new ApiException(400, "该生图模型未映射到已启用的模型密钥");
+      }
+    }
     if (normalized.equalsIgnoreCase(MODEL_API_BANANA_PRO_REQUEST_MODEL)) {
       return modelApiKeyService.resolve("banana-pro");
     }
@@ -2108,8 +2138,11 @@ public class ImageGenerationClient {
     // 首次失败后重试一次（重建连接），常见于 "header parser received no bytes" 错误
     Exception lastError = null;
     for (int attempt = 0; attempt < 2; attempt++) {
+      long started = System.nanoTime();
       try {
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        recordImageCall(providerLabel, request.method(), response.statusCode() >= 200 && response.statusCode() < 300,
+            response.statusCode(), started, null);
         JsonNode root = parseBody(response.body());
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
           String body = compact(response.body());
@@ -2133,11 +2166,14 @@ public class ImageGenerationClient {
         }
         return root;
       } catch (java.net.http.HttpTimeoutException e) {
+        recordImageCall(providerLabel, request.method(), false, null, started, e);
         if (attempt == 0) { lastError = e; continue; }
         throw new ApiException(504, providerLabel + " request timed out: " + e.getMessage(), e);
       } catch (javax.net.ssl.SSLException e) {
+        recordImageCall(providerLabel, request.method(), false, null, started, e);
         throw new ApiException(502, providerLabel + " SSL/HTTP error (server closed connection): " + e.getMessage(), e);
       } catch (java.io.IOException e) {
+        recordImageCall(providerLabel, request.method(), false, null, started, e);
         String msg = e.getMessage();
         if (msg != null && msg.contains("header parser received no bytes")) {
           if (attempt == 0) { lastError = e; continue; }
@@ -2147,6 +2183,16 @@ public class ImageGenerationClient {
       }
     }
     throw new ApiException(502, providerLabel + " request failed after retry: " + (lastError != null ? lastError.getMessage() : "unknown"));
+  }
+
+  private void recordImageCall(String provider, String method, boolean success,
+      Integer httpStatus, long started, Exception error) {
+    if (aiCallLogService == null) return;
+    aiCallLogService.record("canvas-image", "GET".equalsIgnoreCase(method) ? "query" : "generate",
+        provider, telemetryModel.get(),
+        telemetryApiKeyId.get(), "dropdown", success, httpStatus,
+        (System.nanoTime() - started) / 1_000_000L,
+        error == null ? null : error.getClass().getSimpleName());
   }
 
   private String getTokenGenerationPath(String getTokenModel, List<String> imageUrls) {

@@ -3,6 +3,7 @@ package com.youmi.api.video;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.youmi.api.common.ApiException;
+import com.youmi.api.ai.AiCallLogService;
 import com.youmi.api.file.OssStorageService;
 import java.io.InputStream;
 import java.net.URI;
@@ -21,6 +22,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 
 /** THQ video generation client. API keys stay on the backend and completed videos are persisted to OSS. */
 @Service
@@ -39,6 +41,8 @@ public class VideoGenerationClient {
   private final VideoGenerationProperties properties;
   private final OssStorageService ossStorageService;
   private final HttpClient httpClient;
+  private AiCallLogService aiCallLogService;
+  private final ThreadLocal<String> telemetryModel = new ThreadLocal<>();
   private final ConcurrentMap<String, String> persistedVideoUrls = new ConcurrentHashMap<>();
   private final ConcurrentMap<String, Object> persistLocks = new ConcurrentHashMap<>();
 
@@ -56,11 +60,17 @@ public class VideoGenerationClient {
         .build();
   }
 
+  @Autowired(required = false)
+  void setAiCallLogService(AiCallLogService service) { this.aiCallLogService = service; }
+
   public VideoGenerationDtos.CreateTaskResponse createTask(VideoGenerationDtos.CreateTaskRequest request)
       throws Exception {
     NormalizedRequest normalized = normalizeRequest(request);
     requireConfigured();
-    JsonNode root = sendJsonCreate(normalized);
+    telemetryModel.set(normalized.model());
+    JsonNode root;
+    try { root = sendJsonCreate(normalized); }
+    finally { telemetryModel.remove(); }
     ensureSuccessful(root, "THQ video create");
 
     String taskId = firstNonBlank(
@@ -315,7 +325,16 @@ public class VideoGenerationClient {
   }
 
   private JsonNode send(HttpRequest request, String operation) throws Exception {
-    HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+    long started = System.nanoTime();
+    HttpResponse<String> response;
+    try {
+      response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+    } catch (Exception error) {
+      recordCall(operation, false, null, started, error);
+      throw error;
+    }
+    boolean success = response.statusCode() >= 200 && response.statusCode() < 300;
+    recordCall(operation, success, response.statusCode(), started, null);
     if (response.statusCode() < 200 || response.statusCode() >= 300) {
       throw new ApiException(502, operation + " failed: " + response.statusCode() + " " + compact(response.body()));
     }
@@ -323,6 +342,13 @@ public class VideoGenerationClient {
       throw new ApiException(502, operation + " returned empty body");
     }
     return objectMapper.readTree(response.body());
+  }
+
+  private void recordCall(String operation, boolean success, Integer status, long started, Exception error) {
+    if (aiCallLogService != null) aiCallLogService.record("canvas-video", operation,
+        PROVIDER, telemetryModel.get(), null, "dropdown", success, status,
+        (System.nanoTime() - started) / 1_000_000L,
+        error == null ? null : error.getClass().getSimpleName());
   }
 
   private void ensureSuccessful(JsonNode root, String operation) {

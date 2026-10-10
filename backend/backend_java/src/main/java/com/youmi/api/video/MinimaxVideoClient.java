@@ -3,6 +3,7 @@ package com.youmi.api.video;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.youmi.api.common.ApiException;
+import com.youmi.api.ai.AiCallLogService;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -15,6 +16,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 
 @Service
 public class MinimaxVideoClient {
@@ -26,12 +28,16 @@ public class MinimaxVideoClient {
   private final VideoGenerationClient media;
   private final ObjectMapper mapper;
   private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build();
+  private AiCallLogService aiCallLogService;
 
   public MinimaxVideoClient(MinimaxVideoProperties properties, VideoGenerationClient media, ObjectMapper mapper) {
     this.properties = properties;
     this.media = media;
     this.mapper = mapper;
   }
+
+  @Autowired(required = false)
+  void setAiCallLogService(AiCallLogService service) { this.aiCallLogService = service; }
 
   public int price(VideoGenerationDtos.CreateTaskRequest request) {
     validate(request);
@@ -160,7 +166,16 @@ public class MinimaxVideoClient {
     if (body != null) request.header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)));
     else request.GET();
-    var response = http.send(request.build(), HttpResponse.BodyHandlers.ofString());
+    long started = System.nanoTime();
+    java.net.http.HttpResponse<String> response;
+    try {
+      response = http.send(request.build(), HttpResponse.BodyHandlers.ofString());
+    } catch (Exception error) {
+      recordCall(method, false, null, started, error);
+      throw error;
+    }
+    recordCall(method, response.statusCode() >= 200 && response.statusCode() < 300,
+        response.statusCode(), started, null);
     JsonNode root;
     try { root = mapper.readTree(response.body()); }
     catch (Exception error) { throw new ApiException(502, "MiniMax H3 返回无法解析的响应（HTTP " + response.statusCode() + "）", error); }
@@ -172,6 +187,13 @@ public class MinimaxVideoClient {
           + first(text(root, "msg"), text(root, "error"), text(root.path("error"), "message"), "上游服务拒绝请求"));
     }
     return root;
+  }
+
+  private void recordCall(String operation, boolean success, Integer status, long started, Exception error) {
+    if (aiCallLogService != null) aiCallLogService.record("minimax-video", operation,
+        "lk888-minimax", MODEL, null, success, status,
+        (System.nanoTime() - started) / 1_000_000L,
+        error == null ? null : error.getClass().getSimpleName());
   }
   private String text(JsonNode node, String key) {
     JsonNode value = node.path(key);

@@ -1,6 +1,11 @@
 package com.youmi.api.ai;
 
-final class VisionJsonSupport {
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.ArrayList;
+import java.util.List;
+
+public final class VisionJsonSupport {
   private VisionJsonSupport() {}
 
   static String extractNormalizedJsonArray(String text) {
@@ -9,6 +14,37 @@ final class VisionJsonSupport {
     int end = text.lastIndexOf(']');
     if (start < 0 || end <= start) return null;
     return normalizeNumbersOutsideStrings(text.substring(start, end + 1));
+  }
+
+  public static List<VisionElement> parseElements(ObjectMapper mapper, String text) throws Exception {
+    String json = extractNormalizedJsonArray(text);
+    if (json == null) return List.of();
+    JsonNode array = mapper.readTree(json);
+    if (!array.isArray()) return List.of();
+    List<VisionElement> result = new ArrayList<>();
+    for (JsonNode node : array) {
+      String name = node.path("object_name").asText(node.path("name").asText(node.path("object").asText("")));
+      JsonNode box = node.path("box_2d");
+      if (!box.isArray()) box = node.path("bbox_2d");
+      if (!box.isArray()) box = node.path("box2d");
+      if (!box.isArray()) box = node.path("bbox");
+      if (name.isBlank() || !box.isArray() || box.size() != 4) continue;
+      double top = normalizeCoord(box.get(0).asDouble());
+      double left = normalizeCoord(box.get(1).asDouble());
+      double bottom = normalizeCoord(box.get(2).asDouble());
+      double right = normalizeCoord(box.get(3).asDouble());
+      List<Double> bounds = List.of(Math.min(left, right), Math.min(top, bottom),
+          Math.max(left, right), Math.max(top, bottom));
+      if (bounds.get(2) <= bounds.get(0) || bounds.get(3) <= bounds.get(1)) continue;
+      name = name.replaceAll("\\s*\\([^)]*\\)\\s*", "").trim();
+      if (!name.isBlank()) result.add(new VisionElement(name, bounds));
+    }
+    return List.copyOf(result);
+  }
+
+  private static double normalizeCoord(double value) {
+    double normalized = Math.abs(value) > 1.05 ? value / 1000.0 : value;
+    return Math.max(0.0, Math.min(1.0, normalized));
   }
 
   /**

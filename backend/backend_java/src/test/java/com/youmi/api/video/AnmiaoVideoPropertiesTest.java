@@ -67,4 +67,15 @@ class AnmiaoVideoPropertiesTest {
     assertFalse(properties.isAvailable25());
     assertEquals(0, properties.availableRates().get("720p"));
   }
+
+  @Test void exposesRatesWhenModelManagementProvidesTheCredential() {
+    var properties = new AnmiaoVideoProperties();
+    properties.setMiPerSecondByResolution(java.util.Map.of("480p", 3));
+    properties.setMiPerSecond25ByResolution(java.util.Map.of("480p", 4));
+
+    assertEquals(0, properties.availableRates().get("480p"));
+    assertEquals(0, properties.availableRates25().get("480p"));
+    assertEquals(3, properties.availableRates(true).get("480p"));
+    assertEquals(4, properties.availableRates25(true).get("480p"));
+  }
 }

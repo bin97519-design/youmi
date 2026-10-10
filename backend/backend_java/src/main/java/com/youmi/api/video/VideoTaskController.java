@@ -6,6 +6,7 @@ import com.youmi.api.common.ApiResponse;
 import com.youmi.api.credit.MiBizType;
 import com.youmi.api.credit.MiValueDtos;
 import com.youmi.api.credit.MiValueService;
+import com.youmi.api.image.ModelApiKeyDtos;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -48,10 +49,12 @@ public class VideoTaskController {
     Long userId = adminAuthService.requireUserId(authorization);
     if (request != null && "minimax-h3-max".equals(request.model()))
       throw new ApiException(400, "原视频模型已移除，请重新选择视频模型");
+    if (request != null && anmiaoVideos.isConfiguredKeyExcluded(request.model()))
+      throw new ApiException(400, "所选视频模型未映射到画布视频功能");
     if (request != null && ChatVideoClient.MODEL.equals(request.model()))
       return ApiResponse.ok(chatVideos.create(userId, request));
-    if (request != null && (AnmiaoVideoClient.MODEL.equals(request.model())
-        || AnmiaoVideoClient.MODEL25.equals(request.model()) || MinimaxVideoClient.supportsModel(request.model()))) {
+    if (request != null && (anmiaoVideos.supportsModel(request.model())
+        || MinimaxVideoClient.supportsModel(request.model()))) {
       boolean minimax = MinimaxVideoClient.supportsModel(request.model());
       int price = minimax ? minimaxVideos.price(request) : anmiaoVideos.price(request);
       MiValueDtos.DeductResult deduct = miValueService.checkAndDeduct(userId, MiBizType.VIDEO, price);
@@ -89,6 +92,13 @@ public class VideoTaskController {
       }
       throw new ApiException(502, "视频生成失败，失败任务不计入米值消耗：" + reason, e);
     }
+  }
+
+  @GetMapping("/models")
+  public ApiResponse<java.util.List<ModelApiKeyDtos.ModelOption>> models(
+      @RequestHeader(value = "Authorization", required = false) String authorization) {
+    adminAuthService.requireUserId(authorization);
+    return ApiResponse.ok(anmiaoVideos.configuredModels());
   }
 
   @GetMapping("/{taskId}")

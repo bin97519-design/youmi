@@ -11,6 +11,7 @@ import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
@@ -39,7 +40,8 @@ class ImageGenerationClientModelApiTest {
       ModelApiKeyService.ResolvedModelApiKey credential =
           new ModelApiKeyService.ResolvedModelApiKey(
               42L, "banana-2.1", "youmi888", baseUrl,
-              "/v1/media/generate", "/v1/media/status", "test-key");
+              "/v1/media/generate", "/v1/media/status", "test-key",
+              Map.of("custom_parameter", "configured-value", "imageSize", "default-size"));
       ModelApiKeyService keyService = mock(ModelApiKeyService.class);
       when(keyService.resolve("banana-2.1")).thenReturn(Optional.of(credential));
       when(keyService.resolveById(42L)).thenReturn(credential);
@@ -61,6 +63,7 @@ class ImageGenerationClientModelApiTest {
       assertEquals("banana-2.1", requestBody.get().path("model").asText());
       assertEquals("auto", requestBody.get().path("params").path("aspectRatio").asText());
       assertEquals("2K", requestBody.get().path("params").path("imageSize").asText());
+      assertEquals("configured-value", requestBody.get().path("params").path("custom_parameter").asText());
       assertTrue(requestBody.get().path("params").path("web_search").asBoolean());
       assertEquals(1, requestBody.get().path("params").path("images").size());
 
@@ -112,7 +115,7 @@ class ImageGenerationClientModelApiTest {
       assertEquals("3:4", requestBody.get().path("params").path("aspect_ratio").asText());
       assertEquals("4K", requestBody.get().path("params").path("resolution").asText());
       assertEquals("high", requestBody.get().path("params").path("quality").asText());
-      assertEquals("opaque", requestBody.get().path("params").path("background").asText());
+      assertEquals("auto", requestBody.get().path("params").path("background").asText());
       assertEquals(1, requestBody.get().path("params").path("images").size());
       assertTrue(requestBody.get().path("params").path("aspectRatio").isMissingNode());
       assertTrue(requestBody.get().path("params").path("imageSize").isMissingNode());
@@ -129,6 +132,7 @@ class ImageGenerationClientModelApiTest {
       assertEquals("tt-image-2.5", requestBody.get().path("model").asText());
       assertEquals("sunburst", requestBody.get().path("params").path("version").asText());
       assertEquals("high", requestBody.get().path("params").path("quality").asText());
+      assertEquals("auto", requestBody.get().path("params").path("background").asText());
     } finally {
       server.stop(0);
     }

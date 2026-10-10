@@ -15,6 +15,7 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 
 @Service
 public class DashScopeClient {
@@ -22,6 +23,7 @@ public class DashScopeClient {
   private final ObjectMapper objectMapper;
   private final DashScopeProperties properties;
   private final HttpClient httpClient;
+  private AiCallLogService aiCallLogService;
 
   public DashScopeClient(ObjectMapper objectMapper, DashScopeProperties properties) {
     this.objectMapper = objectMapper;
@@ -31,6 +33,9 @@ public class DashScopeClient {
         .connectTimeout(Duration.ofSeconds(Math.max(3, properties.getTimeoutSeconds())))
         .build();
   }
+
+  @Autowired(required = false)
+  void setAiCallLogService(AiCallLogService service) { this.aiCallLogService = service; }
 
   public boolean isConfigured() {
     return properties.isConfigured();
@@ -349,7 +354,16 @@ public class DashScopeClient {
         .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
         .build();
 
-    HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    long started = System.nanoTime();
+    HttpResponse<String> response;
+    try {
+      response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    } catch (Exception error) {
+      recordCall(false, null, started, error);
+      throw error;
+    }
+    recordCall(response.statusCode() >= 200 && response.statusCode() < 300,
+        response.statusCode(), started, null);
     log.info("DashScope response status: {}", response.statusCode());
     if (response.statusCode() >= 300) {
       log.error("DashScope error body: {}", compact(response.body()));
@@ -367,6 +381,13 @@ public class DashScopeClient {
       throw new IllegalStateException("DashScope returned empty content");
     }
     return content;
+  }
+
+  private void recordCall(boolean success, Integer httpStatus, long started, Exception error) {
+    if (aiCallLogService != null) aiCallLogService.record("dashscope", "chat", "dashscope",
+        properties.getModel(), null, success, httpStatus,
+        (System.nanoTime() - started) / 1_000_000L,
+        error == null ? null : error.getClass().getSimpleName());
   }
 
   private void requireConfigured() {

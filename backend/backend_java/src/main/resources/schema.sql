@@ -73,10 +73,12 @@ CREATE TABLE IF NOT EXISTS ym_model_api_key (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   name VARCHAR(128) NOT NULL,
   model VARCHAR(128) NOT NULL,
+  model_type VARCHAR(32) NOT NULL DEFAULT 'image_generation',
   provider VARCHAR(64) NOT NULL DEFAULT 'youmi888',
   base_url VARCHAR(512) NOT NULL,
   generation_path VARCHAR(255) NOT NULL DEFAULT '/v1/media/generate',
   task_path VARCHAR(255) NOT NULL DEFAULT '/v1/media/status',
+  default_data LONGTEXT NULL,
   encrypted_api_key TEXT NOT NULL,
   encrypted_dek TEXT NOT NULL,
   encryption_key_version VARCHAR(32) NOT NULL,
@@ -85,9 +87,44 @@ CREATE TABLE IF NOT EXISTS ym_model_api_key (
   created_by BIGINT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX idx_ym_model_api_key_lookup (model, enabled, priority),
+  INDEX idx_ym_model_api_key_lookup (model_type, model, enabled, priority),
   INDEX idx_ym_model_api_key_provider (provider)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Existing installations predate model_type. Keep startup migration idempotent because
+-- this project initializes MySQL through schema.sql rather than a Flyway runner.
+SET @has_model_api_key_type = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ym_model_api_key' AND COLUMN_NAME='model_type');
+SET @sql = IF(@has_model_api_key_type=0, "ALTER TABLE ym_model_api_key ADD COLUMN model_type VARCHAR(32) NOT NULL DEFAULT 'image_generation' AFTER model", 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @has_model_api_key_default_data = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ym_model_api_key' AND COLUMN_NAME='default_data');
+SET @sql = IF(@has_model_api_key_default_data=0, 'ALTER TABLE ym_model_api_key ADD COLUMN default_data LONGTEXT NULL AFTER task_path', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @model_api_key_lookup_columns = (SELECT GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',') FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ym_model_api_key' AND INDEX_NAME='idx_ym_model_api_key_lookup');
+SET @sql = IF(@model_api_key_lookup_columns IS NOT NULL AND @model_api_key_lookup_columns <> 'model_type,model,enabled,priority', 'DROP INDEX idx_ym_model_api_key_lookup ON ym_model_api_key', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @has_model_api_key_lookup = (SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ym_model_api_key' AND INDEX_NAME='idx_ym_model_api_key_lookup');
+SET @sql = IF(@has_model_api_key_lookup=0, 'CREATE INDEX idx_ym_model_api_key_lookup ON ym_model_api_key (model_type, model, enabled, priority)', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+CREATE TABLE IF NOT EXISTS ym_ai_feature_mapping (
+  feature_code VARCHAR(64) PRIMARY KEY,
+  configured TINYINT(1) NOT NULL DEFAULT 0,
+  default_api_key_id BIGINT NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ym_ai_feature_mapping_key (
+  feature_code VARCHAR(64) NOT NULL,
+  api_key_id BIGINT NOT NULL,
+  PRIMARY KEY (feature_code, api_key_id),
+  INDEX idx_ym_ai_feature_mapping_key_key (api_key_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT IGNORE INTO ym_ai_feature_mapping (feature_code, configured) VALUES
+  ('canvas-image', 0), ('canvas-layering', 0), ('canvas-agent', 0), ('canvas-video', 0);
 
 CREATE TABLE IF NOT EXISTS ym_canvas_document (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -102,6 +139,28 @@ CREATE TABLE IF NOT EXISTS ym_canvas_document (
   UNIQUE KEY uk_ym_canvas_doc_user (doc_id, user_id),
   INDEX idx_ym_canvas_user_updated (user_id, updated_at DESC)
 );
+
+CREATE TABLE IF NOT EXISTS ym_ai_call_log (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  source VARCHAR(64) NOT NULL,
+  operation VARCHAR(32) NOT NULL,
+  provider VARCHAR(64) NULL,
+  model VARCHAR(128) NULL,
+  api_key_id BIGINT NULL,
+  selection_mode VARCHAR(24) NOT NULL DEFAULT 'system_default',
+  status VARCHAR(16) NOT NULL,
+  http_status INT NULL,
+  duration_ms BIGINT NOT NULL DEFAULT 0,
+  error_code VARCHAR(64) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_ym_ai_call_log_created (created_at),
+  INDEX idx_ym_ai_call_log_key_created (api_key_id, created_at),
+  INDEX idx_ym_ai_call_log_model_created (model, created_at)
+);
+
+SET @has_ai_call_log_selection_mode = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='ym_ai_call_log' AND COLUMN_NAME='selection_mode');
+SET @sql = IF(@has_ai_call_log_selection_mode=0, "ALTER TABLE ym_ai_call_log ADD COLUMN selection_mode VARCHAR(24) NOT NULL DEFAULT 'system_default' AFTER api_key_id", 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS ym_agent_conversation (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,

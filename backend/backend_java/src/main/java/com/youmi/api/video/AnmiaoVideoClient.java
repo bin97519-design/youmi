@@ -3,17 +3,23 @@ package com.youmi.api.video;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.youmi.api.common.ApiException;
+import com.youmi.api.image.ModelApiKeyDtos;
+import com.youmi.api.image.ModelApiKeyService;
+import com.youmi.api.image.ModelApiKeyService.ResolvedModelApiKey;
+import com.youmi.api.ai.AiCallLogService;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 
 /** Volcengine-compatible task transport for LK888's per-second Seedance models. */
 @Service
@@ -29,23 +35,70 @@ public class AnmiaoVideoClient {
   private final AnmiaoVideoProperties properties;
   private final VideoGenerationClient media;
   private final ObjectMapper mapper;
+  private final ModelApiKeyService modelApiKeys;
+  private final AiCallLogService aiCallLogService;
   private final HttpClient http;
 
   public AnmiaoVideoClient(AnmiaoVideoProperties properties, VideoGenerationClient media, ObjectMapper mapper) {
+    this(properties, media, mapper, null, null);
+  }
+
+  @Autowired
+  public AnmiaoVideoClient(
+      AnmiaoVideoProperties properties,
+      VideoGenerationClient media,
+      ObjectMapper mapper,
+      ModelApiKeyService modelApiKeys,
+      AiCallLogService aiCallLogService) {
     this.properties = properties;
     this.media = media;
     this.mapper = mapper;
+    this.modelApiKeys = modelApiKeys;
+    this.aiCallLogService = aiCallLogService;
     this.http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build();
+  }
+
+  public AnmiaoVideoClient(AnmiaoVideoProperties properties, VideoGenerationClient media,
+      ObjectMapper mapper, ModelApiKeyService modelApiKeys) {
+    this(properties, media, mapper, modelApiKeys, null);
   }
 
   public boolean available() { return properties.isAvailable(); }
   public boolean available25() { return properties.isAvailable25(); }
 
+  public boolean hasConfiguredModelVersion(boolean version25) {
+    String marker = version25 ? "seedance-2-5" : "seedance-2-0";
+    return configuredModels().stream().anyMatch(option -> option.value() != null
+        && option.value().toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "-").contains(marker));
+  }
+
+  public List<ModelApiKeyDtos.ModelOption> configuredModels() {
+    return modelApiKeys == null ? List.of() : modelApiKeys.enabledModelOptions(
+        ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "canvas-video");
+  }
+
+  public boolean isMappedModelConfigured() {
+    return modelApiKeys != null && modelApiKeys.isFeatureMappingConfigured("canvas-video");
+  }
+
+  public boolean isConfiguredKeyExcluded(String model) {
+    return isMappedModelConfigured() && modelApiKeys.hasEnabledModel(
+        model, ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION)
+        && resolveConfiguredModel(model) == null;
+  }
+
+  public boolean supportsModel(String model) {
+    if (MODEL.equals(model) || MODEL25.equals(model)) return true;
+    return resolveConfiguredModel(model) != null && model != null
+        && model.toLowerCase(Locale.ROOT).contains("seedance-2.");
+  }
+
   public int price(VideoGenerationDtos.CreateTaskRequest request) {
     validate(request);
-    int rate = MODEL25.equals(request.model())
+    int rate = isModel25(request.model())
         ? properties.miPerSecond25(resolution(request)) : properties.miPerSecond(resolution(request));
-    String key = properties.apiKeyForModel(request.model());
+    ResolvedModelApiKey credential = resolveConfiguredModel(request.model());
+    String key = credential == null ? properties.apiKeyForModel(request.model()) : credential.apiKey();
     if (key == null || key.isBlank() || rate == 0)
       throw new ApiException(503, "按秒视频所选画质尚未配置密钥和每秒米值单价");
     return Math.multiplyExact(request.durationSeconds(), rate);
@@ -53,6 +106,7 @@ public class AnmiaoVideoClient {
 
   public VideoGenerationDtos.CreateTaskResponse createTask(VideoGenerationDtos.CreateTaskRequest request) throws Exception {
     price(request);
+    ResolvedModelApiKey credential = resolveConfiguredModel(request.model());
     List<Object> content = new ArrayList<>();
     content.add(Map.of("type", "text", "text", request.prompt().trim()));
     List<String> references = referenceImages(request);
@@ -64,16 +118,34 @@ public class AnmiaoVideoClient {
     }
     String lastFrame = request.lastFrameUrl() == null ? "" : request.lastFrameUrl().trim();
     if (!lastFrame.isBlank()) content.add(image("last_frame", lastFrame));
-    JsonNode root = send(properties.apiKeyForModel(request.model()), "POST", "contents/generations/tasks", Map.of(
-        "model", request.model(), "content", content, "resolution", resolution(request),
-        "ratio", request.ratio(), "duration", request.durationSeconds()));
-    String id = text(root, "id");
-    if (!id.matches("[0-9]+")) throw new ApiException(502, "按秒视频接口未返回有效任务编号");
+    String endpoint = credential == null
+        ? properties.normalizedBaseUrl() + "/contents/generations/tasks"
+        : credential.generationEndpoint();
+    String apiKey = credential == null ? properties.apiKeyForModel(request.model()) : credential.apiKey();
+    long started = System.nanoTime();
+    JsonNode root;
+    String id;
+    try {
+      Map<String, Object> body = new LinkedHashMap<>(credential == null ? Map.of() : credential.defaultData());
+      body.put("model", providerModel(request.model()));
+      body.put("content", content);
+      body.put("resolution", resolution(request));
+      body.put("ratio", request.ratio());
+      body.put("duration", request.durationSeconds());
+      root = sendUrl(apiKey, "POST", endpoint, body);
+      id = providerTaskId(root);
+      if (!id.matches("[A-Za-z0-9_-]+")) throw new ApiException(502, "按秒视频接口未返回有效任务编号");
+      recordCall("canvas-video", request.model(), credential, true, started, null);
+    } catch (Exception error) {
+      recordCall("canvas-video", request.model(), credential, false, started, error);
+      throw error;
+    }
     var result = new VideoGenerationDtos.CreateTaskResponse();
-    result.setProvider(PROVIDER);
+    result.setProvider(credential == null ? PROVIDER : credential.provider());
     result.setModel(request.model());
     // Persist the credential route in the ID so polling still works after a restart.
-    String keyRoute = properties.hasDedicatedKey(request.model())
+    String keyRoute = credential != null ? "key:" + credential.id() + ":"
+        : properties.hasDedicatedKey(request.model())
         ? (MODEL25.equals(request.model()) ? "25:" : "20:") : "";
     result.setTaskId(PREFIX + keyRoute + id);
     result.setStatus("queued");
@@ -82,14 +154,30 @@ public class AnmiaoVideoClient {
   }
 
   public VideoGenerationDtos.TaskStatusResponse getTask(String taskId, Long userId) throws Exception {
-    if (taskId == null || !taskId.matches("anmiao-video:(?:(?:20|25):)?[0-9]+"))
+    if (taskId == null || !taskId.matches("anmiao-video:(?:(?:20|25):|key:[0-9]+:)?[A-Za-z0-9_-]+"))
       throw new ApiException(400, "按秒视频任务编号无效");
     String routeAndId = taskId.substring(PREFIX.length());
-    String key = routeAndId.startsWith("20:") ? properties.apiKeyForModel(MODEL)
+    ResolvedModelApiKey credential = null;
+    String endpoint;
+    String key;
+    String id;
+    if (routeAndId.startsWith("key:")) {
+      int separator = routeAndId.indexOf(':', 4);
+      long credentialId = Long.parseLong(routeAndId.substring(4, separator));
+      credential = modelApiKeys.resolveById(credentialId, ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION);
+      id = routeAndId.substring(separator + 1);
+      endpoint = credential.taskEndpoint().replace("{id}", id);
+      if (endpoint.equals(credential.taskEndpoint())) endpoint += "/" + id;
+      key = credential.apiKey();
+    } else {
+      key = routeAndId.startsWith("20:") ? properties.apiKeyForModel(MODEL)
         : routeAndId.startsWith("25:") ? properties.apiKeyForModel(MODEL25) : properties.getApiKey();
-    String id = routeAndId.substring(routeAndId.lastIndexOf(':') + 1);
-    JsonNode root = send(key, "GET", "contents/generations/tasks/" + id, null);
-    String providerStatus = text(root, "status").toLowerCase(Locale.ROOT);
+      id = routeAndId.substring(routeAndId.lastIndexOf(':') + 1);
+      endpoint = properties.normalizedBaseUrl() + "/contents/generations/tasks/" + id;
+    }
+    JsonNode root = sendUrl(key, "GET", endpoint, null);
+    JsonNode task = taskPayload(root);
+    String providerStatus = text(task, "status").toLowerCase(Locale.ROOT);
     String status = switch (providerStatus) {
       case "queued", "pending" -> "queued";
       case "running", "processing" -> "processing";
@@ -98,7 +186,7 @@ public class AnmiaoVideoClient {
       default -> throw new ApiException(502, "按秒视频接口返回未知状态：" + providerStatus);
     };
     var result = new VideoGenerationDtos.TaskStatusResponse();
-    result.setProvider(PROVIDER);
+    result.setProvider(credential == null ? PROVIDER : credential.provider());
     result.setTaskId(taskId);
     result.setStatus(status);
     result.setStage(switch (status) {
@@ -110,10 +198,10 @@ public class AnmiaoVideoClient {
     result.setProgress("completed".equals(status) || "failed".equals(status) ? 100 : null);
     result.setRaw(root);
     if ("failed".equals(status)) {
-      JsonNode error = root.path("error");
+      JsonNode error = task.path("error");
       result.setError(firstNonBlank(text(error, "message"), text(error, "code"), "视频生成失败"));
     } else if ("completed".equals(status)) {
-      String url = text(root.path("content"), "video_url");
+      String url = text(task.path("content"), "video_url");
       if (url.isBlank()) throw new ApiException(502, "按秒视频已完成，但未返回成片地址");
       requirePublicUrl(url);
       if (properties.isPersistGeneratedVideos()) {
@@ -135,8 +223,10 @@ public class AnmiaoVideoClient {
     if (request == null || request.prompt() == null || request.prompt().isBlank())
       throw new ApiException(400, "视频提示词不能为空");
     if (request.prompt().length() > 2500) throw new ApiException(400, "视频提示词不能超过 2500 字");
-    boolean model25 = MODEL25.equals(request.model());
-    if (!MODEL.equals(request.model()) && !model25) throw new ApiException(400, "按秒视频模型编号无效");
+    boolean model25 = isModel25(request.model());
+    boolean configured = resolveConfiguredModel(request.model()) != null;
+    if (!MODEL.equals(request.model()) && !MODEL25.equals(request.model()) && !configured)
+      throw new ApiException(400, "按秒视频模型编号无效或未配置密钥");
     int maxDuration = model25 ? 30 : 15;
     if (request.durationSeconds() == null || request.durationSeconds() < 4 || request.durationSeconds() > maxDuration)
       throw new ApiException(400, "按秒视频时长必须是 4 至 " + maxDuration + " 的整数秒");
@@ -188,7 +278,12 @@ public class AnmiaoVideoClient {
 
   private JsonNode send(String apiKey, String method, String path, Object body) throws Exception {
     if (apiKey == null || apiKey.isBlank()) throw new ApiException(503, "该按秒视频通道尚未配置密钥");
-    URI url = URI.create(properties.normalizedBaseUrl() + "/" + path);
+    return sendUrl(apiKey, method, properties.normalizedBaseUrl() + "/" + path, body);
+  }
+
+  private JsonNode sendUrl(String apiKey, String method, String endpoint, Object body) throws Exception {
+    if (apiKey == null || apiKey.isBlank()) throw new ApiException(503, "该按秒视频通道尚未配置密钥");
+    URI url = URI.create(endpoint);
     HttpRequest.Builder request = HttpRequest.newBuilder(url)
         .timeout(Duration.ofSeconds(Math.max(5, properties.getTimeoutSeconds())))
         .header("Authorization", "Bearer " + apiKey.trim())
@@ -211,6 +306,68 @@ public class AnmiaoVideoClient {
       throw new ApiException(status, "按秒视频接口请求失败（HTTP " + response.statusCode() + "）：" + reason);
     }
     return root;
+  }
+
+  private ResolvedModelApiKey resolveConfiguredModel(String model) {
+    if (modelApiKeys == null || model == null) return null;
+    return modelApiKeys.resolve(model, ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION,
+        "canvas-video").orElse(null);
+  }
+
+  private void recordCall(String source, String model, ResolvedModelApiKey credential,
+      boolean success, long started, Exception error) {
+    if (aiCallLogService == null) return;
+    aiCallLogService.record(source, "video_generate",
+        credential == null ? PROVIDER : credential.provider(), model,
+        credential == null ? null : credential.id(), "dropdown", success, null,
+        (System.nanoTime() - started) / 1_000_000L,
+        error == null ? null : error.getClass().getSimpleName());
+  }
+
+  private boolean isModel25(String model) {
+    return MODEL25.equals(model) || (model != null && model.toLowerCase(Locale.ROOT).contains("seedance-2.5"));
+  }
+
+  private String providerModel(String model) {
+    if (model != null && model.equalsIgnoreCase("seedance-2.0-guanfang-anmiao")) return MODEL;
+    if (model != null && model.equalsIgnoreCase("seedance-2.5-guanfang-anmiao")) return MODEL25;
+    return model;
+  }
+
+  private String providerTaskId(JsonNode root) {
+    String taskId = findNamedTaskId(root);
+    if (!taskId.isBlank()) return taskId;
+    JsonNode task = taskPayload(root);
+    return firstNonBlank(text(task, "id"), text(root, "id"));
+  }
+
+  private String findNamedTaskId(JsonNode node) {
+    if (node == null || !node.isContainerNode()) return "";
+    if (node.isObject()) {
+      String direct = firstNonBlank(text(node, "task_id"), text(node, "taskId"));
+      if (!direct.isBlank()) return direct;
+      JsonNode task = node.path("task");
+      if (task.isObject()) {
+        String nested = firstNonBlank(text(task, "id"), text(task, "task_id"), text(task, "taskId"));
+        if (!nested.isBlank()) return nested;
+      }
+      var fields = node.fields();
+      while (fields.hasNext()) {
+        String nested = findNamedTaskId(fields.next().getValue());
+        if (!nested.isBlank()) return nested;
+      }
+    } else {
+      for (JsonNode child : node) {
+        String nested = findNamedTaskId(child);
+        if (!nested.isBlank()) return nested;
+      }
+    }
+    return "";
+  }
+
+  private JsonNode taskPayload(JsonNode root) {
+    JsonNode data = root.path("data");
+    return data.isObject() ? data : root;
   }
 
   private String text(JsonNode root, String key) {

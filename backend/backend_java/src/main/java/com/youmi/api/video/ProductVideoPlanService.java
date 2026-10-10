@@ -8,6 +8,8 @@ import com.youmi.api.ai.AiChatDtos;
 import com.youmi.api.ai.CanvasAgentDtos;
 import com.youmi.api.ai.GemAgentClient;
 import com.youmi.api.ai.GemAgentProperties;
+import com.youmi.api.image.ModelApiKeyDtos;
+import com.youmi.api.image.ModelApiKeyService;
 import com.youmi.api.common.ApiException;
 import java.net.http.HttpTimeoutException;
 import java.time.Duration;
@@ -33,20 +35,28 @@ public class ProductVideoPlanService {
   private final ObjectMapper mapper;
   private final ProductVideoPlanJson planJson;
   private final int stageTimeoutSeconds;
+  private final ModelApiKeyService modelApiKeys;
 
   public ProductVideoPlanService(AgentChatClient client, ObjectMapper mapper, int stageTimeoutSeconds) {
-    this(client, mapper, stageTimeoutSeconds, new GemAgentClient(mapper, new GemAgentProperties()));
+    this(client, mapper, stageTimeoutSeconds, new GemAgentClient(mapper, new GemAgentProperties()), null);
+  }
+
+  public ProductVideoPlanService(AgentChatClient client, ObjectMapper mapper,
+      @Value("${youmi.video-workflow.plan-timeout-seconds:300}") int stageTimeoutSeconds,
+      GemAgentClient gemClient) {
+    this(client, mapper, stageTimeoutSeconds, gemClient, null);
   }
 
   @Autowired
   public ProductVideoPlanService(AgentChatClient client, ObjectMapper mapper,
       @Value("${youmi.video-workflow.plan-timeout-seconds:300}") int stageTimeoutSeconds,
-      GemAgentClient gemClient) {
+      GemAgentClient gemClient, ModelApiKeyService modelApiKeys) {
     this.client = client;
     this.gemClient = gemClient;
     this.mapper = mapper;
     this.planJson = new ProductVideoPlanJson(mapper);
     this.stageTimeoutSeconds = Math.max(30, Math.min(300, stageTimeoutSeconds));
+    this.modelApiKeys = modelApiKeys;
   }
 
   public int stageTimeoutSeconds() {
@@ -54,15 +64,37 @@ public class ProductVideoPlanService {
   }
 
   public List<CanvasAgentDtos.AgentModelOption> models() {
-    return List.of(
-        new CanvasAgentDtos.AgentModelOption("default", client.model(), client.isConfigured()),
-        new CanvasAgentDtos.AgentModelOption(GemAgentClient.MODEL, "GEM 3.8 flash", gemClient.isConfigured()));
+    List<CanvasAgentDtos.AgentModelOption> options = new ArrayList<>();
+    options.add(new CanvasAgentDtos.AgentModelOption("default", client.model(), client.isConfigured()));
+    if (modelApiKeys == null || modelApiKeys.resolve(GemAgentClient.MODEL,
+        ModelApiKeyService.MODEL_TYPE_VISION_REASONING).isEmpty()) {
+      options.add(new CanvasAgentDtos.AgentModelOption(
+          GemAgentClient.MODEL, "GEM 3.8 flash", gemClient.isConfigured()));
+    }
+    if (modelApiKeys != null) {
+      for (ModelApiKeyDtos.ModelOption option : modelApiKeys.enabledModelOptions(
+          ModelApiKeyService.MODEL_TYPE_VISION_REASONING)) {
+        options.add(new CanvasAgentDtos.AgentModelOption(
+            option.value(), option.label() + " · " + option.value(), true));
+      }
+    }
+    return List.copyOf(options);
   }
 
   private boolean useGem(String model) {
     if (GemAgentClient.MODEL.equals(model)) return true;
     if (model == null || model.isBlank() || "default".equals(model) || model.equals(client.model())) return false;
     throw new ApiException(400, "不支持的策划模型，请重新选择");
+  }
+
+  private ModelApiKeyService.ResolvedModelApiKey configuredModel(String model) {
+    return modelApiKeys == null || model == null ? null : modelApiKeys.resolve(model,
+        ModelApiKeyService.MODEL_TYPE_VISION_REASONING).orElse(null);
+  }
+
+  private String planningProvider(String model) {
+    ModelApiKeyService.ResolvedModelApiKey configured = configuredModel(model);
+    return configured != null ? configured.provider() : useGem(model) ? "lk888" : "teamorouter";
   }
 
   public ProductVideoDtos.PlanResponse plan(ProductVideoDtos.PlanRequest request) throws Exception {
@@ -82,8 +114,9 @@ public class ProductVideoPlanService {
     boolean singleVideo = isWholeVideo(request.productionMode());
     boolean highlights = isHighlights(request);
     int wholeSeconds = wholeSeconds(request.productionMode());
-    boolean gem = useGem(request.planningModel());
-    if (!(gem ? gemClient.isConfigured() : client.isConfigured()))
+    ModelApiKeyService.ResolvedModelApiKey selectedCredential = configuredModel(request.planningModel());
+    boolean gem = selectedCredential == null && useGem(request.planningModel());
+    if (!(gem ? gemClient.isConfigured() : (selectedCredential != null || client.isConfigured())))
       throw new ApiException(503, gem ? "GEM 3.8 flash 尚未配置专用密钥" : "分镜策划模型未配置，可先手动添加分镜");
     if (!highlights && request.referenceVideo() != null && request.referenceVideo().duration() > 30.5)
       return planLongReference(request, savedShots, progress);
@@ -290,7 +323,7 @@ public class ProductVideoPlanService {
       List<ProductVideoDtos.ShotPlan> savedShots, ProgressListener progress) throws Exception {
     var reference = request.referenceVideo();
     var segments = reference.segments();
-    String provider = useGem(request.planningModel()) ? "lk888" : "teamorouter";
+    String provider = planningProvider(request.planningModel());
     String trace = UUID.randomUUID().toString();
     var candidates = mapper.createArrayNode();
     // Inspect every source segment in bounded batches before selecting highlights.
@@ -407,7 +440,7 @@ public class ProductVideoPlanService {
       if (Math.abs(savedShots.get(i).duration() - (segments.get(i).end() - segments.get(i).start())) > 0.01)
         throw new ApiException(400, "已保存分段时长与原片不一致，请重新策划");
     }
-    String provider = useGem(request.planningModel()) ? "lk888" : "teamorouter";
+    String provider = planningProvider(request.planningModel());
     JsonNode overview = null;
     String cachedOverview = progress.previousResponse("long-overview");
     if (cachedOverview != null) {
@@ -675,13 +708,16 @@ public class ProductVideoPlanService {
   private AiChatDtos.CompletionResult completeStage(String planningModel, String trace, String stage, String system,
       String input, List<String> images, double temperature, int maxTokens) throws Exception {
     long started = System.nanoTime();
-    boolean gem = useGem(planningModel);
+    ModelApiKeyService.ResolvedModelApiKey configured = configuredModel(planningModel);
+    boolean gem = configured == null && useGem(planningModel);
     int outputTokens = gem ? Math.min(GemAgentClient.MAX_OUTPUT_TOKENS, Math.max(GEM_PLAN_OUTPUT_TOKENS, maxTokens)) : maxTokens;
     log.info("Product video plan {}: {} started (timeout={}s, images={}, maxTokens={})",
         trace, stage, stageTimeoutSeconds, images.size(), outputTokens);
     try {
       AiChatDtos.CompletionResult result;
-      if (gem) {
+      if (configured != null) {
+        result = client.completeConfiguredModel(configured, system, input, images, temperature);
+      } else if (gem) {
         try {
           result = gemClient.complete(system, input, images, temperature, true, outputTokens, Duration.ofSeconds(stageTimeoutSeconds));
         } catch (GemAgentClient.OutputLimitException error) {
@@ -749,7 +785,7 @@ public class ProductVideoPlanService {
             (request.referenceVideo() != null && request.referenceVideo().duration() > 30.5 ? 48 : 8)) {
       throw new ApiException(400, "请填写商品信息，普通策划最多 8 镜，长视频反推最多 48 段");
     }
-    useGem(request.planningModel());
+    if (configuredModel(request.planningModel()) == null) useGem(request.planningModel());
     if (tooLong(request.continuity(), 5000)) throw new ApiException(400, "全片固定设定不能超过 5000 字");
     VideoCompositionService.dimensions(request.ratio());
     if (request.productionMode() != null && !List.of("storyboard", "single_video", "single_video_30").contains(request.productionMode()))

@@ -1,9 +1,14 @@
 package com.youmi.api.image;
 
 import com.youmi.api.ai.DashScopeClient;
+import com.youmi.api.ai.AiCallLogService;
+import com.youmi.api.ai.AgentChatClient;
+import com.youmi.api.ai.VisionJsonSupport;
 import com.youmi.api.ai.VisionElement;
 import com.youmi.api.ai.XfyunVisionClient;
 import com.youmi.api.common.ApiResponse;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.youmi.api.image.ModelApiKeyService.ResolvedModelApiKey;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -30,10 +35,20 @@ public class ImageDetectController {
 
   private final XfyunVisionClient xfyunVisionClient;
   private final DashScopeClient dashScopeClient;
+  private final ModelApiKeyService modelApiKeys;
+  private final AgentChatClient agentChatClient;
+  private final ObjectMapper objectMapper;
+  private final AiCallLogService aiCallLogService;
 
-  public ImageDetectController(XfyunVisionClient xfyunVisionClient, DashScopeClient dashScopeClient) {
+  public ImageDetectController(XfyunVisionClient xfyunVisionClient, DashScopeClient dashScopeClient,
+      ModelApiKeyService modelApiKeys, AgentChatClient agentChatClient, ObjectMapper objectMapper,
+      AiCallLogService aiCallLogService) {
     this.xfyunVisionClient = xfyunVisionClient;
     this.dashScopeClient = dashScopeClient;
+    this.modelApiKeys = modelApiKeys;
+    this.agentChatClient = agentChatClient;
+    this.objectMapper = objectMapper;
+    this.aiCallLogService = aiCallLogService;
   }
 
   /**
@@ -99,16 +114,37 @@ public class ImageDetectController {
       return ApiResponse.fail(500, "图片加载失败：" + e.getMessage());
     }
 
-    // Use Xfyun vision first.
+    var preferred = modelApiKeys.preferredEnabledModel(
+        ModelApiKeyService.MODEL_TYPE_VISION_REASONING, "canvas-layering");
+    if (preferred.isPresent()) {
+      ResolvedModelApiKey credential = preferred.get();
+      long started = System.nanoTime();
+      try {
+        String prompt = "识别图片中可独立编辑/分层的主要元素，只返回 JSON 数组，每项包含 object_name（名称）和 box_2d（[top,left,bottom,right]），坐标归一化到 0 到 1。不要 Markdown。";
+        var response = agentChatClient.completeConfiguredModel(credential,
+            "你是图像元素检测器。严格遵循用户的 JSON 输出格式。", prompt,
+            List.of(imageUri), 0.1, "canvas-layering", "system_default");
+        List<VisionElement> detected = VisionJsonSupport.parseElements(objectMapper, response.content());
+        return ApiResponse.ok(new ImageDetectDtos.DetectResponse(detected.stream()
+            .map(el -> new ImageDetectDtos.DetectedElement(el.objectName(), el.box2d())).toList(), request.imageUrl()));
+      } catch (Exception e) {
+        log.error("Default-priority vision model failed, falling back to configured vision services", e);
+      }
+    }
+
+    // No model selector exists for layering, so legacy vision services are fallback routes.
     if (xfyunVisionClient.isConfigured()) {
+      long started = System.nanoTime();
       try {
         log.info("Detecting elements with Xfyun vision (model: {})", xfyunVisionClient.model());
         List<VisionElement> detected = xfyunVisionClient.detectImageElements(imageUri);
+        recordFallback("xfyun", xfyunVisionClient.model(), true, started, null);
         List<ImageDetectDtos.DetectedElement> elements = detected.stream()
             .map(el -> new ImageDetectDtos.DetectedElement(el.objectName(), el.box2d()))
             .toList();
         return ApiResponse.ok(new ImageDetectDtos.DetectResponse(elements, request.imageUrl()));
       } catch (Exception e) {
+        recordFallback("xfyun", xfyunVisionClient.model(), false, started, e);
         log.error("Xfyun vision detect failed, fallback to DashScope", e);
         // Fallback to DashScope below.
       }
@@ -116,14 +152,17 @@ public class ImageDetectController {
 
     // Fallback to DashScope.
     if (dashScopeClient.isConfigured()) {
+      long started = System.nanoTime();
       try {
         log.info("Detecting elements with DashScope (model: {})", dashScopeClient.model());
         List<VisionElement> detected = dashScopeClient.detectImageElements(imageUri);
+        recordFallback("dashscope", dashScopeClient.model(), true, started, null);
         List<ImageDetectDtos.DetectedElement> elements = detected.stream()
             .map(el -> new ImageDetectDtos.DetectedElement(el.objectName(), el.box2d()))
             .toList();
         return ApiResponse.ok(new ImageDetectDtos.DetectResponse(elements, request.imageUrl()));
       } catch (Exception e) {
+        recordFallback("dashscope", dashScopeClient.model(), false, started, e);
         log.error("DashScope detect failed", e);
         return ApiResponse.fail(500, "元素检测失败：" + e.getMessage());
       }
@@ -131,5 +170,11 @@ public class ImageDetectController {
 
     log.warn("No detect API configured (Xfyun vision or DashScope)");
     return ApiResponse.ok(new ImageDetectDtos.DetectResponse(List.of(), request.imageUrl()));
+  }
+
+  private void recordFallback(String provider, String model, boolean success, long started, Exception error) {
+    if (aiCallLogService != null) aiCallLogService.record("canvas-layering", "image_segment", provider, model,
+        null, "fallback", success, null, (System.nanoTime() - started) / 1_000_000L,
+        error == null ? null : error.getClass().getSimpleName());
   }
 }

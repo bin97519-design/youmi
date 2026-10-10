@@ -23,6 +23,7 @@ import {
   MINIMAX_VIDEO_MODEL,
   isRetiredVideoModel,
   isPerSecondVideoModel,
+  isAnmiao25VideoModel,
   VIDEO_MODELS,
 } from '../utils/productVideo'
 import {
@@ -1334,6 +1335,7 @@ const IMAGE_MODEL_LABELS = {
   [MODEL_API_GPT_IMAGE_25_FLARE_OPTION]: 'GPT-image2.5快速',
   [MODEL_API_GPT_IMAGE_25_SUNBURST_OPTION]: 'GPT-image2.5高质',
 }
+const configuredImageModelLabels = reactive({})
 const BUILT_IN_CHAT_MODEL_OPTIONS = [
   'banana2',
   'banana-pro',
@@ -1344,19 +1346,46 @@ const chatModelOptions = reactive([...BUILT_IN_CHAT_MODEL_OPTIONS])
 
 async function loadImageModels() {
   try {
-    const status = await readApiResponse(
-      await fetch(apiPath('/api/image-tasks/status'), {
+    const modelConfig = await readApiResponse(
+      await fetch(apiPath('/api/image-tasks/canvas-models'), {
         headers: userStore.authHeaders(),
       }),
     )
-    const configured = Array.isArray(status?.configuredModels) ? status.configuredModels : []
+    const configured = Array.isArray(modelConfig?.models) ? modelConfig.models : []
+    const modelOptions = Array.isArray(modelConfig?.options) ? modelConfig.options : []
     const configuredOptions = configured.flatMap((model) => {
       const normalized = String(model || '').trim().toLowerCase()
       if (normalized === 'banana-pro') return [MODEL_API_BANANA_PRO_OPTION]
-      if (normalized === 'gpt-image2.5') {
-        return [model, MODEL_API_GPT_IMAGE_25_SUNBURST_OPTION]
+      if (['gpt-image2.5', 'tt-image-2.5', 'gpt-image-2.5'].includes(normalized)) {
+        return [MODEL_API_GPT_IMAGE_25_FLARE_OPTION, MODEL_API_GPT_IMAGE_25_SUNBURST_OPTION]
       }
       return [model]
+    })
+    Object.keys(configuredImageModelLabels).forEach((model) => delete configuredImageModelLabels[model])
+    const duplicateModelIndexes = new Map()
+    modelOptions.forEach((option) => {
+      const model = String(option?.value || '').trim()
+      const alias = String(option?.label || '').trim()
+      if (!model || !alias) return
+      const normalized = model.toLowerCase()
+      let displayModels = [model]
+      if (normalized === 'banana-pro') {
+        displayModels = [MODEL_API_BANANA_PRO_OPTION]
+      } else if (['gpt-image2.5', 'tt-image-2.5', 'gpt-image-2.5'].includes(normalized)) {
+        const aliasKey = alias.toLowerCase()
+        if (aliasKey.includes('高质') || aliasKey.includes('high')) {
+          displayModels = [MODEL_API_GPT_IMAGE_25_SUNBURST_OPTION]
+        } else if (aliasKey.includes('快速') || aliasKey.includes('fast')) {
+          displayModels = [MODEL_API_GPT_IMAGE_25_FLARE_OPTION]
+        } else {
+          const index = duplicateModelIndexes.get(normalized) || 0
+          duplicateModelIndexes.set(normalized, index + 1)
+          displayModels = [[MODEL_API_GPT_IMAGE_25_FLARE_OPTION, MODEL_API_GPT_IMAGE_25_SUNBURST_OPTION][index] || model]
+        }
+      }
+      displayModels.forEach((displayModel) => {
+        configuredImageModelLabels[displayModel] = alias
+      })
     })
     const nextModels = [...new Set([...BUILT_IN_CHAT_MODEL_OPTIONS, ...configuredOptions])]
       .map((model) => String(model || '').trim())
@@ -1413,10 +1442,48 @@ async function loadAgentModels() {
     console.warn('[agent] 模型状态暂时无法读取', error?.message || error)
   }
 }
+async function loadConfiguredVideoModels() {
+  if (!userStore.token) return
+  try {
+    const models = await readApiResponse(
+      await fetch(apiPath('/api/video-tasks/models'), {
+        headers: userStore.authHeaders(),
+      }),
+    )
+    if (!Array.isArray(models)) return
+    const configured = []
+    models.forEach((item) => {
+      if (!item?.value) return
+      const existing = videoModelOptions.find((option) => option.value === item.value)
+      if (existing) {
+        existing.label = item.label || existing.label
+        configured.push(existing)
+        return
+      }
+      const option = { value: item.value, label: item.label || item.value }
+      videoModelOptions.push(option)
+      configured.push(option)
+    })
+
+    const storedModel = String(initialVideoConfig.model || '')
+    if (storedModel && configured.some((item) => item.value === storedModel)) {
+      videoModel.value = storedModel
+      videoResolution.value = validVideoResolution(storedModel, initialVideoConfig.resolution)
+        ? initialVideoConfig.resolution
+        : videoResolutionForModel(storedModel)
+      videoDuration.value = validVideoDuration(storedModel, Number(initialVideoConfig.duration))
+        ? Number(initialVideoConfig.duration)
+        : 15
+    }
+  } catch (error) {
+    console.warn('[video] 模型配置暂时无法读取', error?.message || error)
+  }
+}
 watch(
   () => userStore.token,
   () => {
     void loadAgentModels()
+    void loadConfiguredVideoModels()
   },
 )
 const chatModeOptions = [
@@ -1456,7 +1523,7 @@ function normalizeChatModelSelection(value, fallback = 'banana2') {
 }
 
 function imageModelLabel(model) {
-  return IMAGE_MODEL_LABELS[model] || model
+  return configuredImageModelLabels[model] || IMAGE_MODEL_LABELS[model] || model
 }
 
 function formatSelectedModelLabel(models) {
@@ -1496,7 +1563,7 @@ const inlineDialogModelTitle = computed(() =>
 )
 const chatRatio = ref(initialChatConfig.ratio || '9:16')
 const chatResolution = ref(initialChatConfig.resolution || '2K')
-const videoModelOptions = VIDEO_MODELS
+const videoModelOptions = reactive([...VIDEO_MODELS])
 const LEGACY_DEFAULT_VIDEO_MODEL = 'seedance-2.0-fast-0826-480p'
 const DEFAULT_VIDEO_MODEL = 'seedance-2.0-fast-0826-720p'
 const videoRatioOptions = ['adaptive', '21:9', '16:9', '4:3', '1:1', '3:4', '9:16']
@@ -1557,7 +1624,7 @@ const videoComposerReferenceCount = computed(() => {
   return urls.size
 })
 const firstFrameOnly25 = computed(
-  () => videoModel.value === ANMIAO25_VIDEO_MODEL && videoComposerReferenceCount.value === 1,
+  () => isAnmiao25VideoModel(videoModel.value) && videoComposerReferenceCount.value === 1,
 )
 const videoRatioMenuOptions = computed(() => {
   return firstFrameOnly25.value ? ['adaptive'] : videoRatioOptions
@@ -3043,6 +3110,7 @@ async function submitImageTask({
     size: size || chatRatio.value,
     resolution: resolution || chatResolution.value,
     n: 1,
+    feature_code: 'canvas-image',
   }
   if (imageUrls?.length) {
     body.image_urls = imageUrls
@@ -10305,7 +10373,7 @@ async function sendVideoChat(options = {}) {
   }
   if (!validVideoDuration(requestedModel, requestedDuration)) {
     showCopyPasteToast(
-      requestedModel === ANMIAO25_VIDEO_MODEL
+      isAnmiao25VideoModel(requestedModel)
         ? 'SD2.5 按秒视频时长需为 4 至 30 的整数秒'
         : '所选模型不支持这个视频时长',
     )
@@ -11718,6 +11786,7 @@ onMounted(() => {
   selectedLayerIds.value = []
   _mounted.value = true
   void loadImageModels()
+  void loadConfiguredVideoModels()
   if (
     chatMode.value === 'agent' ||
     (chatMode.value === 'video' && isPerSecondVideoModel(videoModel.value))
@@ -16151,9 +16220,7 @@ async function loadImageForCropUncached(layer) {
                 v-else
                 class="uc-chat-generate-options uc-video-generate-options"
                 :class="{
-                  'is-native-audio': [ANMIAO_VIDEO_MODEL, ANMIAO25_VIDEO_MODEL].includes(
-                    videoModel,
-                  ),
+                  'is-native-audio': isPerSecondVideoModel(videoModel),
                 }"
                 @click.stop="closeChatSelect"
               >

@@ -3,6 +3,7 @@ package com.youmi.api.video;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.youmi.api.common.ApiException;
+import com.youmi.api.ai.AiCallLogService;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -11,13 +12,17 @@ import java.time.Duration;
 import java.util.Map;
 import java.util.Set;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 
 @Service
 public class VideoEnhanceClient {
   private final VideoEnhanceProperties config;
   private final ObjectMapper mapper;
   private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build();
+  private AiCallLogService aiCallLogService;
   public VideoEnhanceClient(VideoEnhanceProperties config, ObjectMapper mapper) { this.config = config; this.mapper = mapper; }
+  @Autowired(required = false)
+  void setAiCallLogService(AiCallLogService service) { this.aiCallLogService = service; }
   public void requireConfigured() {
     if (!config.configured()) throw new ApiException(503, "视频超分尚未配置密钥或价格，暂不能提交");
   }
@@ -59,7 +64,16 @@ public class VideoEnhanceClient {
         .header("Authorization", "Bearer " + config.getApiKey().trim());
     if (body == null) builder.GET();
     else builder.header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body));
-    var response = http.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+    long started = System.nanoTime();
+    HttpResponse<String> response;
+    try {
+      response = http.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+    } catch (Exception error) {
+      recordCall(path, false, null, started, error);
+      throw error;
+    }
+    recordCall(path, response.statusCode() >= 200 && response.statusCode() < 300,
+        response.statusCode(), started, null);
     // Only explicit rejections are safe to fail. Timeouts/5xx may have accepted the submission.
     if (response.statusCode() >= 400 && response.statusCode() < 500) throw new Rejected("中转站拒绝视频超分请求（HTTP " + response.statusCode() + "）：" + failureMessage(response.body()));
     if (response.statusCode() < 200 || response.statusCode() >= 300) throw new ApiException(502, "中转站响应异常，请核对原任务记录");
@@ -71,6 +85,12 @@ public class VideoEnhanceClient {
       throw new ApiException(502, "中转站提交结果不明确，请核对原任务记录");
     }
     return json;
+  }
+  private void recordCall(String path, boolean success, Integer status, long started, Exception error) {
+    if (aiCallLogService != null) aiCallLogService.record("video-enhance", path.contains("status") ? "video_query" : "video_enhance",
+        "lk888", "video-enhance", null, success, status,
+        (System.nanoTime() - started) / 1_000_000L,
+        error == null ? null : error.getClass().getSimpleName());
   }
   private String failureMessage(String body) {
     try {

@@ -21,7 +21,7 @@ class CanvasAgentServiceTest {
   void acceptsTrailingCommasInMultiPromptResponse() throws Exception {
     AgentChatClient agentChatClient = mock(AgentChatClient.class);
     when(agentChatClient.isConfigured()).thenReturn(true);
-    when(agentChatClient.complete(anyList(), anyDouble()))
+    when(agentChatClient.completeCanvasAgent(anyList(), anyDouble()))
         .thenReturn(new AiChatDtos.CompletionResult(
             "teamorouter",
             "gpt-5.6-luna",
@@ -59,14 +59,14 @@ class CanvasAgentServiceTest {
     assertEquals(List.of("第一条提示词", "第二条提示词"), response.draftPrompts());
     assertEquals(List.of("banana2"), response.imageModels());
     assertTrue(response.readyToGenerate());
-    verify(agentChatClient, times(1)).complete(anyList(), anyDouble());
+    verify(agentChatClient, times(1)).completeCanvasAgent(anyList(), anyDouble());
   }
 
   @Test
   void preservesMultipleUserSelectedImageModelsForConfirmation() throws Exception {
     AgentChatClient agentChatClient = mock(AgentChatClient.class);
     when(agentChatClient.isConfigured()).thenReturn(true);
-    when(agentChatClient.complete(anyList(), anyDouble()))
+    when(agentChatClient.completeCanvasAgent(anyList(), anyDouble()))
         .thenReturn(new AiChatDtos.CompletionResult(
             "teamorouter",
             "gpt-5.6-luna",
@@ -108,7 +108,7 @@ class CanvasAgentServiceTest {
   void retriesOnceWhenChatResponseStillCannotBeParsed() throws Exception {
     AgentChatClient agentChatClient = mock(AgentChatClient.class);
     when(agentChatClient.isConfigured()).thenReturn(true);
-    when(agentChatClient.complete(anyList(), anyDouble()))
+    when(agentChatClient.completeCanvasAgent(anyList(), anyDouble()))
         .thenReturn(
             new AiChatDtos.CompletionResult(
                 "teamorouter", "gpt-5.6-luna", "not-json"),
@@ -145,14 +145,14 @@ class CanvasAgentServiceTest {
 
     assertEquals(List.of("修复后的提示词"), response.draftPrompts());
     assertTrue(response.readyToGenerate());
-    verify(agentChatClient, times(2)).complete(anyList(), anyDouble());
+    verify(agentChatClient, times(2)).completeCanvasAgent(anyList(), anyDouble());
   }
 
   @Test
   void enhancesPromptWithoutStartingAgentChatOrGeneration() throws Exception {
     AgentChatClient agentChatClient = mock(AgentChatClient.class);
     when(agentChatClient.isConfigured()).thenReturn(true);
-    when(agentChatClient.complete(anyList(), anyDouble()))
+    when(agentChatClient.completeCanvasAgent(anyList(), anyDouble()))
         .thenReturn(new AiChatDtos.CompletionResult(
             "teamorouter",
             "gpt-5.6-luna",
@@ -168,16 +168,16 @@ class CanvasAgentServiceTest {
     assertEquals(
         "保留床垫主体结构，置于明亮自然的现代卧室中，柔和晨光从侧窗进入。",
         response.prompt());
-    verify(agentChatClient).complete(anyList(), anyDouble());
+    verify(agentChatClient).completeCanvasAgent(anyList(), anyDouble());
     verify(agentChatClient, never())
-        .completeVision(anyString(), anyString(), anyList(), anyDouble());
+        .completeCanvasAgentVision(anyString(), anyString(), anyList(), anyDouble());
   }
 
   @Test
   void chatReturnsConfirmationDraftWithoutExecutingGeneration() throws Exception {
     AgentChatClient agentChatClient = mock(AgentChatClient.class);
     when(agentChatClient.isConfigured()).thenReturn(true);
-    when(agentChatClient.completeVision(anyString(), anyString(), anyList(), anyDouble()))
+    when(agentChatClient.completeCanvasAgentVision(anyString(), anyString(), anyList(), anyDouble()))
         .thenReturn(new AiChatDtos.CompletionResult(
             "teamorouter",
             "gpt-5.6-luna",
@@ -231,7 +231,7 @@ class CanvasAgentServiceTest {
   void chatDoesNotExposeConfirmationWhenModelResponseIsInvalid() throws Exception {
     AgentChatClient agentChatClient = mock(AgentChatClient.class);
     when(agentChatClient.isConfigured()).thenReturn(true);
-    when(agentChatClient.complete(anyList(), anyDouble()))
+    when(agentChatClient.completeCanvasAgent(anyList(), anyDouble()))
         .thenReturn(new AiChatDtos.CompletionResult(
             "teamorouter", "gpt-5.6-luna", "invalid"));
 
@@ -257,7 +257,7 @@ class CanvasAgentServiceTest {
   void selectedCanvasImageDoesNotTriggerVisionWithoutSubmittedReference() throws Exception {
     AgentChatClient agentChatClient = mock(AgentChatClient.class);
     when(agentChatClient.isConfigured()).thenReturn(true);
-    when(agentChatClient.complete(anyList(), anyDouble()))
+    when(agentChatClient.completeCanvasAgent(anyList(), anyDouble()))
         .thenReturn(new AiChatDtos.CompletionResult(
             "teamorouter",
             "gpt-5.6-luna",
@@ -291,16 +291,16 @@ class CanvasAgentServiceTest {
         1));
 
     assertEquals(List.of(), response.referenceLayerIds());
-    verify(agentChatClient).complete(anyList(), anyDouble());
+    verify(agentChatClient).completeCanvasAgent(anyList(), anyDouble());
     verify(agentChatClient, never())
-        .completeVision(anyString(), anyString(), anyList(), anyDouble());
+        .completeCanvasAgentVision(anyString(), anyString(), anyList(), anyDouble());
   }
 
   @Test
   void sanitizesPlannerStepsAndLimitsGeneratedImages() throws Exception {
     AgentChatClient agentChatClient = mock(AgentChatClient.class);
     when(agentChatClient.isConfigured()).thenReturn(true);
-    when(agentChatClient.completeVision(anyString(), anyString(), anyList(), anyDouble()))
+    when(agentChatClient.completeCanvasAgentVision(anyString(), anyString(), anyList(), anyDouble()))
         .thenReturn(new AiChatDtos.CompletionResult(
             "teamorouter",
             "gpt-5.6-luna",
@@ -363,7 +363,7 @@ class CanvasAgentServiceTest {
   void fallsBackToOriginalInstructionWhenPlannerResponseIsInvalid() throws Exception {
     AgentChatClient agentChatClient = mock(AgentChatClient.class);
     when(agentChatClient.isConfigured()).thenReturn(true);
-    when(agentChatClient.complete(anyList(), anyDouble()))
+    when(agentChatClient.completeCanvasAgent(anyList(), anyDouble()))
         .thenReturn(new AiChatDtos.CompletionResult(
             "teamorouter", "gpt-5.6-luna", "not-json"));
 

@@ -2,6 +2,7 @@ package com.youmi.api.ai;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.youmi.api.image.ModelApiKeyService;
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
 import java.net.http.HttpTimeoutException;
@@ -14,6 +15,44 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class AgentChatClientTest {
+  @Test void configuredModelForwardsDefaultDataToItsConfiguredEndpoint() throws Exception {
+    var mapper = new ObjectMapper();
+    List<JsonNode> bodies = new ArrayList<>();
+    var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext("/v1/chat/completions", exchange -> {
+      bodies.add(mapper.readTree(exchange.getRequestBody()));
+      byte[] response = "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}"
+          .getBytes(StandardCharsets.UTF_8);
+      exchange.getResponseHeaders().set("Content-Type", "application/json");
+      exchange.sendResponseHeaders(200, response.length);
+      exchange.getResponseBody().write(response);
+      exchange.close();
+    });
+    server.start();
+    try {
+      var properties = new AgentChatProperties();
+      properties.setTimeoutSeconds(10);
+      var client = new AgentChatClient(mapper, properties);
+      var credential = new ModelApiKeyService.ResolvedModelApiKey(
+          9,
+          "gpt-5.6-luna",
+          "teamorouter",
+          "http://127.0.0.1:" + server.getAddress().getPort() + "/v1",
+          "/chat/completions",
+          "",
+          "local-test-only",
+          java.util.Map.of("service_tier", "fast"));
+
+      var result = client.completeConfiguredModel(credential, "system", "Hello", List.of(), null);
+
+      assertEquals("ok", result.content());
+      assertEquals("gpt-5.6-luna", bodies.get(0).path("model").asText());
+      assertEquals("fast", bodies.get(0).path("service_tier").asText());
+    } finally {
+      server.stop(0);
+    }
+  }
+
   @Test void storyboardTokenBudgetDoesNotChangeRegularAgentRequests() throws Exception {
     var mapper = new ObjectMapper();
     List<JsonNode> bodies = new ArrayList<>();

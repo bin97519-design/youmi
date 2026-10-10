@@ -41,7 +41,8 @@ public class ImageGenerationDtos {
       @JsonProperty("horizontal_angle") Integer horizontalAngle,
       @JsonProperty("vertical_angle") Integer verticalAngle,
       Integer distance,
-      Integer seed) {
+      Integer seed,
+      @JsonProperty("feature_code") String featureCode) {
     public CreateTaskRequest(
         String prompt,
         String model,
@@ -62,7 +63,17 @@ public class ImageGenerationDtos {
       this(
           prompt, model, size, ratio, resolution, n, count, imageUrlsSnake, imageUrls,
           background, outputFormat, moderation, inputFidelity, outputCompression, webhookUrl,
-          clientTaskId, null, null, null, null);
+          clientTaskId, null, null, null, null, null);
+    }
+
+    public CreateTaskRequest(String prompt, String model, String size, String ratio, String resolution,
+        Integer n, Integer count, List<String> imageUrlsSnake, List<String> imageUrls, String background,
+        String outputFormat, String moderation, String inputFidelity, Integer outputCompression,
+        String webhookUrl, String clientTaskId, Integer horizontalAngle, Integer verticalAngle,
+        Integer distance, Integer seed) {
+      this(prompt, model, size, ratio, resolution, n, count, imageUrlsSnake, imageUrls, background,
+          outputFormat, moderation, inputFidelity, outputCompression, webhookUrl, clientTaskId,
+          horizontalAngle, verticalAngle, distance, seed, null);
     }
 
     public List<String> normalizedImageUrls() {

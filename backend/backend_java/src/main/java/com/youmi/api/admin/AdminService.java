@@ -676,12 +676,14 @@ public class AdminService {
     return result;
   }
 
-  private String canonicalProvider(String provider) {
+  static String canonicalProvider(String provider) {
     if (provider == null || provider.isBlank()) return "unknown";
     String value = provider.trim().toLowerCase(Locale.ROOT);
     if (value.startsWith("apimart")) return "apimart";
     if (value.startsWith("gettoken")) return "gettoken";
-    if (value.startsWith("lk888")) return "lk888";
+    if (value.startsWith("lk888") || value.startsWith("youmi888") || value.startsWith("model-api")) {
+      return "lingke";
+    }
     if (value.startsWith("proxy")) return "proxy";
     if (value.startsWith("agnes")) return "agnes";
     return value;
@@ -691,7 +693,7 @@ public class AdminService {
     return switch (provider) {
       case "apimart" -> 0;
       case "gettoken" -> 1;
-      case "lk888" -> 2;
+      case "lingke" -> 2;
       case "proxy" -> 3;
       case "agnes" -> 4;
       default -> 10;
