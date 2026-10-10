@@ -21,10 +21,10 @@ import {
   ANMIAO_VIDEO_MODEL,
   ANMIAO25_VIDEO_MODEL,
   MINIMAX_VIDEO_MODEL,
+  HAILUO_H3_VIDEO_MODEL,
   isRetiredVideoModel,
   isPerSecondVideoModel,
   isAnmiao25VideoModel,
-  VIDEO_MODELS,
 } from '../utils/productVideo'
 import {
   estimatedVideoMiCost,
@@ -36,6 +36,7 @@ import {
   videoReferencePayload,
   videoResolutionForModel,
   videoResolutionOptions as resolutionOptionsForModel,
+  isProviderReportedCostVideoModel,
 } from '../utils/chatVideoSettings'
 import VersionHistoryDialog from '../components/common/VersionHistoryDialog.vue'
 import ThemedSelect from '../components/common/ThemedSelect.vue'
@@ -1010,7 +1011,10 @@ function selectChatOption(name, value) {
   }
   if (name === 'ratio') chatRatio.value = value
   if (name === 'resolution') chatResolution.value = value
-  if (name === 'video-model') videoModel.value = value
+  if (name === 'video-model') {
+    videoModel.value = value
+    if (value === HAILUO_H3_VIDEO_MODEL) videoReferenceMode.value = 'shouweizhen'
+  }
   if (name === 'video-ratio') videoRatio.value = value
   if (name === 'video-resolution') videoResolution.value = value
   if (name === 'video-duration') videoDuration.value = Number(value)
@@ -1437,7 +1441,20 @@ async function loadAgentModels() {
         headers: userStore.authHeaders(),
       }),
     )
-    if (Array.isArray(models) && models.length) agentModelRecords.value = models
+    if (Array.isArray(models)) {
+      const selectableModels = models.filter((option) => option.value !== 'default')
+      agentModelRecords.value = selectableModels
+      if (
+        !selectableModels.some(
+          (option) => option.value === agentModel.value && option.configured !== false,
+        )
+      ) {
+        agentModel.value =
+          selectableModels.find((option) => option.configured !== false)?.value ||
+          selectableModels[0]?.value ||
+          ''
+      }
+    }
   } catch (error) {
     console.warn('[agent] 模型状态暂时无法读取', error?.message || error)
   }
@@ -1450,33 +1467,37 @@ async function loadConfiguredVideoModels() {
         headers: userStore.authHeaders(),
       }),
     )
-    if (!Array.isArray(models)) return
-    const configured = []
-    models.forEach((item) => {
-      if (!item?.value) return
-      const existing = videoModelOptions.find((option) => option.value === item.value)
-      if (existing) {
-        existing.label = item.label || existing.label
-        configured.push(existing)
-        return
-      }
-      const option = { value: item.value, label: item.label || item.value }
-      videoModelOptions.push(option)
-      configured.push(option)
-    })
+    const configured = Array.isArray(models)
+      ? [
+          ...new Map(
+            models
+              .filter((item) => item?.value)
+              .map((item) => [
+                item.value,
+                { value: item.value, label: item.label || item.value, provider: item.provider },
+              ]),
+          ).values(),
+        ]
+      : []
+    videoModelOptions.splice(0, videoModelOptions.length, ...configured)
 
-    const storedModel = String(initialVideoConfig.model || '')
-    if (storedModel && configured.some((item) => item.value === storedModel)) {
-      videoModel.value = storedModel
-      videoResolution.value = validVideoResolution(storedModel, initialVideoConfig.resolution)
+    const storedModel = String(initialVideoConfig.model || videoModel.value || '')
+    const selectedModel = configured.some((item) => item.value === storedModel)
+      ? storedModel
+      : configured[0]?.value || ''
+    videoModel.value = selectedModel
+    if (selectedModel) {
+      videoResolution.value = validVideoResolution(selectedModel, initialVideoConfig.resolution)
         ? initialVideoConfig.resolution
-        : videoResolutionForModel(storedModel)
-      videoDuration.value = validVideoDuration(storedModel, Number(initialVideoConfig.duration))
+        : videoResolutionForModel(selectedModel)
+      videoDuration.value = validVideoDuration(selectedModel, Number(initialVideoConfig.duration))
         ? Number(initialVideoConfig.duration)
         : 15
     }
   } catch (error) {
     console.warn('[video] 模型配置暂时无法读取', error?.message || error)
+    videoModelOptions.splice(0)
+    videoModel.value = ''
   }
 }
 watch(
@@ -1563,19 +1584,10 @@ const inlineDialogModelTitle = computed(() =>
 )
 const chatRatio = ref(initialChatConfig.ratio || '9:16')
 const chatResolution = ref(initialChatConfig.resolution || '2K')
-const videoModelOptions = reactive([...VIDEO_MODELS])
-const LEGACY_DEFAULT_VIDEO_MODEL = 'seedance-2.0-fast-0826-480p'
-const DEFAULT_VIDEO_MODEL = 'seedance-2.0-fast-0826-720p'
+const videoModelOptions = reactive([])
 const videoRatioOptions = ['adaptive', '21:9', '16:9', '4:3', '1:1', '3:4', '9:16']
 const initialVideoConfig = initialChatConfig.video || {}
-const videoModel = ref(
-  initialVideoConfig.model === LEGACY_DEFAULT_VIDEO_MODEL
-    ? DEFAULT_VIDEO_MODEL
-    : isRetiredVideoModel(initialVideoConfig.model) ||
-        videoModelOptions.some((option) => option.value === initialVideoConfig.model)
-      ? initialVideoConfig.model
-      : DEFAULT_VIDEO_MODEL,
-)
+const videoModel = ref('')
 const videoRatio = ref(
   videoRatioOptions.includes(initialVideoConfig.ratio) ? initialVideoConfig.ratio : '16:9',
 )
@@ -1600,7 +1612,9 @@ const videoReferenceModes = [
 const videoModelLabel = computed(
   () =>
     videoModelOptions.find((option) => option.value === videoModel.value)?.label ||
-    (isRetiredVideoModel(videoModel.value) ? '请选择视频模型' : videoModel.value),
+    (isRetiredVideoModel(videoModel.value) || !videoModelOptions.length
+      ? '暂无已绑定模型'
+      : videoModel.value),
 )
 const videoComposerReferenceCount = computed(() => {
   const selectedIds = new Set(
@@ -1627,6 +1641,7 @@ const firstFrameOnly25 = computed(
   () => isAnmiao25VideoModel(videoModel.value) && videoComposerReferenceCount.value === 1,
 )
 const videoRatioMenuOptions = computed(() => {
+  if (videoModel.value === HAILUO_H3_VIDEO_MODEL) return ['adaptive']
   return firstFrameOnly25.value ? ['adaptive'] : videoRatioOptions
 })
 const videoRatioLabel = computed(() => {
@@ -1668,12 +1683,15 @@ const videoEstimatedMiCost = computed(() =>
     videoResolution.value,
     videoDuration.value,
     videoCapabilities.value,
+    isProviderReportedCostVideoModel(videoModel.value, videoModelOptions),
   ),
 )
 const videoCostHint = computed(() =>
   isRetiredVideoModel(videoModel.value)
     ? '原模型已移除，请重新选择'
-    : videoEstimatedMiCost.value == null
+    : isProviderReportedCostVideoModel(videoModel.value, videoModelOptions)
+      ? `${videoDuration.value} 秒 · 生成成功后按实际用量结算`
+      : videoEstimatedMiCost.value == null
       ? `${videoDuration.value} 秒 · 接口密钥待配置`
       : `${videoDuration.value} 秒 · 预计 ${videoEstimatedMiCost.value} 米值`,
 )
@@ -1783,7 +1801,7 @@ watch(
       isRetiredVideoModel(videoCfg.model) ||
       videoModelOptions.some((option) => option.value === videoCfg.model)
         ? videoCfg.model
-        : DEFAULT_VIDEO_MODEL
+        : videoModelOptions[0]?.value || ''
     videoRatio.value = videoRatioOptions.includes(videoCfg.ratio) ? videoCfg.ratio : '16:9'
     videoResolution.value = validVideoResolution(videoModel.value, videoCfg.resolution)
       ? videoCfg.resolution
@@ -2028,7 +2046,7 @@ const panel = reactive({
   resizingChat: null,
 })
 const effectiveChatHeight = computed(() =>
-  chatMode.value === 'video' && videoModel.value === MINIMAX_VIDEO_MODEL
+  chatMode.value === 'video' && [MINIMAX_VIDEO_MODEL, HAILUO_H3_VIDEO_MODEL].includes(videoModel.value)
     ? Math.max(panel.chatHeight, 420)
     : panel.chatHeight,
 )
@@ -10009,6 +10027,7 @@ function agentVideoError(message) {
     message.agentDraft?.referenceImages || [],
     agentDraftActiveItem(message.agentDraft)?.prompt,
     videoCapabilities.value,
+    videoModelOptions,
   )
 }
 
@@ -10344,6 +10363,10 @@ async function sendVideoChat(options = {}) {
   const requestedModel = videoModelOptions.some((option) => option.value === requestedConfig.model)
     ? requestedConfig.model
     : videoModel.value
+  if (!requestedModel || !videoModelOptions.some((option) => option.value === requestedModel)) {
+    showCopyPasteToast('模型管理中没有已绑定画布视频功能的模型')
+    return false
+  }
   if (isRetiredVideoModel(requestedModel)) {
     showCopyPasteToast('原视频模型已移除，请重新选择视频模型')
     return false
@@ -10356,6 +10379,10 @@ async function sendVideoChat(options = {}) {
   }
   const references = [...referenceMap.values()]
   const imageUrls = references.map((reference) => reference.url)
+  if (requestedModel === HAILUO_H3_VIDEO_MODEL && (imageUrls.length < 1 || imageUrls.length > 2)) {
+    showCopyPasteToast('Mini H3 首尾帧必须上传 1 至 2 张图片')
+    return false
+  }
   const sourceLayerIds = [
     ...new Set(references.map((reference) => reference.layerId).filter(Boolean)),
   ]
@@ -10382,8 +10409,13 @@ async function sendVideoChat(options = {}) {
   if (isPerSecondVideoModel(requestedModel)) {
     const capabilities = await loadVideoCapabilities()
     if (
-      estimatedVideoMiCost(requestedModel, requestedResolution, requestedDuration, capabilities) ==
-      null
+      estimatedVideoMiCost(
+        requestedModel,
+        requestedResolution,
+        requestedDuration,
+        capabilities,
+        isProviderReportedCostVideoModel(requestedModel, videoModelOptions),
+      ) == null
     ) {
       showCopyPasteToast('按秒视频接口密钥或所选画质的米值单价尚未配置')
       return false
@@ -15787,6 +15819,7 @@ async function loadImageForCropUncached(layer) {
                     :model-value="
                       agentDraftActiveItem(message.agentDraft)?.video || message.agentDraft.video
                     "
+                    :models="videoModelOptions"
                     :references="
                       agentDraftActiveItem(message.agentDraft)?.referenceImages ||
                       message.agentDraft.referenceImages
@@ -16230,13 +16263,17 @@ async function loadImageForCropUncached(layer) {
                     <button
                       type="button"
                       class="uc-custom-select-trigger"
+                      :disabled="!videoModelOptions.length"
                       :title="videoModelLabel"
                       @click.stop="toggleChatSelect('video-model')"
                     >
                       {{ videoModelLabel }}
                       <i class="ri-arrow-down-s-line"></i>
                     </button>
-                    <div v-if="chatSelectOpen === 'video-model'" class="uc-custom-select-menu">
+                    <div
+                      v-if="chatSelectOpen === 'video-model' && videoModelOptions.length"
+                      class="uc-custom-select-menu"
+                    >
                       <button
                         v-for="model in videoModelOptions"
                         :key="model.value"
@@ -16287,7 +16324,7 @@ async function loadImageForCropUncached(layer) {
                       @click.stop="toggleChatSelect('video-resolution')"
                     >
                       {{
-                        videoModel === MINIMAX_VIDEO_MODEL
+                        [MINIMAX_VIDEO_MODEL, HAILUO_H3_VIDEO_MODEL].includes(videoModel)
                           ? videoResolution.toUpperCase()
                           : videoResolution
                       }}
@@ -16303,7 +16340,9 @@ async function loadImageForCropUncached(layer) {
                         @click.stop="selectChatOption('video-resolution', resolution)"
                       >
                         {{
-                          videoModel === MINIMAX_VIDEO_MODEL ? resolution.toUpperCase() : resolution
+                          [MINIMAX_VIDEO_MODEL, HAILUO_H3_VIDEO_MODEL].includes(videoModel)
+                            ? resolution.toUpperCase()
+                            : resolution
                         }}
                       </button>
                     </div>

@@ -326,13 +326,69 @@ public class AdminService {
   public AdminDtos.ImageStatsResponse imageStats(Long scopeUserId, String dateFrom, String dateTo) {
     return new AdminDtos.ImageStatsResponse(
         imageSummary(scopeUserId),
-        recentImageTasks(scopeUserId, dateFrom, dateTo),
+        List.of(),
         dailyImageStats(scopeUserId),
         modelImageStats(scopeUserId),
         providerSuccessStats(scopeUserId),
         modelDailyTrends(scopeUserId),
         shopDailyTrends(scopeUserId),
         userDailyTrends(scopeUserId));
+  }
+
+  public AdminDtos.ImageTaskPage imageTaskPage(Long scopeUserId, String dateFrom, String dateTo,
+      String status, String model, Long userId, int page, int pageSize, boolean includeTotal) {
+    int safePage = Math.max(1, page);
+    int safePageSize = Math.min(100, Math.max(1, pageSize));
+    long offset = (long) (safePage - 1) * safePageSize;
+    List<Object> args = new ArrayList<>();
+    StringBuilder where = new StringBuilder(" WHERE 1=1");
+    if (scopeUserId != null) {
+      where.append(" AND t.user_id = ?");
+      args.add(scopeUserId);
+    }
+    if (dateFrom != null && !dateFrom.isBlank()) {
+      where.append(" AND t.created_at >= ?");
+      args.add(dateFrom + " 00:00:00");
+    }
+    if (dateTo != null && !dateTo.isBlank()) {
+      where.append(" AND t.created_at < DATE_ADD(?, INTERVAL 1 DAY)");
+      args.add(dateTo);
+    }
+    if (status != null && !status.isBlank()) {
+      switch (status.trim().toUpperCase(Locale.ROOT)) {
+        case "COMPLETED" -> where.append(" AND LOWER(t.status) IN ('completed', 'succeeded', 'success', 'done')");
+        case "FAILED" -> where.append(" AND LOWER(t.status) IN ('failed', 'error', 'cancelled', 'canceled')");
+        case "PENDING" -> where.append(" AND LOWER(t.status) IN ('pending', 'waiting', 'queued', 'submitted')");
+        case "PROCESSING" -> where.append(" AND LOWER(t.status) IN ('processing', 'running', 'generating', 'in_progress', 'persisting')");
+        default -> { }
+      }
+    }
+    if (model != null && !model.isBlank()) {
+      where.append(" AND COALESCE(t.requested_model, t.model, 'unknown') = ?");
+      args.add(model);
+    }
+    if (userId != null) {
+      where.append(" AND t.user_id = ?");
+      args.add(userId);
+    }
+
+    Long total = includeTotal
+        ? jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ym_image_task t" + where, Long.class, args.toArray())
+        : null;
+    List<Object> pageArgs = new ArrayList<>(args);
+    pageArgs.add(safePageSize);
+    pageArgs.add(offset);
+    String sql = """
+        SELECT t.id, t.task_id, t.user_id, u.nickname AS user_name, t.provider, t.prompt, t.model, t.requested_model,
+               t.size, t.resolution, t.requested_count, t.status, t.progress, t.image_count, t.mi_cost,
+               t.money_cost, t.error_message, t.created_at, t.updated_at, t.completed_at,
+               t.image_urls, t.result_urls, t.persist_status
+        FROM ym_image_task t
+        LEFT JOIN ym_sys_user u ON u.id = t.user_id
+        """ + where + " ORDER BY t.created_at DESC LIMIT ? OFFSET ?";
+    List<AdminDtos.ImageTaskRow> tasks = jdbcTemplate.query(sql,
+        (rs, rowNum) -> mapImageTask(rs), pageArgs.toArray());
+    return new AdminDtos.ImageTaskPage(tasks, total == null ? -1 : total, safePage, safePageSize);
   }
 
   private AdminDtos.ImageStatsSummary imageSummary(Long scopeUserId) {
@@ -377,34 +433,6 @@ public class AdminService {
         rs.getInt("total_images"),
         rs.getInt("total_mi_cost"),
         rs.getBigDecimal("total_money_cost")), args);
-  }
-
-  private List<AdminDtos.ImageTaskRow> recentImageTasks(Long scopeUserId, String dateFrom, String dateTo) {
-    String baseSql = """
-        SELECT t.id, t.task_id, t.user_id, u.nickname AS user_name, t.provider, t.prompt, t.model, t.requested_model,
-               t.size, t.resolution, t.requested_count, t.status, t.progress, t.image_count, t.mi_cost,
-               t.money_cost, t.error_message, t.created_at, t.updated_at, t.completed_at,
-               t.image_urls, t.result_urls, t.persist_status
-        FROM ym_image_task t
-        LEFT JOIN ym_sys_user u ON u.id = t.user_id
-        WHERE 1=1
-        """;
-    StringBuilder sql = new StringBuilder(baseSql);
-    List<Object> argList = new ArrayList<>();
-    if (scopeUserId != null) {
-      sql.append(" AND t.user_id = ?");
-      argList.add(scopeUserId);
-    }
-    if (dateFrom != null && !dateFrom.isEmpty()) {
-      sql.append(" AND DATE(t.created_at) >= ?");
-      argList.add(dateFrom);
-    }
-    if (dateTo != null && !dateTo.isEmpty()) {
-      sql.append(" AND DATE(t.created_at) <= ?");
-      argList.add(dateTo);
-    }
-    sql.append(" ORDER BY t.created_at DESC LIMIT 500");
-    return jdbcTemplate.query(sql.toString(), (rs, rowNum) -> mapImageTask(rs), argList.toArray());
   }
 
   private List<AdminDtos.DailyImageStat> dailyImageStats(Long scopeUserId) {

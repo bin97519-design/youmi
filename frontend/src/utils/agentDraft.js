@@ -4,6 +4,7 @@ import {
   validVideoDuration,
   validVideoResolution,
   videoReferenceLimit,
+  isProviderReportedCostVideoModel,
 } from './chatVideoSettings.js'
 
 export function canCreateAgentDraft(response, prompts) {
@@ -21,8 +22,8 @@ export function totalAgentGenerationCount(models, count) {
   return Math.max(1, uniqueModels.size) * perModelCount
 }
 
-export function agentVideoDraftError(config, references, prompt, capabilities) {
-  if (!config || !VIDEO_MODELS.some((option) => option.value === config.model))
+export function agentVideoDraftError(config, references, prompt, capabilities, models = VIDEO_MODELS) {
+  if (!config || !models.some((option) => option.value === config.model))
     return '请选择视频模型'
   if (!String(prompt || '').trim()) return '视频脚本不能为空'
   if (String(prompt).length > 2500) return '视频脚本超过 2500 字，请先让 Agent 精简'
@@ -32,8 +33,13 @@ export function agentVideoDraftError(config, references, prompt, capabilities) {
   const limit = videoReferenceLimit(config.model, config.referenceMode)
   if (references.length > limit) return `所选模式最多支持 ${limit} 张参考图`
   if (
-    estimatedVideoMiCost(config.model, config.resolution, Number(config.duration), capabilities) ==
-    null
+    estimatedVideoMiCost(
+      config.model,
+      config.resolution,
+      Number(config.duration),
+      capabilities,
+      isProviderReportedCostVideoModel(config.model, models),
+    ) == null
   )
     return '视频接口密钥或米值单价尚未配置'
   return ''

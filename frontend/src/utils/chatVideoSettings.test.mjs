@@ -10,11 +10,13 @@ import {
   videoResolutionOptions,
   videoReferencePayload,
   videoReferenceLimit,
+  isProviderReportedCostVideoModel,
 } from './chatVideoSettings.js'
 import {
   ANMIAO_VIDEO_MODEL,
   ANMIAO25_VIDEO_MODEL,
   MINIMAX_VIDEO_MODEL,
+  HAILUO_H3_VIDEO_MODEL,
   VIDEO_MODELS,
 } from './productVideo.js'
 
@@ -78,6 +80,36 @@ test('H3 frame mode preserves order and reference mode accepts a single referenc
   })
 })
 
+test('mapped Mini H3首尾帧 enforces uploaded first/end frames and automatic ratio', () => {
+  const frames = ['https://assets/first.png', 'https://assets/last.png']
+  assert.equal(videoResolutionForModel(HAILUO_H3_VIDEO_MODEL), '768p')
+  assert.deepEqual(videoResolutionOptions(HAILUO_H3_VIDEO_MODEL), ['768p', '1080p', '2k', '4k'])
+  assert.deepEqual(videoDurationOptions(HAILUO_H3_VIDEO_MODEL), [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+  assert.equal(videoRatioForRequest(HAILUO_H3_VIDEO_MODEL, 2, '16:9'), 'adaptive')
+  assert.deepEqual(videoReferencePayload(HAILUO_H3_VIDEO_MODEL, 'shouweizhen', frames), {
+    first_frame_url: frames[0],
+    last_frame_url: frames[1],
+  })
+  assert.deepEqual(videoReferencePayload(HAILUO_H3_VIDEO_MODEL, 'shouweizhen', [frames[0]]), {
+    first_frame_url: frames[0],
+  })
+  assert.throws(() => videoReferencePayload(HAILUO_H3_VIDEO_MODEL, 'shouweizhen', []), /1 至 2 张图片/)
+  assert.throws(() => videoReferencePayload(HAILUO_H3_VIDEO_MODEL, 'shouweizhen', [...frames, 'third']))
+  const mappedModel = [{ value: HAILUO_H3_VIDEO_MODEL, provider: '灵科AI' }]
+  assert.equal(isProviderReportedCostVideoModel(HAILUO_H3_VIDEO_MODEL, mappedModel), true)
+  assert.equal(estimatedVideoMiCost(HAILUO_H3_VIDEO_MODEL, '768p', 15, null, true), 0)
+  assert.equal(estimatedVideoMiCost(HAILUO_H3_VIDEO_MODEL, '768p', 16, null, true), null)
+})
+
+test('mapped Lingke video models can submit without fixed price and bill after success', () => {
+  const model = 'some-lingke-video-model'
+  const mapped = [{ value: model, provider: 'lk888' }]
+  assert.equal(isProviderReportedCostVideoModel(model, mapped), true)
+  assert.equal(estimatedVideoMiCost(model, '480p', 15, null, true), 0)
+  assert.equal(estimatedVideoMiCost(model, '480p', 14, null, true), null)
+  assert.equal(isProviderReportedCostVideoModel(model, [{ value: model, provider: 'apimart' }]), false)
+})
+
 test('legacy chat video keeps fixed duration, resolution and price', () => {
   const model = 'seedance-2.0-fast-0826-480p'
   assert.deepEqual(videoResolutionOptions(model), ['480p'])
@@ -96,6 +128,19 @@ test('per-second chat video exposes standard resolutions and 4-15 seconds', () =
   assert.equal(validVideoResolution(ANMIAO_VIDEO_MODEL, '4k'), true)
   assert.equal(validVideoDuration(ANMIAO_VIDEO_MODEL, 6), true)
   assert.equal(validVideoDuration(ANMIAO_VIDEO_MODEL, 16), false)
+})
+
+test('mapped Seedance 2.0 fast model is per-second, priced on SD2 rates, and limited to 480p/720p', () => {
+  const model = 'doubao-seedance-2-0-fast-260128'
+  assert.equal(videoResolutionForModel(model), '720p')
+  assert.deepEqual(videoResolutionOptions(model), ['480p', '720p'])
+  assert.deepEqual(videoDurationOptions(model), [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+  const capabilities = {
+    anmiaoVideo: true,
+    anmiaoMiPerSecondByResolution: { '480p': 3, '720p': 5 },
+  }
+  assert.equal(estimatedVideoMiCost(model, '480p', 4, capabilities), 12)
+  assert.equal(estimatedVideoMiCost(model, '1080p', 4, capabilities), null)
 })
 
 test('estimate uses selected backend tier and blocks unavailable pricing', () => {

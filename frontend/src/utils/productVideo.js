@@ -34,9 +34,16 @@ export const ANMIAO25_VIDEO_RESOLUTIONS = ANMIAO_VIDEO_RESOLUTIONS.filter(
 )
 export const WHOLE_VIDEO_30_MODEL = 'ya-sd25-30s'
 export const ANMIAO_VIDEO_MODEL = 'doubao-seedance-2-0-260128'
+export const ANMIAO20_FAST_VIDEO_MODEL = 'doubao-seedance-2-0-fast-260128'
 export const ANMIAO25_VIDEO_MODEL = 'doubao-seedance-2-5-260628'
 export const MINIMAX_VIDEO_MODEL = 'minimax-h3'
+export const HAILUO_H3_VIDEO_MODEL = 'hailuo-h3-shouweizhen'
 export const isRetiredVideoModel = (model) => model === 'minimax-h3-max'
+export const isAnmiao20FastVideoModel = (model) =>
+  String(model || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').includes('doubao-seedance-2-0-fast')
+export const ANMIAO20_FAST_VIDEO_RESOLUTIONS = ANMIAO_VIDEO_RESOLUTIONS.filter((option) =>
+  ['480p', '720p'].includes(option.value),
+)
 export const MINIMAX_VIDEO_RESOLUTIONS = [
   { value: '768p', label: '768P' },
   { value: '1080p', label: '1080P' },
@@ -46,7 +53,8 @@ export const MINIMAX_VIDEO_RESOLUTIONS = [
 export const isAnmiao25VideoModel = (model) =>
   model === ANMIAO25_VIDEO_MODEL || String(model || '').toLowerCase().includes('seedance-2.5-guanfang-anmiao')
 export const isPerSecondVideoModel = (model) =>
-  [ANMIAO_VIDEO_MODEL, ANMIAO25_VIDEO_MODEL, MINIMAX_VIDEO_MODEL].includes(model) ||
+  [ANMIAO_VIDEO_MODEL, ANMIAO25_VIDEO_MODEL, MINIMAX_VIDEO_MODEL, HAILUO_H3_VIDEO_MODEL].includes(model) ||
+  isAnmiao20FastVideoModel(model) ||
   String(model || '').toLowerCase().includes('seedance-2.0-guanfang-anmiao') ||
   isAnmiao25VideoModel(model)
 export const WHOLE_VIDEO_30_MODELS = [
@@ -464,6 +472,7 @@ export function buildVideoRequest(workflow, shot, clientId) {
   const anmiaoVideo = isPerSecondVideoModel(model)
   const minimax = model === MINIMAX_VIDEO_MODEL
   const anmiao25Video = model === ANMIAO25_VIDEO_MODEL
+  const anmiao20Fast = isAnmiao20FastVideoModel(model)
   const maxDuration = anmiao25Video ? 30 : 15
   const minDuration = 4
   if (
@@ -478,13 +487,17 @@ export function buildVideoRequest(workflow, shot, clientId) {
     ? MINIMAX_VIDEO_RESOLUTIONS
     : anmiao25Video
       ? ANMIAO25_VIDEO_RESOLUTIONS
-      : ANMIAO_VIDEO_RESOLUTIONS
+      : anmiao20Fast
+        ? ANMIAO20_FAST_VIDEO_RESOLUTIONS
+        : ANMIAO_VIDEO_RESOLUTIONS
   if (anmiaoVideo && !resolutions.some((option) => option.value === anmiaoResolution))
     throw new Error(
       minimax
         ? 'MiniMax H3 画质需选择 768P、1080P、2K 或 4K'
         : anmiao25Video
           ? 'SD2.5 视频画质需选择 480p、720p 或 1080p'
+          : anmiao20Fast
+            ? 'Seedance 2.0 快速版画质需选择 480p 或 720p'
           : '按秒视频画质需选择 480p、720p、1080p 或 4K',
     )
   const timelineCount = Number(shot.timelineCount ?? shot.timeline?.length)

@@ -23,6 +23,12 @@ public class ModelApiKeyService {
   private static final String DEFAULT_GENERATION_PATH = "/v1/media/generate";
   private static final String DEFAULT_TASK_PATH = "/v1/media/status";
 
+  public static boolean usesProviderReportedCost(String provider) {
+    String value = provider == null ? "" : provider.trim().toLowerCase(java.util.Locale.ROOT);
+    return value.startsWith("lk888") || value.startsWith("youmi888") || value.startsWith("lingke")
+        || value.startsWith("model-api") || value.startsWith("灵科ai") || value.startsWith("灵科 ai");
+  }
+
   private final ModelApiKeyRepository repository;
   private final CredentialVault vault;
   private final ImageGenerationProperties imageProperties;
@@ -168,7 +174,9 @@ public class ModelApiKeyService {
     if (requestedModel == null || requestedModel.isBlank()) return Optional.empty();
     String normalized = requestedModel.trim();
     String alias = normalized;
-    if (normalized.equalsIgnoreCase("gpt-image2.5-sunburst-api")) {
+    if (normalized.equalsIgnoreCase("banana-pro-api")) {
+      alias = "banana-pro";
+    } else if (normalized.equalsIgnoreCase("gpt-image2.5-sunburst-api")) {
       alias = "tt-image-2.5";
     } else if (normalized.equalsIgnoreCase("GPT-image2.5") || normalized.equalsIgnoreCase("gpt-image-2.5")) {
       alias = "tt-image-2.5";

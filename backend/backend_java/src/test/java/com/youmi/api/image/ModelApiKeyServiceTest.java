@@ -266,4 +266,16 @@ class ModelApiKeyServiceTest {
     assertEquals(stored.id(), service.resolve("gpt-image2.5-sunburst-api",
         ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, "canvas-image").orElseThrow().id());
   }
+
+  @Test
+  void bananaProApiAliasResolvesSelectedCanvasImageCredential() {
+    ModelApiKeyDtos.Row stored = service.create(new ModelApiKeyDtos.SaveRequest(
+        "香蕉pro", "banana-pro", ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION,
+        "灵科AI", "https://api.example.com", null, null, "sk-image", true, 100), 1L);
+    new AiFeatureMappingService(service, new AiFeatureMappingRepository(jdbcTemplate)).save(
+        "canvas-image", new com.youmi.api.admin.AiFeatureMappingDtos.SaveRequest(List.of(stored.id()), null));
+
+    assertEquals(stored.id(), service.resolve("banana-pro-api",
+        ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, "canvas-image").orElseThrow().id());
+  }
 }

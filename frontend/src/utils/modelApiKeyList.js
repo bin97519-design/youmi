@@ -4,7 +4,10 @@ export function canonicalModelApiProvider(provider) {
   if (
     value.startsWith('lk888') ||
     value.startsWith('youmi888') ||
-    value.startsWith('model-api')
+    value.startsWith('model-api') ||
+    value.startsWith('lingke') ||
+    value.startsWith('灵科ai') ||
+    value.startsWith('灵科 ai')
   ) {
     return 'lingke'
   }

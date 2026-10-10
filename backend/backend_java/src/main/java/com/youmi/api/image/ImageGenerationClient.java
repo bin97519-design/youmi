@@ -1135,7 +1135,8 @@ public class ImageGenerationClient {
       Optional<ModelApiKeyService.ResolvedModelApiKey> mapped = modelApiKeyService.resolve(
           normalized, ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, "canvas-image");
       if (mapped.isPresent()) return mapped;
-      if (modelApiKeyService.isFeatureMappingConfigured("canvas-image")) {
+      if (modelApiKeyService.isFeatureMappingConfigured("canvas-image")
+          && !isLegacyImageProviderModel(normalized)) {
         throw new ApiException(400, "该生图模型未映射到已启用的模型密钥");
       }
     }
@@ -1148,6 +1149,16 @@ public class ImageGenerationClient {
     // Keep the original banana-pro option on its existing GetToken/LK888 route.
     if (normalized.equalsIgnoreCase("banana-pro")) return Optional.empty();
     return modelApiKeyService.resolve(normalized);
+  }
+
+  private boolean isLegacyImageProviderModel(String model) {
+    return model.equalsIgnoreCase("banana2")
+        || model.equalsIgnoreCase("banana-2")
+        || model.equalsIgnoreCase("nanobanana2")
+        || model.equalsIgnoreCase("banana-pro")
+        || model.equalsIgnoreCase("bananapro")
+        || model.equalsIgnoreCase("nanobananapro")
+        || model.equalsIgnoreCase("gpt-image-2");
   }
 
   private String normalizeModelApiUpstreamModel(String model) {

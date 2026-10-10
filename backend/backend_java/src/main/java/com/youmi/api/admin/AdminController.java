@@ -170,4 +170,21 @@ public class AdminController {
     Long scopeUserId = adminAuthService.isAdmin(user) ? null : user.id();
     return ApiResponse.ok(adminService.imageStats(scopeUserId, dateFrom, dateTo));
   }
+
+  @GetMapping("/image-tasks")
+  public ApiResponse<AdminDtos.ImageTaskPage> imageTasks(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @RequestParam(required = false) String dateFrom,
+      @RequestParam(required = false) String dateTo,
+      @RequestParam(required = false) String status,
+      @RequestParam(required = false) String model,
+      @RequestParam(required = false) Long userId,
+      @RequestParam(defaultValue = "1") int page,
+      @RequestParam(defaultValue = "10") int pageSize,
+      @RequestParam(defaultValue = "true") boolean includeTotal) {
+    UserAccount user = adminAuthService.requireLogin(authorization);
+    Long scopeUserId = adminAuthService.isAdmin(user) ? null : user.id();
+    return ApiResponse.ok(adminService.imageTaskPage(
+        scopeUserId, dateFrom, dateTo, status, model, userId, page, pageSize, includeTotal));
+  }
 }

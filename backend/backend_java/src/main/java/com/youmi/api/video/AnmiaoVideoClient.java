@@ -25,11 +25,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 @Service
 public class AnmiaoVideoClient {
   public static final String MODEL = "doubao-seedance-2-0-260128";
+  public static final String MODEL20_FAST = "doubao-seedance-2-0-fast-260128";
   public static final String MODEL25 = "doubao-seedance-2-5-260628";
   public static final String PREFIX = "anmiao-video:";
   private static final String PROVIDER = "anmiao";
   private static final Set<String> RATIOS = Set.of("adaptive", "16:9", "4:3", "1:1", "3:4", "9:16", "21:9");
   public static final Set<String> RESOLUTIONS = Set.of("480p", "720p", "1080p", "4k");
+  public static final Set<String> RESOLUTIONS20_FAST = Set.of("480p", "720p");
   public static final Set<String> RESOLUTIONS25 = Set.of("480p", "720p", "1080p");
 
   private final AnmiaoVideoProperties properties;
@@ -88,9 +90,7 @@ public class AnmiaoVideoClient {
   }
 
   public boolean supportsModel(String model) {
-    if (MODEL.equals(model) || MODEL25.equals(model)) return true;
-    return resolveConfiguredModel(model) != null && model != null
-        && model.toLowerCase(Locale.ROOT).contains("seedance-2.");
+    return MODEL.equals(model) || MODEL25.equals(model) || resolveConfiguredModel(model) != null;
   }
 
   public int price(VideoGenerationDtos.CreateTaskRequest request) {
@@ -99,7 +99,11 @@ public class AnmiaoVideoClient {
         ? properties.miPerSecond25(resolution(request)) : properties.miPerSecond(resolution(request));
     ResolvedModelApiKey credential = resolveConfiguredModel(request.model());
     String key = credential == null ? properties.apiKeyForModel(request.model()) : credential.apiKey();
-    if (key == null || key.isBlank() || rate == 0)
+    if (key == null || key.isBlank())
+      throw new ApiException(503, "按秒视频所选模型未配置密钥");
+    if (credential != null && ModelApiKeyService.usesProviderReportedCost(credential.provider()))
+      return 0;
+    if (rate == 0)
       throw new ApiException(503, "按秒视频所选画质尚未配置密钥和每秒米值单价");
     return Math.multiplyExact(request.durationSeconds(), rate);
   }
@@ -128,6 +132,7 @@ public class AnmiaoVideoClient {
     try {
       Map<String, Object> body = new LinkedHashMap<>(credential == null ? Map.of() : credential.defaultData());
       body.put("model", providerModel(request.model()));
+      if (credential != null) body.put("prompt", request.prompt().trim());
       body.put("content", content);
       body.put("resolution", resolution(request));
       body.put("ratio", request.ratio());
@@ -224,6 +229,7 @@ public class AnmiaoVideoClient {
       throw new ApiException(400, "视频提示词不能为空");
     if (request.prompt().length() > 2500) throw new ApiException(400, "视频提示词不能超过 2500 字");
     boolean model25 = isModel25(request.model());
+    boolean fastModel = isModel20Fast(request.model());
     boolean configured = resolveConfiguredModel(request.model()) != null;
     if (!MODEL.equals(request.model()) && !MODEL25.equals(request.model()) && !configured)
       throw new ApiException(400, "按秒视频模型编号无效或未配置密钥");
@@ -231,9 +237,14 @@ public class AnmiaoVideoClient {
     if (request.durationSeconds() == null || request.durationSeconds() < 4 || request.durationSeconds() > maxDuration)
       throw new ApiException(400, "按秒视频时长必须是 4 至 " + maxDuration + " 的整数秒");
     if (!RATIOS.contains(request.ratio())) throw new ApiException(400, "成片比例不受支持");
-    if (!(model25 ? RESOLUTIONS25 : RESOLUTIONS).contains(resolution(request)))
+    Set<String> supportedResolutions = model25 ? RESOLUTIONS25
+        : fastModel ? RESOLUTIONS20_FAST : RESOLUTIONS;
+    // Model-manager bindings may target providers with their own resolution enums.
+    // Pass those values through and let the bound provider validate them.
+    if (!configured && !supportedResolutions.contains(resolution(request)))
       throw new ApiException(400, model25
           ? "SD 2.5 画质仅支持 480p、720p 或 1080p"
+          : fastModel ? "Seedance 2.0 快速版画质仅支持 480p 或 720p"
           : "按秒视频画质仅支持 480p、720p、1080p 或 4k");
     String first = request.normalizedFirstFrameUrl();
     String last = request.lastFrameUrl() == null ? "" : request.lastFrameUrl().trim();
@@ -326,6 +337,12 @@ public class AnmiaoVideoClient {
 
   private boolean isModel25(String model) {
     return MODEL25.equals(model) || (model != null && model.toLowerCase(Locale.ROOT).contains("seedance-2.5"));
+  }
+
+  private boolean isModel20Fast(String model) {
+    if (model == null) return false;
+    String normalized = model.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "-");
+    return normalized.contains("seedance-2-0-fast");
   }
 
   private String providerModel(String model) {

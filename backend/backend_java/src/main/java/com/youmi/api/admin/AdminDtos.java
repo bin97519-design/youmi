@@ -88,6 +88,9 @@ public final class AdminDtos {
       List<DimensionImageTrend> userTrends) {
   }
 
+  public record ImageTaskPage(List<ImageTaskRow> tasks, long total, int page, int pageSize) {
+  }
+
   public record ImageStatsSummary(
       Long totalTasks,
       Long completedTasks,

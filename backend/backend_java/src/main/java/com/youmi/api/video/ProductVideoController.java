@@ -21,6 +21,7 @@ public class ProductVideoController {
   private final AnmiaoVideoProperties anmiao;
   private final MinimaxVideoProperties minimax;
   private final AnmiaoVideoClient anmiaoClient;
+  private MinimaxVideoClient minimaxClient;
 
   public ProductVideoController(AdminAuthService auth, ProductVideoPlanService plans,
       VideoCompositionService compositions, SelectionPoolService products, MiValueProperties pricing,
@@ -42,11 +43,15 @@ public class ProductVideoController {
     this.anmiaoClient = anmiaoClient;
   }
 
+  @Autowired(required = false)
+  void setMinimaxClient(MinimaxVideoClient minimaxClient) { this.minimaxClient = minimaxClient; }
+
   @GetMapping("/capabilities")
   public ApiResponse<?> capabilities(@RequestHeader(value = "Authorization", required = false) String token) {
     auth.requireUserId(token);
     boolean configured20 = anmiaoClient != null && anmiaoClient.hasConfiguredModelVersion(false);
     boolean configured25 = anmiaoClient != null && anmiaoClient.hasConfiguredModelVersion(true);
+    boolean configuredHailuo = minimaxClient != null && minimaxClient.hasConfiguredHailuoModel();
     return ApiResponse.ok(Map.ofEntries(
         Map.entry("composition", compositions.available()),
         Map.entry("videoPrice", pricing.getPrice(MiBizType.VIDEO)),
@@ -64,8 +69,8 @@ public class ProductVideoController {
         Map.entry("anmiaoMiPerSecondByResolution", anmiao.availableRates(configured20)),
         Map.entry("anmiao25Video", anmiao.isAvailable25() || configured25),
         Map.entry("anmiao25MiPerSecondByResolution", anmiao.availableRates25(configured25)),
-        Map.entry("minimaxVideo", minimax.isAvailable()),
-        Map.entry("minimaxMiPerSecondByResolution", minimax.availableRates())));
+        Map.entry("minimaxVideo", minimax.isAvailable() || configuredHailuo),
+        Map.entry("minimaxMiPerSecondByResolution", minimax.availableRates(configuredHailuo))));
   }
 
   @PostMapping("/plan")

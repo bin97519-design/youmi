@@ -12,10 +12,12 @@ import {
   videoRatioForRequest,
   videoResolutionForModel,
   videoResolutionOptions,
+  isProviderReportedCostVideoModel,
 } from '../../utils/chatVideoSettings'
 
 const props = defineProps({
   modelValue: { type: Object, required: true },
+  models: { type: Array, default: () => VIDEO_MODELS },
   references: { type: Array, default: () => [] },
   capabilities: { type: Object, default: null },
   disabled: Boolean,
@@ -32,6 +34,7 @@ const price = computed(() =>
     props.modelValue.resolution,
     Number(props.modelValue.duration),
     props.capabilities,
+    isProviderReportedCostVideoModel(props.modelValue.model, props.models),
   ),
 )
 function change(key, value) {
@@ -51,7 +54,7 @@ function change(key, value) {
         :value="modelValue.model"
         @change="change('model', $event.target.value)"
       >
-        <option v-for="option in VIDEO_MODELS" :key="option.value" :value="option.value">
+        <option v-for="option in models" :key="option.value" :value="option.value">
           {{ option.label }}
         </option>
       </select>

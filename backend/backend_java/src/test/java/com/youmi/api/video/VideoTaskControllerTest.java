@@ -2,6 +2,7 @@ package com.youmi.api.video;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.youmi.api.admin.AdminAuthService;
 import com.youmi.api.common.ApiException;
 import com.youmi.api.credit.MiBizType;
@@ -85,13 +86,18 @@ class VideoTaskControllerTest {
     var request = new VideoGenerationDtos.CreateTaskRequest("test", "seedance-2.0-fast-0826-720p", "16:9", 15);
     var response = new VideoGenerationDtos.CreateTaskResponse();
     response.setTaskId("thq-video:old-1");
+    when(anmiao.supportsModel(request.model())).thenReturn(false);
+    when(anmiao.isConfiguredKeyExcluded(request.model())).thenReturn(false);
     when(legacy.createTask(request)).thenReturn(response);
     when(billing.checkAndDeduct(7L, MiBizType.VIDEO)).thenReturn(new MiValueDtos.DeductResult(1L, 0, 0, 50, MiBizType.VIDEO));
     controller.create("token", request);
     verify(legacy).createTask(request);
     verify(billing).linkTask(1L, "thq-video:old-1");
     verify(billing).commit(1L);
-    verifyNoInteractions(chat, anmiao);
+    verify(anmiao).supportsModel(request.model());
+    verify(anmiao).isConfiguredKeyExcluded(request.model());
+    verifyNoMoreInteractions(anmiao);
+    verifyNoInteractions(chat);
   }
 
   @Test void pollingChecksOwnershipAndRoutesToCorrectProvider() throws Exception {
@@ -114,6 +120,7 @@ class VideoTaskControllerTest {
     var request = new VideoGenerationDtos.CreateTaskRequest("test", AnmiaoVideoClient.MODEL, "16:9", 6);
     var response = new VideoGenerationDtos.CreateTaskResponse();
     response.setTaskId("anmiao-video:123");
+    when(anmiao.supportsModel(AnmiaoVideoClient.MODEL)).thenReturn(true);
     when(anmiao.price(request)).thenReturn(18);
     when(anmiao.createTask(request)).thenReturn(response);
     when(billing.checkAndDeduct(7L, MiBizType.VIDEO, 18))
@@ -123,9 +130,63 @@ class VideoTaskControllerTest {
     verifyNoInteractions(legacy, chat);
   }
 
+  @Test void mappedFastModelUsesConfiguredVideoTransportInsteadOfLegacyThq() throws Exception {
+    when(auth.requireUserId("token")).thenReturn(7L);
+    var request = new VideoGenerationDtos.CreateTaskRequest("test", AnmiaoVideoClient.MODEL20_FAST,
+        "16:9", 4, "480p", java.util.List.of(), null, null, null, false, null, null, null);
+    var response = new VideoGenerationDtos.CreateTaskResponse();
+    response.setTaskId("anmiao-video:key:42:fast-123");
+    when(anmiao.supportsModel(AnmiaoVideoClient.MODEL20_FAST)).thenReturn(true);
+    when(anmiao.price(request)).thenReturn(12);
+    when(anmiao.createTask(request)).thenReturn(response);
+    when(billing.checkAndDeduct(7L, MiBizType.VIDEO, 12))
+        .thenReturn(new MiValueDtos.DeductResult(12L, 0, 0, 12, MiBizType.VIDEO));
+
+    controller.create("token", request);
+
+    verify(anmiao).createTask(request);
+    verify(billing).linkTask(12L, response.getTaskId());
+    verify(legacy, never()).createTask(any());
+  }
+
+  @Test void LingkeVideoSettlesReportedCostOnlyAfterSuccessfulPolling() throws Exception {
+    when(auth.requireUserId("token")).thenReturn(7L);
+    String taskId = "hailuo-h3:key:9:123456";
+    when(billing.isTaskOwnedByUser(7L, taskId, MiBizType.VIDEO)).thenReturn(true);
+    var completed = new VideoGenerationDtos.TaskStatusResponse();
+    completed.setProvider("灵科AI");
+    completed.setStatus("completed");
+    completed.setRaw(new ObjectMapper().readTree("{\"cost\":0.23}"));
+    when(minimax.getTask(taskId, 7L)).thenReturn(completed);
+
+    controller.get(taskId, "token");
+
+    verify(billing).settleActualByTaskId(taskId, 23);
+    verify(billing, never()).commitByTaskId(taskId);
+    verify(billing, never()).rollbackByTaskId(taskId);
+  }
+
+  @Test void LingkeVideoWaitsForCostInsteadOfSettlingZero() throws Exception {
+    when(auth.requireUserId("token")).thenReturn(7L);
+    String taskId = "hailuo-h3:key:9:123456";
+    when(billing.isTaskOwnedByUser(7L, taskId, MiBizType.VIDEO)).thenReturn(true);
+    var completed = new VideoGenerationDtos.TaskStatusResponse();
+    completed.setProvider("lk888");
+    completed.setStatus("completed");
+    when(minimax.getTask(taskId, 7L)).thenReturn(completed);
+
+    var result = controller.get(taskId, "token").data();
+
+    assertEquals("processing", result.getStatus());
+    assertEquals("生成已完成，等待灵科 AI 返回实际费用", result.getStage());
+    verify(billing, never()).commitByTaskId(taskId);
+    verify(billing, never()).settleActualByTaskId(anyString(), anyInt());
+  }
+
   @Test void rejectedPerSecondTaskRefundsAndOwnedPollingUsesItsProvider() throws Exception {
     when(auth.requireUserId("token")).thenReturn(7L);
     var request = new VideoGenerationDtos.CreateTaskRequest("test", AnmiaoVideoClient.MODEL, "16:9", 6);
+    when(anmiao.supportsModel(AnmiaoVideoClient.MODEL)).thenReturn(true);
     when(anmiao.price(request)).thenReturn(18);
     when(billing.checkAndDeduct(7L, MiBizType.VIDEO, 18))
         .thenReturn(new MiValueDtos.DeductResult(3L, 0, 0, 18, MiBizType.VIDEO));
@@ -150,6 +211,7 @@ class VideoTaskControllerTest {
         "adaptive", 30);
     var response = new VideoGenerationDtos.CreateTaskResponse();
     response.setTaskId("anmiao-video:456");
+    when(anmiao.supportsModel(AnmiaoVideoClient.MODEL25)).thenReturn(true);
     when(anmiao.price(request)).thenReturn(210);
     when(anmiao.createTask(request)).thenReturn(response);
     when(billing.checkAndDeduct(7L, MiBizType.VIDEO, 210))

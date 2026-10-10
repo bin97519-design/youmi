@@ -18,6 +18,7 @@ import {
   buildVideoRequest,
   ANMIAO_VIDEO_MODEL,
   ANMIAO_VIDEO_RESOLUTIONS,
+  ANMIAO20_FAST_VIDEO_MODEL,
   ANMIAO25_VIDEO_MODEL,
   ANMIAO25_VIDEO_RESOLUTIONS,
   MINIMAX_VIDEO_MODEL,
@@ -153,6 +154,24 @@ test('per-second Seedance model uses explicit 4-15 seconds without changing exis
   data.videoModel = 'seedance-2.0-fast-0826-720p'
   shot.productionMode = 'storyboard'
   assert.equal(buildVideoRequest(data, shot, 'legacy').durationSeconds, 15)
+})
+
+test('Seedance 2.0 fast model is sent as a configured per-second model with 480p/720p only', () => {
+  const { data, shot } = fixture()
+  shot.images = [{ id: 'image', url: 'https://assets.example/frame.png' }]
+  shot.imageId = shot.approvedImageId = 'image'
+  data.videoModel = ANMIAO20_FAST_VIDEO_MODEL
+  data.videoResolution = '720p'
+  data.videoDurationSeconds = 5
+
+  const request = buildVideoRequest(data, shot, 'fast')
+
+  assert.equal(request.model, ANMIAO20_FAST_VIDEO_MODEL)
+  assert.equal(request.durationSeconds, 5)
+  assert.equal(request.resolution, '720p')
+  assert.equal(Object.hasOwn(request, 'generate_audio'), false)
+  data.videoResolution = '1080p'
+  assert.throws(() => buildVideoRequest(data, shot, 'fast-invalid-resolution'), /快速版.*480p.*720p/)
 })
 
 test('Seedance 2.5 adds 4-30 second storyboard clips and an optional whole-30 model', () => {

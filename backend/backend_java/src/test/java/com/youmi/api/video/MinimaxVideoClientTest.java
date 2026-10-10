@@ -6,10 +6,13 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import com.youmi.api.common.ApiException;
+import com.youmi.api.image.ModelApiKeyService;
+import com.youmi.api.image.ModelApiKeyService.ResolvedModelApiKey;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
@@ -30,7 +33,8 @@ class MinimaxVideoClientTest {
     server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
     server.createContext("/v1/media/", exchange -> {
       calls.incrementAndGet();
-      assertEquals("Bearer test-only", exchange.getRequestHeaders().getFirst("Authorization"));
+      assertTrue(List.of("Bearer test-only", "Bearer configured-only")
+          .contains(exchange.getRequestHeaders().getFirst("Authorization")));
       if (exchange.getRequestMethod().equals("POST")) {
         assertEquals("/v1/media/generate", exchange.getRequestURI().getPath());
         submitted.set(mapper.readTree(exchange.getRequestBody()));
@@ -48,6 +52,17 @@ class MinimaxVideoClientTest {
     properties.setApiKey("test-only");
     properties.setMiPerSecondByResolution(Map.of("768p", 5, "1080p", 10, "2k", 15, "4k", 30));
     client = new MinimaxVideoClient(properties, media, mapper);
+    ModelApiKeyService modelApiKeys = mock(ModelApiKeyService.class);
+    String baseUrl = "http://127.0.0.1:" + server.getAddress().getPort();
+    ResolvedModelApiKey configuredKey = new ResolvedModelApiKey(9L,
+        MinimaxVideoClient.CONFIGURED_MODEL, "lk888", baseUrl, "/v1/media/generate",
+        "/v1/media/status?task_id={task_id}", "configured-only", Map.of());
+    when(modelApiKeys.resolve(MinimaxVideoClient.CONFIGURED_MODEL,
+        ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "canvas-video"))
+        .thenReturn(Optional.of(configuredKey));
+    when(modelApiKeys.resolveById(9L, ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION))
+        .thenReturn(configuredKey);
+    client.setModelApiKeyService(modelApiKeys);
   }
   @AfterEach void stop() { server.stop(0); }
 
@@ -95,6 +110,29 @@ class MinimaxVideoClientTest {
     List<String> nine = java.util.stream.IntStream.range(0, 9).mapToObj(i -> "https://assets.example/" + i + ".png").toList();
     client.createTask(request(8, "1080p", nine, null, null));
     assertEquals(9, submitted.get().path("params").path("image_url").size());
+  }
+
+  @Test void configuredMiniH3UsesMappedCredentialAndDocumentedRequestAndStatusFormat() throws Exception {
+    var request = new VideoGenerationDtos.CreateTaskRequest("slow camera move",
+        MinimaxVideoClient.CONFIGURED_MODEL, "adaptive", 5, "768p",
+        List.of("https://assets.example/first.png", "https://assets.example/last.png"),
+        "https://assets.example/first.png", "https://assets.example/last.png",
+        null, true, null, null, "client-id");
+    properties.setMiPerSecondByResolution(Map.of());
+    assertEquals(0, client.price(request));
+    assertTrue(client.hasConfiguredHailuoModel());
+    var created = client.createTask(request);
+    assertEquals("hailuo-h3:key:9:123456", created.getTaskId());
+    JsonNode body = submitted.get();
+    assertEquals(3, body.size());
+    assertEquals(MinimaxVideoClient.CONFIGURED_MODEL, body.path("model").asText());
+    assertEquals("slow camera move", body.path("prompt").asText());
+    assertEquals("5", body.path("params").path("duration").asText());
+    assertEquals("768P", body.path("params").path("resolution").asText());
+    assertEquals(2, body.path("params").path("images").size());
+    properties.setPersistGeneratedVideos(false);
+    response.set("{\"state\":\"success\",\"is_final\":true,\"progress\":\"100%\",\"result_url\":\"https://assets.example/out.mp4\"}");
+    assertEquals("completed", client.getTask(created.getTaskId(), 7L).getStatus());
   }
 
   @Test void invalidParametersAndMissingConfigurationNeverReachProvider() {

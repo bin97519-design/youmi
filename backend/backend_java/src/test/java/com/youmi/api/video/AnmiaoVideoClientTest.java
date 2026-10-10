@@ -1,6 +1,7 @@
 package com.youmi.api.video;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -96,6 +97,7 @@ class AnmiaoVideoClientTest {
     assertEquals(18, client.price(request(6)));
     assertEquals("Bearer test-anmiao-key", authorization.get());
     assertEquals(AnmiaoVideoClient.MODEL, body.get().path("model").asText());
+    assertTrue(body.get().path("prompt").isMissingNode());
     assertEquals(6, body.get().path("duration").asInt());
     assertEquals("720p", body.get().path("resolution").asText());
     assertEquals("9:16", body.get().path("ratio").asText());
@@ -144,6 +146,33 @@ class AnmiaoVideoClientTest {
     }
   }
 
+  @Test void configuredModelsPassProviderSpecificResolutionsThroughWithoutHardcodedValidation() throws Exception {
+    start();
+    AtomicReference<JsonNode> body = new AtomicReference<>();
+    server.createContext("/bound/tasks", exchange -> {
+      body.set(mapper.readTree(exchange.getRequestBody()));
+      respond(exchange, 200, "{\"data\":{\"task_id\":\"h3_123\"}}");
+    });
+    var keys = mock(ModelApiKeyService.class);
+    var properties = new AnmiaoVideoProperties();
+    String model = "hailuo-h3-shouweizhen";
+    var credential = new ModelApiKeyService.ResolvedModelApiKey(51, model, "灵科AI",
+        "http://127.0.0.1:" + server.getAddress().getPort(),
+        "/bound/tasks", "/bound/tasks/{id}", "bound-key");
+    when(keys.resolve(model, ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "canvas-video"))
+        .thenReturn(Optional.of(credential));
+    var client = client(properties, keys);
+    var request = new VideoGenerationDtos.CreateTaskRequest("测试 H3", model,
+        "adaptive", 5, "768P", List.of(), "https://assets.example/first.png",
+        null, null, true, null, null, null);
+
+    var response = client.createTask(request);
+
+    assertEquals("768p", body.get().path("resolution").asText());
+    assertEquals("测试 H3", body.get().path("prompt").asText());
+    assertEquals("anmiao-video:key:51:h3_123", response.getTaskId());
+  }
+
   @Test void readsTaskIdFromNestedProviderResponse() throws Exception {
     start();
     server.createContext("/contents/generations/tasks", exchange ->
@@ -152,6 +181,47 @@ class AnmiaoVideoClientTest {
     var response = client(3).createTask(request(4));
 
     assertEquals("anmiao-video:task_nested_123", response.getTaskId());
+  }
+
+  @Test void mappedModelsDeferResolutionValidationToTheirBoundProvider() throws Exception {
+    start();
+    AtomicReference<JsonNode> body = new AtomicReference<>();
+    AtomicReference<String> authorization = new AtomicReference<>();
+    server.createContext("/bound/tasks", exchange -> {
+      authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
+      body.set(mapper.readTree(exchange.getRequestBody()));
+      respond(exchange, 200, "{\"data\":{\"task_id\":\"fast_123\"}}");
+    });
+    var keys = mock(ModelApiKeyService.class);
+    var properties = new AnmiaoVideoProperties();
+    properties.setMiPerSecondByResolution(Map.of("480p", 3, "720p", 5, "1080p", 10));
+    var credential = new ModelApiKeyService.ResolvedModelApiKey(42,
+        AnmiaoVideoClient.MODEL20_FAST, "灵科AI", "http://127.0.0.1:" + server.getAddress().getPort(),
+        "/bound/tasks", "/bound/tasks/{id}", "bound-key", Map.of("watermark", false));
+    when(keys.resolve(AnmiaoVideoClient.MODEL20_FAST,
+        ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "canvas-video"))
+        .thenReturn(Optional.of(credential));
+    var client = client(properties, keys);
+    var request = new VideoGenerationDtos.CreateTaskRequest("测试快速版",
+        AnmiaoVideoClient.MODEL20_FAST, "16:9", 4, "480p", List.of(), null,
+        null, null, false, null, null, null);
+
+    assertTrue(client.supportsModel(AnmiaoVideoClient.MODEL20_FAST));
+    properties.setMiPerSecondByResolution(Map.of());
+    assertEquals(0, client.price(request));
+    var response = client.createTask(request);
+
+    assertEquals("Bearer bound-key", authorization.get());
+    assertEquals("anmiao-video:key:42:fast_123", response.getTaskId());
+    assertEquals(AnmiaoVideoClient.MODEL20_FAST, body.get().path("model").asText());
+    assertEquals("测试快速版", body.get().path("prompt").asText());
+    assertFalse(body.get().path("watermark").asBoolean(true));
+    var unsupported = new VideoGenerationDtos.CreateTaskRequest("测试快速版",
+        AnmiaoVideoClient.MODEL20_FAST, "16:9", 4, "1080p", List.of(), null,
+        null, null, false, null, null, null);
+    assertEquals(0, client.price(unsupported));
+    client.createTask(unsupported);
+    assertEquals("1080p", body.get().path("resolution").asText());
   }
 
   @Test void capabilitiesRecognizeConfiguredProviderModelIdsAndAliases() throws Exception {

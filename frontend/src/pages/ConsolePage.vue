@@ -29,6 +29,11 @@ const saving = ref(false)
 const errorText = ref('')
 const users = ref([])
 const roles = ref([])
+const usersLoaded = ref(false)
+const rolesLoaded = ref(false)
+const shopsLoaded = ref(false)
+const platformsLoaded = ref(false)
+const modelApiKeysLoaded = ref(false)
 const modelApiKeys = ref([])
 const aiFeatureMappings = ref([])
 const aiFeatureMappingLoading = ref(false)
@@ -43,6 +48,8 @@ const modelApiKeyProviderFilter = ref('all')
 const modelApiKeyTypeFilter = ref('all')
 const modelApiKeyDialogOpen = ref(false)
 const stats = ref(null)
+const taskRows = ref([])
+const taskRowsTotal = ref(0)
 const financeRefreshKey = ref(0)
 const elapsedClock = ref(Date.now())
 let elapsedTimer = null
@@ -342,14 +349,7 @@ const filteredRoles = computed(() => {
 })
 
 const filteredTasks = computed(() => {
-  let list = stats.value?.tasks || []
-  if (taskStatusFilter.value)
-    list = list.filter((t) => taskStatusKey(t.status) === taskStatusFilter.value)
-  if (taskModelFilter.value)
-    list = list.filter((t) => (t.requestedModel || t.model) === taskModelFilter.value)
-  if (taskUserFilter.value)
-    list = list.filter((t) => String(t.userId) === taskUserFilter.value)
-  return list
+  return taskRows.value
 })
 
 /* ── 最近生图任务分页（客户端分页，复用 image-stats 接口重新加载） ── */
@@ -358,15 +358,14 @@ const taskPageSize = ref(10)
 const taskReloading = ref(false)
 
 const pagedTasks = computed(() => {
-  const list = filteredTasks.value
-  const start = (taskCurrentPage.value - 1) * taskPageSize.value
-  return list.slice(start, start + taskPageSize.value)
+  return filteredTasks.value
 })
-const taskTotal = computed(() => filteredTasks.value.length)
+const taskTotal = computed(() => taskRowsTotal.value)
 const taskTotalPages = computed(() => Math.max(1, Math.ceil(taskTotal.value / taskPageSize.value)))
 /* 筛选条件变化只重置页码，保留筛选值 */
 watch([taskStatusFilter, taskModelFilter, taskUserFilter], () => {
   taskCurrentPage.value = 1
+  if (stats.value) reloadTaskPage(1)
 })
 
 /* ── 日期范围筛选（最近生图任务） ── */
@@ -558,10 +557,16 @@ function syncTaskToday() {
 }
 
 // 拼接日期筛选 query 参数（dateFrom / dateTo）
-function buildImageStatsQuery() {
+function buildImageTaskQuery(page = taskCurrentPage.value, includeTotal = true) {
   const params = new URLSearchParams()
   if (taskDateFrom.value) params.set('dateFrom', taskDateFrom.value)
   if (taskDateTo.value) params.set('dateTo', taskDateTo.value)
+  if (taskStatusFilter.value) params.set('status', taskStatusFilter.value)
+  if (taskModelFilter.value) params.set('model', taskModelFilter.value)
+  if (taskUserFilter.value) params.set('userId', taskUserFilter.value)
+  params.set('page', String(page))
+  params.set('pageSize', String(taskPageSize.value))
+  params.set('includeTotal', String(includeTotal))
   const qs = params.toString()
   return qs ? `?${qs}` : ''
 }
@@ -578,8 +583,9 @@ async function reloadTaskPage(p) {
   taskReloading.value = true
   taskCurrentPage.value = target
   try {
-    const imageStats = await api('/api/admin/image-stats' + buildImageStatsQuery())
-    stats.value = normalizeImageStats(imageStats)
+    const taskPage = await api('/api/admin/image-tasks' + buildImageTaskQuery(target))
+    taskRows.value = normalizeImageStats({ tasks: taskPage?.tasks }).tasks
+    taskRowsTotal.value = Number(taskPage?.total) || 0
   } catch (e) {
     /* 静默失败，仍展示已分页数据 */
   } finally {
@@ -590,17 +596,17 @@ async function reloadTaskPage(p) {
 function changeTaskPageSize(size) {
   taskPageSize.value = size
   taskCurrentPage.value = 1
+  if (stats.value) reloadTaskPage(1)
 }
 
 const taskModelOptions = computed(() => {
   const allTimeModels = (stats.value?.models || []).map((item) => item.model)
-  const recentTaskModels = (stats.value?.tasks || []).map((task) => task.requestedModel || task.model)
+  const recentTaskModels = taskRows.value.map((task) => task.requestedModel || task.model)
   return [...new Set([...allTimeModels, ...recentTaskModels].filter(Boolean))]
 })
 
 const taskUserOptions = computed(() => {
-  const userIds = new Set((stats.value?.tasks || []).map((t) => String(t.userId)).filter(Boolean))
-  return users.value.filter((u) => userIds.has(String(u.id)))
+  return users.value
 })
 
 const searchedTaskUserOptions = computed(() => {
@@ -832,32 +838,14 @@ async function loadConsole() {
   loading.value = true
   errorText.value = ''
   try {
-    const requests = [api('/api/admin/image-stats' + buildImageStatsQuery())]
-    if (isAdmin.value) {
-      requests.push(
-        api('/api/admin/users').catch(() => []),
-        api('/api/admin/roles').catch(() => []),
-        api('/api/admin/shops').catch(() => []),
-        api('/api/admin/platforms').catch(() => []),
-        api('/api/admin/model-api-keys').catch(() => modelApiKeys.value),
-      )
-    }
-    const [
-      imageStats,
-      userRows = [],
-      roleRows = [],
-      shopRows = [],
-      platformRows = [],
-      modelApiKeyRows = [],
-    ] = await Promise.all(requests)
+    const requests = [
+      api('/api/admin/image-stats'),
+      api('/api/admin/image-tasks' + buildImageTaskQuery(1)),
+    ]
+    const [imageStats, taskPage] = await Promise.all(requests)
     stats.value = normalizeImageStats(imageStats)
-    if (isAdmin.value) {
-      roles.value = roleRows.map(normalizeRole)
-      users.value = userRows.map(normalizeUser)
-      shops.value = shopRows
-      platforms.value = platformRows
-      modelApiKeys.value = modelApiKeyRows
-    }
+    taskRows.value = normalizeImageStats({ tasks: taskPage?.tasks }).tasks
+    taskRowsTotal.value = Number(taskPage?.total) || 0
   } catch (error) {
     /* 非管理员请求 admin 接口返回 403 是预期行为，不必提示 */
     if (!/403|没有控制台权限/.test(error.message)) {
@@ -866,6 +854,46 @@ async function loadConsole() {
   } finally {
     loading.value = false
     if (activeTab.value === 'finance') financeRefreshKey.value += 1
+  }
+}
+
+async function loadAdminTabData(tab) {
+  if (!isAdmin.value) return
+  try {
+    if (tab === 'stats' || tab === 'accounts') {
+      const requests = []
+      if (tab === 'accounts' && !shopsLoaded.value) requests.push(api('/api/admin/shops'))
+      if (tab === 'accounts' && !platformsLoaded.value) requests.push(api('/api/admin/platforms'))
+      if (!usersLoaded.value) requests.push(api('/api/admin/users').catch(() => []))
+      if (!rolesLoaded.value) requests.push(api('/api/admin/roles').catch(() => []))
+      if (!requests.length) return
+      const results = await Promise.all(requests)
+      let index = 0
+      if (tab === 'accounts' && !shopsLoaded.value) {
+        shops.value = results[index++]
+        shopsLoaded.value = true
+      }
+      if (tab === 'accounts' && !platformsLoaded.value) {
+        platforms.value = results[index++]
+        platformsLoaded.value = true
+      }
+      if (!usersLoaded.value) {
+        users.value = results[index++].map(normalizeUser)
+        usersLoaded.value = true
+      }
+      if (!rolesLoaded.value) {
+        roles.value = results[index++].map(normalizeRole)
+        rolesLoaded.value = true
+      }
+    } else if (tab === 'roles' && !rolesLoaded.value) {
+      roles.value = (await api('/api/admin/roles')).map(normalizeRole)
+      rolesLoaded.value = true
+    } else if (tab === 'api-keys' && !modelApiKeysLoaded.value) {
+      modelApiKeys.value = await api('/api/admin/model-api-keys')
+      modelApiKeysLoaded.value = true
+    }
+  } catch (error) {
+    errorText.value = error.message || '控制台数据加载失败'
   }
 }
 
@@ -1329,7 +1357,7 @@ function formatTime(value) {
 }
 
 const shouldRefreshTaskStats = computed(() =>
-  (stats.value?.tasks || []).some(
+  taskRows.value.some(
     (task) => isTaskRunning(task) || String(task.persistStatus || '').toUpperCase() === 'PENDING',
   ),
 )
@@ -1345,8 +1373,11 @@ async function refreshTaskStatsSilently({ force = false } = {}) {
     return
   }
   try {
-    const imageStats = await api('/api/admin/image-stats' + buildImageStatsQuery())
-    stats.value = normalizeImageStats(imageStats)
+    const taskPage = await api(
+      '/api/admin/image-tasks' + buildImageTaskQuery(taskCurrentPage.value, false),
+    )
+    taskRows.value = normalizeImageStats({ tasks: taskPage?.tasks }).tasks
+    if (Number(taskPage?.total) >= 0) taskRowsTotal.value = Number(taskPage.total)
   } catch {
     // 保留当前数据，下一轮再同步任务状态与永久链接。
   }
@@ -1355,18 +1386,15 @@ async function refreshTaskStatsSilently({ force = false } = {}) {
 function onImageTaskPersistence(detail) {
   if (!detail?.taskId || !stats.value) return
   const persistStatus = String(detail.persistStatus || '').toUpperCase()
-  stats.value = {
-    ...stats.value,
-    tasks: (stats.value.tasks || []).map((task) => {
-      if (task.taskId !== detail.taskId) return task
-      return {
-        ...task,
-        status: 'completed',
-        persistStatus,
-        previewUrls: detail.imageUrl ? [detail.imageUrl] : task.previewUrls,
-      }
-    }),
-  }
+  taskRows.value = taskRows.value.map((task) => {
+    if (task.taskId !== detail.taskId) return task
+    return {
+      ...task,
+      status: 'completed',
+      persistStatus,
+      previewUrls: detail.imageUrl ? [detail.imageUrl] : task.previewUrls,
+    }
+  })
   void refreshTaskStatsSilently({ force: true })
 }
 
@@ -1979,6 +2007,7 @@ watch([activeTab, stats, trendDimension, trendFilter, trendSelectedKeys], () => 
 
 watch(activeTab, (tab) => {
   if (tab === 'ai-feature-mappings') refreshAiFeatureMappings()
+  void loadAdminTabData(tab)
 })
 
 function handleTrendResize() {
@@ -1989,6 +2018,7 @@ function handleTrendResize() {
 
 onMounted(() => {
   loadConsole()
+  void loadAdminTabData(activeTab.value)
   elapsedTimer = window.setInterval(() => {
     elapsedClock.value = Date.now()
   }, 1000)
@@ -1996,7 +2026,7 @@ onMounted(() => {
   // 也要定期同步，确保“最近生图任务”及时出现新增记录。
   taskRefreshTimer = window.setInterval(
     () => refreshTaskStatsSilently({ force: true }),
-    5000,
+    15000,
   )
   unsubscribeTaskPersistence = subscribeImageTaskPersistence(onImageTaskPersistence)
   document.addEventListener('visibilitychange', onVisibilityChange)
@@ -2086,7 +2116,7 @@ onUnmounted(() => {
 
     <!-- Metrics with skeleton -->
     <section v-if="!['finance', 'api-keys', 'ai-feature-mappings'].includes(activeTab)" class="console-metrics">
-      <template v-if="loading && !users.length">
+      <template v-if="loading || (isAdmin && (!usersLoaded || !rolesLoaded))">
         <article v-for="i in isAdmin ? 5 : 3" :key="i" class="console-skeleton-metric">
           <span class="console-skeleton-bar" style="width: 48px"></span>
           <span class="console-skeleton-bar" style="width: 64px; height: 28px"></span>

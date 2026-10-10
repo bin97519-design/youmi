@@ -3,6 +3,8 @@ package com.youmi.api.image;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -14,6 +16,7 @@ import java.lang.reflect.Field;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
@@ -40,8 +43,13 @@ class ImageGenerationClientLk888Test {
     try {
       ImageGenerationClient client = new ImageGenerationClient(
           objectMapper, properties(server, true, false));
+      ModelApiKeyService keyService = mock(ModelApiKeyService.class);
+      when(keyService.resolve("banana2", ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, "canvas-image"))
+          .thenReturn(Optional.empty());
+      when(keyService.isFeatureMappingConfigured("canvas-image")).thenReturn(true);
+      client.setModelApiKeyService(keyService);
       ImageGenerationDtos.CreateTaskResponse response = client.createTask(
-          request("banana2", "9:16", "2K", "https://example.com/reference.png"));
+          requestWithCanvasFeature("banana2", "9:16", "2K", "https://example.com/reference.png"));
 
       assertEquals("lk888", response.provider());
       assertEquals("gemini-3.1-flash-image-preview", response.model());
@@ -152,8 +160,13 @@ class ImageGenerationClientLk888Test {
     try {
       ImageGenerationProperties properties = properties(server, false, true);
       ImageGenerationClient client = new ImageGenerationClient(objectMapper, properties);
+      ModelApiKeyService keyService = mock(ModelApiKeyService.class);
+      when(keyService.resolve("gpt-image-2", ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, "canvas-image"))
+          .thenReturn(Optional.empty());
+      when(keyService.isFeatureMappingConfigured("canvas-image")).thenReturn(true);
+      client.setModelApiKeyService(keyService);
       ImageGenerationDtos.CreateTaskResponse response =
-          client.createTask(request("gpt-image-2", "3:4", "4K", null));
+          client.createTask(requestWithCanvasFeature("gpt-image-2", "3:4", "4K", null));
 
       assertEquals("lk888", response.provider());
       assertEquals("gemini-3.1-flash-image-preview", response.model());
@@ -231,6 +244,16 @@ class ImageGenerationClientLk888Test {
         null,
         null,
         null);
+  }
+
+  private ImageGenerationDtos.CreateTaskRequest requestWithCanvasFeature(
+      String model, String ratio, String resolution, String imageUrl) {
+    ImageGenerationDtos.CreateTaskRequest base = request(model, ratio, resolution, imageUrl);
+    return new ImageGenerationDtos.CreateTaskRequest(
+        base.prompt(), base.model(), base.size(), base.ratio(), base.resolution(), base.n(), base.count(),
+        base.imageUrlsSnake(), base.imageUrls(), base.background(), base.outputFormat(), base.moderation(),
+        base.inputFidelity(), base.outputCompression(), base.webhookUrl(), base.clientTaskId(),
+        base.horizontalAngle(), base.verticalAngle(), base.distance(), base.seed(), "canvas-image");
   }
 
   private HttpServer server(ExchangeHandler handler) throws IOException {
