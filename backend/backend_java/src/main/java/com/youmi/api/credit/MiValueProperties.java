@@ -2,6 +2,7 @@ package com.youmi.api.credit;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.math.BigDecimal;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
@@ -14,42 +15,49 @@ import org.springframework.stereotype.Component;
 @ConfigurationProperties(prefix = "youmi.credit")
 public class MiValueProperties {
   /** 各业务类型的固定单价（米值/次）。例：IMAGE=10，VIDEO=50 */
-  private Map<String, Integer> prices = new HashMap<>();
-  private Map<String, Map<String, Integer>> imagePrices = new HashMap<>();
+  private Map<String, Object> prices = new HashMap<>();
+  private Map<String, Map<String, Object>> imagePrices = new HashMap<>();
 
-  public Map<String, Integer> getPrices() {
+  public Map<String, Object> getPrices() {
     return prices;
   }
 
-  public void setPrices(Map<String, Integer> prices) {
-    this.prices = prices == null ? new HashMap<>() : prices;
+  public void setPrices(Map<String, ?> prices) {
+    this.prices = new HashMap<>();
+    if (prices != null) prices.forEach(this.prices::put);
   }
 
-  public Map<String, Map<String, Integer>> getImagePrices() {
+  public Map<String, Map<String, Object>> getImagePrices() {
     return imagePrices;
   }
 
-  public void setImagePrices(Map<String, Map<String, Integer>> imagePrices) {
-    this.imagePrices = imagePrices == null ? new HashMap<>() : imagePrices;
+  public void setImagePrices(Map<String, ? extends Map<String, ?>> imagePrices) {
+    this.imagePrices = new HashMap<>();
+    if (imagePrices != null) imagePrices.forEach((key, value) -> {
+      Map<String, Object> normalized = new HashMap<>();
+      value.forEach(normalized::put);
+      this.imagePrices.put(key, normalized);
+    });
   }
 
-  public int getImagePrice(String model, String resolution) {
+  public BigDecimal getImagePrice(String model, String resolution) {
     String modelKey = normalizeModel(model);
     String resolutionKey = normalizeResolution(resolution);
-    Map<String, Integer> modelPrices = imagePrices.get(modelKey);
+    Map<String, Object> modelPrices = imagePrices.get(modelKey);
     if (modelPrices == null) {
       throw new IllegalArgumentException("Unsupported image model: " + model);
     }
-    Integer price = modelPrices.entrySet().stream()
+    Object configuredPrice = modelPrices.entrySet().stream()
         .filter(entry -> entry.getKey().equalsIgnoreCase(resolutionKey))
         .map(Map.Entry::getValue)
         .findFirst()
         .orElse(null);
-    if (price == null || price < 0) {
+    BigDecimal price = configuredPrice == null ? null : new BigDecimal(configuredPrice.toString());
+    if (price == null || price.signum() < 0) {
       throw new IllegalArgumentException(
           "Unsupported image resolution " + resolution + " for model " + modelKey);
     }
-    return price;
+    return price.setScale(2, java.math.RoundingMode.HALF_UP);
   }
 
   public static String normalizeModel(String model) {
@@ -95,14 +103,15 @@ public class MiValueProperties {
    * @return 单价（米值/次）；ADMIN_ADJUST 无单价返回 0
    * @throws IllegalStateException 当业务类型未配置单价时（开发期配置错误）
    */
-  public int getPrice(MiBizType bizType) {
-    Integer price = prices.get(bizType.name());
+  public BigDecimal getPrice(MiBizType bizType) {
+    Object configuredPrice = prices.get(bizType.name());
+    BigDecimal price = configuredPrice == null ? null : new BigDecimal(configuredPrice.toString());
     if (price == null) {
       if (bizType == MiBizType.ADMIN_ADJUST) {
-        return 0;
+        return BigDecimal.ZERO.setScale(2);
       }
       throw new IllegalStateException("未配置米值单价: " + bizType);
     }
-    return price;
+    return price.setScale(2, java.math.RoundingMode.HALF_UP);
   }
 }

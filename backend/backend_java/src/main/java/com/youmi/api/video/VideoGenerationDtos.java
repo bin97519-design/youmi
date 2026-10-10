@@ -1,5 +1,7 @@
 package com.youmi.api.video;
 
+import java.math.BigDecimal;
+
 import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -65,7 +67,7 @@ public class VideoGenerationDtos {
     private String status;
     private List<String> videoUrls = new ArrayList<>();
     private JsonNode raw;
-    private int consumedMi = 0;
+    private BigDecimal consumedMi = BigDecimal.ZERO.setScale(2);
     @JsonIgnore
     private int balance = 0;
 
@@ -117,12 +119,16 @@ public class VideoGenerationDtos {
       this.raw = raw;
     }
 
-    public int getConsumedMi() {
+    public BigDecimal getConsumedMi() {
       return consumedMi;
     }
 
+    public void setConsumedMi(BigDecimal consumedMi) {
+      this.consumedMi = consumedMi == null ? BigDecimal.ZERO.setScale(2) : consumedMi;
+    }
+
     public void setConsumedMi(int consumedMi) {
-      this.consumedMi = consumedMi;
+      this.consumedMi = BigDecimal.valueOf(consumedMi).setScale(2);
     }
 
     public int getBalance() {

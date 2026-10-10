@@ -10,6 +10,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.youmi.api.auth.UserRepository;
+import java.math.BigDecimal;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -36,16 +37,16 @@ class MiValueServiceTest {
   @Test
   @DisplayName("不检查账户余额，只登记待确认消费")
   void recordsPendingConsumptionWithoutBalanceGate() {
-    when(properties.getPrice(MiBizType.IMAGE)).thenReturn(10);
-    when(repository.insertLog(eq(USER), eq(MiBizType.IMAGE), any(), eq(10), eq(0), eq(0),
+    when(properties.getPrice(MiBizType.IMAGE)).thenReturn(new BigDecimal("10.00"));
+    when(repository.insertLog(eq(USER), eq(MiBizType.IMAGE), any(), eq(new BigDecimal("10.00")), eq(0), eq(0),
         eq("PENDING"), any())).thenReturn(123L);
 
     MiValueDtos.DeductResult result = service.checkAndDeduct(USER, MiBizType.IMAGE);
 
     assertEquals(123L, result.logId());
-    assertEquals(10, result.price());
-    assertEquals(0, result.beforeBalance());
-    assertEquals(0, result.afterBalance());
+    assertEquals(new BigDecimal("10.00"), result.price());
+    assertEquals(new BigDecimal("0.00"), result.beforeBalance());
+    assertEquals(new BigDecimal("0.00"), result.afterBalance());
     verify(repository, never()).getBalance(USER);
     verify(repository, never()).deductAtomic(USER, 10);
   }
@@ -59,9 +60,9 @@ class MiValueServiceTest {
 
     MiValueDtos.DeductResult result = service.settle(11L, 6);
 
-    assertEquals(6, result.price());
-    assertEquals(0, result.afterBalance());
-    verify(repository).settle(11L, 6, 0);
+    assertEquals(new BigDecimal("6.00"), result.price());
+    assertEquals(new BigDecimal("0.00"), result.afterBalance());
+    verify(repository).settle(11L, new BigDecimal("6.00"), 0);
     verify(repository, never()).refund(USER, 2);
   }
 
@@ -91,7 +92,7 @@ class MiValueServiceTest {
   void settlesActualConsumptionByTaskId() {
     service.settleActualByTaskId("task-cost", 7);
 
-    verify(repository).settleActualByTaskId("task-cost", 7);
+    verify(repository).settleActualByTaskId("task-cost", new BigDecimal("7.00"));
   }
 
   @Test
@@ -105,7 +106,7 @@ class MiValueServiceTest {
   @Test
   @DisplayName("查询个人累计成功消费")
   void returnsAccumulatedConsumption() {
-    when(repository.getConsumedMi(USER)).thenReturn(321);
-    assertEquals(321, service.getConsumedMi(USER));
+    when(repository.getConsumedMi(USER)).thenReturn(new BigDecimal("321.00"));
+    assertEquals(new BigDecimal("321.00"), service.getConsumedMi(USER));
   }
 }

@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import com.youmi.api.credit.MiValueProperties;
 import java.util.Map;
+import java.math.BigDecimal;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.context.properties.bind.Bindable;
@@ -32,15 +33,15 @@ class ImageMiValuePricingServiceTest {
 
   @Test
   void appliesModelResolutionAndCountMatrix() {
-    assertEquals(8, service.quote("banana2", "1K", 1).requestedPrice());
-    assertEquals(30, service.quote("banana-pro", "2K", 2).requestedPrice());
-    assertEquals(18, service.quote("banana-2.1", "2K", 2).requestedPrice());
-    assertEquals(60, service.quote("gpt-image-2", "4K", 4).requestedPrice());
-    assertEquals(15, service.quote("GPT-image2.5", "4K", 1).requestedPrice());
-    assertEquals(36, service.quote("gpt-image-2.5-sunburst", "4K", 2).requestedPrice());
-    assertEquals(18, service.quote("gpt-image2.5-sunburst-api", "4K", 1).requestedPrice());
+    assertEquals(new BigDecimal("8.00"), service.quote("banana2", "1K", 1).requestedPrice());
+    assertEquals(new BigDecimal("30.00"), service.quote("banana-pro", "2K", 2).requestedPrice());
+    assertEquals(new BigDecimal("18.00"), service.quote("banana-2.1", "2K", 2).requestedPrice());
+    assertEquals(new BigDecimal("60.00"), service.quote("gpt-image-2", "4K", 4).requestedPrice());
+    assertEquals(new BigDecimal("15.00"), service.quote("GPT-image2.5", "4K", 1).requestedPrice());
+    assertEquals(new BigDecimal("36.00"), service.quote("gpt-image-2.5-sunburst", "4K", 2).requestedPrice());
+    assertEquals(new BigDecimal("18.00"), service.quote("gpt-image2.5-sunburst-api", "4K", 1).requestedPrice());
     assertEquals(
-        20,
+        new BigDecimal("20.00"),
         service.quote("wavespeed-ai/qwen-image/edit-multiple-angles", "1K", 1)
             .requestedPrice());
   }
@@ -48,15 +49,15 @@ class ImageMiValuePricingServiceTest {
   @Test
   void reservesFallbackCostAndSettlesActualProvider() {
     ImageMiValuePricingService.PriceQuote quote = service.quote("gpt image 2", "1K", 2);
-    assertEquals(16, quote.reservedPrice());
-    assertEquals(12, service.settlementPrice(quote, "apimart"));
-    assertEquals(16, service.settlementPrice(quote, "gettoken"));
-    assertEquals(16, service.settlementPrice(quote, "lk888"));
+    assertEquals(new BigDecimal("16.00"), quote.reservedPrice());
+    assertEquals(new BigDecimal("12.00"), service.settlementPrice(quote, "apimart"));
+    assertEquals(new BigDecimal("16.00"), service.settlementPrice(quote, "gettoken"));
+    assertEquals(new BigDecimal("16.00"), service.settlementPrice(quote, "lk888"));
   }
 
   @Test
   void keepsLegacyDefaultsCompatible() {
-    assertEquals(10, service.quote(null, null, 1).requestedPrice());
+    assertEquals(new BigDecimal("10.00"), service.quote(null, null, 1).requestedPrice());
   }
 
   @Test
@@ -70,8 +71,8 @@ class ImageMiValuePricingServiceTest {
         .bind("youmi.credit", Bindable.of(MiValueProperties.class))
         .orElseThrow(() -> new IllegalStateException("youmi.credit configuration is missing"));
 
-    assertEquals(18, properties.getImagePrice("gpt-image-2.5-sunburst", "4K"));
-    assertEquals(12, properties.getImagePrice("banana-2.1", "4K"));
+    assertEquals(new BigDecimal("18.00"), properties.getImagePrice("gpt-image-2.5-sunburst", "4K"));
+    assertEquals(new BigDecimal("12.00"), properties.getImagePrice("banana-2.1", "4K"));
   }
 
 }

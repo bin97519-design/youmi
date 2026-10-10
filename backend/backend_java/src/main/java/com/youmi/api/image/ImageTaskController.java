@@ -129,12 +129,27 @@ public class ImageTaskController {
           && response.tasks().get(0).taskId() != null) {
         miValueService.linkTask(deduct.logId(), response.tasks().get(0).taskId());
       }
-      // 外部调用成功 → 确认流水 SUCCESS（余额已在扣减时减少，此处只改状态）
-      int settledPrice = pricingService.settlementPrice(quote, response.provider());
-      MiValueDtos.DeductResult settlement = miValueService.settle(deduct.logId(), settledPrice);
+      // Prefer an actual provider cost when the create response already includes it.
+      // Most async providers only return cost during polling, which is handled below.
+      Optional<ImageTaskLogService.ProviderCost> providerCost =
+          imageTaskLogService.extractProviderCost(response.raw());
+      String taskId = response.tasks() == null || response.tasks().isEmpty()
+          ? null : response.tasks().get(0).taskId();
+      java.math.BigDecimal settledPrice;
+      int afterBalance;
+      if (providerCost.isPresent() && taskId != null && !taskId.isBlank()) {
+        settledPrice = providerCost.get().miCost();
+        miValueService.settleActualByTaskId(taskId, settledPrice);
+        afterBalance = miValueService.getBalance(userId);
+      } else {
+        // External call succeeded; without a reported cost, retain the configured estimate.
+        settledPrice = pricingService.settlementPrice(quote, response.provider());
+        miValueService.settle(deduct.logId(), settledPrice);
+        afterBalance = 0;
+      }
       // 回填本次消耗与最新余额
-      response.setConsumedMi(settlement.price());
-      response.setBalance(settlement.afterBalance());
+      response.setConsumedMi(settledPrice);
+      response.setBalance(afterBalance);
       imageTaskLogService.recordCreated(userId, request, response, requestStartedAt);
       return ApiResponse.ok(response);
     } catch (DuplicateKeyException dke) {

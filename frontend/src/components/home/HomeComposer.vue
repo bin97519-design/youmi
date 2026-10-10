@@ -4,6 +4,7 @@ import { useUserStore } from '../../stores/user'
 import { apiPath } from '../../utils/apiBase'
 import { uploadFileDirect } from '../../utils/ossUpload'
 import { imageMiCost, imageMiUnitPrice } from '../../utils/imageMiPricing'
+import { formatMiValue } from '../../utils/miValue'
 
 const UPLOAD_ENDPOINT = '/api/file/upload'
 
@@ -1748,7 +1749,7 @@ async function submitCloneGenerate() {
       <div class="yh-action-area">
         <template v-if="isMainImageMode">
           <span class="yh-main-cost">
-            {{ mainUnitMiCost }}米值/张，共{{ mainTotalMiCost }}米值
+            {{ formatMiValue(mainUnitMiCost) }}米值/张，共{{ formatMiValue(mainTotalMiCost) }}米值
           </span>
           <button
             :class="['yh-generate', 'yh-generate-primary', { 'is-ready': hasComposerContent }]"
@@ -1867,7 +1868,7 @@ async function submitCloneGenerate() {
           </div>
 
           <footer class="yh-detail-modal-foot">
-            <span>预计消耗 45 米值</span>
+            <span>预计消耗 45.00 米值</span>
             <div>
               <button type="button" @click="detailModalOpen = false">取消</button>
               <button type="button" class="primary" @click="submitDetailGenerate">开始生成</button>
@@ -2298,8 +2299,8 @@ async function submitCloneGenerate() {
               {{ cloneLoading ? '处理中...' : '立即生成' }}
             </button>
             <div>
-              <span>预计消耗 {{ cloneUnitMiCost }} 米值</span>
-              <strong>{{ cloneUnitMiCost }} 米值/张</strong>
+              <span>预计消耗 {{ formatMiValue(cloneUnitMiCost) }} 米值</span>
+              <strong>{{ formatMiValue(cloneUnitMiCost) }} 米值/张</strong>
             </div>
           </footer>
         </section>

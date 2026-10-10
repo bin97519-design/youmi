@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS ym_image_task (
   status VARCHAR(32) NOT NULL DEFAULT 'submitted',
   progress INT NOT NULL DEFAULT 0,
   image_count INT NOT NULL DEFAULT 0,
-  mi_cost INT NOT NULL DEFAULT 0,
+  mi_cost DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   money_cost DECIMAL(12,4) NOT NULL DEFAULT 0,
   image_urls LONGTEXT NULL,
   error_message VARCHAR(512) NULL,
@@ -298,7 +298,7 @@ CREATE TABLE IF NOT EXISTS ym_mi_value_log (
   platform_id BIGINT NULL COMMENT '消费发生时的平台快照',
   biz_type VARCHAR(20) NOT NULL COMMENT 'IMAGE/VIDEO/ADMIN_ADJUST',
   task_type VARCHAR(32) NULL,
-  price INT NOT NULL COMMENT '本次变动的米值绝对值',
+  price DECIMAL(12,2) NOT NULL COMMENT '本次变动的米值绝对值',
   before_balance INT NOT NULL COMMENT '变动前余额快照',
   after_balance INT NOT NULL COMMENT '变动后余额快照',
   task_id VARCHAR(128) NULL COMMENT '关联外部任务 id（异步终态回滚/确认用）',
@@ -312,6 +312,15 @@ CREATE TABLE IF NOT EXISTS ym_mi_value_log (
   INDEX idx_log_status (status),
   INDEX idx_log_task (task_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Preserve existing whole-number Mi values while allowing provider-reported fractions.
+SET @db = DATABASE();
+SET @mi_cost_type = (SELECT DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=@db AND TABLE_NAME='ym_image_task' AND COLUMN_NAME='mi_cost');
+SET @sql = IF(@mi_cost_type IS NOT NULL AND @mi_cost_type NOT IN ('decimal', 'numeric'), 'ALTER TABLE ym_image_task MODIFY COLUMN mi_cost DECIMAL(12,2) NOT NULL DEFAULT 0.00', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @mi_price_type = (SELECT DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=@db AND TABLE_NAME='ym_mi_value_log' AND COLUMN_NAME='price');
+SET @sql = IF(@mi_price_type IS NOT NULL AND @mi_price_type NOT IN ('decimal', 'numeric'), 'ALTER TABLE ym_mi_value_log MODIFY COLUMN price DECIMAL(12,2) NOT NULL', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- ── 电商平台与店铺归属 ──
 CREATE TABLE IF NOT EXISTS ym_platform (

@@ -2,6 +2,7 @@ package com.youmi.api.credit;
 
 import com.youmi.api.auth.UserAccount;
 import com.youmi.api.auth.UserRepository;
+import java.math.BigDecimal;
 import java.util.Optional;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -33,14 +34,21 @@ public class MiValueRepository {
 
   /** 插入一条消费流水（默认 PENDING），返回自增主键 */
   public long insertLog(
-      Long userId, MiBizType bizType, String taskType, int price,
+      Long userId, MiBizType bizType, String taskType, BigDecimal price,
       int beforeBalance, int afterBalance, String status, String taskId) {
     return insertLog(userId, bizType, taskType, price, beforeBalance, afterBalance, status, taskId, null);
   }
 
-  /** 插入一条消费流水（带备注，如管理后台调账原因），返回自增主键 */
   public long insertLog(
       Long userId, MiBizType bizType, String taskType, int price,
+      int beforeBalance, int afterBalance, String status, String taskId) {
+    return insertLog(userId, bizType, taskType, BigDecimal.valueOf(price), beforeBalance,
+        afterBalance, status, taskId);
+  }
+
+  /** 插入一条消费流水（带备注，如管理后台调账原因），返回自增主键 */
+  public long insertLog(
+      Long userId, MiBizType bizType, String taskType, BigDecimal price,
       int beforeBalance, int afterBalance, String status, String taskId, String remark) {
     ShopSnapshot snapshot = findShopSnapshot(userId);
     jdbcTemplate.update(
@@ -51,6 +59,13 @@ public class MiValueRepository {
         userId, snapshot.shopId(), snapshot.platformId(), bizType.name(), taskType, price,
         beforeBalance, afterBalance, status, taskId, remark);
     return jdbcTemplate.queryForObject("SELECT LAST_INSERT_ID()", Long.class);
+  }
+
+  public long insertLog(
+      Long userId, MiBizType bizType, String taskType, int price,
+      int beforeBalance, int afterBalance, String status, String taskId, String remark) {
+    return insertLog(userId, bizType, taskType, BigDecimal.valueOf(price), beforeBalance,
+        afterBalance, status, taskId, remark);
   }
 
   private ShopSnapshot findShopSnapshot(Long userId) {
@@ -79,7 +94,7 @@ public class MiValueRepository {
         status, logId);
   }
 
-  public int settle(long logId, int settledPrice, int refundAmount) {
+  public int settle(long logId, BigDecimal settledPrice, int refundAmount) {
     return jdbcTemplate.update(
         "UPDATE ym_mi_value_log"
             + " SET price = ?, before_balance = 0, after_balance = 0, status = 'SUCCESS',"
@@ -89,7 +104,7 @@ public class MiValueRepository {
   }
 
   /** 使用供应商成功响应中的实际成本修正消费流水，允许覆盖创建时的预估价格。 */
-  public int settleActualByTaskId(String taskId, int settledPrice) {
+  public int settleActualByTaskId(String taskId, BigDecimal settledPrice) {
     return jdbcTemplate.update(
         "UPDATE ym_mi_value_log"
             + " SET price = ?, before_balance = 0, after_balance = 0, status = 'SUCCESS',"
@@ -99,12 +114,12 @@ public class MiValueRepository {
   }
 
   /** Total successful consumption for a user. Failed and rolled-back tasks are excluded. */
-  public int getConsumedMi(Long userId) {
-    Integer total = jdbcTemplate.queryForObject(
+  public BigDecimal getConsumedMi(Long userId) {
+    BigDecimal total = jdbcTemplate.queryForObject(
         "SELECT COALESCE(SUM(price), 0) FROM ym_mi_value_log"
             + " WHERE user_id = ? AND status = 'SUCCESS' AND biz_type IN ('IMAGE', 'VIDEO')",
-        Integer.class, userId);
-    return total == null ? 0 : total;
+        BigDecimal.class, userId);
+    return total == null ? BigDecimal.ZERO.setScale(2) : total.setScale(2, java.math.RoundingMode.HALF_UP);
   }
 
   /** 回滚守卫：仅当流水处于 PENDING 或 SUCCESS 时才置为 ROLLBACK。 */
@@ -129,7 +144,7 @@ public class MiValueRepository {
     return jdbcTemplate.query(sql, (rs, rn) -> new LogRow(
         rs.getLong("id"),
         rs.getLong("user_id"),
-        rs.getInt("price"),
+        rs.getBigDecimal("price"),
         rs.getString("status"),
         rs.getString("biz_type")), taskId).stream().findFirst();
   }
@@ -148,7 +163,7 @@ public class MiValueRepository {
     return jdbcTemplate.query(sql, (rs, rn) -> new LogRow(
         rs.getLong("id"),
         rs.getLong("user_id"),
-        rs.getInt("price"),
+        rs.getBigDecimal("price"),
         rs.getString("status"),
         rs.getString("biz_type")), logId).stream().findFirst();
   }
@@ -168,7 +183,11 @@ public class MiValueRepository {
   }
 
   /** 消费流水行快照（供 commit/rollback 时取 price 与 user_id） */
-  public record LogRow(long logId, Long userId, int price, String status, String bizType) {}
+  public record LogRow(long logId, Long userId, BigDecimal price, String status, String bizType) {
+    public LogRow(long logId, Long userId, int price, String status, String bizType) {
+      this(logId, userId, BigDecimal.valueOf(price).setScale(2), status, bizType);
+    }
+  }
 
   private record ShopSnapshot(Long shopId, Long platformId) {}
 }

@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import ThemedSelect from '../common/ThemedSelect.vue'
 import { useUserStore } from '../../stores/user'
 import { apiPath } from '../../utils/apiBase'
+import { formatMiValue } from '../../utils/miValue'
 
 const props = defineProps({
   sourceUrl: { type: String, required: true },
@@ -345,7 +346,7 @@ onBeforeUnmount(() => {
             视频超分尚未启用，请配置密钥和视频检查服务
           </p>
           <div v-if="quote" class="ve-quote" role="status">
-            <strong>本次 {{ quote.price }} 米值</strong>
+            <strong>本次 {{ formatMiValue(quote.price) }} 米值</strong>
             <span>
               {{ Math.ceil(quote.metadata.duration) }} 计费秒 ·
               {{ settings.resolution.toUpperCase() }} ·
@@ -373,7 +374,7 @@ onBeforeUnmount(() => {
           <div class="ve-actions">
             <button v-if="quote" class="ve-primary" :disabled="busy || !available" @click="submit">
               <i class="ri-magic-line" aria-hidden="true"></i>
-              确认超分 · {{ quote.price }} 米值
+              确认超分 · {{ formatMiValue(quote.price) }} 米值
             </button>
             <button
               v-else-if="running || task?.status === 'unknown'"

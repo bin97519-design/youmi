@@ -11,6 +11,7 @@ import { useTheme } from '../composables/useTheme'
 import { apiPath } from '../utils/apiBase'
 import { uploadBase64ImageDirect } from '../utils/ossUpload'
 import { imageMiCost } from '../utils/imageMiPricing'
+import { formatMiValue } from '../utils/miValue'
 
 const railExpanded = ref(false)
 const prompt = ref('')
@@ -791,8 +792,8 @@ onBeforeUnmount(() => {
           </button>
           <p>
             <span>限时优惠</span>
-            预计消耗 {{ detailCost }} 米值
-            <s>{{ detailCost * 4 }}</s>
+            预计消耗 {{ formatMiValue(detailCost) }} 米值
+            <s>{{ formatMiValue(detailCost * 4) }}</s>
           </p>
         </div>
       </aside>

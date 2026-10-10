@@ -1,6 +1,7 @@
 package com.youmi.api.image;
 
 import com.youmi.api.credit.MiValueProperties;
+import java.math.BigDecimal;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -17,27 +18,29 @@ public class ImageMiValuePricingService {
     String canonicalResolution = MiValueProperties.normalizeResolution(
         resolution == null || resolution.isBlank() ? "2K" : resolution);
     int normalizedCount = Math.max(1, Math.min(4, count));
-    int unitPrice = properties.getImagePrice(canonicalModel, canonicalResolution);
-    int fallbackUnitPrice = canonicalModel.equals("gpt-image-2")
+    BigDecimal unitPrice = properties.getImagePrice(canonicalModel, canonicalResolution)
+        .setScale(2, java.math.RoundingMode.HALF_UP);
+    BigDecimal fallbackUnitPrice = canonicalModel.equals("gpt-image-2")
         ? properties.getImagePrice("banana2", canonicalResolution)
         : unitPrice;
-    int reservedUnitPrice = Math.max(unitPrice, fallbackUnitPrice);
+    BigDecimal reservedUnitPrice = unitPrice.max(fallbackUnitPrice);
     return new PriceQuote(
         canonicalModel,
         canonicalResolution,
         normalizedCount,
         unitPrice,
         reservedUnitPrice,
-        normalizedCount * unitPrice,
-        normalizedCount * reservedUnitPrice);
+        unitPrice.multiply(BigDecimal.valueOf(normalizedCount)),
+        reservedUnitPrice.multiply(BigDecimal.valueOf(normalizedCount)));
   }
 
-  public int settlementPrice(PriceQuote quote, String provider) {
+  public BigDecimal settlementPrice(PriceQuote quote, String provider) {
     if (quote == null) throw new IllegalArgumentException("Image price quote is required");
     String providerName = provider == null ? "" : provider.trim().toLowerCase();
     if (quote.model().equals("gpt-image-2")
         && (providerName.contains("gettoken") || providerName.contains("lk888"))) {
-      return properties.getImagePrice("banana2", quote.resolution()) * quote.count();
+      return properties.getImagePrice("banana2", quote.resolution())
+        .multiply(BigDecimal.valueOf(quote.count())).setScale(2, java.math.RoundingMode.HALF_UP);
     }
     return quote.requestedPrice();
   }
@@ -46,8 +49,8 @@ public class ImageMiValuePricingService {
       String model,
       String resolution,
       int count,
-      int unitPrice,
-      int reservedUnitPrice,
-      int requestedPrice,
-      int reservedPrice) {}
+      BigDecimal unitPrice,
+      BigDecimal reservedUnitPrice,
+      BigDecimal requestedPrice,
+      BigDecimal reservedPrice) {}
 }

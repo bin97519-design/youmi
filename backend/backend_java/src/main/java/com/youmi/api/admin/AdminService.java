@@ -431,7 +431,7 @@ public class AdminService {
         rs.getLong("processing_tasks"),
         rs.getLong("today_tasks"),
         rs.getInt("total_images"),
-        rs.getInt("total_mi_cost"),
+        rs.getBigDecimal("total_mi_cost"),
         rs.getBigDecimal("total_money_cost")), args);
   }
 
@@ -468,7 +468,7 @@ public class AdminService {
         rs.getLong("tasks"),
         rs.getLong("failed_tasks"),
         rs.getInt("images"),
-        rs.getInt("mi_cost"),
+        rs.getBigDecimal("mi_cost"),
         rs.getBigDecimal("money_cost")), args);
   }
 
@@ -499,7 +499,7 @@ public class AdminService {
         rs.getString("model"),
         rs.getLong("tasks"),
         rs.getInt("images"),
-        rs.getInt("mi_cost"),
+        rs.getBigDecimal("mi_cost"),
         rs.getBigDecimal("money_cost")), args);
 
     Map<String, AdminDtos.ModelImageStat> merged = new LinkedHashMap<>();
@@ -511,7 +511,7 @@ public class AdminService {
               model,
               left.tasks() + right.tasks(),
               left.images() + right.images(),
-              left.miCost() + right.miCost(),
+              left.miCost().add(right.miCost()),
               left.moneyCost().add(right.moneyCost())));
     }
     List<AdminDtos.ModelImageStat> result = new ArrayList<>(merged.values());
@@ -597,7 +597,7 @@ public class AdminService {
             rs.getLong("tasks"),
             rs.getLong("failed_tasks"),
             rs.getInt("images"),
-            rs.getInt("mi_cost"),
+            rs.getBigDecimal("mi_cost"),
             rs.getBigDecimal("money_cost"))), args);
   }
 
@@ -654,7 +654,7 @@ public class AdminService {
           left.tasks() + right.tasks(),
           left.failedTasks() + right.failedTasks(),
           left.images() + right.images(),
-          left.miCost() + right.miCost(),
+          left.miCost().add(right.miCost()),
           leftMoney.add(rightMoney));
     }
   }
@@ -752,16 +752,16 @@ public class AdminService {
         time(rs, "updated_at"));
   }
 
-  private int consumedMi(Long userId) {
+  private BigDecimal consumedMi(Long userId) {
     try {
-      Integer total = jdbcTemplate.queryForObject(
+      BigDecimal total = jdbcTemplate.queryForObject(
           "SELECT COALESCE(SUM(price), 0) FROM ym_mi_value_log"
               + " WHERE user_id = ? AND status = 'SUCCESS' AND biz_type IN ('IMAGE', 'VIDEO')",
-          Integer.class, userId);
-      return total == null ? 0 : total;
+          BigDecimal.class, userId);
+      return total == null ? BigDecimal.ZERO.setScale(2) : total.setScale(2, java.math.RoundingMode.HALF_UP);
     } catch (org.springframework.dao.DataAccessException ignored) {
       // Compatibility for installations/tests upgrading before the ledger migration runs.
-      return 0;
+      return BigDecimal.ZERO.setScale(2);
     }
   }
 
@@ -802,7 +802,7 @@ public class AdminService {
         rs.getString("status"),
         rs.getInt("progress"),
         rs.getInt("image_count"),
-        rs.getInt("mi_cost"),
+        rs.getBigDecimal("mi_cost"),
         rs.getBigDecimal("money_cost"),
         rs.getString("error_message"),
         time(rs, "created_at"),

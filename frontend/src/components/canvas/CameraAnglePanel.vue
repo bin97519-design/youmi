@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { getCameraAngleSpec, normalizeHorizontalAngle } from '../../utils/cameraAnglePrompt'
 import { writeTextToClipboard } from '../../utils/clipboard'
+import { formatMiValue } from '../../utils/miValue'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -468,7 +469,7 @@ onBeforeUnmount(() => {
                   <i class="ri-list-check-3" aria-hidden="true"></i>
                   生成列表
                 </span>
-                <b>{{ batchCount }} 张 · {{ totalCost }} 米值</b>
+                <b>{{ batchCount }} 张 · {{ formatMiValue(totalCost) }} 米值</b>
               </header>
               <div v-if="!generationShots.length" class="cap-generation-empty">
                 调整上方角度后，点击“加入生成列表”
@@ -482,7 +483,7 @@ onBeforeUnmount(() => {
                     <span>倾斜 {{ shot.verticalAngle }}°</span>
                     <span>{{ distanceOptions.find((item) => item.value === shot.distance)?.label }}</span>
                   </button>
-                  <small>{{ UNIT_PRICE }} 米值</small>
+                  <small>{{ formatMiValue(UNIT_PRICE) }} 米值</small>
                   <button
                     type="button"
                     class="cap-shot-remove"
@@ -570,8 +571,8 @@ onBeforeUnmount(() => {
 
         <footer class="cap-footer">
           <div class="cap-price">
-            <span>{{ batchCount }} 张 × {{ UNIT_PRICE }} 米值</span>
-            <strong>共 {{ totalCost }} 米值</strong>
+            <span>{{ batchCount }} 张 × {{ formatMiValue(UNIT_PRICE) }} 米值</span>
+            <strong>共 {{ formatMiValue(totalCost) }} 米值</strong>
           </div>
           <button type="button" class="cap-secondary" @click="copyParameters">
             <i :class="copied ? 'ri-check-line' : 'ri-file-copy-line'" aria-hidden="true"></i>

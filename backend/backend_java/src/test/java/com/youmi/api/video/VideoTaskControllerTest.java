@@ -161,7 +161,7 @@ class VideoTaskControllerTest {
 
     controller.get(taskId, "token");
 
-    verify(billing).settleActualByTaskId(taskId, 23);
+    verify(billing).settleActualByTaskId(taskId, new java.math.BigDecimal("23.00"));
     verify(billing, never()).commitByTaskId(taskId);
     verify(billing, never()).rollbackByTaskId(taskId);
   }

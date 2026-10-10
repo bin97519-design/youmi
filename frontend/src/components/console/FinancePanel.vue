@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useUserStore } from '../../stores/user'
 import { apiPath } from '../../utils/apiBase'
+import { formatMiValue } from '../../utils/miValue'
 
 const props = defineProps({
   platforms: { type: Array, default: () => [] },
@@ -821,7 +822,7 @@ onBeforeUnmount(() => {
         <i class="ri-money-cny-circle-line" aria-hidden="true"></i>
         <span>消耗金额</span>
         <strong>{{ yuan(summary.totalYuan) }}</strong>
-        <small>{{ integer(summary.totalMi) }} 米值</small>
+        <small>{{ formatMiValue(summary.totalMi) }} 米值</small>
       </article>
       <article class="finance-summary-card">
         <i class="ri-checkbox-circle-line" aria-hidden="true"></i>
@@ -832,13 +833,13 @@ onBeforeUnmount(() => {
       <article class="finance-summary-card">
         <i class="ri-image-line" aria-hidden="true"></i>
         <span>生图消耗</span>
-        <strong>{{ integer(summary.imageMi) }}</strong>
+        <strong>{{ formatMiValue(summary.imageMi) }}</strong>
         <small>{{ yuan(Number(summary.imageMi || 0) / 100) }}</small>
       </article>
       <article class="finance-summary-card">
         <i class="ri-video-line" aria-hidden="true"></i>
         <span>视频消耗</span>
-        <strong>{{ integer(summary.videoMi) }}</strong>
+        <strong>{{ formatMiValue(summary.videoMi) }}</strong>
         <small>{{ yuan(Number(summary.videoMi || 0) / 100) }}</small>
       </article>
       <article class="finance-summary-card">
@@ -876,10 +877,10 @@ onBeforeUnmount(() => {
                 <td>{{ row.day }}</td>
                 <td>{{ integer(row.transactionCount) }}</td>
                 <td>{{ integer(row.userCount) }}</td>
-                <td>{{ integer(row.imageMi) }}</td>
-                <td>{{ integer(row.videoMi) }}</td>
+                <td>{{ formatMiValue(row.imageMi) }}</td>
+                <td>{{ formatMiValue(row.videoMi) }}</td>
                 <td>
-                  <strong>{{ integer(row.totalMi) }}</strong>
+                  <strong>{{ formatMiValue(row.totalMi) }}</strong>
                 </td>
                 <td class="money">{{ yuan(row.totalYuan) }}</td>
               </tr>
@@ -917,7 +918,7 @@ onBeforeUnmount(() => {
                   </td>
                   <td>{{ integer(row.shopCount) }}</td>
                   <td>{{ integer(row.transactionCount) }}</td>
-                  <td>{{ integer(row.totalMi) }}</td>
+                  <td>{{ formatMiValue(row.totalMi) }}</td>
                   <td class="money">{{ yuan(row.totalYuan) }}</td>
                 </tr>
                 <tr v-if="!report?.platforms?.length">
@@ -958,7 +959,7 @@ onBeforeUnmount(() => {
                   </td>
                   <td>{{ row.platformName }}</td>
                   <td>{{ integer(row.userCount) }}</td>
-                  <td>{{ integer(row.totalMi) }}</td>
+                  <td>{{ formatMiValue(row.totalMi) }}</td>
                   <td class="money">{{ yuan(row.totalYuan) }}</td>
                 </tr>
                 <tr v-if="!filteredShopRows.length">
@@ -1006,9 +1007,9 @@ onBeforeUnmount(() => {
                   {{ integer(row.platformCount) }} 个平台 · {{ integer(row.shopCount) }} 个店铺
                 </td>
                 <td>{{ integer(row.transactionCount) }}</td>
-                <td>{{ integer(row.imageMi) }}</td>
-                <td>{{ integer(row.videoMi) }}</td>
-                <td><strong>{{ integer(row.totalMi) }}</strong></td>
+                <td>{{ formatMiValue(row.imageMi) }}</td>
+                <td>{{ formatMiValue(row.videoMi) }}</td>
+                <td><strong>{{ formatMiValue(row.totalMi) }}</strong></td>
                 <td class="money">{{ yuan(row.totalYuan) }}</td>
               </tr>
               <tr v-if="!filteredUserRows.length">

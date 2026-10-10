@@ -16,7 +16,7 @@ public final class AdminDtos {
       String nickname,
       String status,
       @JsonIgnore Integer miValue,
-      Integer consumedMi,
+      BigDecimal consumedMi,
       String planName,
       Long shopId,
       String shopName,
@@ -98,8 +98,14 @@ public final class AdminDtos {
       Long processingTasks,
       Long todayTasks,
       Integer totalImages,
-      Integer totalMiCost,
+      BigDecimal totalMiCost,
       BigDecimal totalMoneyCost) {
+    public ImageStatsSummary(Long totalTasks, Long completedTasks, Long failedTasks,
+        Long processingTasks, Long todayTasks, Integer totalImages, Integer totalMiCost,
+        BigDecimal totalMoneyCost) {
+      this(totalTasks, completedTasks, failedTasks, processingTasks, todayTasks, totalImages,
+          BigDecimal.valueOf(totalMiCost).setScale(2), totalMoneyCost);
+    }
   }
 
   public record ImageTaskRow(
@@ -117,7 +123,7 @@ public final class AdminDtos {
       String status,
       Integer progress,
       Integer imageCount,
-      Integer miCost,
+      BigDecimal miCost,
       BigDecimal moneyCost,
       String errorMessage,
       String createdAt,
@@ -134,7 +140,7 @@ public final class AdminDtos {
       Long tasks,
       Long failedTasks,
       Integer images,
-      Integer miCost,
+      BigDecimal miCost,
       BigDecimal moneyCost) {
   }
 
@@ -145,7 +151,7 @@ public final class AdminDtos {
       List<DailyImageStat> daily) {
   }
 
-  public record ModelImageStat(String model, Long tasks, Integer images, Integer miCost, BigDecimal moneyCost) {
+  public record ModelImageStat(String model, Long tasks, Integer images, BigDecimal miCost, BigDecimal moneyCost) {
   }
 
   public record ProviderSuccessStat(

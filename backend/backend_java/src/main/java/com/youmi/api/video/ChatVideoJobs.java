@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -32,10 +33,15 @@ public class ChatVideoJobs {
   private final Set<String> active = ConcurrentHashMap.newKeySet();
   private final ThreadPoolExecutor executor = new ThreadPoolExecutor(2, 2, 0, TimeUnit.SECONDS, new ArrayBlockingQueue<>(8));
   record Saved(String id, VideoGenerationDtos.CreateTaskRequest request, String status, String raw,
-      String url, String error, int price, ChatVideoClient.ProviderFailure failure) {
+      String url, String error, BigDecimal price, ChatVideoClient.ProviderFailure failure) {
+    Saved(String id, VideoGenerationDtos.CreateTaskRequest request, String status, String raw,
+        String url, String error, BigDecimal price) {
+      this(id, request, status, raw, url, error, price, null);
+    }
+
     Saved(String id, VideoGenerationDtos.CreateTaskRequest request, String status, String raw,
         String url, String error, int price) {
-      this(id, request, status, raw, url, error, price, null);
+      this(id, request, status, raw, url, error, BigDecimal.valueOf(price).setScale(2), null);
     }
   }
 

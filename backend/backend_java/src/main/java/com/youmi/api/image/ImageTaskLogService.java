@@ -174,7 +174,7 @@ public class ImageTaskLogService {
     int imageCount = imageGenerated ? imageUrls.size() : 0;
     Optional<ProviderCost> providerCost = extractProviderCost(response.raw());
     int hasProviderCost = providerCost.isPresent() ? 1 : 0;
-    int actualMiCost = providerCost.map(ProviderCost::miCost).orElse(0);
+    BigDecimal actualMiCost = providerCost.map(ProviderCost::miCost).orElse(BigDecimal.ZERO.setScale(2));
     BigDecimal moneyCost = providerCost.map(ProviderCost::moneyCost).orElse(BigDecimal.ZERO);
     Timestamp completedAt = imageGenerated ? Timestamp.valueOf(LocalDateTime.now()) : null;
     String storedStatus = imageGenerated ? "completed" : normalizeStatus(response.status(), "unknown");
@@ -261,16 +261,14 @@ public class ImageTaskLogService {
     }
     if (moneyCost.signum() < 0) return Optional.empty();
     try {
-      int miCost = moneyCost.movePointRight(2)
-          .setScale(0, RoundingMode.HALF_UP)
-          .intValueExact();
+      BigDecimal miCost = moneyCost.movePointRight(2).setScale(2, RoundingMode.HALF_UP);
       return Optional.of(new ProviderCost(moneyCost, miCost));
     } catch (ArithmeticException ignored) {
       return Optional.empty();
     }
   }
 
-  public record ProviderCost(BigDecimal moneyCost, int miCost) {}
+  public record ProviderCost(BigDecimal moneyCost, BigDecimal miCost) {}
 
   private String rawString(JsonNode node) {
     if (node == null || node.isMissingNode() || node.isNull()) return null;

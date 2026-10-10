@@ -287,7 +287,9 @@ public class EcommerceSetService {
     }
 
     log.info("[ecommerce] Started generation setId={} totalTasks={}", setId, taskDefs.size());
-    int consumedMi = reservations.stream().mapToInt(MiValueDtos.DeductResult::price).sum();
+    java.math.BigDecimal consumedMi = reservations.stream()
+        .map(MiValueDtos.DeductResult::price)
+        .reduce(java.math.BigDecimal.ZERO.setScale(2), java.math.BigDecimal::add);
     return new EcommerceSetDtos.GenerationResponse(
         setId, taskDefs.size(), consumedMi, miValueService.getBalance(userId));
   }

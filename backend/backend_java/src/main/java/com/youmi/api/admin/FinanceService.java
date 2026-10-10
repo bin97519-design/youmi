@@ -120,13 +120,13 @@ public class FinanceService {
                COALESCE(SUM(l.price), 0) AS total_mi
         """ + LEDGER_FROM + filter.where();
     return jdbcTemplate.queryForObject(sql, (rs, rowNum) -> {
-      long totalMi = rs.getLong("total_mi");
+      BigDecimal totalMi = miValue(rs, "total_mi");
       return new FinanceDtos.FinanceSummary(
           rs.getLong("transaction_count"),
           rs.getLong("user_count"),
           rs.getLong("shop_count"),
-          rs.getLong("image_mi"),
-          rs.getLong("video_mi"),
+          miValue(rs, "image_mi"),
+          miValue(rs, "video_mi"),
           totalMi,
           yuan(totalMi));
     }, filter.args());
@@ -145,13 +145,13 @@ public class FinanceService {
         ORDER BY stat_day
         """;
     return jdbcTemplate.query(sql, (rs, rowNum) -> {
-      long totalMi = rs.getLong("total_mi");
+      BigDecimal totalMi = miValue(rs, "total_mi");
       return new FinanceDtos.DailyFinanceRow(
           rs.getString("stat_day"),
           rs.getLong("transaction_count"),
           rs.getLong("user_count"),
-          rs.getLong("image_mi"),
-          rs.getLong("video_mi"),
+          miValue(rs, "image_mi"),
+          miValue(rs, "video_mi"),
           totalMi,
           yuan(totalMi));
     }, filter.args());
@@ -173,7 +173,7 @@ public class FinanceService {
         ORDER BY total_mi DESC, platform_name
         """;
     return jdbcTemplate.query(sql, (rs, rowNum) -> {
-      long totalMi = rs.getLong("total_mi");
+      BigDecimal totalMi = miValue(rs, "total_mi");
       return new FinanceDtos.PlatformFinanceRow(
           nullableLong(rs, "effective_platform_id"),
           rs.getString("platform_code"),
@@ -181,8 +181,8 @@ public class FinanceService {
           rs.getLong("transaction_count"),
           rs.getLong("shop_count"),
           rs.getLong("user_count"),
-          rs.getLong("image_mi"),
-          rs.getLong("video_mi"),
+          miValue(rs, "image_mi"),
+          miValue(rs, "video_mi"),
           totalMi,
           yuan(totalMi));
     }, filter.args());
@@ -206,7 +206,7 @@ public class FinanceService {
         ORDER BY total_mi DESC, shop_name
         """;
     return jdbcTemplate.query(sql, (rs, rowNum) -> {
-      long totalMi = rs.getLong("total_mi");
+      BigDecimal totalMi = miValue(rs, "total_mi");
       return new FinanceDtos.ShopFinanceRow(
           nullableLong(rs, "effective_shop_id"),
           rs.getString("shop_code"),
@@ -215,8 +215,8 @@ public class FinanceService {
           rs.getString("platform_name"),
           rs.getLong("transaction_count"),
           rs.getLong("user_count"),
-          rs.getLong("image_mi"),
-          rs.getLong("video_mi"),
+          miValue(rs, "image_mi"),
+          miValue(rs, "video_mi"),
           totalMi,
           yuan(totalMi));
     }, filter.args());
@@ -238,7 +238,7 @@ public class FinanceService {
         ORDER BY total_mi DESC, effective_user_id
         """;
     return jdbcTemplate.query(sql, (rs, rowNum) -> {
-      long totalMi = rs.getLong("total_mi");
+      BigDecimal totalMi = miValue(rs, "total_mi");
       return new FinanceDtos.UserFinanceRow(
           nullableLong(rs, "effective_user_id"),
           rs.getString("account"),
@@ -246,8 +246,8 @@ public class FinanceService {
           rs.getLong("transaction_count"),
           rs.getLong("platform_count"),
           rs.getLong("shop_count"),
-          rs.getLong("image_mi"),
-          rs.getLong("video_mi"),
+          miValue(rs, "image_mi"),
+          miValue(rs, "video_mi"),
           totalMi,
           yuan(totalMi));
     }, filter.args());
@@ -296,8 +296,13 @@ public class FinanceService {
     }
   }
 
-  private BigDecimal yuan(long miValue) {
-    return BigDecimal.valueOf(miValue)
+  private BigDecimal miValue(ResultSet rs, String column) throws SQLException {
+    BigDecimal value = rs.getBigDecimal(column);
+    return (value == null ? BigDecimal.ZERO : value).setScale(2, RoundingMode.HALF_UP);
+  }
+
+  private BigDecimal yuan(BigDecimal miValue) {
+    return miValue
         .movePointLeft(2)
         .setScale(2, RoundingMode.HALF_UP);
   }

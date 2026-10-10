@@ -63,7 +63,7 @@ class MiValueRepositoryTest {
         CREATE TABLE IF NOT EXISTS ym_mi_value_log (
           id BIGINT PRIMARY KEY AUTO_INCREMENT, user_id BIGINT, shop_id BIGINT,
           platform_id BIGINT, biz_type VARCHAR(20),
-          task_type VARCHAR(32), price INT, before_balance INT, after_balance INT,
+          task_type VARCHAR(32), price DECIMAL(12,2), before_balance INT, after_balance INT,
           task_id VARCHAR(128), status VARCHAR(20), remark VARCHAR(255),
           created_at DATETIME, updated_at DATETIME)
         """);
@@ -135,7 +135,7 @@ class MiValueRepositoryTest {
 
     Optional<MiValueRepository.LogRow> byId = repository.findLogById(logId);
     assertTrue(byId.isPresent());
-    assertEquals(50, byId.get().price());
+    assertEquals(new java.math.BigDecimal("50.00"), byId.get().price());
     assertEquals("SUCCESS", byId.get().status());
 
     Optional<MiValueRepository.LogRow> byTask = repository.findLogByTaskId("agnes-video:task1");

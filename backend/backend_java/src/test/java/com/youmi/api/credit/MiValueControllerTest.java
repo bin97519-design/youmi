@@ -155,7 +155,9 @@ class MiValueControllerTest {
     jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS ym_sys_user_role (user_id BIGINT, role_id BIGINT)");
     jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS ym_platform (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(64), code VARCHAR(32), status VARCHAR(20), sort_order INT, created_at TIMESTAMP, updated_at TIMESTAMP)");
     jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS ym_shop (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(128), code VARCHAR(64), platform_id BIGINT, platform VARCHAR(32), status VARCHAR(20), created_at TIMESTAMP, updated_at TIMESTAMP)");
-    jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS ym_mi_value_log (id BIGINT PRIMARY KEY AUTO_INCREMENT, user_id BIGINT, shop_id BIGINT, platform_id BIGINT, biz_type VARCHAR(20), task_type VARCHAR(32), price INT, before_balance INT, after_balance INT, task_id VARCHAR(128), status VARCHAR(20), remark VARCHAR(255), created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)");
+    jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS ym_mi_value_log (id BIGINT PRIMARY KEY AUTO_INCREMENT, user_id BIGINT, shop_id BIGINT, platform_id BIGINT, biz_type VARCHAR(20), task_type VARCHAR(32), price DECIMAL(12,2), before_balance INT, after_balance INT, task_id VARCHAR(128), status VARCHAR(20), remark VARCHAR(255), created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)");
+    jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS ym_ai_feature_mapping (feature_code VARCHAR(64) PRIMARY KEY, configured BOOLEAN NOT NULL DEFAULT FALSE, default_api_key_id BIGINT NULL)");
+    jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS ym_ai_feature_mapping_key (feature_code VARCHAR(64), api_key_id BIGINT, PRIMARY KEY(feature_code, api_key_id))");
   }
 
   private void insertUser(Long id, String account, int miValue, Long roleId) {

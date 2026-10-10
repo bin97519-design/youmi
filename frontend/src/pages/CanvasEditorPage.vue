@@ -44,6 +44,7 @@ import { useVersionHistory } from '../composables/useVersionHistory'
 import { layerName, useCanvasStore } from '../stores/canvas'
 import { useUserStore } from '../stores/user'
 import { apiPath } from '../utils/apiBase'
+import { formatMiValue } from '../utils/miValue'
 import { resolveAgentReferenceImages } from '../utils/agentContext'
 import {
   agentVideoDraftError,
@@ -1693,7 +1694,7 @@ const videoCostHint = computed(() =>
       ? `${videoDuration.value} 秒 · 生成成功后按实际用量结算`
       : videoEstimatedMiCost.value == null
       ? `${videoDuration.value} 秒 · 接口密钥待配置`
-      : `${videoDuration.value} 秒 · 预计 ${videoEstimatedMiCost.value} 米值`,
+      : `${videoDuration.value} 秒 · 预计 ${formatMiValue(videoEstimatedMiCost.value)} 米值`,
 )
 
 watch(
@@ -16476,7 +16477,7 @@ async function loadImageForCropUncached(layer) {
                         ? '确认后才生成'
                         : chatMode === 'video'
                           ? videoCostHint
-                          : `${chatTotalGenerationCount} 张 · 预计 ${chatEstimatedMiCost} 米值`
+                          : `${chatTotalGenerationCount} 张 · 预计 ${formatMiValue(chatEstimatedMiCost)} 米值`
                     }}
                   </span>
                 </div>

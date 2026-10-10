@@ -1,5 +1,7 @@
 package com.youmi.api.image;
 
+import java.math.BigDecimal;
+
 import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -123,20 +125,21 @@ public class ImageGenerationDtos {
     @JsonProperty("raw")
     private JsonNode raw;
     @JsonProperty("consumedMi")
-    private int consumedMi = 0;
+    private BigDecimal consumedMi = BigDecimal.ZERO.setScale(2);
     @JsonIgnore
     private int balance = 0;
 
     public CreateTaskResponse(
         String provider, String requestedModel, String model, String size,
         String resolution, int n, List<TaskRef> tasks, JsonNode raw) {
-      this(provider, requestedModel, model, size, resolution, n, tasks, raw, 0, 0);
+      this(provider, requestedModel, model, size, resolution, n, tasks, raw,
+          BigDecimal.ZERO.setScale(2), 0);
     }
 
     public CreateTaskResponse(
         String provider, String requestedModel, String model, String size,
         String resolution, int n, List<TaskRef> tasks, JsonNode raw,
-        int consumedMi, int balance) {
+        BigDecimal consumedMi, int balance) {
       this.provider = provider;
       this.requestedModel = requestedModel;
       this.model = model;
@@ -181,7 +184,7 @@ public class ImageGenerationDtos {
       return raw;
     }
 
-    public int consumedMi() {
+    public BigDecimal consumedMi() {
       return consumedMi;
     }
 
@@ -189,8 +192,12 @@ public class ImageGenerationDtos {
       return balance;
     }
 
+    public void setConsumedMi(BigDecimal consumedMi) {
+      this.consumedMi = consumedMi == null ? BigDecimal.ZERO.setScale(2) : consumedMi;
+    }
+
     public void setConsumedMi(int consumedMi) {
-      this.consumedMi = consumedMi;
+      this.consumedMi = BigDecimal.valueOf(consumedMi).setScale(2);
     }
 
     public void setBalance(int balance) {

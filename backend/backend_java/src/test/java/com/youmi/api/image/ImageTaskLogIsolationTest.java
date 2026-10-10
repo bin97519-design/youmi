@@ -33,7 +33,7 @@ class ImageTaskLogIsolationTest {
           provider VARCHAR(64), model VARCHAR(64), requested_model VARCHAR(64),
           size VARCHAR(32), resolution VARCHAR(32), requested_count INT,
           status VARCHAR(32), progress INT DEFAULT 0, image_count INT DEFAULT 0,
-          mi_cost INT DEFAULT 0, money_cost DECIMAL(12, 4), image_urls CLOB,
+          mi_cost DECIMAL(12,2) DEFAULT 0.00, money_cost DECIMAL(12, 4), image_urls CLOB,
           result_urls CLOB, persist_status VARCHAR(16) DEFAULT 'PENDING',
           error_message CLOB, raw_response CLOB, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           completed_at TIMESTAMP NULL
@@ -112,8 +112,8 @@ class ImageTaskLogIsolationTest {
         List.of("https://cdn.example.com/result.png"), "PENDING", null,
         mapper.readTree("{\"data\":{\"result\":{\"cost\":0.07}}}")));
 
-    assertEquals(7, jdbcTemplate.queryForObject(
-        "SELECT mi_cost FROM ym_image_task WHERE task_id = 'task-cost'", Integer.class));
+    assertEquals(new BigDecimal("7.00"), jdbcTemplate.queryForObject(
+        "SELECT mi_cost FROM ym_image_task WHERE task_id = 'task-cost'", BigDecimal.class));
     assertEquals(0, new BigDecimal("0.07").compareTo(jdbcTemplate.queryForObject(
         "SELECT money_cost FROM ym_image_task WHERE task_id = 'task-cost'", BigDecimal.class)));
 
@@ -122,10 +122,16 @@ class ImageTaskLogIsolationTest {
         List.of("https://oss.example.com/result.png"), "DONE", null,
         mapper.readTree("{\"source\":\"persisted_oss\"}")));
 
-    assertEquals(7, jdbcTemplate.queryForObject(
-        "SELECT mi_cost FROM ym_image_task WHERE task_id = 'task-cost'", Integer.class));
+    assertEquals(new BigDecimal("7.00"), jdbcTemplate.queryForObject(
+        "SELECT mi_cost FROM ym_image_task WHERE task_id = 'task-cost'", BigDecimal.class));
     assertEquals(0, new BigDecimal("0.07").compareTo(jdbcTemplate.queryForObject(
         "SELECT money_cost FROM ym_image_task WHERE task_id = 'task-cost'", BigDecimal.class)));
+  }
+
+  @Test
+  void preservesTwoDecimalPlacesWhenConvertingProviderCostToMiValue() throws Exception {
+    var cost = service.extractProviderCost(new ObjectMapper().readTree("{\"cost\":0.0047}"));
+    assertEquals(new BigDecimal("0.47"), cost.orElseThrow().miCost());
   }
 
   @Test

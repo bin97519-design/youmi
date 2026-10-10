@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import { formatMiValue } from '../../utils/miValue'
 import {
   MINIMAX_VIDEO_MODEL,
   VIDEO_MODELS,
@@ -139,7 +140,7 @@ function change(key, value) {
       </div>
     </div>
     <output class="agent-video-price">
-      {{ price == null ? '费用待配置' : `预计 ${price} 米值 / 条` }}
+      {{ price == null ? '费用待配置' : `预计 ${formatMiValue(price)} 米值 / 条` }}
     </output>
   </fieldset>
 </template>

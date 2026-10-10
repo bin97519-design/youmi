@@ -1,6 +1,7 @@
 package com.youmi.api.credit;
 
 import com.youmi.api.auth.UserRepository;
+import java.math.BigDecimal;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -26,25 +27,35 @@ public class MiValueService {
   }
 
   @Transactional
-  public MiValueDtos.DeductResult checkAndDeduct(Long userId, MiBizType bizType, int price) {
-    if (price < 0) throw new IllegalArgumentException("Mi value price must not be negative");
+  public MiValueDtos.DeductResult checkAndDeduct(Long userId, MiBizType bizType, BigDecimal price) {
+    price = normalize(price);
+    if (price.signum() < 0) throw new IllegalArgumentException("Mi value price must not be negative");
     // Mi value is consumption accounting, not a prepaid balance. Keep the legacy
     // method name for callers, but only create an auditable pending record here.
     long logId = repository.insertLog(
         userId, bizType, null, price, 0, 0, "PENDING", null);
-    return new MiValueDtos.DeductResult(logId, 0, 0, price, bizType);
+    return new MiValueDtos.DeductResult(logId, BigDecimal.ZERO.setScale(2), BigDecimal.ZERO.setScale(2), price, bizType);
+  }
+
+  public MiValueDtos.DeductResult checkAndDeduct(Long userId, MiBizType bizType, int price) {
+    return checkAndDeduct(userId, bizType, BigDecimal.valueOf(price));
   }
 
   @Transactional
-  public MiValueDtos.DeductResult settle(Long logId, int settledPrice) {
+  public MiValueDtos.DeductResult settle(Long logId, BigDecimal settledPrice) {
+    settledPrice = normalize(settledPrice);
     MiValueRepository.LogRow row = repository.findLogById(logId)
         .orElseThrow(() -> new IllegalArgumentException("Mi value log not found: " + logId));
-    if (settledPrice < 0 || settledPrice > row.price()) {
+    if (settledPrice.signum() < 0 || settledPrice.compareTo(row.price()) > 0) {
       throw new IllegalArgumentException("Settled price exceeds reserved price");
     }
     repository.settle(logId, settledPrice, 0);
     return new MiValueDtos.DeductResult(
-        logId, 0, 0, settledPrice, MiBizType.valueOf(row.bizType()));
+        logId, BigDecimal.ZERO.setScale(2), BigDecimal.ZERO.setScale(2), settledPrice, MiBizType.valueOf(row.bizType()));
+  }
+
+  public MiValueDtos.DeductResult settle(Long logId, int settledPrice) {
+    return settle(logId, BigDecimal.valueOf(settledPrice));
   }
 
   /** 生成成功：将 PENDING 流水置为 SUCCESS。 */
@@ -59,10 +70,15 @@ public class MiValueService {
   }
 
   /** 按供应商返回的实际成本修正任务消费；米值账户已取消，因此不受预估价格上限约束。 */
-  public void settleActualByTaskId(String taskId, int settledPrice) {
+  public void settleActualByTaskId(String taskId, BigDecimal settledPrice) {
     if (taskId == null || taskId.isBlank()) return;
-    if (settledPrice < 0) throw new IllegalArgumentException("Mi value price must not be negative");
+    settledPrice = normalize(settledPrice);
+    if (settledPrice.signum() < 0) throw new IllegalArgumentException("Mi value price must not be negative");
     repository.settleActualByTaskId(taskId, settledPrice);
+  }
+
+  public void settleActualByTaskId(String taskId, int settledPrice) {
+    settleActualByTaskId(taskId, BigDecimal.valueOf(settledPrice));
   }
 
   /** 生成失败：幂等标记为 ROLLBACK，不计入消费。 */
@@ -98,8 +114,13 @@ public class MiValueService {
     return 0;
   }
 
-  public int getConsumedMi(Long userId) {
+  public BigDecimal getConsumedMi(Long userId) {
     return repository.getConsumedMi(userId);
+  }
+
+  private BigDecimal normalize(BigDecimal value) {
+    if (value == null) throw new IllegalArgumentException("Mi value price is required");
+    return value.setScale(2, java.math.RoundingMode.HALF_UP);
   }
 
   /** 米值余额账户已取消，不再支持充值或调账。 */

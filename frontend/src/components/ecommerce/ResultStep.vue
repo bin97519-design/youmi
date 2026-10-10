@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import ImageViewer from '../ImageViewer.vue'
 import { useEcommerceSetStore } from '../../stores/ecommerceSet'
+import { formatMiValue } from '../../utils/miValue'
 
 const store = useEcommerceSetStore()
 const viewerOpen = ref(false)
@@ -128,7 +129,7 @@ function downloadSelected() {
         <span v-else>全部生成完成</span>
       </div>
       <div v-if="store.billing.consumedMi" class="es-billing">
-        已消耗 {{ store.billing.consumedMi }} 米值
+        已消耗 {{ formatMiValue(store.billing.consumedMi) }} 米值
       </div>
     </div>
 

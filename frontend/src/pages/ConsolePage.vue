@@ -7,6 +7,7 @@ import ImageViewer from '../components/ImageViewer.vue'
 import { useUserStore } from '../stores/user'
 import { useTheme } from '../composables/useTheme'
 import { apiPath } from '../utils/apiBase'
+import { formatMiValue } from '../utils/miValue'
 import { writeTextToClipboard } from '../utils/clipboard'
 import {
   buildFixedTrendSeries,
@@ -2145,7 +2146,7 @@ onUnmounted(() => {
         <article class="console-metric-card metric-cost">
           <i class="ri-coins-line console-metric-icon" aria-hidden="true"></i>
           <span>米值消耗</span>
-          <strong>{{ summary.totalMiCost || 0 }}</strong>
+          <strong>{{ formatMiValue(summary.totalMiCost) }}</strong>
           <small>生成 {{ summary.totalImages || 0 }} 张图</small>
         </article>
         <article class="console-metric-card metric-success">
@@ -2349,7 +2350,7 @@ onUnmounted(() => {
                 {{ roleLabel(role) }}
               </option>
             </select>
-            <span class="console-consumed-mi">{{ user.consumedMi || 0 }} 米值</span>
+            <span class="console-consumed-mi">{{ formatMiValue(user.consumedMi) }} 米值</span>
             <select v-model="user.status">
               <option value="ACTIVE">启用</option>
               <option value="DISABLED">禁用</option>
@@ -2998,7 +2999,7 @@ onUnmounted(() => {
               <span class="console-legend-name">{{ model.model }}</span>
               <span class="console-legend-value">{{ model.tasks }} 任务</span>
               <span class="console-legend-sub">
-                {{ model.images }} 张 / {{ model.miCost }} 米值
+                {{ model.images }} 张 / {{ formatMiValue(model.miCost) }} 米值
               </span>
             </div>
             <p v-if="!stats?.models?.length" class="console-empty">暂无模型统计。</p>
@@ -3388,7 +3389,7 @@ onUnmounted(() => {
                   +{{ task.previewUrls.length - 3 }}
                 </button>
               </span>
-              <small>{{ task.imageCount || task.previewUrls?.length || 0 }} 张 / {{ task.miCost || 0 }} 米值</small>
+              <small>{{ task.imageCount || task.previewUrls?.length || 0 }} 张 / {{ formatMiValue(task.miCost) }} 米值</small>
             </span>
             <span :class="['task-duration', { live: isTaskRunning(task) }]" :title="isTaskRunning(task) ? '任务进行中，耗时实时更新' : '从发起生图到任务结束的耗时'">{{ taskDuration(task) }}</span>
           </div>

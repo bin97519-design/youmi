@@ -11,7 +11,7 @@ import com.youmi.api.image.ModelApiKeyService;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.util.OptionalInt;
+import java.util.Optional;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -126,9 +126,9 @@ public class VideoTaskController {
       miValueService.rollbackByTaskId(taskId);
     } else if (isTerminalSuccess(response.getStatus())) {
       if (ModelApiKeyService.usesProviderReportedCost(response.getProvider())) {
-        OptionalInt actualCost = providerCostInMi(response.getRaw());
+        Optional<BigDecimal> actualCost = providerCostInMi(response.getRaw());
         if (actualCost.isPresent()) {
-          miValueService.settleActualByTaskId(taskId, actualCost.getAsInt());
+          miValueService.settleActualByTaskId(taskId, actualCost.get());
         } else {
           response.setStatus("processing");
           response.setStage("生成已完成，等待灵科 AI 返回实际费用");
@@ -140,16 +140,16 @@ public class VideoTaskController {
     return ApiResponse.ok(response);
   }
 
-  private OptionalInt providerCostInMi(JsonNode raw) {
-    if (raw == null || raw.isNull() || raw.isMissingNode()) return OptionalInt.empty();
+  private Optional<BigDecimal> providerCostInMi(JsonNode raw) {
+    if (raw == null || raw.isNull() || raw.isMissingNode()) return Optional.empty();
     JsonNode cost = raw.findValue("cost");
-    if (cost == null || cost.isNull() || cost.isMissingNode()) return OptionalInt.empty();
+    if (cost == null || cost.isNull() || cost.isMissingNode()) return Optional.empty();
     try {
       BigDecimal amount = cost.isNumber() ? cost.decimalValue() : new BigDecimal(cost.asText().trim());
-      if (amount.signum() < 0) return OptionalInt.empty();
-      return OptionalInt.of(amount.movePointRight(2).setScale(0, RoundingMode.HALF_UP).intValueExact());
+      if (amount.signum() < 0) return Optional.empty();
+      return Optional.of(amount.movePointRight(2).setScale(2, RoundingMode.HALF_UP));
     } catch (NumberFormatException | ArithmeticException ignored) {
-      return OptionalInt.empty();
+      return Optional.empty();
     }
   }
 

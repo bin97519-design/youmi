@@ -27,9 +27,9 @@ public final class FinanceDtos {
       Long transactionCount,
       Long userCount,
       Long shopCount,
-      Long imageMi,
-      Long videoMi,
-      Long totalMi,
+      BigDecimal imageMi,
+      BigDecimal videoMi,
+      BigDecimal totalMi,
       BigDecimal totalYuan) {
   }
 
@@ -37,9 +37,9 @@ public final class FinanceDtos {
       String day,
       Long transactionCount,
       Long userCount,
-      Long imageMi,
-      Long videoMi,
-      Long totalMi,
+      BigDecimal imageMi,
+      BigDecimal videoMi,
+      BigDecimal totalMi,
       BigDecimal totalYuan) {
   }
 
@@ -50,9 +50,9 @@ public final class FinanceDtos {
       Long transactionCount,
       Long shopCount,
       Long userCount,
-      Long imageMi,
-      Long videoMi,
-      Long totalMi,
+      BigDecimal imageMi,
+      BigDecimal videoMi,
+      BigDecimal totalMi,
       BigDecimal totalYuan) {
   }
 
@@ -64,9 +64,9 @@ public final class FinanceDtos {
       String platformName,
       Long transactionCount,
       Long userCount,
-      Long imageMi,
-      Long videoMi,
-      Long totalMi,
+      BigDecimal imageMi,
+      BigDecimal videoMi,
+      BigDecimal totalMi,
       BigDecimal totalYuan) {
   }
 
@@ -77,9 +77,9 @@ public final class FinanceDtos {
       Long transactionCount,
       Long platformCount,
       Long shopCount,
-      Long imageMi,
-      Long videoMi,
-      Long totalMi,
+      BigDecimal imageMi,
+      BigDecimal videoMi,
+      BigDecimal totalMi,
       BigDecimal totalYuan) {
   }
 }

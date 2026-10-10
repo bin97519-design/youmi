@@ -9,6 +9,7 @@ import { useUserStore } from '../../stores/user'
 import { fetchSelectionProducts, fetchSelectionProduct } from '../../utils/selectionPoolApi'
 import { normalizeSelectionProduct } from '../../utils/selectionProductFormat'
 import { uploadFileDirect } from '../../utils/ossUpload'
+import { formatMiValue } from '../../utils/miValue'
 import { writeTextToClipboard } from '../../utils/clipboard'
 import { inspectReferenceVideoFile } from '../../utils/referenceVideo'
 import {
@@ -930,7 +931,7 @@ function generateShot(kind) {
       : isWholeVideo(shot.productionMode)
         ? '生成整片视频'
         : '生成分镜视频',
-    `${shot.title}：本次 ${price} 米值${kind === 'video' ? (isWholeVideo(shot.productionMode) ? `，生成 1 条 ${generationDuration(shot, workflow.value)} 秒整片` : `，生成 ${generationDuration(shot, workflow.value)} 秒原片`) : '，生成 1 张 2K 图片'}。`,
+    `${shot.title}：本次 ${formatMiValue(price)} 米值${kind === 'video' ? (isWholeVideo(shot.productionMode) ? `，生成 1 条 ${generationDuration(shot, workflow.value)} 秒整片` : `，生成 ${generationDuration(shot, workflow.value)} 秒原片`) : '，生成 1 张 2K 图片'}。`,
     () => generate(shot.id, kind),
   )
 }
@@ -960,7 +961,7 @@ async function batchGenerate() {
   }
   ask(
     '批量生成视频',
-    `${shots.length} 个视频，共 ${shots.reduce((sum, shot) => sum + generationDuration(shot, workflow.value), 0)} 秒，共 ${prices.reduce((sum, price) => sum + price, 0)} 米值。`,
+    `${shots.length} 个视频，共 ${shots.reduce((sum, shot) => sum + generationDuration(shot, workflow.value), 0)} 秒，共 ${formatMiValue(prices.reduce((sum, price) => sum + price, 0))} 米值。`,
     async () => {
       for (const shot of shots) await generate(shot.id, 'video', context)
     },
@@ -2002,7 +2003,7 @@ function onKeydown(event) {
                     >
                       <i aria-hidden="true" class="ri-sparkling-line"></i>
                       {{ busy(active, 'images') ? '生成中' : frame ? '重新生成' : '生成首帧' }}
-                      <small v-if="imagePrice != null">{{ imagePrice }} 米值</small>
+                      <small v-if="imagePrice != null">{{ formatMiValue(imagePrice) }} 米值</small>
                     </button>
                     <button
                       class="pv-primary"
@@ -2201,7 +2202,7 @@ function onKeydown(event) {
                     >
                       <i aria-hidden="true" class="ri-video-add-line"></i>
                       {{ busy(active, 'videos') ? '生成中' : video ? '重新生成视频' : '生成视频' }}
-                      <small v-if="videoPrice(active) != null">{{ videoPrice(active) }} 米值</small>
+                      <small v-if="videoPrice(active) != null">{{ formatMiValue(videoPrice(active)) }} 米值</small>
                     </button>
                     <button :disabled="uploading" @click="videoInput.click()">
                       <i aria-hidden="true" class="ri-upload-2-line"></i>

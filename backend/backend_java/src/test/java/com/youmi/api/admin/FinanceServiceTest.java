@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.youmi.api.common.ApiException;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import javax.sql.DataSource;
 import org.h2.jdbcx.JdbcDataSource;
@@ -34,18 +35,18 @@ class FinanceServiceTest {
         financeService.report("2026-07-01", "2026-07-31", null, null);
 
     assertEquals(3L, report.summary().transactionCount());
-    assertEquals(23L, report.summary().totalMi());
+    assertEquals(new BigDecimal("23.25"), report.summary().totalMi());
     assertEquals("0.23", report.summary().totalYuan().toPlainString());
     assertEquals(2, report.daily().size());
     assertEquals(1, report.platforms().size());
     assertEquals("京东", report.shops().get(0).platformName());
     assertEquals("京东旗舰店", report.shops().get(0).shopName());
-    assertEquals(23L, report.shops().get(0).totalMi());
+    assertEquals(new BigDecimal("23.25"), report.shops().get(0).totalMi());
     assertEquals(2, report.users().size());
     assertEquals("operator", report.users().get(0).account());
     assertEquals("运营", report.users().get(0).nickname());
     assertEquals(2L, report.users().get(0).transactionCount());
-    assertEquals(15L, report.users().get(0).totalMi());
+    assertEquals(new BigDecimal("15.25"), report.users().get(0).totalMi());
   }
 
   @Test
@@ -55,7 +56,7 @@ class FinanceServiceTest {
         financeService.report("2026-07-01", "2026-07-31", 2L, 20L);
 
     assertEquals(3L, report.summary().transactionCount());
-    assertEquals(23L, report.summary().totalMi());
+    assertEquals(new BigDecimal("23.25"), report.summary().totalMi());
     assertEquals(1, report.platforms().size());
     assertEquals(1, report.shops().size());
     assertEquals(2, report.users().size());
@@ -70,7 +71,7 @@ class FinanceServiceTest {
         financeService.report("2026-07-01", "2026-07-31", 1L, 10L);
 
     assertEquals(2L, report.summary().transactionCount());
-    assertEquals(15L, report.summary().totalMi());
+    assertEquals(new BigDecimal("15.25"), report.summary().totalMi());
     assertEquals(1, report.shops().size());
     assertEquals("爱洁猫", report.shops().get(0).shopName());
     assertEquals("淘宝", report.shops().get(0).platformName());
@@ -132,7 +133,7 @@ class FinanceServiceTest {
           shop_id BIGINT,
           platform_id BIGINT,
           biz_type VARCHAR(20),
-          price INT,
+          price DECIMAL(12,2),
           status VARCHAR(20),
           remark VARCHAR(255),
           created_at DATETIME)
@@ -152,7 +153,7 @@ class FinanceServiceTest {
         """);
 
     // 用户 100 当前已换到京东店；财务汇总应随账号当前归属变化，流水快照只作兜底。
-    insertLog(100, 10L, 1L, "IMAGE", 8, "SUCCESS", "2026-07-10 10:00:00", "生图");
+    insertLog(100, 10L, 1L, "IMAGE", new BigDecimal("8.25"), "SUCCESS", "2026-07-10 10:00:00", "生图");
     insertLog(100, 10L, 1L, "VIDEO", 7, "SUCCESS", "2026-07-10 11:00:00", "视频");
     insertLog(200, 20L, 2L, "IMAGE", 8, "SUCCESS", "2026-07-11 10:00:00", "生图");
     insertLog(100, 10L, 1L, "IMAGE", 99, "ROLLBACK", "2026-07-12 10:00:00", "回滚任务");
@@ -169,6 +170,15 @@ class FinanceServiceTest {
       String status,
       String createdAt,
       String remark) {
+    jdbcTemplate.update("""
+        INSERT INTO ym_mi_value_log
+          (user_id, shop_id, platform_id, biz_type, price, status, created_at, remark)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, userId, shopId, platformId, bizType, BigDecimal.valueOf(price), status, createdAt, remark);
+  }
+
+  private void insertLog(long userId, Long shopId, Long platformId, String bizType,
+      BigDecimal price, String status, String createdAt, String remark) {
     jdbcTemplate.update("""
         INSERT INTO ym_mi_value_log
           (user_id, shop_id, platform_id, biz_type, price, status, created_at, remark)
