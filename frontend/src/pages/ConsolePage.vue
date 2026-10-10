@@ -2892,7 +2892,10 @@ onUnmounted(() => {
         </div>
         <article v-for="row in aiFeatureMappings" :key="row.featureCode" class="ai-feature-map-row">
           <div class="ai-feature-map-cell ai-feature-map-name"><strong>{{ row.featureName }}</strong></div>
-          <div class="ai-feature-map-cell ai-feature-map-code"><code>{{ row.featureCode }}</code></div>
+          <div class="ai-feature-map-cell ai-feature-map-code">
+            <code>{{ row.featureCode }}</code>
+            <small>{{ row.selectionEventCount || 0 }} 次模型选中</small>
+          </div>
           <div class="ai-feature-map-cell ai-feature-map-type">{{ aiFeatureTypeLabel(row.modelType) }}</div>
           <div class="ai-feature-map-cell ai-feature-map-selection">{{ aiFeatureSelectionLabel(row.selectionMode) }}</div>
           <div class="ai-feature-map-cell ai-feature-map-policy">{{ row.modelPolicy }}</div>
@@ -5449,10 +5452,21 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
+.ai-feature-map-code {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
 .ai-feature-map-code code {
   color: var(--console-accent-strong);
   font-size: 11px;
   overflow-wrap: anywhere;
+}
+
+.ai-feature-map-code small {
+  color: var(--console-muted);
+  font-size: 10px;
 }
 
 .ai-feature-map-type,

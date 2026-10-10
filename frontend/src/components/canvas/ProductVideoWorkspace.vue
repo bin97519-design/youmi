@@ -28,10 +28,10 @@ import {
   setContinuityReference,
 } from '../../utils/productVideoContinuity'
 import {
-  VIDEO_MODELS,
   productVideoShotLimit,
   ANMIAO_VIDEO_RESOLUTIONS,
   ANMIAO25_VIDEO_MODEL,
+  HAILUO_H3_VIDEO_MODEL,
   ANMIAO25_VIDEO_RESOLUTIONS,
   MINIMAX_VIDEO_MODEL,
   MINIMAX_VIDEO_RESOLUTIONS,
@@ -127,7 +127,12 @@ const {
   composing,
   capabilities,
   planningModelOptions,
+  imageModelOptions,
+  videoModelOptions,
   planningModelUnavailable,
+  selectPlanningModel,
+  selectImageModel,
+  selectVideoModel,
   request,
   loadCapabilities,
   addShot,
@@ -140,11 +145,7 @@ const {
   activeTaskId,
 )
 const user = useUserStore()
-const currentVideoModelOptions = computed(() =>
-  isRetiredVideoModel(workflow.value.videoModel)
-    ? [{ value: workflow.value.videoModel, label: '请选择视频模型' }, ...VIDEO_MODELS]
-    : VIDEO_MODELS,
-)
+const currentVideoModelOptions = computed(() => videoModelOptions.value)
 const tab = ref('source'),
   activeId = ref(''),
   shotCount = ref(4),
@@ -268,10 +269,18 @@ const canvasPickerTitle = computed(() => {
   const field = CONTINUITY_IMAGE_FIELDS.find((item) => item.key === role)
   return field ? `${field.label} · 画布图片` : '画布图片'
 })
-const modelOptions = computed(() =>
-  props.imageModels
-    .filter((model) => !/multi.angle/.test(model))
-    .map((value) => ({ value, label: value })),
+const modelOptions = imageModelOptions
+const selectedImageModelOption = computed(
+  () =>
+    imageModelOptions.value.find((option) => option.value === workflow.value.imageModel) ||
+    imageModelOptions.value.find((option) => option.model === workflow.value.imageModel),
+)
+const selectedImageModelValue = computed(
+  () => selectedImageModelOption.value?.value || workflow.value.imageModel,
+)
+const imageModelIsMapped = computed(() => Boolean(selectedImageModelOption.value))
+const effectiveImageModel = computed(
+  () => selectedImageModelOption.value?.model || workflow.value.imageModel,
 )
 const ratioOptions = VIDEO_RATIOS.map((value) => ({ value, label: value }))
 const productImages = computed(() =>
@@ -290,8 +299,11 @@ const productImages = computed(() =>
     : [],
 )
 const imagePrice = computed(
-  () => capabilities.value?.imagePrices?.[workflow.value.imageModel]?.['2K'],
+  () => capabilities.value?.imagePrices?.[effectiveImageModel.value]?.['2K'],
 )
+function imageUsesReportedCost() {
+  return imagePrice.value == null && imageModelIsMapped.value
+}
 const compositionBusy = computed(
   () => composing.value || ['queued', 'processing'].includes(workflow.value.composition?.status),
 )
@@ -852,7 +864,7 @@ function perSecondVideo(shot) {
   return isPerSecondVideoModel(videoModelForShot(shot))
 }
 function videoResolutionForShot(shot) {
-  if (videoModelForShot(shot) === MINIMAX_VIDEO_MODEL)
+  if ([MINIMAX_VIDEO_MODEL, HAILUO_H3_VIDEO_MODEL].includes(videoModelForShot(shot)))
     return workflow.value.minimaxResolution ?? '768p'
   return (
     (shot.productionMode === 'single_video_30'
@@ -861,7 +873,8 @@ function videoResolutionForShot(shot) {
   )
 }
 function resolutionOptionsForShot(shot) {
-  if (videoModelForShot(shot) === MINIMAX_VIDEO_MODEL) return MINIMAX_VIDEO_RESOLUTIONS
+  if ([MINIMAX_VIDEO_MODEL, HAILUO_H3_VIDEO_MODEL].includes(videoModelForShot(shot)))
+    return MINIMAX_VIDEO_RESOLUTIONS
   return videoModelForShot(shot) === ANMIAO25_VIDEO_MODEL
     ? ANMIAO25_VIDEO_RESOLUTIONS
     : ANMIAO_VIDEO_RESOLUTIONS
@@ -880,9 +893,10 @@ function invalidAnmiaoResolution(shot) {
 }
 function videoPrice(shot) {
   if (isRetiredVideoModel(videoModelForShot(shot))) return null
+  if (videoUsesReportedCost(shot)) return null
   if (perSecondVideo(shot)) {
     const model25 = videoModelForShot(shot) === ANMIAO25_VIDEO_MODEL
-    const minimax = videoModelForShot(shot) === MINIMAX_VIDEO_MODEL
+    const minimax = [MINIMAX_VIDEO_MODEL, HAILUO_H3_VIDEO_MODEL].includes(videoModelForShot(shot))
     const available = minimax
       ? capabilities.value?.minimaxVideo
       : model25
@@ -897,6 +911,16 @@ function videoPrice(shot) {
     return available && rate > 0 ? rate * generationDuration(shot, workflow.value) : null
   }
   return capabilities.value?.videoPrice
+}
+function videoUsesReportedCost(shot) {
+  const model = videoModelForShot(shot)
+  if (model === HAILUO_H3_VIDEO_MODEL ||
+      (model === MINIMAX_VIDEO_MODEL && capabilities.value?.hailuoH3Video === true)) return true
+  const provider = String(videoModelOptions.value.find((option) => option.value === model)?.provider || '')
+    .trim()
+    .toLowerCase()
+  return ['lk888', 'youmi888', 'lingke', 'model-api', '灵科ai', '灵科 ai']
+    .some((prefix) => provider.startsWith(prefix))
 }
 function generateShot(kind) {
   const shot = active.value
@@ -918,7 +942,11 @@ function generateShot(kind) {
     return
   }
   const price = kind === 'image' ? imagePrice.value : videoPrice(shot)
-  if (price == null) {
+  if (
+    price == null &&
+    !(kind === 'video' && videoUsesReportedCost(shot)) &&
+    !(kind === 'image' && imageUsesReportedCost())
+  ) {
     error.value =
       kind === 'video' && perSecondVideo(shot)
         ? '按秒视频所选画质尚未配置密钥和每秒米值单价'
@@ -931,7 +959,7 @@ function generateShot(kind) {
       : isWholeVideo(shot.productionMode)
         ? '生成整片视频'
         : '生成分镜视频',
-    `${shot.title}：本次 ${formatMiValue(price)} 米值${kind === 'video' ? (isWholeVideo(shot.productionMode) ? `，生成 1 条 ${generationDuration(shot, workflow.value)} 秒整片` : `，生成 ${generationDuration(shot, workflow.value)} 秒原片`) : '，生成 1 张 2K 图片'}。`,
+    `${shot.title}：本次 ${price == null ? '费用以生成成功后接口返回为准' : `${formatMiValue(price)} 米值`}${kind === 'video' ? (isWholeVideo(shot.productionMode) ? `，生成 1 条 ${generationDuration(shot, workflow.value)} 秒整片` : `，生成 ${generationDuration(shot, workflow.value)} 秒原片`) : '，生成 1 张 2K 图片'}。`,
     () => generate(shot.id, kind),
   )
 }
@@ -953,7 +981,9 @@ async function batchGenerate() {
     return
   }
   const prices = shots.map(videoPrice)
-  if (!shots.length || prices.some((price) => price == null)) {
+  if (!shots.length || prices.some((price, index) =>
+    price == null && !videoUsesReportedCost(shots[index]),
+  )) {
     error.value = !shots.length
       ? '没有可生成的视频分镜，请先确认图片'
       : '按秒视频所选画质尚未配置密钥和每秒米值单价'
@@ -961,7 +991,7 @@ async function batchGenerate() {
   }
   ask(
     '批量生成视频',
-    `${shots.length} 个视频，共 ${shots.reduce((sum, shot) => sum + generationDuration(shot, workflow.value), 0)} 秒，共 ${formatMiValue(prices.reduce((sum, price) => sum + price, 0))} 米值。`,
+    `${shots.length} 个视频，共 ${shots.reduce((sum, shot) => sum + generationDuration(shot, workflow.value), 0)} 秒，${prices.every((price) => price != null) ? `预计 ${formatMiValue(prices.reduce((sum, price) => sum + price, 0))} 米值` : '费用以生成成功后接口返回为准'}。`,
     async () => {
       for (const shot of shots) await generate(shot.id, 'video', context)
     },
@@ -1550,7 +1580,7 @@ function onKeydown(event) {
                     :model-value="workflow.planningModel || 'default'"
                     :options="planningModelOptions"
                     aria-label="策划模型"
-                    @update:model-value="set('planningModel', $event)"
+                    @update:model-value="selectPlanningModel"
                   />
                 </label>
               </fieldset>
@@ -1984,18 +2014,41 @@ function onKeydown(event) {
                   <label>
                     图片模型 · 2K PNG
                     <ThemedSelect
-                      :model-value="workflow.imageModel"
+                      :model-value="selectedImageModelValue"
                       :options="modelOptions"
                       aria-label="图片模型"
-                      @update:model-value="set('imageModel', $event)"
+                      @update:model-value="selectImageModel"
                     />
                   </label>
+                  <p
+                    v-if="imageModelIsMapped && imagePrice == null"
+                    :class="['pv-task-status', { error: !imageUsesReportedCost() }]"
+                    role="status"
+                  >
+                    {{
+                      imageUsesReportedCost()
+                        ? '单价以生成成功后接口返回为准'
+                        : '当前图片模型未配置单价，暂不可生成'
+                    }}
+                  </p>
+                  <p v-if="!modelOptions.length" class="pv-task-status error" role="status">
+                    请先在控制台 AI 功能映射中配置分镜生图模型
+                  </p>
+                  <p
+                    v-else-if="!imageModelIsMapped"
+                    class="pv-task-status error"
+                    role="status"
+                  >
+                    当前图片模型未映射，请重新选择
+                  </p>
                   <div class="pv-actions">
                     <button
                       :disabled="
                         busy(active, 'images') ||
                         needsAnchor ||
                         uploading ||
+                        (imagePrice == null && !imageUsesReportedCost()) ||
+                        !imageModelIsMapped ||
                         !productReferenceUrls(workflow, active).length ||
                         !active.imagePrompt.trim()
                       "
@@ -2134,9 +2187,23 @@ function onKeydown(event) {
                       :model-value="workflow.videoModel"
                       :options="currentVideoModelOptions"
                       aria-label="视频模型"
-                      @update:model-value="set('videoModel', $event)"
+                      @update:model-value="selectVideoModel"
                     />
                   </label>
+                  <p
+                    v-if="active.productionMode !== 'single_video_30' && !currentVideoModelOptions.length"
+                    class="pv-task-status error"
+                    role="status"
+                  >
+                    请先在控制台 AI 功能映射中配置分镜视频模型
+                  </p>
+                  <p
+                    v-else-if="active.productionMode !== 'single_video_30' && !currentVideoModelOptions.some((option) => option.value === workflow.videoModel)"
+                    class="pv-task-status error"
+                    role="status"
+                  >
+                    当前视频模型未映射，请重新选择
+                  </p>
                   <p
                     v-if="isRetiredVideoModel(videoModelForShot(active))"
                     class="pv-task-status error"
@@ -2179,22 +2246,17 @@ function onKeydown(event) {
                       @input="set('videoDurationSeconds', Number($event.target.value))"
                     />
                   </label>
-                  <p
-                    v-if="perSecondVideo(active) && videoPrice(active) == null"
-                    class="pv-task-status error"
-                    role="status"
-                  >
-                    所选画质尚未配置接口密钥和每秒米值单价
-                  </p>
                   <div class="pv-actions">
                     <button
                       class="pv-primary"
                       :disabled="
                         !canGenerateVideo(active) ||
+                        (active.productionMode !== 'single_video_30' &&
+                          !currentVideoModelOptions.some((option) => option.value === workflow.videoModel)) ||
                         isRetiredVideoModel(videoModelForShot(active)) ||
                         busy(active, 'videos') ||
                         (perSecondVideo(active) &&
-                          (videoPrice(active) == null ||
+                          (videoPrice(active) == null && !videoUsesReportedCost(active) ||
                             invalidAnmiaoDuration(active) ||
                             invalidAnmiaoResolution(active)))
                       "

@@ -21,6 +21,7 @@ import {
   ANMIAO20_FAST_VIDEO_MODEL,
   ANMIAO25_VIDEO_MODEL,
   ANMIAO25_VIDEO_RESOLUTIONS,
+  HAILUO_H3_VIDEO_MODEL,
   MINIMAX_VIDEO_MODEL,
   MINIMAX_VIDEO_RESOLUTIONS,
   VIDEO_MODELS,
@@ -125,6 +126,24 @@ test('H3 uses confirmed first frame with independent resolution and cannot make 
   )
   data.minimaxResolution = '720p'
   assert.throws(() => buildVideoRequest(data, shot, 'h3'), /768P/)
+})
+
+test('Hailuo H3首尾帧 uses adaptive ratio and Mini H3 resolutions', () => {
+  const { data, shot } = fixture()
+  shot.images = [{ id: 'image', url: 'https://assets.example/frame.png' }]
+  shot.imageId = shot.approvedImageId = 'image'
+  data.videoModel = HAILUO_H3_VIDEO_MODEL
+  data.videoDurationSeconds = 5
+  for (const option of MINIMAX_VIDEO_RESOLUTIONS) {
+    data.minimaxResolution = option.value
+    const request = buildVideoRequest(data, shot, 'hailuo-h3')
+    assert.equal(request.model, HAILUO_H3_VIDEO_MODEL)
+    assert.equal(request.ratio, 'adaptive')
+    assert.equal(request.resolution, option.value)
+    assert.equal(request.durationSeconds, 5)
+    assert.equal(request.first_frame_url, shot.images[0].url)
+    assert.equal(Object.hasOwn(request, 'generate_audio'), false)
+  }
 })
 
 test('per-second Seedance model uses explicit 4-15 seconds without changing existing video models', () => {

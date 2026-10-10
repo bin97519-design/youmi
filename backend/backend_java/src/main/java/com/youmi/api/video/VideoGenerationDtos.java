@@ -28,10 +28,18 @@ public class VideoGenerationDtos {
       @JsonProperty("generate_audio") @JsonAlias("generateAudio") Boolean generateAudio,
       @JsonProperty("seed") Long seed,
       @JsonProperty("webhook_url") @JsonAlias("webhookUrl") String webhookUrl,
-      @JsonProperty("client_task_id") @JsonAlias("clientTaskId") String clientTaskId) {
+      @JsonProperty("client_task_id") @JsonAlias("clientTaskId") String clientTaskId,
+      @JsonProperty("feature_code") String featureCode) {
 
     public CreateTaskRequest(String prompt, String model, String ratio, Integer durationSeconds) {
-      this(prompt, model, ratio, durationSeconds, null, List.of(), null, null, null, null, null, null, null);
+      this(prompt, model, ratio, durationSeconds, null, List.of(), null, null, null, null, null, null, null, null);
+    }
+
+    public CreateTaskRequest(String prompt, String model, String ratio, Integer durationSeconds,
+        String resolution, List<String> imageUrls, String firstFrameUrl, String lastFrameUrl,
+        String negativePrompt, Boolean generateAudio, Long seed, String webhookUrl, String clientTaskId) {
+      this(prompt, model, ratio, durationSeconds, resolution, imageUrls, firstFrameUrl, lastFrameUrl,
+          negativePrompt, generateAudio, seed, webhookUrl, clientTaskId, null);
     }
 
     public List<String> normalizedImageUrls() {

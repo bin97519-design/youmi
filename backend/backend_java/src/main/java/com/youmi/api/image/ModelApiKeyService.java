@@ -60,7 +60,9 @@ public class ModelApiKeyService {
 
   public List<ModelApiKeyDtos.ModelOption> enabledModelOptions(String modelType, String featureCode) {
     List<ModelApiKeyDtos.ModelOption> options = enabledModelOptions(modelType);
-    if (!isFeatureMappingConfigured(featureCode)) return options;
+    if (!isFeatureMappingConfigured(featureCode)) {
+      return isProductVideoFeature(featureCode) ? List.of() : options;
+    }
     java.util.Set<Long> selected = java.util.Set.copyOf(featureMappings.selectedKeyIdsIfConfigured(featureCode));
     return repository.list().stream().filter(row -> selected.contains(row.id())
         && row.enabled() && modelType.equals(row.modelType()))
@@ -170,7 +172,9 @@ public class ModelApiKeyService {
   }
 
   public Optional<ResolvedModelApiKey> resolve(String requestedModel, String modelType, String featureCode) {
-    if (!isFeatureMappingConfigured(featureCode)) return resolve(requestedModel, modelType);
+    if (!isFeatureMappingConfigured(featureCode)) {
+      return isProductVideoFeature(featureCode) ? Optional.empty() : resolve(requestedModel, modelType);
+    }
     if (requestedModel == null || requestedModel.isBlank()) return Optional.empty();
     String normalized = requestedModel.trim();
     String alias = normalized;
@@ -189,10 +193,15 @@ public class ModelApiKeyService {
     java.util.Set<Long> selected = java.util.Set.copyOf(featureMappings.selectedKeyIdsIfConfigured(featureCode));
     return repository.list().stream().filter(row -> selected.contains(row.id())
         && row.enabled() && modelType.equals(row.modelType())
-        && (row.model().equalsIgnoreCase(normalized) || row.model().equalsIgnoreCase(aliasModel)))
+        && (row.model().equalsIgnoreCase(normalized) || row.model().equalsIgnoreCase(aliasModel)
+            || row.name().equalsIgnoreCase(normalized)))
         .sorted(Comparator.comparingInt(ModelApiKeyRepository.StoredModelApiKey::priority).reversed()
             .thenComparingLong(ModelApiKeyRepository.StoredModelApiKey::id))
         .findFirst().map(this::decrypt);
+  }
+
+  private boolean isProductVideoFeature(String featureCode) {
+    return "product-video-image".equals(featureCode) || "product-video-video".equals(featureCode);
   }
 
   /** Resolves the highest-priority enabled credential when an operation has no model selector. */

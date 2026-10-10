@@ -64,12 +64,16 @@ public class ImageTaskController {
   }
 
   @GetMapping("/canvas-models")
-  public ApiResponse<CanvasModelsResponse> canvasModels() {
+  public ApiResponse<CanvasModelsResponse> canvasModels(
+      @RequestParam(value = "feature_code", defaultValue = "canvas-image") String featureCode) {
     if (modelApiKeyService == null) return ApiResponse.ok(new CanvasModelsResponse(false, java.util.List.of()));
+    if (!java.util.Set.of("canvas-image", "canvas-creation-image", "product-video-image").contains(featureCode)) {
+      throw new ApiException(400, "不支持的画布生图功能映射");
+    }
     java.util.List<ModelApiKeyDtos.ModelOption> options = modelApiKeyService.enabledModelOptions(
-        ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, "canvas-image");
+        ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, featureCode);
     return ApiResponse.ok(new CanvasModelsResponse(
-        modelApiKeyService.isFeatureMappingConfigured("canvas-image"),
+        modelApiKeyService.isFeatureMappingConfigured(featureCode),
         options.stream().map(ModelApiKeyDtos.ModelOption::value).distinct().toList(),
         options));
   }
@@ -112,10 +116,21 @@ public class ImageTaskController {
     }
     // 先扣后生成：原子扣减成功才发起外部调用；不足则抛 402，绝不发起外部调用
     ImageMiValuePricingService.PriceQuote quote;
+    var mappedModel = modelApiKeyService == null || request.model() == null
+        ? java.util.Optional.<ModelApiKeyService.ResolvedModelApiKey>empty()
+        : modelApiKeyService.resolve(request.model(), ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION,
+            request.featureCode());
+    boolean modelMapped = mappedModel.isPresent();
+    String billingModel = mappedModel.map(ModelApiKeyService.ResolvedModelApiKey::model).orElse(request.model());
     try {
-      quote = pricingService.quote(request.model(), request.resolution(), request.requestedCount());
+      quote = pricingService.quote(billingModel, request.resolution(), request.requestedCount());
     } catch (IllegalArgumentException e) {
-      throw new ApiException(400, e.getMessage());
+      if (!modelMapped) throw new ApiException(400, e.getMessage());
+      try {
+        quote = pricingService.reportedCostQuote(billingModel, request.resolution(), request.requestedCount());
+      } catch (IllegalArgumentException unsupportedRequest) {
+        throw new ApiException(400, unsupportedRequest.getMessage());
+      }
     }
     MiValueDtos.DeductResult deduct =
         miValueService.checkAndDeduct(userId, MiBizType.IMAGE, quote.reservedPrice());

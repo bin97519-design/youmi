@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.youmi.api.ai.AgentChatClient;
 import com.youmi.api.ai.AiChatDtos;
 import com.youmi.api.ai.GemAgentClient;
+import com.youmi.api.ai.CanvasAgentDtos;
 import com.youmi.api.common.ApiException;
 import java.net.http.HttpTimeoutException;
 import java.time.Duration;
@@ -19,6 +20,17 @@ class ProductVideoPlanServiceTest {
   private final ObjectMapper mapper = new ObjectMapper();
   private final AgentChatClient client = mock(AgentChatClient.class);
   private final ProductVideoPlanService service = new ProductVideoPlanService(client, mapper, 180);
+
+  @Test void planningModelListDoesNotExposeLegacyModelNameOrUnconfiguredGemPlaceholder() {
+    when(client.isConfigured()).thenReturn(true);
+    when(client.model()).thenReturn("gpt-5.6-luna");
+    var gem = mock(GemAgentClient.class);
+    when(gem.isConfigured()).thenReturn(false);
+
+    var options = new ProductVideoPlanService(client, mapper, 180, gem).models();
+
+    assertEquals(List.of(new CanvasAgentDtos.AgentModelOption("default", "默认策划模型", true)), options);
+  }
 
   @Test void fixedContinuityReachesOutlineAndEveryDetailBatchWithoutChangingBriefOrReferences() throws Exception {
     when(client.isConfigured()).thenReturn(true);

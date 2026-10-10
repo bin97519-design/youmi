@@ -34,6 +34,16 @@ public class ImageMiValuePricingService {
         reservedUnitPrice.multiply(BigDecimal.valueOf(normalizedCount)));
   }
 
+  public PriceQuote reportedCostQuote(String model, String resolution, int count) {
+    String canonicalModel = MiValueProperties.normalizeModel(
+        model == null || model.isBlank() ? "gpt-image-2" : model);
+    String canonicalResolution = MiValueProperties.normalizeResolution(
+        resolution == null || resolution.isBlank() ? "2K" : resolution);
+    int normalizedCount = Math.max(1, Math.min(4, count));
+    BigDecimal zero = BigDecimal.ZERO.setScale(2, java.math.RoundingMode.HALF_UP);
+    return new PriceQuote(canonicalModel, canonicalResolution, normalizedCount, zero, zero, zero, zero);
+  }
+
   public BigDecimal settlementPrice(PriceQuote quote, String provider) {
     if (quote == null) throw new IllegalArgumentException("Image price quote is required");
     String providerName = provider == null ? "" : provider.trim().toLowerCase();

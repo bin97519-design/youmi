@@ -2,6 +2,7 @@ package com.youmi.api.admin;
 
 import java.util.List;
 import java.util.Optional;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,6 +36,17 @@ public class AiFeatureMappingRepository {
 
   public Optional<Long> defaultKeyIdIfConfigured(String featureCode) {
     return find(featureCode).filter(MappingState::configured).map(MappingState::defaultApiKeyId);
+  }
+
+  public long selectionEventCount(String featureCode) {
+    try {
+      Long count = jdbc.queryForObject(
+          "SELECT COUNT(*) FROM ym_ai_model_selection_event WHERE feature_code = ? AND selected = 1",
+          Long.class, featureCode);
+      return count == null ? 0 : count;
+    } catch (DataAccessException ignored) {
+      return 0;
+    }
   }
 
   @Transactional

@@ -8,6 +8,7 @@ import com.youmi.api.common.ApiException;
 import com.youmi.api.credit.MiBizType;
 import com.youmi.api.credit.MiValueDtos;
 import com.youmi.api.credit.MiValueService;
+import com.youmi.api.image.ModelApiKeyService;
 import org.junit.jupiter.api.Test;
 
 class VideoTaskControllerTest {
@@ -24,6 +25,47 @@ class VideoTaskControllerTest {
     var request = new VideoGenerationDtos.CreateTaskRequest("test", "minimax-h3-max", "16:9", 5);
     assertEquals(400, assertThrows(ApiException.class, () -> controller.create("token", request)).getCode());
     verifyNoInteractions(legacy, chat, anmiao, minimax, billing);
+  }
+
+  @Test void productVideoModelMustBelongToItsFeatureMapping() {
+    when(auth.requireUserId("token")).thenReturn(7L);
+    var modelApiKeys = mock(ModelApiKeyService.class);
+    controller.setModelApiKeys(modelApiKeys);
+    when(modelApiKeys.resolve("unmapped-video", ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION,
+        "product-video-video")).thenReturn(java.util.Optional.empty());
+    var request = new VideoGenerationDtos.CreateTaskRequest("test", "unmapped-video", "16:9", 5,
+        "720p", java.util.List.of(), null, null, null, false, null, null, null, "product-video-video");
+
+    var error = assertThrows(ApiException.class, () -> controller.create("token", request));
+
+    assertEquals(400, error.getCode());
+    verify(modelApiKeys).resolve("unmapped-video", ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION,
+        "product-video-video");
+    verify(minimax).usesMappedHailuoAlias("unmapped-video", "product-video-video");
+    verifyNoInteractions(legacy, chat, anmiao, billing);
+  }
+
+  @Test void mappedMiniH3CredentialAcceptsLegacyProductVideoSelection() throws Exception {
+    when(auth.requireUserId("token")).thenReturn(7L);
+    var modelApiKeys = mock(ModelApiKeyService.class);
+    controller.setModelApiKeys(modelApiKeys);
+    when(minimax.usesMappedHailuoAlias("minimax-h3", "product-video-video")).thenReturn(true);
+    var request = new VideoGenerationDtos.CreateTaskRequest("slow camera move", "minimax-h3", "adaptive", 5,
+        "768p", java.util.List.of("https://assets.example/first.png"),
+        "https://assets.example/first.png", null, null, false, null, null, "client-id",
+        "product-video-video");
+    when(minimax.price(request)).thenReturn(0);
+    when(billing.checkAndDeduct(7L, MiBizType.VIDEO, 0))
+        .thenReturn(new MiValueDtos.DeductResult(12L, 0, 0, 0, MiBizType.VIDEO));
+    var created = new VideoGenerationDtos.CreateTaskResponse();
+    created.setTaskId("hailuo-h3:key:9:123456");
+    when(minimax.createTask(request)).thenReturn(created);
+
+    controller.create("token", request);
+
+    verify(modelApiKeys, never()).resolve(anyString(), anyString(), anyString());
+    verify(billing).linkTask(12L, created.getTaskId());
+    verifyNoInteractions(legacy, chat, anmiao);
   }
 
   @Test void minimaxUsesOwnPriceAndTransportAndCommitsOnlyAfterFinalSuccess() throws Exception {
@@ -149,12 +191,12 @@ class VideoTaskControllerTest {
     verify(legacy, never()).createTask(any());
   }
 
-  @Test void LingkeVideoSettlesReportedCostOnlyAfterSuccessfulPolling() throws Exception {
+  @Test void configuredMiniH3SettlesReportedCostRegardlessOfProviderLabel() throws Exception {
     when(auth.requireUserId("token")).thenReturn(7L);
     String taskId = "hailuo-h3:key:9:123456";
     when(billing.isTaskOwnedByUser(7L, taskId, MiBizType.VIDEO)).thenReturn(true);
     var completed = new VideoGenerationDtos.TaskStatusResponse();
-    completed.setProvider("灵科AI");
+    completed.setProvider("开放 API");
     completed.setStatus("completed");
     completed.setRaw(new ObjectMapper().readTree("{\"cost\":0.23}"));
     when(minimax.getTask(taskId, 7L)).thenReturn(completed);
@@ -166,12 +208,12 @@ class VideoTaskControllerTest {
     verify(billing, never()).rollbackByTaskId(taskId);
   }
 
-  @Test void LingkeVideoWaitsForCostInsteadOfSettlingZero() throws Exception {
+  @Test void configuredMiniH3WaitsForReportedCostInsteadOfSettlingZero() throws Exception {
     when(auth.requireUserId("token")).thenReturn(7L);
     String taskId = "hailuo-h3:key:9:123456";
     when(billing.isTaskOwnedByUser(7L, taskId, MiBizType.VIDEO)).thenReturn(true);
     var completed = new VideoGenerationDtos.TaskStatusResponse();
-    completed.setProvider("lk888");
+    completed.setProvider("开放 API");
     completed.setStatus("completed");
     when(minimax.getTask(taskId, 7L)).thenReturn(completed);
 

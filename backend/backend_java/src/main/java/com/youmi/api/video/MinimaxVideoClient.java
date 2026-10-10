@@ -48,21 +48,29 @@ public class MinimaxVideoClient {
   void setModelApiKeyService(ModelApiKeyService service) { this.modelApiKeys = service; }
 
   public boolean hasConfiguredHailuoModel() {
-    return resolveHailuoCredential().filter(key ->
-        ModelApiKeyService.usesProviderReportedCost(key.provider())
-            || RESOLUTIONS.stream().anyMatch(value -> properties.rate(value) > 0)).isPresent();
+    return hasConfiguredHailuoModel("canvas-video");
+  }
+
+  public boolean hasConfiguredHailuoModel(String featureCode) {
+    return resolveHailuoCredential(featureCode).isPresent();
+  }
+
+  public boolean usesMappedHailuoAlias(String model, String featureCode) {
+    return MODEL.equals(model) && "product-video-video".equals(featureCode)
+        && hasConfiguredHailuoModel(featureCode);
   }
 
   public int price(VideoGenerationDtos.CreateTaskRequest request) {
     validate(request);
     int rate = properties.rate(resolution(request));
-    boolean configuredModel = isConfiguredModel(request.model());
+    boolean configuredModel = usesConfiguredHailuo(request);
     java.util.Optional<ResolvedModelApiKey> credential = configuredModel
-        ? resolveHailuoCredential() : java.util.Optional.empty();
+        ? resolveHailuoCredential(featureCode(request)) : java.util.Optional.empty();
     if (configuredModel && credential.isEmpty())
       throw new ApiException(503, "Mini H3 首尾帧模型管理密钥未配置或未绑定画布视频功能");
-    if (configuredModel && ModelApiKeyService.usesProviderReportedCost(credential.get().provider()))
-      return 0;
+    // Model-managed Mini H3 reports its actual cost in the status response;
+    // channel labels are user-defined and must not gate task submission.
+    if (configuredModel) return 0;
     if ((!configuredModel && !properties.hasKey()) || rate == 0)
       throw new ApiException(503, "Mini H3 首尾帧所选画质尚未配置模型密钥和每秒米值单价");
     return Math.multiplyExact(rate, request.durationSeconds());
@@ -78,7 +86,7 @@ public class MinimaxVideoClient {
 
   public VideoGenerationDtos.CreateTaskResponse createTask(VideoGenerationDtos.CreateTaskRequest request) throws Exception {
     price(request);
-    if (isConfiguredModel(request.model())) return createConfiguredHailuoTask(request);
+    if (usesConfiguredHailuo(request)) return createConfiguredHailuoTask(request);
     Map<String, Object> params = new LinkedHashMap<>();
     params.put("duration", String.valueOf(request.durationSeconds()));
     params.put("resolution", resolution(request).toUpperCase(Locale.ROOT));
@@ -143,7 +151,7 @@ public class MinimaxVideoClient {
 
   private VideoGenerationDtos.CreateTaskResponse createConfiguredHailuoTask(
       VideoGenerationDtos.CreateTaskRequest request) throws Exception {
-    ResolvedModelApiKey credential = resolveHailuoCredential()
+    ResolvedModelApiKey credential = resolveHailuoCredential(featureCode(request))
         .orElseThrow(() -> new ApiException(503, "Mini H3 首尾帧模型管理密钥未配置或未绑定画布视频功能"));
     List<String> frames = hailuoFrames(request);
     if (frames.isEmpty() || frames.size() > 2)
@@ -163,7 +171,7 @@ public class MinimaxVideoClient {
       String id = text(root.path("data"), "task_id");
       if (!id.matches("[A-Za-z0-9_-]+"))
         throw new ApiException(502, "Mini H3 首尾帧未返回有效任务编号");
-      recordConfiguredCall(credential, true, started, null);
+      recordConfiguredCall(credential, true, started, null, featureCode(request));
       var result = new VideoGenerationDtos.CreateTaskResponse();
       result.setProvider(credential.provider());
       result.setModel(CONFIGURED_MODEL);
@@ -172,7 +180,7 @@ public class MinimaxVideoClient {
       result.setRaw(root);
       return result;
     } catch (Exception error) {
-      recordConfiguredCall(credential, false, started, error);
+      recordConfiguredCall(credential, false, started, error, featureCode(request));
       throw error;
     }
   }
@@ -243,15 +251,31 @@ public class MinimaxVideoClient {
   }
 
   private java.util.Optional<ResolvedModelApiKey> resolveHailuoCredential() {
+    return resolveHailuoCredential("canvas-video");
+  }
+
+  private java.util.Optional<ResolvedModelApiKey> resolveHailuoCredential(String featureCode) {
     if (modelApiKeys == null) return java.util.Optional.empty();
-    return modelApiKeys.resolve(CONFIGURED_MODEL,
-        com.youmi.api.image.ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "canvas-video");
+    String modelType = com.youmi.api.image.ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION;
+    return modelApiKeys.resolve(CONFIGURED_MODEL, modelType, featureCode)
+        .or(() -> modelApiKeys.resolve(MODEL, modelType, featureCode));
+  }
+
+  private String featureCode(VideoGenerationDtos.CreateTaskRequest request) {
+    return request != null && "product-video-video".equals(request.featureCode())
+        ? request.featureCode() : "canvas-video";
   }
 
   private boolean isConfiguredModel(String model) { return CONFIGURED_MODEL.equals(model); }
 
-  private void recordConfiguredCall(ResolvedModelApiKey credential, boolean success, long started, Exception error) {
-    if (aiCallLogService != null) aiCallLogService.record("canvas-video", "video_generate",
+  private boolean usesConfiguredHailuo(VideoGenerationDtos.CreateTaskRequest request) {
+    return isConfiguredModel(request.model())
+        || usesMappedHailuoAlias(request.model(), featureCode(request));
+  }
+
+  private void recordConfiguredCall(ResolvedModelApiKey credential, boolean success, long started, Exception error,
+      String featureCode) {
+    if (aiCallLogService != null) aiCallLogService.record(featureCode, "video_generate",
         credential.provider(), CONFIGURED_MODEL, credential.id(), "dropdown", success, null,
         (System.nanoTime() - started) / 1_000_000L,
         error == null ? null : error.getClass().getSimpleName());
@@ -259,7 +283,7 @@ public class MinimaxVideoClient {
 
   private void validate(VideoGenerationDtos.CreateTaskRequest request) {
     if (request == null || !supportsModel(request.model())) throw new ApiException(400, "Mini H3 视频模型编号无效");
-    boolean configuredHailuo = isConfiguredModel(request.model());
+    boolean configuredHailuo = usesConfiguredHailuo(request);
     if (request.prompt() == null || request.prompt().isBlank()) throw new ApiException(400, "视频提示词不能为空");
     if (request.durationSeconds() == null || request.durationSeconds() < 4 || request.durationSeconds() > 15)
       throw new ApiException(400, "Mini H3 时长必须为 4 至 15 的整数秒");

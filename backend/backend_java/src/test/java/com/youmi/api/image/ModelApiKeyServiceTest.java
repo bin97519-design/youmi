@@ -214,6 +214,34 @@ class ModelApiKeyServiceTest {
   }
 
   @Test
+  void productVideoModelsAndRoutingRequireAnExplicitFeatureMapping() {
+    ModelApiKeyDtos.Row image = service.create(new ModelApiKeyDtos.SaveRequest(
+        "未映射图片线路", "unmapped-image", ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION,
+        "router", "https://image.example.com", null, null, "sk-image", true, 100), 1L);
+    ModelApiKeyDtos.Row video = service.create(new ModelApiKeyDtos.SaveRequest(
+        "未映射视频线路", "unmapped-video", ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION,
+        "router", "https://video.example.com", null, null, "sk-video", true, 100), 1L);
+
+    assertTrue(service.enabledModelOptions(ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION,
+        "product-video-image").isEmpty());
+    assertTrue(service.enabledModelOptions(ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION,
+        "product-video-video").isEmpty());
+    assertTrue(service.resolve(image.model(), ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION,
+        "product-video-image").isEmpty());
+    assertTrue(service.resolve(video.model(), ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION,
+        "product-video-video").isEmpty());
+    assertEquals(List.of("unmapped-video"), service.enabledModels(
+        ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "canvas-video"));
+
+    var mapping = new AiFeatureMappingService(service, new AiFeatureMappingRepository(jdbcTemplate))
+        .list().stream()
+        .filter(item -> item.featureCode().equals("product-video-video"))
+        .findFirst().orElseThrow();
+    assertFalse(mapping.configured());
+    assertTrue(mapping.selectedApiKeyIds().isEmpty());
+  }
+
+  @Test
   void preservesConfiguredAliasInsteadOfReplacingItWithInternalModel() {
     ModelApiKeyDtos.Row created = service.create(new ModelApiKeyDtos.SaveRequest(
         "Banana Pro 主线路", "banana-pro", ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION,
@@ -265,6 +293,26 @@ class ModelApiKeyServiceTest {
 
     assertEquals(stored.id(), service.resolve("gpt-image2.5-sunburst-api",
         ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, "canvas-image").orElseThrow().id());
+  }
+
+  @Test
+  void productVideoImageAliasesResolveDistinctCredentialsForSameUpstreamModel() {
+    ModelApiKeyDtos.Row fast = service.create(new ModelApiKeyDtos.SaveRequest(
+        "image-2.5快速", "tt-image-2.5", ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION,
+        "灵科AI", "https://api.example.com", "/v1/images/generations", "/v1/images/tasks/{id}",
+        "sk-fast", true, 100), 1L);
+    ModelApiKeyDtos.Row highQuality = service.create(new ModelApiKeyDtos.SaveRequest(
+        "image-2.5高质", "tt-image-2.5", ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION,
+        "灵科AI", "https://api.example.com", "/v1/images/generations", "/v1/images/tasks/{id}",
+        "sk-high", true, 100), 1L);
+    new AiFeatureMappingService(service, new AiFeatureMappingRepository(jdbcTemplate)).save(
+        "product-video-image", new com.youmi.api.admin.AiFeatureMappingDtos.SaveRequest(
+            List.of(fast.id(), highQuality.id()), fast.id()));
+
+    assertEquals(fast.id(), service.resolve("image-2.5快速",
+        ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, "product-video-image").orElseThrow().id());
+    assertEquals(highQuality.id(), service.resolve("image-2.5高质",
+        ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, "product-video-image").orElseThrow().id());
   }
 
   @Test

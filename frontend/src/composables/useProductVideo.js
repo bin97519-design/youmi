@@ -11,6 +11,7 @@ import {
   buildVideoRequest,
   ANMIAO_VIDEO_MODEL,
   ANMIAO25_VIDEO_MODEL,
+  HAILUO_H3_VIDEO_MODEL,
   MINIMAX_VIDEO_MODEL,
   isPerSecondVideoModel,
   WHOLE_VIDEO_30_MODEL,
@@ -59,15 +60,26 @@ export function useProductVideo(canvasId, activeTaskId) {
   const planningModelRecords = computed(() =>
     capabilities.value?.planningModels?.length
       ? capabilities.value.planningModels
-      : [
-          { value: 'default', label: '默认策划模型', configured: null },
-          { value: 'gem-3.8-flash', label: 'GEM 3.8 flash', configured: false },
-        ],
+      : [{ value: 'default', label: '默认策划模型', configured: null }],
   )
   const planningModelOptions = computed(() =>
     planningModelRecords.value.map((option) => ({
       ...option,
       label: option.configured === false ? `${option.label} · 未配置密钥` : option.label,
+    })),
+  )
+  const imageModelOptions = computed(() =>
+    (capabilities.value?.imageModels || []).map((option) => ({
+      ...option,
+      model: option.value,
+      value: option.label || option.value,
+      label: option.label || option.value,
+    })),
+  )
+  const videoModelOptions = computed(() =>
+    (capabilities.value?.videoModels || []).map((option) => ({
+      ...option,
+      label: option.label || option.value,
     })),
   )
   const planningModelUnavailable = computed(
@@ -145,6 +157,51 @@ export function useProductVideo(canvasId, activeTaskId) {
     } catch (e) {
       error.value = e.message
     }
+  }
+  function selectPlanningModel(model) {
+    const previous = workflow.value.planningModel || 'default'
+    if (previous === model) return
+    change((data) => {
+      data.planningModel = model
+    })
+    recordModelSelection('product-video-planning', previous, model)
+  }
+  function selectImageModel(model) {
+    const previous = workflow.value.imageModel
+    if (previous === model) return
+    change((data) => {
+      data.imageModel = model
+    })
+    recordModelSelection('product-video-image', previous, model)
+  }
+  function selectVideoModel(model) {
+    const previous = workflow.value.videoModel
+    if (previous === model) return
+    change((data) => {
+      data.videoModel = model
+    })
+    recordModelSelection('product-video-video', previous, model)
+  }
+  function recordModelSelection(featureCode, previous, model) {
+    const record = (value, selected) => {
+      if (!value || value === 'default') return
+      void request('/api/ai/model-selection-events', {
+        feature_code: featureCode,
+        model: value,
+        selected,
+      }).catch((e) => console.warn('[product-video] 模型选择埋点上报失败', e?.message || e))
+    }
+    record(model, true)
+    record(previous, false)
+  }
+  function videoUsesReportedCost(model) {
+    if (model === HAILUO_H3_VIDEO_MODEL ||
+        (model === MINIMAX_VIDEO_MODEL && capabilities.value?.hailuoH3Video === true)) return true
+    const provider = String(videoModelOptions.value.find((option) => option.value === model)?.provider || '')
+      .trim()
+      .toLowerCase()
+    return ['lk888', 'youmi888', 'lingke', 'model-api', '灵科ai', '灵科 ai']
+      .some((prefix) => provider.startsWith(prefix))
   }
   function addShot(plan) {
     if (planning.value) return
@@ -361,6 +418,8 @@ export function useProductVideo(canvasId, activeTaskId) {
         kind === 'image'
           ? buildImageRequest(task, shot, itemId)
           : buildVideoRequest(task, shot, itemId)
+      payload.feature_code = kind === 'image' ? 'product-video-image' : 'product-video-video'
+      const costReportedByProvider = kind === 'video' && videoUsesReportedCost(payload.model)
       if (
         kind === 'video' &&
         payload.model === WHOLE_VIDEO_30_MODEL &&
@@ -370,21 +429,21 @@ export function useProductVideo(canvasId, activeTaskId) {
       if (
         kind === 'video' &&
         payload.model === ANMIAO_VIDEO_MODEL &&
-        (!capabilities.value?.anmiaoVideo ||
+        !costReportedByProvider && (!capabilities.value?.anmiaoVideo ||
           !capabilities.value?.anmiaoMiPerSecondByResolution?.[payload.resolution])
       )
         throw new Error('按秒视频所选画质尚未配置密钥和每秒米值单价')
       if (
         kind === 'video' &&
         payload.model === ANMIAO25_VIDEO_MODEL &&
-        (!capabilities.value?.anmiao25Video ||
+        !costReportedByProvider && (!capabilities.value?.anmiao25Video ||
           !capabilities.value?.anmiao25MiPerSecondByResolution?.[payload.resolution])
       )
         throw new Error('SD2.5 所选画质尚未配置密钥和每秒米值单价')
       if (
         kind === 'video' &&
         payload.model === MINIMAX_VIDEO_MODEL &&
-        (!capabilities.value?.minimaxVideo ||
+        !costReportedByProvider && (!capabilities.value?.minimaxVideo ||
           !capabilities.value?.minimaxMiPerSecondByResolution?.[payload.resolution])
       )
         throw new Error('MiniMax H3 所选画质尚未配置密钥和每秒米值单价')
@@ -584,6 +643,58 @@ export function useProductVideo(canvasId, activeTaskId) {
     }
   }
 
+  async function recoverUnknownImageSubmissions() {
+    const staleAfterMs = 60_000
+    for (const task of tasks.value) {
+      const context = { docId: canvasId.value, taskId: task.id }
+      for (const shot of task.shots) {
+        const unresolved = shot.images.filter(
+          (item) =>
+            item.status === 'unknown' &&
+            !item.taskId &&
+            /^请求失败（502）/.test(item.error || ''),
+        )
+        for (const entry of unresolved) {
+          const clientTaskId = entry.request?.client_task_id || entry.id
+          try {
+            const result = await request(
+              `/api/image-tasks/by-client-task-id?client_task_id=${encodeURIComponent(clientTaskId)}`,
+            )
+            const taskId = result?.task_id || result?.taskId
+            if (taskId) {
+              shotChange(
+                shot.id,
+                (current) => {
+                  const item = current.images.find((candidate) => candidate.id === entry.id)
+                  if (!item) return
+                  item.taskId = taskId
+                  item.status = 'processing'
+                  item.error = ''
+                },
+                context,
+              )
+              void canvas.flushNow(context.docId)
+              void pollEntry(context, shot.id, 'image', { ...entry, taskId, status: 'processing' })
+              continue
+            }
+            const createdAt = Number(entry.createdAt) || Date.parse(entry.createdAt) || 0
+            if (Date.now() - createdAt < staleAfterMs) continue
+            shotChange(
+              shot.id,
+              (current) => {
+                current.images = current.images.filter((item) => item.id !== entry.id)
+              },
+              context,
+            )
+            void canvas.flushNow(context.docId)
+          } catch {
+            // Keep the uncertain entry visible if the task lookup itself cannot be completed.
+          }
+        }
+      }
+    }
+  }
+
   async function compose() {
     if (composing.value || ['queued', 'processing'].includes(workflow.value.composition?.status))
       return
@@ -630,6 +741,7 @@ export function useProductVideo(canvasId, activeTaskId) {
         )
       }
     }
+    void recoverUnknownImageSubmissions()
     void poll()
     timer = setInterval(poll, 5000)
   })
@@ -653,7 +765,12 @@ export function useProductVideo(canvasId, activeTaskId) {
     composing,
     capabilities,
     planningModelOptions,
+    imageModelOptions,
+    videoModelOptions,
     planningModelUnavailable,
+    selectPlanningModel,
+    selectImageModel,
+    selectVideoModel,
     request,
     loadCapabilities,
     addShot,

@@ -14,6 +14,10 @@ import org.springframework.stereotype.Service;
 public class AiFeatureMappingService {
   private static final Map<String, String> FEATURE_TYPES = Map.of(
       "canvas-image", ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION,
+      "canvas-creation-image", ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION,
+      "product-video-image", ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION,
+      "product-video-video", ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION,
+      "product-video-planning", ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
       "canvas-layering", ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
       "canvas-agent", ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
       "canvas-video", ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION);
@@ -32,6 +36,19 @@ public class AiFeatureMappingService {
         mapping("canvas-image", "画布下拉模型生图", ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION,
             "dropdown", "按此处勾选的模型提供画布生图选项；同一模型按优先级降序、ID升序。",
             "由用户在画布模型下拉框选择", "无额外默认线路", keys),
+        mapping("canvas-creation-image", "画布创作模型生图", ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION,
+            "dropdown", "按此处勾选的模型提供画布创作弹窗选项；同一模型按优先级降序、ID升序。",
+            "由用户在画布创作模型下拉框选择", "无额外默认线路", keys),
+        mapping("product-video-image", "主图视频分镜生图模型", ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION,
+            "dropdown", "按此处勾选的模型提供主图视频分镜首帧生图选项；同一模型按优先级降序、ID升序。",
+            "由用户在主图视频分镜图片模型下拉框选择", "无额外默认线路", keys),
+        mapping("product-video-video", "主图视频分镜视频模型", ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION,
+            "dropdown", "按此处勾选的模型提供主图视频分镜视频生成选项；同一模型按优先级降序、ID升序。",
+            "由用户在主图视频分镜视频模型下拉框选择", "无额外默认线路", keys),
+        mapping("product-video-planning", "主图视频策划模型", ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
+            "dropdown", "按此处勾选的模型提供主图视频策划模型选项；同一模型按优先级降序、ID升序。",
+            "默认策划使用全局 Agent 配置；自定义模型使用对应识图推理模型配置。",
+            "无额外默认模型；内置 GEM 仍走其专用配置。", keys),
         mapping("canvas-layering", "画布图片智能分层", ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
             "system_default", "此功能没有模型下拉框，使用此处指定的默认识图推理模型。",
             preferredVisionRoute(keys), "指定模型不可用或调用失败时回退到讯飞视觉，再回退 DashScope。", keys),
@@ -78,15 +95,14 @@ public class AiFeatureMappingService {
             row.provider(), row.priority(), row.enabled())).toList();
     AiFeatureMappingRepository.MappingState state = repository.find(code).orElse(null);
     boolean configured = state != null && state.configured();
-    List<Long> selected = configured ? repository.selectedKeyIds(code) : routes.stream()
-        .filter(AiFeatureMappingDtos.KeyRoute::enabled).map(AiFeatureMappingDtos.KeyRoute::apiKeyId).toList();
+    List<Long> selected = configured ? repository.selectedKeyIds(code) : List.of();
     Long defaultId = state == null ? null : state.defaultApiKeyId();
     String currentDefault = defaultId == null ? defaultRoute : routes.stream()
         .filter(route -> route.apiKeyId().equals(defaultId))
         .map(route -> route.apiKeyName() + " · " + route.model() + " · #" + route.apiKeyId())
         .findFirst().orElse("所选模型不可用");
     return new AiFeatureMappingDtos.Mapping(code, name, type, mode, policy, currentDefault,
-        fallbackRoute, routes, configured, selected, defaultId);
+        fallbackRoute, routes, configured, selected, defaultId, repository.selectionEventCount(code));
   }
 
   private String preferredVisionRoute(List<ModelApiKeyDtos.Row> keys) {

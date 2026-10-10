@@ -5,6 +5,8 @@ import com.youmi.api.common.ApiException;
 import com.youmi.api.common.ApiResponse;
 import com.youmi.api.credit.MiBizType;
 import com.youmi.api.credit.MiValueProperties;
+import com.youmi.api.image.ModelApiKeyService;
+import com.youmi.api.image.ModelApiKeyDtos;
 import com.youmi.api.selection.SelectionPoolService;
 import java.util.Map;
 import org.springframework.web.bind.annotation.*;
@@ -21,6 +23,7 @@ public class ProductVideoController {
   private final AnmiaoVideoProperties anmiao;
   private final MinimaxVideoProperties minimax;
   private final AnmiaoVideoClient anmiaoClient;
+  private ModelApiKeyService modelApiKeys;
   private MinimaxVideoClient minimaxClient;
 
   public ProductVideoController(AdminAuthService auth, ProductVideoPlanService plans,
@@ -46,18 +49,28 @@ public class ProductVideoController {
   @Autowired(required = false)
   void setMinimaxClient(MinimaxVideoClient minimaxClient) { this.minimaxClient = minimaxClient; }
 
+  @Autowired(required = false)
+  void setModelApiKeys(ModelApiKeyService modelApiKeys) { this.modelApiKeys = modelApiKeys; }
+
   @GetMapping("/capabilities")
   public ApiResponse<?> capabilities(@RequestHeader(value = "Authorization", required = false) String token) {
     auth.requireUserId(token);
-    boolean configured20 = anmiaoClient != null && anmiaoClient.hasConfiguredModelVersion(false);
-    boolean configured25 = anmiaoClient != null && anmiaoClient.hasConfiguredModelVersion(true);
-    boolean configuredHailuo = minimaxClient != null && minimaxClient.hasConfiguredHailuoModel();
+    var imageModels = modelApiKeys == null ? java.util.List.<ModelApiKeyDtos.ModelOption>of()
+        : modelApiKeys.enabledModelOptions(ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, "product-video-image");
+    var videoModels = modelApiKeys == null ? java.util.List.<ModelApiKeyDtos.ModelOption>of()
+        : modelApiKeys.enabledModelOptions(ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "product-video-video");
+    boolean configured20 = anmiaoClient != null && anmiaoClient.hasConfiguredModelVersion(false, "product-video-video");
+    boolean configured25 = anmiaoClient != null && anmiaoClient.hasConfiguredModelVersion(true, "product-video-video");
+    boolean configuredHailuo = minimaxClient != null && minimaxClient.hasConfiguredHailuoModel("product-video-video");
     return ApiResponse.ok(Map.ofEntries(
         Map.entry("composition", compositions.available()),
         Map.entry("videoPrice", pricing.getPrice(MiBizType.VIDEO)),
         Map.entry("imagePrices", pricing.getImagePrices()),
         Map.entry("planStageTimeoutSeconds", plans.stageTimeoutSeconds()),
         Map.entry("planningModels", plans.models()),
+        Map.entry("imageModels", imageModels),
+        Map.entry("videoModels", videoModels),
+        Map.entry("hailuoH3Video", configuredHailuo),
         Map.entry("clipSpeed", true), Map.entry("singleVideoPlan", true), Map.entry("singleVideo30", true),
         Map.entry("wholeVideoShotCount", true), Map.entry("synchronizedAudio", true),
         Map.entry("referenceVideoReverse", true), Map.entry("longReferenceVideo", true),

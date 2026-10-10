@@ -78,6 +78,7 @@ public class ImageGenerationClient {
   private final ThreadLocal<Long> requestUserId = new ThreadLocal<>();
   private final ThreadLocal<String> telemetryModel = new ThreadLocal<>();
   private final ThreadLocal<Long> telemetryApiKeyId = new ThreadLocal<>();
+  private final ThreadLocal<String> telemetryFeatureCode = new ThreadLocal<>();
   // 持久化专用线程池：避免轮询请求内同步阻塞，且不引入自注入造成的循环依赖
   private final ThreadPoolTaskExecutor persistExecutor = buildPersistExecutor();
   // Agnes 上游是同步接口；用独立线程池包装成内部异步任务，避免一次生成阻塞后续提交。
@@ -191,12 +192,16 @@ public class ImageGenerationClient {
     Optional<ModelApiKeyService.ResolvedModelApiKey> credential = resolveModelApiCredential(
         request.model(), request.featureCode());
     telemetryModel.set(request.model());
+    telemetryFeatureCode.set("canvas-creation-image".equals(request.featureCode())
+        ? "canvas-creation-image"
+        : "product-video-image".equals(request.featureCode()) ? "product-video-image" : "canvas-image");
     if (credential.isPresent()) telemetryApiKeyId.set(credential.get().id());
     try {
       return createTaskInternal(request, credential);
     } finally {
       telemetryModel.remove();
       telemetryApiKeyId.remove();
+      telemetryFeatureCode.remove();
     }
   }
 
@@ -1129,14 +1134,23 @@ public class ImageGenerationClient {
 
   private Optional<ModelApiKeyService.ResolvedModelApiKey> resolveModelApiCredential(
       String requestedModel, String featureCode) {
-    if (modelApiKeyService == null || requestedModel == null) return Optional.empty();
+    if (requestedModel == null) return Optional.empty();
+    if (modelApiKeyService == null) {
+      if ("product-video-image".equals(featureCode))
+        throw new ApiException(400, "主图视频分镜生图尚未配置模型映射");
+      return Optional.empty();
+    }
     String normalized = requestedModel.trim();
-    if ("canvas-image".equals(featureCode)) {
+    if ("canvas-image".equals(featureCode) || "canvas-creation-image".equals(featureCode)
+        || "product-video-image".equals(featureCode)) {
       Optional<ModelApiKeyService.ResolvedModelApiKey> mapped = modelApiKeyService.resolve(
-          normalized, ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, "canvas-image");
+          normalized, ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, featureCode);
       if (mapped.isPresent()) return mapped;
-      if (modelApiKeyService.isFeatureMappingConfigured("canvas-image")
-          && !isLegacyImageProviderModel(normalized)) {
+      if ("product-video-image".equals(featureCode)) {
+        throw new ApiException(400, "该生图模型未映射到主图视频分镜生图功能");
+      }
+      if (modelApiKeyService.isFeatureMappingConfigured(featureCode)
+          && ("product-video-image".equals(featureCode) || !isLegacyImageProviderModel(normalized))) {
         throw new ApiException(400, "该生图模型未映射到已启用的模型密钥");
       }
     }
@@ -2199,7 +2213,9 @@ public class ImageGenerationClient {
   private void recordImageCall(String provider, String method, boolean success,
       Integer httpStatus, long started, Exception error) {
     if (aiCallLogService == null) return;
-    aiCallLogService.record("canvas-image", "GET".equalsIgnoreCase(method) ? "query" : "generate",
+    aiCallLogService.record(
+        telemetryFeatureCode.get() == null ? "canvas-image" : telemetryFeatureCode.get(),
+        "GET".equalsIgnoreCase(method) ? "query" : "generate",
         provider, telemetryModel.get(),
         telemetryApiKeyId.get(), "dropdown", success, httpStatus,
         (System.nanoTime() - started) / 1_000_000L,

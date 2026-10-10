@@ -33,6 +33,7 @@ public class VideoTaskController {
   private final ChatVideoJobs chatVideos;
   private final AnmiaoVideoClient anmiaoVideos;
   private final MinimaxVideoClient minimaxVideos;
+  private ModelApiKeyService modelApiKeys;
 
   public VideoTaskController(
       VideoGenerationClient videoGenerationClient,
@@ -47,17 +48,33 @@ public class VideoTaskController {
     this.minimaxVideos = minimaxVideos;
   }
 
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  void setModelApiKeys(ModelApiKeyService modelApiKeys) { this.modelApiKeys = modelApiKeys; }
+
   @PostMapping
   public ApiResponse<VideoGenerationDtos.CreateTaskResponse> create(
       @RequestHeader(value = "Authorization", required = false) String authorization,
       @RequestBody VideoGenerationDtos.CreateTaskRequest request) throws Exception {
     Long userId = adminAuthService.requireUserId(authorization);
+    String featureCode = request == null ? null : request.featureCode();
+    boolean productVideoCall = "product-video-video".equals(featureCode);
+    if (featureCode != null && !featureCode.isBlank()
+        && !java.util.Set.of("canvas-video", "product-video-video").contains(featureCode))
+      throw new ApiException(400, "不支持的视频生成功能映射");
+    boolean mappedHailuoAlias = productVideoCall && minimaxVideos.usesMappedHailuoAlias(
+        request == null ? null : request.model(), featureCode);
+    if (productVideoCall && !mappedHailuoAlias
+        && (modelApiKeys == null || request.model() == null || modelApiKeys.resolve(
+            request.model(), ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, featureCode).isEmpty()))
+      throw new ApiException(400, "该视频模型未映射到主图视频分镜视频生成功能");
     if (request != null && "minimax-h3-max".equals(request.model()))
       throw new ApiException(400, "原视频模型已移除，请重新选择视频模型");
     if (request != null && ChatVideoClient.MODEL.equals(request.model()))
       return ApiResponse.ok(chatVideos.create(userId, request));
     boolean minimax = request != null && MinimaxVideoClient.supportsModel(request.model());
-    boolean configuredModel = request != null && !minimax && anmiaoVideos.supportsModel(request.model());
+    boolean configuredModel = request != null && !minimax && (productVideoCall
+        ? anmiaoVideos.supportsModel(request.model(), featureCode)
+        : anmiaoVideos.supportsModel(request.model()));
     if (request != null && !minimax && !configuredModel
         && anmiaoVideos.isConfiguredKeyExcluded(request.model()))
       throw new ApiException(400, "所选视频模型未映射到画布视频功能");
@@ -102,9 +119,12 @@ public class VideoTaskController {
 
   @GetMapping("/models")
   public ApiResponse<java.util.List<ModelApiKeyDtos.ModelOption>> models(
-      @RequestHeader(value = "Authorization", required = false) String authorization) {
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @org.springframework.web.bind.annotation.RequestParam(value = "feature_code", defaultValue = "canvas-video") String featureCode) {
     adminAuthService.requireUserId(authorization);
-    return ApiResponse.ok(anmiaoVideos.configuredModels());
+    if (!java.util.Set.of("canvas-video", "product-video-video").contains(featureCode))
+      throw new ApiException(400, "不支持的视频模型功能映射");
+    return ApiResponse.ok(anmiaoVideos.configuredModels(featureCode));
   }
 
   @GetMapping("/{taskId}")
@@ -125,7 +145,7 @@ public class VideoTaskController {
     if (isTerminalFailed(response.getStatus())) {
       miValueService.rollbackByTaskId(taskId);
     } else if (isTerminalSuccess(response.getStatus())) {
-      if (ModelApiKeyService.usesProviderReportedCost(response.getProvider())) {
+      if (usesProviderReportedCostTask(taskId, response)) {
         Optional<BigDecimal> actualCost = providerCostInMi(response.getRaw());
         if (actualCost.isPresent()) {
           miValueService.settleActualByTaskId(taskId, actualCost.get());
@@ -151,6 +171,12 @@ public class VideoTaskController {
     } catch (NumberFormatException | ArithmeticException ignored) {
       return Optional.empty();
     }
+  }
+
+  private boolean usesProviderReportedCostTask(String taskId,
+      VideoGenerationDtos.TaskStatusResponse response) {
+    return (taskId != null && taskId.startsWith(MinimaxVideoClient.CONFIGURED_PREFIX + "key:"))
+        || ModelApiKeyService.usesProviderReportedCost(response.getProvider());
   }
 
   private boolean isTerminalFailed(String status) {

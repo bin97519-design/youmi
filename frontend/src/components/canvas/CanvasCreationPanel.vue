@@ -266,11 +266,29 @@ function toggleGenerationSelect(key) {
 function selectGenerationOption(key, value) {
   if (key === 'model') {
     const current = normalizedSelectedModels.value
-    selectedModels.value = current.includes(value)
+    const wasSelected = current.includes(value)
+    const next = current.includes(value)
       ? current.length > 1
         ? current.filter((model) => model !== value)
         : current
       : availableModelOptions.value.filter((model) => [...current, value].includes(model))
+    selectedModels.value = next
+    if (wasSelected !== next.includes(value)) {
+      void fetch(apiPath('/api/ai/model-selection-events'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...userStore.authHeaders(),
+        },
+        body: JSON.stringify({
+          feature_code: 'canvas-creation-image',
+          model: value,
+          selected: next.includes(value),
+        }),
+      }).catch((error) => {
+        console.warn('[canvas-creation] 模型选择埋点上报失败', error?.message || error)
+      })
+    }
     return
   }
   if (key === 'ratio') selectedRatio.value = value

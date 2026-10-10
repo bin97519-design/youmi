@@ -55,11 +55,16 @@ class MinimaxVideoClientTest {
     ModelApiKeyService modelApiKeys = mock(ModelApiKeyService.class);
     String baseUrl = "http://127.0.0.1:" + server.getAddress().getPort();
     ResolvedModelApiKey configuredKey = new ResolvedModelApiKey(9L,
-        MinimaxVideoClient.CONFIGURED_MODEL, "lk888", baseUrl, "/v1/media/generate",
+        MinimaxVideoClient.CONFIGURED_MODEL, "开放 API", baseUrl, "/v1/media/generate",
         "/v1/media/status?task_id={task_id}", "configured-only", Map.of());
     when(modelApiKeys.resolve(MinimaxVideoClient.CONFIGURED_MODEL,
         ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "canvas-video"))
         .thenReturn(Optional.of(configuredKey));
+    when(modelApiKeys.resolve(MinimaxVideoClient.MODEL,
+        ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "product-video-video"))
+        .thenReturn(Optional.of(new ResolvedModelApiKey(10L,
+            MinimaxVideoClient.MODEL, "开放 API", baseUrl, "/v1/media/generate",
+            "/v1/media/status?task_id={task_id}", "configured-only", Map.of())));
     when(modelApiKeys.resolveById(9L, ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION))
         .thenReturn(configuredKey);
     client.setModelApiKeyService(modelApiKeys);
@@ -133,6 +138,23 @@ class MinimaxVideoClientTest {
     properties.setPersistGeneratedVideos(false);
     response.set("{\"state\":\"success\",\"is_final\":true,\"progress\":\"100%\",\"result_url\":\"https://assets.example/out.mp4\"}");
     assertEquals("completed", client.getTask(created.getTaskId(), 7L).getStatus());
+  }
+
+  @Test void legacyProductVideoModelUsesMappedMiniH3AndReportedCost() throws Exception {
+    var request = new VideoGenerationDtos.CreateTaskRequest("slow camera move",
+        MinimaxVideoClient.MODEL, "adaptive", 5, "768p",
+        List.of("https://assets.example/first.png"), "https://assets.example/first.png", null,
+        null, false, null, null, "client-id", "product-video-video");
+    properties.setMiPerSecondByResolution(Map.of());
+
+    assertTrue(client.usesMappedHailuoAlias(request.model(), request.featureCode()));
+    assertEquals(0, client.price(request));
+    var created = client.createTask(request);
+
+    assertEquals("hailuo-h3:key:10:123456", created.getTaskId());
+    assertEquals(MinimaxVideoClient.CONFIGURED_MODEL, submitted.get().path("model").asText());
+    assertEquals("slow camera move", submitted.get().path("prompt").asText());
+    assertEquals(1, submitted.get().path("params").path("images").size());
   }
 
   @Test void invalidParametersAndMissingConfigurationNeverReachProvider() {

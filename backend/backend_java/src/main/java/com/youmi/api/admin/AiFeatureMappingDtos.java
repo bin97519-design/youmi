@@ -16,7 +16,8 @@ public final class AiFeatureMappingDtos {
       List<KeyRoute> keyRoutes,
       boolean configured,
       List<Long> selectedApiKeyIds,
-      Long defaultApiKeyId) {}
+      Long defaultApiKeyId,
+      long selectionEventCount) {}
 
   public record SaveRequest(List<Long> selectedApiKeyIds, Long defaultApiKeyId) {}
 

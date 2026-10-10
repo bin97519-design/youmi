@@ -470,7 +470,7 @@ export function buildVideoRequest(workflow, shot, clientId) {
   const model = whole30 ? (workflow.wholeVideo30Model ?? WHOLE_VIDEO_30_MODEL) : workflow.videoModel
   if (isRetiredVideoModel(model)) throw new Error('原视频模型已移除，请重新选择视频模型')
   const anmiaoVideo = isPerSecondVideoModel(model)
-  const minimax = model === MINIMAX_VIDEO_MODEL
+  const minimax = model === MINIMAX_VIDEO_MODEL || model === HAILUO_H3_VIDEO_MODEL
   const anmiao25Video = model === ANMIAO25_VIDEO_MODEL
   const anmiao20Fast = isAnmiao20FastVideoModel(model)
   const maxDuration = anmiao25Video ? 30 : 15
@@ -522,7 +522,7 @@ export function buildVideoRequest(workflow, shot, clientId) {
   return {
     prompt: `以提供的首帧图片作为第 0 秒画面。\n${productAppearanceConstraint('已确认首帧')}\n\n${singleVideo ? '整片时间轴与镜头安排' : '当前镜头动作与运镜'}：\n${normalizeVideoPrompt(shot).trim()}\n\n连续性要求：${continuity}保持商品颜色、材质、结构、数量和品牌标识，避免肢体畸变、商品变形和穿模。${direction}${countDirection}不要额外添加字幕、水印或营销文案。${audio}`,
     model,
-    ratio: anmiao25Video ? 'adaptive' : workflow.ratio,
+    ratio: anmiao25Video || model === HAILUO_H3_VIDEO_MODEL ? 'adaptive' : workflow.ratio,
     resolution:
       whole30 && !anmiao25Video
         ? '720p'

@@ -15,11 +15,50 @@ import com.youmi.api.credit.MiValueProperties;
 import com.youmi.api.credit.MiValueService;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.math.BigDecimal;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 class ImageTaskControllerTest {
+  @Test
+  void allowsMappedModelWithoutFixedPriceAndCreatesZeroEstimate() throws Exception {
+    Long userId = 7L;
+    String taskId = "lk888:task-123";
+    var auth = mock(AdminAuthService.class);
+    var generation = mock(ImageGenerationClient.class);
+    var ledger = mock(MiValueService.class);
+    var jdbc = mock(JdbcTemplate.class);
+    var modelApiKeys = mock(ModelApiKeyService.class);
+    var mapper = new ObjectMapper();
+    var taskLogs = new ImageTaskLogService(jdbc, mapper);
+    var pricing = new ImageMiValuePricingService(new MiValueProperties());
+    var controller = new ImageTaskController(generation, taskLogs, auth, ledger, pricing);
+    controller.setModelApiKeyService(modelApiKeys);
+    var request = new ImageGenerationDtos.CreateTaskRequest(
+        "画一朵花", "image-2.5快速", "1024x1024", "1:1", "2K",
+        1, null, List.of(), List.of(), null, null, null, null, null, null, null,
+        null, null, null, null, "product-video-image");
+    var providerResponse = new ImageGenerationDtos.CreateTaskResponse(
+        "Custom Gateway", "image-2.5快速", "image-2.5快速", "1024x1024", "2K", 1,
+        List.of(new ImageGenerationDtos.TaskRef(taskId, "submitted")), mapper.readTree("{}"));
+
+    when(auth.requireUserId("Bearer test-token")).thenReturn(userId);
+    when(modelApiKeys.resolve("image-2.5快速", ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION,
+        "product-video-image"))
+        .thenReturn(Optional.of(new ModelApiKeyService.ResolvedModelApiKey(
+            5L, "image-2.5快速", "Custom Gateway", "https://api.example", "/generate", "/status",
+            "secret", Map.of())));
+    when(ledger.checkAndDeduct(userId, MiBizType.IMAGE, new BigDecimal("0.00")))
+        .thenReturn(new MiValueDtos.DeductResult(99L, 0, 0, 0, MiBizType.IMAGE));
+    when(generation.createTask(request, userId)).thenReturn(providerResponse);
+
+    var result = controller.create("Bearer test-token", request).data();
+
+    assertEquals(new BigDecimal("0.00"), result.consumedMi());
+    verify(ledger).settle(99L, new BigDecimal("0.00"));
+  }
+
   @Test
   void createUsesReportedProviderCostInsteadOfConfiguredEstimate() throws Exception {
     Long userId = 7L;

@@ -27,6 +27,7 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class ProductVideoPlanService {
+  private static final String FEATURE_CODE = "product-video-planning";
   private static final Logger log = LoggerFactory.getLogger(ProductVideoPlanService.class);
   private static final int DETAIL_BATCH_SIZE = 2;
   private static final int GEM_PLAN_OUTPUT_TOKENS = 12000;
@@ -65,17 +66,19 @@ public class ProductVideoPlanService {
 
   public List<CanvasAgentDtos.AgentModelOption> models() {
     List<CanvasAgentDtos.AgentModelOption> options = new ArrayList<>();
-    options.add(new CanvasAgentDtos.AgentModelOption("default", client.model(), client.isConfigured()));
-    if (modelApiKeys == null || modelApiKeys.resolve(GemAgentClient.MODEL,
-        ModelApiKeyService.MODEL_TYPE_VISION_REASONING).isEmpty()) {
+    if (client.isConfigured()) {
+      options.add(new CanvasAgentDtos.AgentModelOption("default", "默认策划模型", true));
+    }
+    if (gemClient.isConfigured() && (modelApiKeys == null || modelApiKeys.resolve(GemAgentClient.MODEL,
+        ModelApiKeyService.MODEL_TYPE_VISION_REASONING, FEATURE_CODE).isEmpty())) {
       options.add(new CanvasAgentDtos.AgentModelOption(
-          GemAgentClient.MODEL, "GEM 3.8 flash", gemClient.isConfigured()));
+          GemAgentClient.MODEL, "GEM 3.8 flash", true));
     }
     if (modelApiKeys != null) {
       for (ModelApiKeyDtos.ModelOption option : modelApiKeys.enabledModelOptions(
-          ModelApiKeyService.MODEL_TYPE_VISION_REASONING)) {
+          ModelApiKeyService.MODEL_TYPE_VISION_REASONING, FEATURE_CODE)) {
         options.add(new CanvasAgentDtos.AgentModelOption(
-            option.value(), option.label() + " · " + option.value(), true));
+            option.value(), option.label(), true));
       }
     }
     return List.copyOf(options);
@@ -89,7 +92,7 @@ public class ProductVideoPlanService {
 
   private ModelApiKeyService.ResolvedModelApiKey configuredModel(String model) {
     return modelApiKeys == null || model == null ? null : modelApiKeys.resolve(model,
-        ModelApiKeyService.MODEL_TYPE_VISION_REASONING).orElse(null);
+        ModelApiKeyService.MODEL_TYPE_VISION_REASONING, FEATURE_CODE).orElse(null);
   }
 
   private String planningProvider(String model) {

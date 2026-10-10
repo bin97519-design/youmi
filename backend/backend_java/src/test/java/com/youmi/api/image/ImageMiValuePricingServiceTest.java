@@ -56,6 +56,16 @@ class ImageMiValuePricingServiceTest {
   }
 
   @Test
+  void createsZeroEstimateQuoteForProviderReportedPricing() {
+    ImageMiValuePricingService.PriceQuote quote =
+        service.reportedCostQuote("image-2.5快速", "2K", 1);
+
+    assertEquals(new BigDecimal("0.00"), quote.requestedPrice());
+    assertEquals(new BigDecimal("0.00"), quote.reservedPrice());
+    assertEquals("2K", quote.resolution());
+  }
+
+  @Test
   void keepsLegacyDefaultsCompatible() {
     assertEquals(new BigDecimal("10.00"), service.quote(null, null, 1).requestedPrice());
   }

@@ -69,14 +69,23 @@ public class AnmiaoVideoClient {
   public boolean available25() { return properties.isAvailable25(); }
 
   public boolean hasConfiguredModelVersion(boolean version25) {
+    return hasConfiguredModelVersion(version25, "canvas-video");
+  }
+
+  public boolean hasConfiguredModelVersion(boolean version25, String featureCode) {
     String marker = version25 ? "seedance-2-5" : "seedance-2-0";
-    return configuredModels().stream().anyMatch(option -> option.value() != null
+    return configuredModels(featureCode).stream().anyMatch(option -> option.value() != null
         && option.value().toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "-").contains(marker));
   }
 
   public List<ModelApiKeyDtos.ModelOption> configuredModels() {
     return modelApiKeys == null ? List.of() : modelApiKeys.enabledModelOptions(
         ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "canvas-video");
+  }
+
+  public List<ModelApiKeyDtos.ModelOption> configuredModels(String featureCode) {
+    return modelApiKeys == null ? List.of() : modelApiKeys.enabledModelOptions(
+        ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, featureCode);
   }
 
   public boolean isMappedModelConfigured() {
@@ -90,14 +99,18 @@ public class AnmiaoVideoClient {
   }
 
   public boolean supportsModel(String model) {
-    return MODEL.equals(model) || MODEL25.equals(model) || resolveConfiguredModel(model) != null;
+    return supportsModel(model, "canvas-video");
+  }
+
+  public boolean supportsModel(String model, String featureCode) {
+    return MODEL.equals(model) || MODEL25.equals(model) || resolveConfiguredModel(model, featureCode) != null;
   }
 
   public int price(VideoGenerationDtos.CreateTaskRequest request) {
     validate(request);
     int rate = isModel25(request.model())
         ? properties.miPerSecond25(resolution(request)) : properties.miPerSecond(resolution(request));
-    ResolvedModelApiKey credential = resolveConfiguredModel(request.model());
+    ResolvedModelApiKey credential = resolveConfiguredModel(request.model(), request.featureCode());
     String key = credential == null ? properties.apiKeyForModel(request.model()) : credential.apiKey();
     if (key == null || key.isBlank())
       throw new ApiException(503, "按秒视频所选模型未配置密钥");
@@ -110,7 +123,7 @@ public class AnmiaoVideoClient {
 
   public VideoGenerationDtos.CreateTaskResponse createTask(VideoGenerationDtos.CreateTaskRequest request) throws Exception {
     price(request);
-    ResolvedModelApiKey credential = resolveConfiguredModel(request.model());
+    ResolvedModelApiKey credential = resolveConfiguredModel(request.model(), request.featureCode());
     List<Object> content = new ArrayList<>();
     content.add(Map.of("type", "text", "text", request.prompt().trim()));
     List<String> references = referenceImages(request);
@@ -140,9 +153,9 @@ public class AnmiaoVideoClient {
       root = sendUrl(apiKey, "POST", endpoint, body);
       id = providerTaskId(root);
       if (!id.matches("[A-Za-z0-9_-]+")) throw new ApiException(502, "按秒视频接口未返回有效任务编号");
-      recordCall("canvas-video", request.model(), credential, true, started, null);
+      recordCall(callFeature(request), request.model(), credential, true, started, null);
     } catch (Exception error) {
-      recordCall("canvas-video", request.model(), credential, false, started, error);
+      recordCall(callFeature(request), request.model(), credential, false, started, error);
       throw error;
     }
     var result = new VideoGenerationDtos.CreateTaskResponse();
@@ -230,7 +243,7 @@ public class AnmiaoVideoClient {
     if (request.prompt().length() > 2500) throw new ApiException(400, "视频提示词不能超过 2500 字");
     boolean model25 = isModel25(request.model());
     boolean fastModel = isModel20Fast(request.model());
-    boolean configured = resolveConfiguredModel(request.model()) != null;
+    boolean configured = resolveConfiguredModel(request.model(), request.featureCode()) != null;
     if (!MODEL.equals(request.model()) && !MODEL25.equals(request.model()) && !configured)
       throw new ApiException(400, "按秒视频模型编号无效或未配置密钥");
     int maxDuration = model25 ? 30 : 15;
@@ -320,9 +333,17 @@ public class AnmiaoVideoClient {
   }
 
   private ResolvedModelApiKey resolveConfiguredModel(String model) {
+    return resolveConfiguredModel(model, "canvas-video");
+  }
+
+  private ResolvedModelApiKey resolveConfiguredModel(String model, String featureCode) {
     if (modelApiKeys == null || model == null) return null;
     return modelApiKeys.resolve(model, ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION,
-        "canvas-video").orElse(null);
+        featureCode == null || featureCode.isBlank() ? "canvas-video" : featureCode).orElse(null);
+  }
+
+  private String callFeature(VideoGenerationDtos.CreateTaskRequest request) {
+    return "product-video-video".equals(request.featureCode()) ? request.featureCode() : "canvas-video";
   }
 
   private void recordCall(String source, String model, ResolvedModelApiKey credential,

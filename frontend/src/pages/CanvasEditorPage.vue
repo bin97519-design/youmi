@@ -1348,6 +1348,7 @@ const BUILT_IN_CHAT_MODEL_OPTIONS = [
   'gpt-image-2',
 ]
 const chatModelOptions = reactive([...BUILT_IN_CHAT_MODEL_OPTIONS])
+const creationModelOptions = reactive([...BUILT_IN_CHAT_MODEL_OPTIONS])
 
 async function loadImageModels() {
   try {
@@ -1397,6 +1398,28 @@ async function loadImageModels() {
       .filter((model) => model && !RETIRED_IMAGE_MODELS.has(model.toLowerCase()))
     chatModelOptions.splice(0, chatModelOptions.length, ...nextModels)
     chatModels.value = normalizeChatModelSelection(chatModels.value)
+
+    const creationConfig = await readApiResponse(
+      await fetch(apiPath('/api/image-tasks/canvas-models?feature_code=canvas-creation-image'), {
+        headers: userStore.authHeaders(),
+      }),
+    )
+    const creationConfigured = Array.isArray(creationConfig?.models) ? creationConfig.models : []
+    const creationOptions = creationConfigured.flatMap((model) => {
+      const normalized = String(model || '').trim().toLowerCase()
+      if (normalized === 'banana-pro') return [MODEL_API_BANANA_PRO_OPTION]
+      if (['gpt-image2.5', 'tt-image-2.5', 'gpt-image-2.5'].includes(normalized)) {
+        return [MODEL_API_GPT_IMAGE_25_FLARE_OPTION, MODEL_API_GPT_IMAGE_25_SUNBURST_OPTION]
+      }
+      return [model]
+    })
+    creationModelOptions.splice(
+      0,
+      creationModelOptions.length,
+      ...new Set([...BUILT_IN_CHAT_MODEL_OPTIONS, ...creationOptions])
+        .map((model) => String(model || '').trim())
+        .filter((model) => model && !RETIRED_IMAGE_MODELS.has(model.toLowerCase())),
+    )
   } catch (error) {
     console.warn('[image] 模型配置暂时无法读取', error?.message || error)
   }
@@ -3109,6 +3132,7 @@ async function submitImageTask({
   background,
   outputFormat,
   inputFidelity,
+  featureCode = 'canvas-image',
   horizontalAngle,
   verticalAngle,
   distance,
@@ -3129,7 +3153,7 @@ async function submitImageTask({
     size: size || chatRatio.value,
     resolution: resolution || chatResolution.value,
     n: 1,
-    feature_code: 'canvas-image',
+    feature_code: featureCode,
   }
   if (imageUrls?.length) {
     body.image_urls = imageUrls
@@ -3312,6 +3336,7 @@ async function pollImageTaskUntilDone(taskId, placeholderId, assistantId, prompt
               size: qualityMeta.ratio,
               resolution: qualityMeta.resolution,
               inputFidelity: qualityMeta.generationOptions?.inputFidelity,
+              featureCode: qualityMeta.featureCode,
               clientTaskId: retryClientTaskId,
             })
             updateGeneratingPlaceholder(placeholderId, {
@@ -3923,6 +3948,7 @@ async function resumeInterruptedNoTaskId(layer) {
       verticalAngle: layer.genMeta?.generationOptions?.verticalAngle,
       distance: layer.genMeta?.generationOptions?.distance,
       seed: layer.genMeta?.generationOptions?.seed,
+      featureCode: layer.genMeta?.featureCode,
     })
     _pollingTasks.add(taskId) // 提前占住，避免 watch 重扫重复拉起轮询
     // 成功拿到 taskId：清除上一次失败残留的报错/网络标记，避免陈旧 e 字段一直挂在图层上
@@ -4640,6 +4666,7 @@ function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '',
           ? genMeta.referenceImageUrls
           : [],
         creationType: genMeta.creationType || '',
+        featureCode: genMeta.featureCode || 'canvas-image',
         sourceLayerIds: Array.isArray(genMeta.sourceLayerIds) ? genMeta.sourceLayerIds : [],
         cloneQuality:
           genMeta.cloneQuality && typeof genMeta.cloneQuality === 'object'
@@ -4775,6 +4802,7 @@ async function runCanvasCreation({ type, sourceIds, jobs, batchIndex = 0, batchC
             resolution: job.resolution || chatResolution.value,
             targetLayerId: sourceId,
             creationType: type || '',
+            featureCode: 'canvas-creation-image',
             cloneQuality: job.cloneQuality || null,
             inputFidelity: job.inputFidelity || '',
           },
@@ -4793,6 +4821,7 @@ async function runCanvasCreation({ type, sourceIds, jobs, batchIndex = 0, batchC
           aspectWidth: job.aspectWidth,
           aspectHeight: job.aspectHeight,
           creationType: type || '',
+          featureCode: 'canvas-creation-image',
           sourceLayerIds: job.sourceIds || sourceIds || [],
           cloneQuality: job.cloneQuality || null,
           generationOptions: {
@@ -4828,6 +4857,7 @@ async function runCanvasCreation({ type, sourceIds, jobs, batchIndex = 0, batchC
           size: job.ratio || 'auto',
           resolution: job.resolution || chatResolution.value,
           inputFidelity: job.inputFidelity || '',
+          featureCode: 'canvas-creation-image',
           clientTaskId: pendingLayer?.clientTaskId || '',
         })
         updateGeneratingPlaceholder(placeholderId, {
@@ -17354,7 +17384,7 @@ async function loadImageForCropUncached(layer) {
     :selected-layers="selectedCreationLayers"
     :model="chatModel"
     :resolution="chatResolution"
-    :model-options="chatModelOptions"
+    :model-options="creationModelOptions"
     :ratio-options="chatRatioOptions"
     :resolution-options="chatResolutionOptions"
     :busy="creationRunning"
