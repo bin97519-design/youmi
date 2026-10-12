@@ -10,6 +10,8 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import static org.junit.jupiter.api.Assertions.*;
 
 class VideoEnhanceClientTest {
@@ -89,6 +91,33 @@ class VideoEnhanceClientTest {
     assertEquals("source expired", client.poll("123456").error());
     response.set("{\"state\":\"running\",\"is_final\":true}");
     assertThrows(ApiException.class, () -> client.poll("123456"));
+  }
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "/v1/media/status?task_id={task_id}",
+      "/v1/media/status?task_id={id}",
+      "/v1/media/status?task_id=",
+      "/v1/media/status?task_id=old"
+  })
+  void mappedTaskPathsQueryTheOriginalTaskExactlyOnce(String taskPath) throws Exception {
+    var keys = org.mockito.Mockito.mock(ModelApiKeyService.class);
+    var mapped = new ModelApiKeyService.ResolvedModelApiKey(42L, "video-enhance", "lk888",
+        config.getBaseUrl(), "/v1/media/generate", taskPath, "mapped-secret");
+    org.mockito.Mockito.when(keys.resolveById(42L, ModelApiKeyService.MODEL_TYPE_VIDEO_ENHANCEMENT))
+        .thenReturn(mapped);
+    client.setModelApiKeys(keys);
+    expectedAuthorization.set("Bearer mapped-secret");
+    response.set("{\"state\":\"running\",\"is_final\":false}");
+
+    assertEquals("running", client.poll("123456", 42L).state());
+    assertNull(submitted);
+    org.mockito.Mockito.verify(keys).resolveById(42L, ModelApiKeyService.MODEL_TYPE_VIDEO_ENHANCEMENT);
+  }
+  @Test void taskPathPreservesOtherQueryParametersWithoutDuplicatingTaskIds() {
+    assertEquals("/v1/media/status?format=json&task_id=123456", VideoEnhanceClient.taskPath(
+        "/v1/media/status?task_id=old&format=json&task_id=other", "123456"));
+    assertEquals("/v1/media/tasks/123456?format=json", VideoEnhanceClient.taskPath(
+        "/v1/media/tasks/{task_id}?format=json", "123456"));
   }
   @Test void rejectsMissingKeyInvalidSettingsAndMalformedAcceptedTask() {
     config.setApiKey("");

@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.Set;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.web.util.UriComponentsBuilder;
 
 @Service
 public class VideoEnhanceClient {
@@ -71,7 +72,7 @@ public class VideoEnhanceClient {
   public State poll(String id, Long credentialId) throws Exception {
     if (id == null || !id.matches("[0-9]+")) throw new ApiException(400, "无效的超分任务编号");
     Route route = route(credentialId);
-    String path = route.taskPath() + (route.taskPath().contains("?") ? "&" : "?") + "task_id=" + id;
+    String path = taskPath(route.taskPath(), id);
     JsonNode json = send(route, path, null);
     if (json.has("data") && json.path("data").isObject()) json = json.path("data");
     String state = json.path("state").asText("");
@@ -82,6 +83,13 @@ public class VideoEnhanceClient {
     if (terminal && "success".equals(state) && !url.matches("https?://.+")) throw new ApiException(502, "中转站尚未返回结果地址");
     String error = json.path("error").isObject() ? json.path("error").path("message").asText("") : json.path("error").asText("");
     return new State(terminal, state, progress(json.path("progress")), json.path("status").asText("处理中"), url, error);
+  }
+
+  static String taskPath(String endpoint, String id) {
+    if (endpoint.contains("{task_id}") || endpoint.contains("{id}"))
+      return endpoint.replace("{task_id}", id).replace("{id}", id);
+    return UriComponentsBuilder.fromUriString(endpoint).replaceQueryParam("task_id", id)
+        .build(true).toUriString();
   }
 
   static Integer progress(JsonNode value) {
