@@ -211,6 +211,7 @@ const providerLabelMap = {
 const modelApiKeyTypeOptions = [
   { value: 'image_generation', label: '图片' },
   { value: 'video_generation', label: '视频' },
+  { value: 'video_enhancement', label: '超分' },
   { value: 'vision_reasoning', label: '识图推理' },
 ]
 function modelApiKeyTypeLabel(value) {
@@ -715,12 +716,16 @@ function aiFeatureTypeLabel(type) {
   return ({
     image_generation: '生图模型',
     video_generation: '视频模型',
+    video_enhancement: '超分模型',
     vision_reasoning: '识图推理模型',
   })[type] || type || '-'
 }
 
 function aiFeatureSelectionLabel(mode) {
-  return mode === 'dropdown' ? '下拉选择' : '系统默认'
+  return ({
+    dropdown: '下拉选择',
+    system_default: '系统默认',
+  })[mode] || mode || '-'
 }
 
 async function refreshAiFeatureMappings() {
@@ -3009,7 +3014,7 @@ onUnmounted(() => {
               </div>
               <p v-else class="ai-feature-no-keys">暂无可选模型</p>
             </template>
-            <span v-if="row.selectionMode !== 'system_default'" class="ai-feature-key-count">{{ row.keyRoutes?.filter((item) => item.enabled).length || 0 }} 个模型可选</span>
+            <span v-if="row.selectionMode === 'dropdown'" class="ai-feature-key-count">{{ row.keyRoutes?.filter((item) => item.enabled).length || 0 }} 个模型可选</span>
           </div>
           <div class="ai-feature-map-actions">
             <span :class="row.configured ? 'is-mapped' : ''">{{ row.configured ? '已生效' : '尚未保存' }}</span>

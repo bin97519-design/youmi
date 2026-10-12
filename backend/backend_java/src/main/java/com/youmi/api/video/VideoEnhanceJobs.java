@@ -59,7 +59,7 @@ public class VideoEnhanceJobs {
     workers.scheduleWithFixedDelay(this::cleanupQuotes, 1, 5, TimeUnit.MINUTES);
   }
   @PreDestroy public void close() { workers.shutdownNow(); }
-  public boolean available() { return config.configured() && media.available(); }
+  public boolean available() { return config.priceConfigured() && client.isConfigured() && media.available(); }
   public synchronized Task quote(Long userId, QuoteRequest request) throws Exception {
     client.requireConfigured();
     if (!media.available()) throw new ApiException(503, "视频检查或素材存储服务尚未就绪");
@@ -97,8 +97,9 @@ public class VideoEnhanceJobs {
       task = task.state("submitting", "", null, "正在提交", "", "", "");
       write(userId, task);
       submitted = true;
-      String providerId = client.create(sourceUrl, task.settings());
-      task = task.state("pending", providerId, null, "中转站排队中", "", "", "");
+      VideoEnhanceClient.Submission submission = client.createSubmission(sourceUrl, task.settings());
+      writeRouteId(userId, id, submission.credentialId());
+      task = task.state("pending", submission.taskId(), null, "中转站排队中", "", "", "");
       write(userId, task);
       schedule(userId, id);
       return task;
@@ -127,6 +128,7 @@ public class VideoEnhanceJobs {
     if (!"quoted".equals(task.status())) return;
     Files.deleteIfExists(source(userId, id));
     Files.deleteIfExists(file(userId, id));
+    Files.deleteIfExists(routeFile(userId, id));
   }
   public List<Task> list(Long userId, String url) throws Exception {
     String source = media.ownedObject(userId, url);
@@ -152,7 +154,7 @@ public class VideoEnhanceJobs {
     if (!pollable(task)) { reconcile(task); return false; }
     try {
       if (!"persisting".equals(task.status())) {
-        var state = client.poll(task.providerTaskId());
+        var state = client.poll(task.providerTaskId(), readRouteId(userId, id));
         if (!state.terminal()) {
           task = task.state("pending".equals(state.state()) ? "pending" : "running", task.providerTaskId(), state.progress(), state.stage(), "", "", "");
           write(userId, task);
@@ -163,6 +165,7 @@ public class VideoEnhanceJobs {
           write(userId, task);
           reconcile(task);
           removeSnapshot(userId, task);
+          Files.deleteIfExists(routeFile(userId, id));
           return false;
         }
         task = task.state("persisting", task.providerTaskId(), state.progress(), "正在保存超分视频", "", "", state.url());
@@ -173,6 +176,7 @@ public class VideoEnhanceJobs {
       write(userId, task);
       reconcile(task);
       removeSnapshot(userId, task);
+      Files.deleteIfExists(routeFile(userId, id));
       return false;
     } catch (Exception error) {
       if (Set.of("completed", "failed").contains(task.status())) throw error;
@@ -194,6 +198,19 @@ public class VideoEnhanceJobs {
     return root.resolve(userId.toString()).resolve(id + ".json");
   }
   private Path source(Long userId, String id) { return file(userId, id).resolveSibling(id + ".source"); }
+  private Path routeFile(Long userId, String id) { return file(userId, id).resolveSibling(id + ".route"); }
+  private void writeRouteId(Long userId, String id, Long credentialId) throws Exception {
+    Path route = routeFile(userId, id);
+    Files.writeString(route, credentialId == null ? "legacy" : credentialId.toString());
+  }
+  private Long readRouteId(Long userId, String id) throws Exception {
+    Path route = routeFile(userId, id);
+    if (!Files.isRegularFile(route)) return 0L;
+    String value = Files.readString(route).trim();
+    if ("legacy".equals(value)) return 0L;
+    if (!value.matches("[1-9][0-9]*")) throw new ApiException(500, "超分任务线路记录无效，无法安全查询");
+    return Long.valueOf(value);
+  }
   private Task read(Long userId, String id) throws Exception {
     Path file = file(userId, id);
     if (!Files.isRegularFile(file)) throw new ApiException(404, "超分任务不存在");

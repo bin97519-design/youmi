@@ -22,8 +22,10 @@ public class VideoEnhanceProperties {
   public void setMaxInputBytes(long value) { maxInputBytes = value; }
   public long getMaxOutputBytes() { return maxOutputBytes; }
   public void setMaxOutputBytes(long value) { maxOutputBytes = value; }
-  public boolean configured() {
-    return apiKey != null && !apiKey.isBlank() && baseMiPerSecond != null
+  public boolean priceConfigured() {
+    return baseMiPerSecond != null
         && baseMiPerSecond.signum() > 0 && baseMiPerSecond.compareTo(new BigDecimal("10000")) <= 0;
   }
+  public boolean legacyKeyConfigured() { return apiKey != null && !apiKey.isBlank(); }
+  public boolean configured() { return legacyKeyConfigured() && priceConfigured(); }
 }

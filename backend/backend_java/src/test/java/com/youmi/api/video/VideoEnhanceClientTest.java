@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import com.youmi.api.common.ApiException;
+import com.youmi.api.image.ModelApiKeyService;
+import java.util.Optional;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicReference;
@@ -14,13 +16,14 @@ class VideoEnhanceClientTest {
   final ObjectMapper mapper = new ObjectMapper();
   final VideoEnhanceProperties config = new VideoEnhanceProperties();
   final AtomicReference<String> response = new AtomicReference<>("{\"code\":200,\"data\":{\"task_id\":123456}}");
+  final AtomicReference<String> expectedAuthorization = new AtomicReference<>("Bearer test-only");
   JsonNode submitted;
   HttpServer server;
   VideoEnhanceClient client;
   @BeforeEach void setup() throws Exception {
     server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
     server.createContext("/v1/media/", exchange -> {
-      assertEquals("Bearer test-only", exchange.getRequestHeaders().getFirst("Authorization"));
+      assertEquals(expectedAuthorization.get(), exchange.getRequestHeaders().getFirst("Authorization"));
       if ("POST".equals(exchange.getRequestMethod())) {
         assertEquals("/v1/media/generate", exchange.getRequestURI().getPath());
         submitted = mapper.readTree(exchange.getRequestBody());
@@ -55,6 +58,24 @@ class VideoEnhanceClientTest {
     client.create("https://example.test/source.mp4", settings("professional"));
     assertFalse(submitted.path("params").has("scene"));
     assertEquals("professional", submitted.path("params").path("tool_version").asText());
+  }
+  @Test void mappedEnhancementCredentialRoutesSubmissionAndPolling() throws Exception {
+    var keys = org.mockito.Mockito.mock(ModelApiKeyService.class);
+    var mapped = new ModelApiKeyService.ResolvedModelApiKey(42L, "video-enhance", "lk888",
+        config.getBaseUrl(), "/v1/media/generate", "/v1/media/status", "mapped-secret");
+    org.mockito.Mockito.when(keys.preferredEnabledModel(ModelApiKeyService.MODEL_TYPE_VIDEO_ENHANCEMENT, "video-enhancement"))
+        .thenReturn(Optional.of(mapped));
+    org.mockito.Mockito.when(keys.resolveById(42L, ModelApiKeyService.MODEL_TYPE_VIDEO_ENHANCEMENT)).thenReturn(mapped);
+    client.setModelApiKeys(keys);
+    expectedAuthorization.set("Bearer mapped-secret");
+
+    var submission = client.createSubmission("https://example.test/source.mp4", settings("standard"));
+    assertEquals("123456", submission.taskId());
+    assertEquals(42L, submission.credentialId());
+    assertEquals("video-enhance", submitted.path("model").asText());
+
+    response.set("{\"state\":\"running\",\"is_final\":false}");
+    assertEquals("running", client.poll(submission.taskId(), submission.credentialId()).state());
   }
   @Test void onlyBooleanFinalAndMachineStateControlCompletion() throws Exception {
     response.set("{\"state\":\"success\",\"is_final\":false,\"status\":\"已完成\",\"progress\":\"45%\"}");

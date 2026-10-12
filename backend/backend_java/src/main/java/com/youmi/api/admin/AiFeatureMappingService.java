@@ -20,7 +20,8 @@ public class AiFeatureMappingService {
       "product-video-planning", ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
       "canvas-layering", ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
       "canvas-agent", ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
-      "canvas-video", ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION);
+      "canvas-video", ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION,
+      "video-enhancement", ModelApiKeyService.MODEL_TYPE_VIDEO_ENHANCEMENT);
 
   private final ModelApiKeyService modelApiKeys;
   private final AiFeatureMappingRepository repository;
@@ -59,19 +60,22 @@ public class AiFeatureMappingService {
         mapping("canvas-video", "画布下拉模型视频生成", ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION,
             "dropdown", "按此处勾选的模型提供画布视频选项，并路由到对应配置。",
             "配置模型使用对应视频密钥；内置视频模型使用各自通道配置。",
-            "无额外默认模型；任务按所选模型对应通道提交。", keys));
+            "无额外默认模型；任务按所选模型对应通道提交。", keys),
+        mapping("video-enhancement", "视频超分", ModelApiKeyService.MODEL_TYPE_VIDEO_ENHANCEMENT,
+            "system_default", "固定调用 video-enhance 超分模型，使用此处指定的默认超分密钥。",
+            preferredEnhancementRoute(keys), "未指定映射时使用优先级最高的已启用超分密钥。", keys));
   }
 
   public AiFeatureMappingDtos.Mapping save(String featureCode, AiFeatureMappingDtos.SaveRequest request) {
     String type = FEATURE_TYPES.get(featureCode);
     if (type == null) throw new ApiException(404, "AI 功能映射不存在");
     List<ModelApiKeyDtos.Row> keys = modelApiKeys.list();
-    if ("canvas-layering".equals(featureCode)) {
+    if ("canvas-layering".equals(featureCode) || "video-enhancement".equals(featureCode)) {
       Long id = request == null ? null : request.defaultApiKeyId();
-      if (id == null) throw new ApiException(400, "请选择一个默认识图推理模型");
+      if (id == null) throw new ApiException(400, "请选择一个默认模型");
       if (id != null && keys.stream().noneMatch(key -> key.id().equals(id)
           && key.enabled() && type.equals(key.modelType()))) {
-        throw new ApiException(400, "默认模型必须是已启用的识图推理模型");
+        throw new ApiException(400, "默认模型必须是已启用且类型匹配的模型密钥");
       }
       repository.saveDefault(featureCode, id);
     } else {
@@ -97,6 +101,7 @@ public class AiFeatureMappingService {
     boolean configured = state != null && state.configured();
     List<Long> selected = configured ? repository.selectedKeyIds(code) : List.of();
     Long defaultId = state == null ? null : state.defaultApiKeyId();
+    if ("system_default".equals(mode) && defaultId == null) configured = false;
     String currentDefault = defaultId == null ? defaultRoute : routes.stream()
         .filter(route -> route.apiKeyId().equals(defaultId))
         .map(route -> route.apiKeyName() + " · " + route.model() + " · #" + route.apiKeyId())
@@ -112,5 +117,14 @@ public class AiFeatureMappingService {
             .thenComparing(ModelApiKeyDtos.Row::id))
         .findFirst().map(row -> row.name() + " · " + row.model() + " · #" + row.id())
         .orElse("暂无启用的识图推理密钥，将尝试回退服务");
+  }
+
+  private String preferredEnhancementRoute(List<ModelApiKeyDtos.Row> keys) {
+    return keys.stream().filter(row -> ModelApiKeyService.MODEL_TYPE_VIDEO_ENHANCEMENT.equals(row.modelType()))
+        .filter(ModelApiKeyDtos.Row::enabled)
+        .sorted(Comparator.comparingInt(ModelApiKeyDtos.Row::priority).reversed()
+            .thenComparing(ModelApiKeyDtos.Row::id))
+        .findFirst().map(row -> row.name() + " · " + row.model() + " · #" + row.id())
+        .orElse("请选择已启用的超分密钥；未保存映射时按密钥优先级自动路由");
   }
 }

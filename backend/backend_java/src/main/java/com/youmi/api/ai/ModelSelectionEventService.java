@@ -7,7 +7,8 @@ import org.springframework.stereotype.Service;
 @Service
 public class ModelSelectionEventService {
   private static final java.util.Set<String> FEATURE_CODES = java.util.Set.of(
-      "canvas-creation-image", "product-video-planning", "product-video-image", "product-video-video");
+      "canvas-creation-image", "product-video-planning", "product-video-image", "product-video-video",
+      "video-enhancement");
   private final JdbcTemplate jdbc;
 
   public ModelSelectionEventService(JdbcTemplate jdbc) {

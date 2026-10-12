@@ -52,6 +52,7 @@ import {
   isAnmiao20FastVideoModel,
   ANMIAO20_FAST_VIDEO_RESOLUTIONS,
   HAILUO_H3_VIDEO_MODEL,
+  NEXT_SHOT_FIRST_FRAME,
   ANMIAO25_VIDEO_RESOLUTIONS,
   MINIMAX_VIDEO_MODEL,
   MINIMAX_VIDEO_RESOLUTIONS,
@@ -239,6 +240,36 @@ const active = computed(
 )
 watch(activeId, () => { wholeBeatIndex.value = 0 })
 const frame = computed(() => active.value && selectedImage(active.value))
+const nextShot = computed(() => {
+  const index = workflow.value.shots.findIndex((shot) => shot.id === active.value?.id)
+  return index >= 0 ? workflow.value.shots[index + 1] : null
+})
+const nextShotFrame = computed(() => nextShot.value && selectedImage(nextShot.value))
+const isH3VideoModel = computed(
+  () =>
+    active.value &&
+    [MINIMAX_VIDEO_MODEL, HAILUO_H3_VIDEO_MODEL].includes(videoModelForShot(active.value)),
+)
+const tailFrameOptions = computed(() => [
+  { value: '', label: '不设置尾帧' },
+  ...workflow.value.references.map((item) => ({
+    value: item.id,
+    label: item.name || '参考图',
+  })),
+  ...(nextShot.value && nextShotFrame.value
+    ? [
+        {
+          value: NEXT_SHOT_FIRST_FRAME,
+          label: `下一镜头首帧 · ${nextShot.value.title}`,
+        },
+      ]
+    : []),
+])
+const tailFrame = computed(() => {
+  if (active.value?.lastFrameImageId === NEXT_SHOT_FIRST_FRAME && nextShotFrame.value)
+    return { ...nextShotFrame.value, name: `下一镜头首帧 · ${nextShot.value.title}` }
+  return workflow.value.references.find((item) => item.id === active.value?.lastFrameImageId)
+})
 const fixedContinuity = computed(() => continuityEnabled(workflow.value))
 const fixedSettings = computed(() => continuitySettings(workflow.value))
 const planningAnchor = computed(() => continuityAnchor(workflow.value))
@@ -2659,6 +2690,23 @@ function onKeydown(event) {
                     <img v-if="frame" :src="frame.url" alt="当前分镜首帧" />
                     <span v-else>暂无首帧</span>
                   </div>
+                  <label v-if="isH3VideoModel" class="pv-tail-frame">
+                    尾帧图片（可选）
+                    <ThemedSelect
+                      :model-value="active.lastFrameImageId || ''"
+                      :options="tailFrameOptions"
+                      aria-label="尾帧图片"
+                      @update:model-value="
+                        shotChange(active.id, (shot) => (shot.lastFrameImageId = $event))
+                      "
+                    />
+                    <img
+                      v-if="tailFrame"
+                      :src="tailFrame.url"
+                      :alt="tailFrame.name || '尾帧图片'"
+                    />
+                    <small v-else>仅上传首帧时按单帧生成；选择图片后将作为结束帧。</small>
+                  </label>
                   <div
                     v-if="active.images.some((item) => item.url)"
                     class="pv-versions"
@@ -4488,6 +4536,31 @@ function onKeydown(event) {
 .pv-shot-media,
 .pv-shot-controls {
   min-width: 0;
+}
+.pv-tail-frame {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 48px;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 0 0 12px;
+  color: var(--canvas-text-muted);
+  font-size: 12px;
+}
+.pv-tail-frame :deep(.themed-select) {
+  grid-column: 1;
+}
+.pv-tail-frame img {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+  border: 1px solid var(--canvas-border);
+  border-radius: 4px;
+}
+.pv-tail-frame small {
+  grid-column: 1;
+  color: var(--canvas-text-subtle);
 }
 .pv-workspace :deep(.pv-prompt-field) {
   margin-bottom: 16px;

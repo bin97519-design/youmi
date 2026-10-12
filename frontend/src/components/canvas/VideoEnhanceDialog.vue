@@ -186,6 +186,15 @@ async function submit() {
   const selected = quote.value
   busy.value = true
   error.value = ''
+  void fetch(apiPath('/api/ai/model-selection-events'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...user.authHeaders() },
+    body: JSON.stringify({
+      feature_code: 'video-enhancement',
+      model: 'video-enhance',
+      selected: true,
+    }),
+  }).catch((e) => console.warn('[video-enhancement] 模型使用埋点上报失败', e?.message || e))
   // Keep the quote id as the task id even if the POST response is lost.
   task.value = { ...selected, status: 'submitting', stage: '正在确认提交结果' }
   quote.value = null

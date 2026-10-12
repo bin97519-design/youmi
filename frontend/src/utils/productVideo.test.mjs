@@ -24,6 +24,7 @@ import {
   HAILUO_H3_VIDEO_MODEL,
   MINIMAX_VIDEO_MODEL,
   MINIMAX_VIDEO_RESOLUTIONS,
+  NEXT_SHOT_FIRST_FRAME,
   VIDEO_MODELS,
   WHOLE_VIDEO_30_MODELS,
   generationDuration,
@@ -110,6 +111,8 @@ test('H3 uses confirmed first frame with independent resolution and cannot make 
   shot.imageId = shot.approvedImageId = 'image'
   data.videoModel = MINIMAX_VIDEO_MODEL
   shot.duration = 5
+  data.references.push({ id: 'tail', url: 'https://assets.example/tail.png', name: '尾帧' })
+  shot.lastFrameImageId = 'tail'
   for (const option of MINIMAX_VIDEO_RESOLUTIONS) {
     data.minimaxResolution = option.value
     const request = buildVideoRequest(data, shot, 'h3')
@@ -117,6 +120,8 @@ test('H3 uses confirmed first frame with independent resolution and cannot make 
     assert.equal(request.resolution, option.value)
     assert.equal(request.durationSeconds, 5)
     assert.equal(request.first_frame_url, shot.images[0].url)
+    assert.equal(request.last_frame_url, 'https://assets.example/tail.png')
+    assert.match(request.prompt, /尾帧图片作为结束画面/)
     assert.equal(Object.hasOwn(request, 'generate_audio'), false)
   }
   shot.duration = 30
@@ -129,6 +134,8 @@ test('H3 uses confirmed first frame with independent resolution and cannot make 
   )
   data.minimaxResolution = '720p'
   assert.throws(() => buildVideoRequest(data, shot, 'h3'), /768P/)
+  data.videoModel = 'seedance-2.0-fast-0826-720p'
+  assert.equal(Object.hasOwn(buildVideoRequest(data, shot, 'other'), 'last_frame_url'), false)
 })
 
 test('Hailuo H3首尾帧 uses adaptive ratio and Mini H3 resolutions', () => {
@@ -147,6 +154,20 @@ test('Hailuo H3首尾帧 uses adaptive ratio and Mini H3 resolutions', () => {
     assert.equal(request.first_frame_url, shot.images[0].url)
     assert.equal(Object.hasOwn(request, 'generate_audio'), false)
   }
+})
+
+test('H3 can reuse the next shot selected first frame as its end frame', () => {
+  const { data, shot } = fixture()
+  shot.images = [{ id: 'start', url: 'https://assets.example/start.png' }]
+  shot.imageId = shot.approvedImageId = 'start'
+  shot.lastFrameImageId = NEXT_SHOT_FIRST_FRAME
+  const next = newShot({ title: '下一镜头' })
+  next.images = [{ id: 'next-frame', url: 'https://assets.example/next.png' }]
+  next.imageId = 'next-frame'
+  data.shots.push(next)
+  data.videoModel = HAILUO_H3_VIDEO_MODEL
+  const request = buildVideoRequest(data, shot, 'next-shot-tail')
+  assert.equal(request.last_frame_url, 'https://assets.example/next.png')
 })
 
 test('per-second Seedance model uses each shot duration without changing fixed-duration video models', () => {
@@ -816,8 +837,10 @@ test('whole-video planning is explicit, creates one full clip and survives check
 test('removing a reference removes its per-shot binding without deleting generated versions', () => {
   const { data, shot } = fixture()
   shot.images.push({ id: 'old', url: 'https://assets.example/old.png' })
+  shot.lastFrameImageId = 'product'
   removeReference(data, 'product')
   assert.deepEqual(shot.referenceIds, [])
+  assert.equal(shot.lastFrameImageId, '')
   assert.equal(shot.images.length, 1)
 })
 

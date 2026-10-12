@@ -126,7 +126,8 @@ CREATE TABLE IF NOT EXISTS ym_ai_feature_mapping_key (
 INSERT IGNORE INTO ym_ai_feature_mapping (feature_code, configured) VALUES
   ('canvas-image', 0), ('canvas-creation-image', 0), ('product-video-image', 0),
   ('product-video-video', 0), ('product-video-planning', 0),
-  ('canvas-layering', 0), ('canvas-agent', 0), ('canvas-video', 0);
+  ('canvas-layering', 0), ('canvas-agent', 0), ('canvas-video', 0),
+  ('video-enhancement', 0);
 
 CREATE TABLE IF NOT EXISTS ym_ai_model_selection_event (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,

@@ -34,8 +34,8 @@ class VideoEnhanceJobsTest {
     });
     when(media.publishSource(eq(1L), any(), any())).thenReturn("https://owned.test/snapshot.mp4");
     when(billing.checkAndDeduct(eq(1L), eq(MiBizType.VIDEO), anyInt())).thenReturn(new MiValueDtos.DeductResult(4L, 0, 0, 7, MiBizType.VIDEO));
-    when(client.create(anyString(), any())).thenReturn("123456");
-    when(client.poll("123456")).thenReturn(new VideoEnhanceClient.State(false, "running", 45, "处理中", "", ""));
+    when(client.createSubmission(anyString(), any())).thenReturn(new VideoEnhanceClient.Submission("123456", null));
+    when(client.poll("123456", 0L)).thenReturn(new VideoEnhanceClient.State(false, "running", 45, "处理中", "", ""));
   }
   @AfterEach void close() { jobs.close(); }
   Task quote() throws Exception {
@@ -49,7 +49,7 @@ class VideoEnhanceJobsTest {
     Task first = jobs.create(1L, quote.id());
     assertEquals("123456", first.providerTaskId());
     assertEquals(first, jobs.create(1L, quote.id()));
-    verify(client, times(1)).create(anyString(), any());
+    verify(client, times(1)).createSubmission(anyString(), any());
     verify(billing, times(1)).checkAndDeduct(1L, MiBizType.VIDEO, 7);
     verify(billing).linkTask(4L, VideoEnhanceJobs.PREFIX + quote.id());
     assertFalse(Files.exists(temp.resolve("1/" + quote.id() + ".source")));
@@ -61,32 +61,32 @@ class VideoEnhanceJobsTest {
   }
   @Test void lostSubmissionResponseNeverResubmitsOrMarksKnownFailure() throws Exception {
     Task quote = quote();
-    when(client.create(anyString(), any())).thenThrow(new IOException("response lost"));
+    when(client.createSubmission(anyString(), any())).thenThrow(new IOException("response lost"));
     Task task = jobs.create(1L, quote.id());
     assertEquals("unknown", task.status());
     assertEquals(task, jobs.create(1L, task.id()));
     jobs.get(1L, task.id());
-    verify(client, times(1)).create(anyString(), any());
+    verify(client, times(1)).createSubmission(anyString(), any());
     verify(billing, never()).rollback(any(), any());
     verify(billing, never()).commitByTaskId(any());
   }
   @Test void rejectedSubmissionRollsBackWithoutRetry() throws Exception {
     Task quote = quote();
-    when(client.create(anyString(), any())).thenThrow(new VideoEnhanceClient.Rejected("quota"));
+    when(client.createSubmission(anyString(), any())).thenThrow(new VideoEnhanceClient.Rejected("quota"));
     assertEquals("failed", jobs.create(1L, quote.id()).status());
     verify(billing).rollback(1L, 4L);
     jobs.create(1L, quote.id());
-    verify(client, times(1)).create(anyString(), any());
+    verify(client, times(1)).createSubmission(anyString(), any());
   }
   @Test void pollingTransientErrorsAndPersistenceFailuresKeepSameJob() throws Exception {
     Task task = jobs.create(1L, quote().id());
     assertTrue(jobs.pollOnce(1L, task.id()));
     assertEquals(45, jobs.get(1L, task.id()).progress());
-    when(client.poll("123456")).thenThrow(new IOException("temporarily unavailable"));
+    when(client.poll("123456", 0L)).thenThrow(new IOException("temporarily unavailable"));
     assertTrue(jobs.pollOnce(1L, task.id()));
     assertEquals("running", jobs.get(1L, task.id()).status());
     verify(billing, never()).rollbackByTaskId(any());
-    doReturn(new VideoEnhanceClient.State(true, "success", 100, "已完成", "https://result.test/video.mp4", "")).when(client).poll("123456");
+    doReturn(new VideoEnhanceClient.State(true, "success", 100, "已完成", "https://result.test/video.mp4", "")).when(client).poll("123456", 0L);
     when(media.persist(eq(1L), any(), any())).thenThrow(new IOException("storage unavailable"))
         .thenReturn("https://owned.test/enhanced.mp4");
     assertTrue(jobs.pollOnce(1L, task.id()));
@@ -95,17 +95,17 @@ class VideoEnhanceJobsTest {
     Task completed = jobs.get(1L, task.id());
     assertEquals("completed", completed.status()); assertEquals("", completed.error());
     assertEquals("https://owned.test/enhanced.mp4", completed.resultUrl());
-    verify(client, times(1)).create(anyString(), any());
+    verify(client, times(1)).createSubmission(anyString(), any());
     verify(billing, atLeastOnce()).commitByTaskId(VideoEnhanceJobs.PREFIX + task.id());
   }
   @Test void providerFailureRollsBackAndRestartResumesOnlyQueries() throws Exception {
     Task task = jobs.create(1L, quote().id());
     jobs.close();
     jobs = new VideoEnhanceJobs(client, media, config, billing, mapper, temp.toString());
-    when(client.poll("123456")).thenReturn(new VideoEnhanceClient.State(true, "failed", 19, "失败", "", "invalid source"));
+    when(client.poll("123456", 0L)).thenReturn(new VideoEnhanceClient.State(true, "failed", 19, "失败", "", "invalid source"));
     assertFalse(jobs.pollOnce(1L, task.id()));
     assertEquals("invalid source", jobs.get(1L, task.id()).error());
-    verify(client, times(1)).create(anyString(), any());
+    verify(client, times(1)).createSubmission(anyString(), any());
     verify(billing, atLeastOnce()).rollbackByTaskId(VideoEnhanceJobs.PREFIX + task.id());
   }
   @Test void rejectsCrossUserExpiredQuotesAndTraversal() throws Exception {

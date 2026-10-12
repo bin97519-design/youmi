@@ -19,6 +19,7 @@ public class ModelApiKeyService {
   public static final String MODEL_TYPE_IMAGE_GENERATION = "image_generation";
   public static final String MODEL_TYPE_VIDEO_GENERATION = "video_generation";
   public static final String MODEL_TYPE_VISION_REASONING = "vision_reasoning";
+  public static final String MODEL_TYPE_VIDEO_ENHANCEMENT = "video_enhancement";
   private static final String DEFAULT_PROVIDER = "youmi888";
   private static final String DEFAULT_GENERATION_PATH = "/v1/media/generate";
   private static final String DEFAULT_TASK_PATH = "/v1/media/status";
@@ -353,10 +354,11 @@ public class ModelApiKeyService {
     String normalized = optional(value, fallback).trim().toLowerCase();
     if (normalized.equals(MODEL_TYPE_IMAGE_GENERATION)
         || normalized.equals(MODEL_TYPE_VIDEO_GENERATION)
-        || normalized.equals(MODEL_TYPE_VISION_REASONING)) {
+        || normalized.equals(MODEL_TYPE_VISION_REASONING)
+        || normalized.equals(MODEL_TYPE_VIDEO_ENHANCEMENT)) {
       return normalized;
     }
-    throw new ApiException(400, "模型类型必须是生图、视频或识图逻辑推理");
+    throw new ApiException(400, "模型类型必须是生图、视频、识图推理或超分");
   }
 
   private String normalizeBaseUrl(String value) {

@@ -26,5 +26,12 @@ class AiFeatureMappingServiceTest {
     assertEquals(ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, video.modelType());
     assertEquals("dropdown", image.selectionMode());
     assertEquals("dropdown", video.selectionMode());
+
+    var enhancement = mappings.stream().filter(row -> row.featureCode().equals("video-enhancement"))
+        .findFirst().orElseThrow();
+    assertEquals(ModelApiKeyService.MODEL_TYPE_VIDEO_ENHANCEMENT, enhancement.modelType());
+    assertEquals("system_default", enhancement.selectionMode());
+    assertFalse(enhancement.configured());
+    assertTrue(enhancement.fallbackRoute().contains("超分密钥"));
   }
 }

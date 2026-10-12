@@ -20,7 +20,7 @@ export function canonicalModelApiProvider(provider) {
 
 export function canonicalModelApiType(modelType) {
   const value = String(modelType || '').trim().toLowerCase()
-  if (value === 'video_generation' || value === 'vision_reasoning') return value
+  if (value === 'video_generation' || value === 'video_enhancement' || value === 'vision_reasoning') return value
   return 'image_generation'
 }
 
@@ -39,6 +39,9 @@ export function summarizeModelApiKeys(rows = []) {
     ).length,
     videoGeneration: rows.filter(
       (row) => canonicalModelApiType(row.modelType) === 'video_generation',
+    ).length,
+    videoEnhancement: rows.filter(
+      (row) => canonicalModelApiType(row.modelType) === 'video_enhancement',
     ).length,
     visionReasoning: rows.filter(
       (row) => canonicalModelApiType(row.modelType) === 'vision_reasoning',

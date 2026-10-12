@@ -50,6 +50,7 @@ export const ANMIAO20_FAST_VIDEO_MODEL = 'doubao-seedance-2-0-fast-260128'
 export const ANMIAO25_VIDEO_MODEL = 'doubao-seedance-2-5-260628'
 export const MINIMAX_VIDEO_MODEL = 'minimax-h3'
 export const HAILUO_H3_VIDEO_MODEL = 'hailuo-h3-shouweizhen'
+export const NEXT_SHOT_FIRST_FRAME = '__next_shot_first_frame__'
 export function mappedImageModelOption(model, options = []) {
   const normalize = (value) => String(value ?? '').trim().toLowerCase()
   const requested = normalize(model)
@@ -384,6 +385,7 @@ export function newShot(plan = {}) {
     videos: [],
     imageId: '',
     approvedImageId: '',
+    lastFrameImageId: '',
     videoId: '',
     kept: false,
     referenceIds: [],
@@ -599,6 +601,13 @@ export function buildVideoRequest(workflow, shot, clientId) {
   const anmiaoVideo = isPerSecondVideoModel(model)
   const minimax = model === MINIMAX_VIDEO_MODEL || model === HAILUO_H3_VIDEO_MODEL
   const anmiao25Video = isAnmiao25VideoModel(model)
+  let lastFrame = null
+  if (minimax && shot.lastFrameImageId === NEXT_SHOT_FIRST_FRAME) {
+    const nextShot = workflow.shots?.[workflow.shots.findIndex((item) => item.id === shot.id) + 1]
+    lastFrame = nextShot && selectedImage(nextShot)
+  } else if (minimax) {
+    lastFrame = workflow.references?.find((item) => item.id === shot.lastFrameImageId && item.url)
+  }
   const anmiao20Fast = isAnmiao20FastVideoModel(model)
   const maxDuration = anmiao25Video ? 30 : 15
   const minDuration = 4
@@ -646,7 +655,7 @@ export function buildVideoRequest(workflow, shot, clientId) {
     workflow.generateAudio === true
       ? '\n声音要求：生成与画面同步的音轨，按策划时间轴安排环境声和动作音效，接触、摩擦等声音与实际动作同时发生。仅在策划明确安排说话时生成对白并对齐口型，不额外添加旁白、广告语或背景音乐。'
       : ''
-  const opening = `以提供的首帧图片作为第 0 秒画面。\n${productAppearanceConstraint('已确认首帧')}`
+  const opening = `以提供的首帧图片作为第 0 秒画面。${lastFrame ? '\n以尾帧图片作为结束画面，并在首尾帧之间自然完成动作与镜头变化。' : ''}\n${productAppearanceConstraint('已确认首帧')}`
   const statePrompt = wholeStatePrompt(shot)
   const action = `${singleVideo ? '整片时间轴与镜头安排' : '当前镜头动作与运镜'}：\n${normalizeVideoPrompt(shot).trim()}${statePrompt ? `\n${statePrompt}` : ''}`
   const requirements = `连续性要求：${continuity}保持商品颜色、材质、结构、数量和品牌标识，避免肢体畸变、商品变形和穿模。${direction}${countDirection}${shotMotionHandoffPrompt(workflow, executionShot)}不要额外添加字幕、水印或营销文案。${audio}`
@@ -673,6 +682,7 @@ export function buildVideoRequest(workflow, shot, clientId) {
     durationSeconds: duration,
     ...(whole30 || anmiaoVideo ? {} : { generate_audio: workflow.generateAudio === true }),
     first_frame_url: image.url,
+    ...(lastFrame ? { last_frame_url: lastFrame.url } : {}),
     image_urls: [image.url],
     client_task_id: clientId,
   }
@@ -815,5 +825,6 @@ export function removeReference(workflow, id) {
   workflow.references = workflow.references.filter((item) => item.id !== id)
   workflow.shots.forEach((shot) => {
     shot.referenceIds = shot.referenceIds.filter((value) => value !== id)
+    if (shot.lastFrameImageId === id) shot.lastFrameImageId = ''
   })
 }
