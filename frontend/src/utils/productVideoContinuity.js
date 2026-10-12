@@ -104,7 +104,14 @@ function roleReferences(workflow, productUrls, anchor = null, shot) {
         ]
       : []),
   ].join('\n')
-  return { urls, instruction }
+  const imageRoles = urls.flatMap((url, index) => [
+    ...(productUrls.includes(url)
+      ? [{ imageIndex: index + 1, role: references.some(image => image.role === 'product' && image.url === url) ? 'primary_product' : 'product' }]
+      : []),
+    ...references.filter(image => image.url === url && image.role !== 'product')
+      .map(image => ({ imageIndex: index + 1, role: image.role })),
+  ])
+  return { urls, instruction, imageRoles }
 }
 
 export function planningContinuityReferences(workflow, shot) {
@@ -113,6 +120,7 @@ export function planningContinuityReferences(workflow, shot) {
     throw new Error('策划最多使用 8 张图片（含固定场景、人物和商品图），请减少商品参考图后重试')
   return {
     urls: shared.urls,
+    imageRoles: shared.imageRoles,
     instruction: continuityPrompt(workflow, shot)
       ? [continuityPrompt(workflow, shot), shared.instruction].filter(Boolean).join('\n')
       : '',
@@ -206,10 +214,11 @@ export function imageContinuityReferences(workflow, shot, productUrls) {
   const anchor = continuityAnchor(workflow, shot)
   const shared = roleReferences(workflow, productUrls, anchor, shot)
   const urls = shared.urls
-  const instruction = !continuityPrompt(workflow, shot)
-    ? ''
+  const continuity = continuityPrompt(workflow, shot)
+  const instruction = !continuity
+    ? shared.instruction
     : [
-        continuityPrompt(workflow, shot),
+        continuity,
         shared.instruction,
         wholeVideo(workflow, shot)
           ? '只生成本条整片的开场首帧；场景和人物按本条脚本及选填参考安排，不作为其他视频的共同基准。'

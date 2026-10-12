@@ -38,6 +38,7 @@ import {
   executionDuration,
   planningErrorMessage,
   taskState,
+  returnedVideoTaskUrl,
   imageSubmissionRejected,
   canGenerateVideo,
   pickImage,
@@ -322,7 +323,7 @@ export function useProductVideo(canvasId, activeTaskId) {
     error.value = ''
     const snapshot = copy(workflow.value)
     try {
-      const payload = buildPlanRequest(snapshot, count)
+      const payload = buildPlanRequest(snapshot, count, null, capabilities.value)
       if (
         isWholeVideo(payload.productionMode) &&
         snapshot.planningSource !== 'reference' &&
@@ -650,9 +651,10 @@ export function useProductVideo(canvasId, activeTaskId) {
         `/api/${kind === 'image' ? 'image' : 'video'}-tasks/${encodeURIComponent(entry.taskId)}`,
       )
       const status = taskState(data.status)
-      const url = (kind === 'image' ? data.imageUrls : data.videoUrls)?.[0]
+      const url = kind === 'image' ? data.imageUrls?.[0] : returnedVideoTaskUrl(data)
+      const hasResult = status === 'completed' || (kind === 'video' && url && status !== 'failed')
       const mediaSize =
-        status === 'completed' && url ? await readProductVideoMediaSize(url, kind) : null
+        hasResult && url && url !== entry.url ? await readProductVideoMediaSize(url, kind) : null
       shotChange(
         shotId,
         (shot, doc) => {
@@ -669,25 +671,26 @@ export function useProductVideo(canvasId, activeTaskId) {
             item.error = data.error || '生成失败'
             return
           }
-          if (status === 'completed' && url) {
+          if (hasResult && url) {
+            const firstResult = item.url !== url
             Object.assign(item, {
-              status: 'completed',
+              status,
               url,
               progress: 100,
               error: '',
-              duration: kind === 'video' ? mediaSize?.duration || Number(entry.request?.durationSeconds) || 15 : undefined,
+              duration: kind === 'video' ? mediaSize?.duration || item.duration || Number(entry.request?.durationSeconds) || 15 : undefined,
               ...(kind === 'video' ? { requestedDuration: Number(entry.request?.durationSeconds) || 15 } : {}),
               ...(mediaSize ? { mediaWidth: mediaSize.width, mediaHeight: mediaSize.height } : {}),
             })
-            if (kind === 'image') {
+            if (firstResult && kind === 'image') {
               shot.imageId = item.id
               shot.approvedImageId = ''
-            } else {
+            } else if (firstResult) {
               shot.videoId = item.id
               shot.kept = false
               shot.start = 0
             }
-            addAsset(doc, shot, item, kind, context.taskId)
+            if (firstResult) addAsset(doc, shot, item, kind, context.taskId)
           } else if (status === 'completed' && !url) {
             item.status = 'failed'
             item.error = '任务完成，但没有返回素材地址'

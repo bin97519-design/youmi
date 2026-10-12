@@ -35,6 +35,7 @@ export const VIDEO_MODELS = [
   { value: 'minimax-h3', label: 'MiniMax H3' },
 ]
 export const VIDEO_RATIOS = ['16:9', '9:16', '1:1', '3:4', '4:3', '21:9']
+export const DEFAULT_VIDEO_RATIO = '3:4'
 export const ANMIAO_VIDEO_RESOLUTIONS = [
   { value: '480p', label: '480p' },
   { value: '720p', label: '720p' },
@@ -223,7 +224,7 @@ export function newProductVideo() {
     brief: '',
     references: [],
     shots: [],
-    ratio: '16:9',
+    ratio: DEFAULT_VIDEO_RATIO,
     imageModel: 'gpt-image-2',
     videoModel: 'seedance-2.0-fast-0826-720p',
     videoResolution: '720p',
@@ -406,7 +407,7 @@ export function planningErrorMessage(error) {
   return error?.message || '分镜策划未完成，请稍后重试。'
 }
 
-export function buildPlanRequest(workflow, count, shot) {
+export function buildPlanRequest(workflow, count, shot, features = {}) {
   const mode = shot ? shot.productionMode : workflow.productionMode
   const singleVideo = isWholeVideo(mode)
   const highlights =
@@ -459,6 +460,7 @@ export function buildPlanRequest(workflow, count, shot) {
     ...(shared.instruction ? { continuity: shared.instruction } : {}),
     planningModel: workflow.planningModel || 'default',
     images: shared.urls,
+    ...(features?.imageEvidenceRoles && shared.imageRoles.length ? { imageRoles: shared.imageRoles } : {}),
     count:
       shot || singleVideo
         ? 1
@@ -582,7 +584,7 @@ export function buildImageRequest(workflow, shot, clientId) {
     output_format: 'png',
     client_task_id: clientId,
     image_urls: imageUrls,
-    prompt: `${productAppearanceConstraint('所选商品参考图')}\n\n${shared.instruction}\n\n${shotConnectionPrompt(workflow, shot)}\n${frameDirection}\n\n商品资料（仅供核对商品特征）：${workflow.brief}\n\n当前镜头首帧：\n${normalizePromptLineBreaks(shot.imagePrompt).trim()}\n\n生成要求：生成单张视频起始帧，以当前镜头描述安排人物、场景、构图和光线，不要把后续动作或多个镜头画成拼图。人物出镜时，按描述呈现服装、位置、视线、手部与商品接触前的起始姿势，为下一步动作留出空间。使用参考图中的同一商品，保持颜色、材质、结构、数量、比例和商品自带的品牌标识，不更换或编造品牌。不要额外叠加字幕、营销文案、水印或未经提供的产品功能。`,
+    prompt: `${productAppearanceConstraint('所选商品参考图')}\n\n${shared.instruction}\n\n${shotConnectionPrompt(workflow, shot)}\n${frameDirection}\n\n商品资料（仅供核对商品特征）：${workflow.brief}\n\n当前镜头首帧：\n${normalizePromptLineBreaks(shot.imagePrompt).trim()}\n\n生成要求：生成单张视频起始帧，以当前镜头描述安排人物、场景、构图和光线，不要把后续动作或多个镜头画成拼图。人物出镜时，按描述呈现服装、位置、视线、切入瞬间的起始姿势与手部接触状态。已经握住、接触或拉动商品时保留动作进度，不退回接触前，为后续运动留出空间。使用参考图中的同一商品，保持颜色、材质、结构、数量、比例和商品自带的品牌标识，不更换或编造品牌。不要额外叠加字幕、营销文案、水印或未经提供的产品功能。`,
   }
 }
 
@@ -646,7 +648,7 @@ export function buildVideoRequest(workflow, shot, clientId) {
   const direction = singleVideo
     ? `这是一条完整的 ${duration} 秒电商视频，必须按提示词里的全部时间段完成开场、展示和收尾。需要切换镜头时按策划的衔接执行；明确要求一镜到底时保持连续。不要仅做第一个动作后一直停留。`
     : shot.referenceRange
-      ? `本片段对应参考视频第 ${shot.referenceRange.start} 至 ${shot.referenceRange.end} 秒，成片使用 ${shot.duration} 秒。严格在前 ${shot.duration} 秒完成全部动作与转场，之后自然停留；按提示词衔接，不新增剧情。`
+      ? `本片段对应参考视频第 ${shot.referenceRange.start} 至 ${shot.referenceRange.end} 秒，成片使用 ${shot.duration} 秒。复现本段的动作阶段和原有转场，不补整套操作或人为停留；超出成片范围时自然延续已有运动，不新增剧情。`
       : '本镜内部连续拍摄，不换场、不跳切、不突然变焦。'
   const continuity = singleVideo
     ? `首帧只定义第 0 秒开场，后续按时间轴切换机位和景别，不锁定首帧构图。同一角色再次出镜时保持身份与服装；${continuityEnabled(workflow, shot) ? '固定场景人物已开启，全片不得换房间、换人换装' : '允许按脚本切换场景或角色，不强制同一房间或同一人物'}。商品始终不变。第一段从首帧已有状态开始，不凭空变出或替换人物、商品。`
@@ -655,10 +657,10 @@ export function buildVideoRequest(workflow, shot, clientId) {
     workflow.generateAudio === true
       ? '\n声音要求：生成与画面同步的音轨，按策划时间轴安排环境声和动作音效，接触、摩擦等声音与实际动作同时发生。仅在策划明确安排说话时生成对白并对齐口型，不额外添加旁白、广告语或背景音乐。'
       : ''
-  const opening = `以提供的首帧图片作为第 0 秒画面。${lastFrame ? '\n以尾帧图片作为结束画面，并在首尾帧之间自然完成动作与镜头变化。' : ''}\n${productAppearanceConstraint('已确认首帧')}`
+  const opening = `以提供的首帧图片作为第 0 秒画面。首帧与已确认的实际动作衔接优先于旧稿起点，不回退或重演。${lastFrame ? '\n以尾帧图片作为结束画面，并在首尾帧之间自然完成动作与镜头变化。' : ''}\n${productAppearanceConstraint('已确认首帧')}`
   const statePrompt = wholeStatePrompt(shot)
   const action = `${singleVideo ? '整片时间轴与镜头安排' : '当前镜头动作与运镜'}：\n${normalizeVideoPrompt(shot).trim()}${statePrompt ? `\n${statePrompt}` : ''}`
-  const requirements = `连续性要求：${continuity}保持商品颜色、材质、结构、数量和品牌标识，避免肢体畸变、商品变形和穿模。${direction}${countDirection}${shotMotionHandoffPrompt(workflow, executionShot)}不要额外添加字幕、水印或营销文案。${audio}`
+  const requirements = `连续性要求：${continuity}商品结构、数量和品牌不变，避免肢体畸变、商品变形和穿模。${direction}${countDirection}${shotMotionHandoffPrompt(workflow, executionShot)}不要额外添加字幕、水印或营销文案。${audio}`
   const baseLength = [opening, action, requirements].join('\n\n').length
   const connectionBudget = Math.max(0, 2400 - baseLength - 2)
   const observation = usableMotionObservation(workflow, shot)?.results[0]
@@ -780,6 +782,24 @@ export function taskState(value) {
   )
     return 'completed'
   return 'processing'
+}
+
+export function returnedVideoTaskUrl(task) {
+  if (taskState(task?.status) === 'failed') return ''
+  const urls = task?.videoUrls || task?.video_urls || task?.videos || []
+  const url = Array.isArray(urls) ? urls.find(value => typeof value === 'string' && value.trim()) : ''
+  return String(url || task?.videoUrl || task?.video_url || task?.url || '').trim()
+}
+
+export function videoTaskStatusText(task, progress) {
+  if (taskState(task?.status) === 'completed') return '视频生成完成'
+  const stage = String(task?.stage || '').trim()
+  if (returnedVideoTaskUrl(task)) return stage || '视频已生成，正在核对任务状态'
+  if (stage) return stage
+  if (task?.status === 'persisting') return '视频已生成，正在转存到素材空间…'
+  if (progress >= 100) return '模型进度已满，等待成片地址'
+  return progress == null || !Number.isFinite(Number(progress))
+    ? '视频生成中' : `视频生成中 ${Math.round(progress)}%`
 }
 
 function generationNotices(entries) {

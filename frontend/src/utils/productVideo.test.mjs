@@ -26,6 +26,7 @@ import {
   MINIMAX_VIDEO_RESOLUTIONS,
   NEXT_SHOT_FIRST_FRAME,
   VIDEO_MODELS,
+  DEFAULT_VIDEO_RATIO,
   WHOLE_VIDEO_30_MODELS,
   generationDuration,
   videoPromptDuration,
@@ -52,6 +53,24 @@ function fixture() {
   data.shots.push(shot)
   return { data, shot }
 }
+
+test('new product videos default to 3:4 while stored task ratios remain unchanged', () => {
+  assert.equal(DEFAULT_VIDEO_RATIO, '3:4')
+  assert.equal(newProductVideo().ratio, '3:4')
+  assert.equal(newProductVideoTask().ratio, '3:4')
+  const { data, shot } = fixture()
+  assert.equal(buildPlanRequest(data, 1).ratio, '3:4')
+  assert.equal(buildImageRequest(data, shot, 'image').size, '3:4')
+  shot.images = [{ id: 'frame', url: 'https://assets.example/frame.png', status: 'completed' }]
+  shot.imageId = shot.approvedImageId = 'frame'
+  assert.equal(buildVideoRequest(data, shot, 'video').ratio, '3:4')
+  for (const ratio of ['16:9', '9:16', '1:1']) {
+    data.ratio = ratio
+    assert.equal(productVideoLibrary({ version: 2, tasks: [data] }).tasks[0].ratio, ratio)
+    assert.equal(buildPlanRequest(data, 1).ratio, ratio)
+    assert.equal(buildVideoRequest(data, shot, 'saved-video').ratio, ratio)
+  }
+})
 
 test('planning model persists per task and reaches every mode without changing media models', () => {
   const { data, shot } = fixture()

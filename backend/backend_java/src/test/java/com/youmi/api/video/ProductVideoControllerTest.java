@@ -75,9 +75,10 @@ class ProductVideoControllerTest {
     mvc.perform(post("/api/product-videos/plan").contentType(MediaType.APPLICATION_JSON).content("{\"brief\":\"product\",\"count\":1}"))
         .andExpect(status().isUnauthorized());
     mvc.perform(post("/api/product-videos/plan").header("Authorization", "Bearer test").contentType(MediaType.APPLICATION_JSON)
-        .content("{\"brief\":\"product\",\"count\":1,\"images\":[\"https://assets/frame.png\"],\"ratio\":\"16:9\"}"))
+        .content("{\"brief\":\"product\",\"count\":1,\"images\":[\"https://assets/frame.png\"],\"ratio\":\"16:9\",\"imageRoles\":[{\"imageIndex\":1,\"role\":\"primary_product\"}]}"))
         .andExpect(status().isOk()).andExpect(jsonPath("$.data.shots[0].title").value("shot"));
-    verify(plans).plan(argThat(request -> request.images().get(0).equals("https://assets/frame.png")));
+    verify(plans).plan(argThat(request -> request.images().get(0).equals("https://assets/frame.png")
+        && request.imageRoles().get(0).equals(new ProductVideoDtos.ReferenceImageRole(1, "primary_product"))));
   }
 
   @Test void wholePeriodRefinementRequiresLoginAndPreservesTheSelectedIndex() throws Exception {
@@ -135,6 +136,7 @@ class ProductVideoControllerTest {
         .andExpect(jsonPath("$.data.singleVideoPlan").value(true))
         .andExpect(jsonPath("$.data.wholeVideoShotCount").value(true))
         .andExpect(jsonPath("$.data.wholeVideoOptionalContinuity").value(true))
+        .andExpect(jsonPath("$.data.imageEvidenceRoles").value(true))
         .andExpect(jsonPath("$.data.synchronizedAudio").value(true))
         .andExpect(jsonPath("$.data.referenceVideoReverse").value(true))
         .andExpect(jsonPath("$.data.referenceVideoHighlights").value(true))

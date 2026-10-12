@@ -9,7 +9,14 @@ public final class ProductVideoDtos {
   @JsonIgnoreProperties({"talentMode"})
   public record PlanRequest(String brief, List<String> images, int count, String ratio,
       ShotPlan currentShot, List<ShotContext> contextShots, String productionMode, Integer timelineCount,
-      boolean generateAudio, ReferenceVideo referenceVideo, String planningModel, String continuity) {
+      boolean generateAudio, ReferenceVideo referenceVideo, String planningModel, String continuity,
+      List<ReferenceImageRole> imageRoles) {
+    public PlanRequest(String brief, List<String> images, int count, String ratio,
+        ShotPlan currentShot, List<ShotContext> contextShots, String productionMode, Integer timelineCount,
+        boolean generateAudio, ReferenceVideo referenceVideo, String planningModel, String continuity) {
+      this(brief, images, count, ratio, currentShot, contextShots, productionMode, timelineCount,
+          generateAudio, referenceVideo, planningModel, continuity, null);
+    }
     public PlanRequest(String brief, List<String> images, int count, String ratio,
         ShotPlan currentShot, List<ShotContext> contextShots, String productionMode, Integer timelineCount,
         boolean generateAudio, ReferenceVideo referenceVideo, String planningModel) {
@@ -41,6 +48,7 @@ public final class ProductVideoDtos {
       this(brief, images, count, ratio, currentShot, contextShots, null);
     }
   }
+  public record ReferenceImageRole(int imageIndex, String role) {}
   public record ReferenceVideo(String url, String name, double duration, Integer width, Integer height,
       String audioSummary, List<ReferenceFrame> frames, List<ReferenceSegment> segments, String strategy) {
     public ReferenceVideo(String url, String name, double duration, Integer width, Integer height,

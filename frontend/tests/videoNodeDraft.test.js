@@ -13,6 +13,15 @@ import {
 } from '../src/utils/productVideo.js'
 import { SEEDANCE_FIRST_LAST_MODE, videoReferencePayload } from '../src/utils/chatVideoSettings.js'
 
+test('new video nodes default to 3:4 without replacing saved or inherited ratios', () => {
+  assert.equal(normalizeVideoNodeDraft().config.ratio, '3:4')
+  assert.equal(normalizeVideoNodeDraft({ config: { ratio: 'invalid' } }).config.ratio, '3:4')
+  for (const ratio of ['16:9', '9:16', '1:1', 'adaptive']) {
+    assert.equal(normalizeVideoNodeDraft({ config: { ratio } }).config.ratio, ratio)
+    assert.equal(normalizeVideoNodeDraft({}, { ratio }).config.ratio, ratio)
+  }
+})
+
 test('sidebar settings synchronize without changing node content or graph ownership', () => {
   const draft = normalizeVideoNodeDraft({
     prompt: 'Keep this node script',
@@ -122,7 +131,7 @@ test('drafts remove transient references and normalize persistent fields', () =>
     config: { ratio: 'invalid', generateAudio: false },
   })
   assert.equal(draft.prompt.length, 2500)
-  assert.equal(draft.config.ratio, '16:9')
+  assert.equal(draft.config.ratio, '3:4')
   assert.equal(draft.config.generateAudio, false)
   assert.equal(draft.references.length, 1)
   assert.equal(draft.references[0].uploading, undefined)

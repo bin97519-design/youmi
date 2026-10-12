@@ -236,6 +236,62 @@ test('reference-video workflows and explicitly disabled continuity retain origin
   }
 })
 
+test('product image roles survive disabled and reference modes without enabling fixed scenes', () => {
+  for (const type of ['reference', 'disabled']) {
+    const { data, next } = fixture()
+    data.planningSource = type === 'reference' ? 'reference' : 'creative'
+    data.continuity.enabled = false
+    const request = buildPlanRequest(data, 3, null, { imageEvidenceRoles: true })
+    assert.equal(request.continuity, undefined)
+    assert.deepEqual(request.imageRoles, [{ imageIndex: 1, role: 'product' }])
+    const image = buildImageRequest(data, next, 'image')
+    assert.match(image.prompt, /图1是商品外观依据，只参考商品本身/)
+    assert.doesNotMatch(image.prompt, /全片固定设定|全片已确认的场景、人物和商品基准/)
+    assert.equal(buildPlanRequest(data, 3).imageRoles, undefined)
+    assert.equal(buildPlanRequest(data, 3, null, null).imageRoles, undefined)
+  }
+  const { data } = fixture()
+  data.continuity.enabled = false
+  data.references = []
+  assert.equal(buildPlanRequest(data, 1, null, { imageEvidenceRoles: true }).imageRoles, undefined)
+})
+
+test('image roles follow the exact deduplicated image order and preserve the primary product', () => {
+  const { data, next } = fixture()
+  setContinuityReference(data, 'product', { url: 'https://assets.example/primary.png' })
+  setContinuityReference(data, 'scene', { url: 'https://assets.example/room.png' })
+  setContinuityReference(data, 'person', { url: 'https://assets.example/person.png' })
+  const original = JSON.stringify(data)
+  for (const shot of [undefined, next]) {
+    const request = buildPlanRequest(data, 1, shot, { imageEvidenceRoles: true })
+    assert.deepEqual(request.images, [
+      'https://assets.example/primary.png', 'https://assets.example/product.jpg',
+      'https://assets.example/room.png', 'https://assets.example/person.png',
+    ])
+    assert.deepEqual(request.imageRoles, [
+      { imageIndex: 1, role: 'primary_product' }, { imageIndex: 2, role: 'product' },
+      { imageIndex: 3, role: 'scene' }, { imageIndex: 4, role: 'person' },
+    ])
+  }
+  assert.equal(JSON.stringify(data), original)
+  setContinuityReference(data, 'scene', { url: 'https://assets.example/product.jpg' })
+  const shared = planningContinuityReferences(data)
+  assert.equal(shared.urls.filter(url => url === 'https://assets.example/product.jpg').length, 1)
+  assert.ok(shared.imageRoles.some(role => role.imageIndex === 2 && role.role === 'product'))
+  assert.ok(shared.imageRoles.some(role => role.imageIndex === 2 && role.role === 'scene'))
+})
+
+test('independent whole videos identify primary product images without inheriting a person reference', () => {
+  const { data, next } = fixture()
+  data.productionMode = next.productionMode = 'single_video'
+  setContinuityReference(data, 'product', { url: 'https://assets.example/primary.png' }, next)
+  setContinuityReference(data, 'person', { url: 'https://assets.example/person.png' }, next)
+  const request = buildPlanRequest(data, 1, next, { imageEvidenceRoles: true })
+  assert.deepEqual(request.imageRoles, [{ imageIndex: 1, role: 'primary_product' }, { imageIndex: 2, role: 'product' }])
+  assert.ok(!request.images.includes('https://assets.example/person.png'))
+  assert.match(request.continuity, /场景与人物未锁定/)
+})
+
 test('legacy tasks get consistent defaults without auto-approving old frames; reference URLs are deduplicated without dropping product images', () => {
   const { data, first, next } = fixture()
   delete data.continuity

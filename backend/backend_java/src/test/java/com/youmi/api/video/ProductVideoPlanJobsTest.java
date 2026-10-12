@@ -46,6 +46,35 @@ class ProductVideoPlanJobsTest {
     } finally { jobs.close(); }
   }
 
+  @Test void changedImageRoleDoesNotReuseCachedProductRecognition() throws Exception {
+    var images = List.of("https://assets.example/product.png");
+    var original = new ProductVideoDtos.PlanRequest("商品", images, 1, "16:9", null, null, null, null,
+        false, null, "default", null, List.of(new ProductVideoDtos.ReferenceImageRole(1, "product")));
+    var outline = mapper.readTree("{\"analysis\":\"Product facts\",\"concept\":\"Story\",\"shots\":[{}]}");
+    var result = new ProductVideoDtos.PlanResponse("mock", List.of(shot), null);
+    when(plans.plan(eq(original), any(), anyList(), any())).thenAnswer(invocation -> {
+      ProductVideoPlanService.ProgressListener progress = invocation.getArgument(3);
+      progress.save("Outline", outline, List.of(), "mock");
+      return result;
+    });
+    var jobs = new ProductVideoPlanJobs(plans, mapper, dir.toString());
+    try { jobs.create(1L, new ProductVideoPlanJobs.CreateRequest(id, original)); finished(jobs); }
+    finally { jobs.close(); }
+    var unchanged = new ProductVideoDtos.PlanRequest(original.brief(), images, 1, "16:9", shot, List.of(), null, null,
+        false, null, "default", null, original.imageRoles());
+    var changed = new ProductVideoDtos.PlanRequest(original.brief(), images, 1, "16:9", shot, List.of(), null, null,
+        false, null, "default", null, List.of(new ProductVideoDtos.ReferenceImageRole(1, "person")));
+    when(plans.refineFromOutline(eq(unchanged), eq(outline), eq(0))).thenReturn(result);
+    when(plans.plan(eq(changed))).thenReturn(result);
+    jobs = new ProductVideoPlanJobs(plans, mapper, dir.toString());
+    try {
+      assertEquals(result, jobs.refine(1L, new ProductVideoDtos.RefineRequest(id, "plan-" + id + "-0", unchanged)));
+      assertEquals(result, jobs.refine(1L, new ProductVideoDtos.RefineRequest(id, "plan-" + id + "-0", changed)));
+      verify(plans, times(1)).refineFromOutline(any(), any(), anyInt());
+      verify(plans).plan(changed);
+    } finally { jobs.close(); }
+  }
+
   @Test void planningModelIsPersistedAndRetryDoesNotSwitchProvider() throws Exception {
     var selected = new ProductVideoDtos.PlanRequest("商品", List.of(), 1, "16:9", null, null,
         "storyboard", null, false, null, "gem-3.8-flash");

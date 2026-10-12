@@ -94,6 +94,7 @@ public class ProductVideoController {
         Map.entry("canvasVideoReversePrompt", true),
         Map.entry("fixedContinuity", true),
         Map.entry("fixedContinuityImages", true),
+        Map.entry("imageEvidenceRoles", true),
         Map.entry("wholeVideoOptionalContinuity", true),
         Map.entry("anmiaoVideo", anmiao.isAvailable() || configured20),
         Map.entry("anmiaoMiPerSecondByResolution", anmiao.availableRates(configured20)),

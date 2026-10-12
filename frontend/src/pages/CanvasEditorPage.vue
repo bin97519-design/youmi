@@ -29,6 +29,10 @@ import {
   ANMIAO25_VIDEO_MODEL,
   MINIMAX_VIDEO_MODEL,
   HAILUO_H3_VIDEO_MODEL,
+  DEFAULT_VIDEO_RATIO,
+  returnedVideoTaskUrl,
+  videoTaskStatusText,
+  taskState,
   isRetiredVideoModel,
   isPerSecondVideoModel,
   isAnmiao25VideoModel,
@@ -1781,7 +1785,7 @@ const videoRatioOptions = ['adaptive', '21:9', '16:9', '4:3', '1:1', '3:4', '9:1
 const initialVideoConfig = initialChatConfig.video || {}
 const videoModel = ref('')
 const videoRatio = ref(
-  videoRatioOptions.includes(initialVideoConfig.ratio) ? initialVideoConfig.ratio : '16:9',
+  videoRatioOptions.includes(initialVideoConfig.ratio) ? initialVideoConfig.ratio : DEFAULT_VIDEO_RATIO,
 )
 const videoResolution = ref(
   validVideoResolution(videoModel.value, initialVideoConfig.resolution)
@@ -2007,7 +2011,7 @@ watch(
       videoModelOptions.some((option) => option.value === videoCfg.model)
         ? videoCfg.model
         : videoModelOptions[0]?.value || ''
-    videoRatio.value = videoRatioOptions.includes(videoCfg.ratio) ? videoCfg.ratio : '16:9'
+    videoRatio.value = videoRatioOptions.includes(videoCfg.ratio) ? videoCfg.ratio : DEFAULT_VIDEO_RATIO
     videoResolution.value = validVideoResolution(videoModel.value, videoCfg.resolution)
       ? videoCfg.resolution
       : videoResolutionForModel(videoModel.value)
@@ -10442,23 +10446,15 @@ function handleComposerSubmit() {
 }
 
 const VIDEO_TASK_POLL_INTERVAL = 4000
+const VIDEO_BILLING_POLL_INTERVAL = 30000
 const VIDEO_TASK_MAX_POLLS = 900
 const pollingVideoTaskIds = new Set()
 
-function canvasVideoSize(ratio = '16:9') {
+function canvasVideoSize(ratio = DEFAULT_VIDEO_RATIO) {
   const [rawWidth, rawHeight] = String(ratio).split(':').map(Number)
-  const aspect = rawWidth > 0 && rawHeight > 0 ? rawWidth / rawHeight : 16 / 9
+  const aspect = rawWidth > 0 && rawHeight > 0 ? rawWidth / rawHeight : 3 / 4
   const width = CANVAS_IMAGE_WIDTH
   return { width, height: Math.max(180, Math.round(width / aspect)) }
-}
-
-function extractVideoTaskUrl(task) {
-  const urls = task?.videoUrls || task?.video_urls || task?.videos || []
-  if (Array.isArray(urls)) {
-    const match = urls.find((url) => typeof url === 'string' && url.trim())
-    if (match) return match.trim()
-  }
-  return String(task?.videoUrl || task?.video_url || task?.url || '').trim()
 }
 
 async function submitVideoTask({
@@ -11028,13 +11024,21 @@ function syncVideoNodeMediaDimensions(layer, event) {
 }
 
 async function pollVideoTaskUntilDone(taskId, layerId, assistantId = '') {
-  for (let index = 0; index < VIDEO_TASK_MAX_POLLS; index += 1) {
-    await wait(VIDEO_TASK_POLL_INTERVAL)
+  let resultAvailable = Boolean(layers.value.find(layer => layer.id === layerId)?.url)
+  for (let index = 0; index < VIDEO_TASK_MAX_POLLS || resultAvailable; index += 1) {
+    await wait(resultAvailable ? VIDEO_BILLING_POLL_INTERVAL : VIDEO_TASK_POLL_INTERVAL)
     if (!_mounted.value) return false
     if (!layers.value.some((layer) => layer.id === layerId)) return false
 
-    const task = await fetchVideoTask(taskId)
-    const status = normalizeStatus(task?.status) || 'processing'
+    let task
+    try {
+      task = await fetchVideoTask(taskId)
+    } catch (error) {
+      if (!resultAvailable) throw error
+      updateLayer(layerId, { statusText: '视频已生成，状态核对暂时中断，将自动重试' })
+      continue
+    }
+    const status = taskState(task?.status)
     const perSecondTask = taskId.startsWith('anmiao-video:') || taskId.startsWith('minimax-h3:')
     const providerProgress = task?.progress == null ? null : Number(task.progress)
     const progress = perSecondTask
@@ -11063,33 +11067,32 @@ async function pollVideoTaskUntilDone(taskId, layerId, assistantId = '') {
       void canvas.flushNow?.(props.id)
       throw new Error(failureMessage)
     }
+    const videoUrl = returnedVideoTaskUrl(task)
+    const firstResult = videoUrl && !resultAvailable
+    resultAvailable = Boolean(videoUrl) || resultAvailable
+    const statusText = videoTaskStatusText(task, progress)
     updateLayer(layerId, {
       taskId,
       status,
       progress,
-      statusText:
-        status === 'persisting'
-          ? '视频已生成，正在转存到素材空间…'
-          : progress == null
-            ? task?.stage || '视频生成中'
-            : `视频生成中 ${Math.round(progress)}%`,
+      statusText,
+      ...(videoUrl ? { url: videoUrl } : {}),
     })
     if (assistantId) {
       updateChatMessage(assistantId, {
         taskId,
-        text:
-          status === 'persisting'
-            ? '视频已生成，正在转存到素材空间…'
-            : progress == null
-              ? task?.stage || '视频生成中'
-              : `视频生成中 ${Math.round(progress)}%`,
+        text: statusText,
+        ...(videoUrl ? { videoUrl } : {}),
         generating: true,
       })
+    }
+    if (firstResult) {
+      revealCanvasMedia(layerId)
+      void canvas.flushNow?.(props.id)
     }
 
     if (status !== 'completed') continue
 
-    const videoUrl = extractVideoTaskUrl(task)
     if (!videoUrl) throw new Error('视频任务已完成，但没有返回视频地址')
     updateLayer(layerId, {
       url: videoUrl,
@@ -11127,6 +11130,7 @@ function resumePendingVideoTasks() {
   for (const layer of layers.value) {
     if (layer.type !== 'video' || !layer.generating || !layer.taskId) continue
     if (pollingVideoTaskIds.has(layer.taskId)) continue
+    if (layer.url) revealCanvasMedia(layer.id)
     void startVideoTaskPoll(layer.taskId, layer.id, layer.assistantId || '').catch((error) => {
       updateLayer(layer.id, {
         generating: false,

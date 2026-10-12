@@ -89,6 +89,7 @@ public class ProductVideoPlanJobs {
           && saved.request().referenceVideo() == null && input.request().referenceVideo() == null
           && java.util.Objects.equals(saved.request().brief(), input.request().brief())
           && java.util.Objects.equals(saved.request().images(), input.request().images())
+          && java.util.Objects.equals(saved.request().imageRoles(), input.request().imageRoles())
           && java.util.Objects.equals(saved.request().planningModel(), input.request().planningModel())
           && java.util.Objects.equals(saved.request().productionMode(), input.request().productionMode())) {
         String index = input.shotId().substring(prefix.length());

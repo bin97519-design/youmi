@@ -3,6 +3,7 @@ import {
   HAILUO_H3_VIDEO_MODEL,
   VIDEO_MODELS,
   VIDEO_RATIOS,
+  DEFAULT_VIDEO_RATIO,
   isPerSecondVideoModel,
   isRetiredVideoModel,
 } from './productVideo.js'
@@ -37,7 +38,7 @@ export function normalizeVideoNodeDraft(value = {}, defaults = {}, modelOptions 
   }
   const config = {
     model,
-    ratio: ['adaptive', ...VIDEO_RATIOS].includes(requested.ratio) ? requested.ratio : '16:9',
+    ratio: ['adaptive', ...VIDEO_RATIOS].includes(requested.ratio) ? requested.ratio : DEFAULT_VIDEO_RATIO,
     resolution: validVideoResolution(model, requested.resolution)
       ? requested.resolution
       : videoResolutionForModel(model),

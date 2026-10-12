@@ -596,7 +596,7 @@ async function refineWholeBeat(index) {
     try {
       const problem = wholeTimelineIssue(shot)
       if (problem) throw new Error(problem)
-      const beat = await request('/api/product-videos/refine-timeline', { request: buildPlanRequest(task, 1, shot), index }, (Number(capabilities.value?.planStageTimeoutSeconds) || 300) * 1000 + 30000)
+      const beat = await request('/api/product-videos/refine-timeline', { request: buildPlanRequest(task, 1, shot, capabilities.value), index }, (Number(capabilities.value?.planStageTimeoutSeconds) || 300) * 1000 + 30000)
       if (!props.open || !isCurrent(context)) return
       ask('采用时段完善结果', `第 ${index + 1} 时段：\n${beat.description}\n\n开始：${beat.startState}\n结束：${beat.endState}`, () => {
         try { shotChange(shotId, item => {
@@ -973,7 +973,7 @@ async function refineShot() {
   error.value = ''
   try {
     const local = capabilities.value?.localShotRefinement && !shot.referenceRange
-    const payload = buildPlanRequest(workflow.value, 1, shot)
+    const payload = buildPlanRequest(workflow.value, 1, shot, capabilities.value)
     const result = await request(
       local ? '/api/product-videos/refine' : '/api/product-videos/plan',
       local ? { planJobId: workflow.value.planJob?.id, shotId: shot.id, request: payload } : payload,
@@ -2927,6 +2927,15 @@ function onKeydown(event) {
                     @copy="copyPrompt('motion')"
                     @expand="openPrompt('motion', $event)"
                   />
+                  <label>
+                    {{ activeWholeVideo ? '整片字幕' : '分镜字幕' }}
+                    <input
+                      :value="active.caption"
+                      :aria-label="activeWholeVideo ? '整片字幕' : '分镜字幕'"
+                      maxlength="120"
+                      @input="updateShot('caption', $event.target.value)"
+                    />
+                  </label>
                   <label>
                     视频模型 ·
                     {{

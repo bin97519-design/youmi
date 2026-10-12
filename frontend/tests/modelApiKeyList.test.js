@@ -62,8 +62,19 @@ test('灵科历史中转站标识在列表中归为同一组', () => {
     providers: 1,
     imageGeneration: 2,
     videoGeneration: 1,
+    videoEnhancement: 0,
     visionReasoning: 0,
   })
+})
+
+test('视频超分密钥单独统计且可按模型类型筛选', () => {
+  const enhancement = { ...rows[0], id: 6, model: 'video-upscale', modelType: 'video_enhancement' }
+  const mixed = [...rows, enhancement]
+  const summary = summarizeModelApiKeys(mixed)
+  assert.equal(summary.videoEnhancement, 1)
+  assert.equal(summary.videoGeneration, 1)
+  assert.equal(summary.imageGeneration, 2)
+  assert.deepEqual(filterModelApiKeys(mixed, { modelType: 'video_enhancement' }).map(row => row.id), [6])
 })
 
 test('密钥列表可按状态、中转站和全字段搜索', () => {

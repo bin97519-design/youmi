@@ -90,15 +90,59 @@ test('image and video execution receive adjacent states without forcing an ident
     buildVideoRequest(workflow, shot, 'video'),
   ]) {
     assert.match(request.prompt, /上一镜「拉合纱帘」结束：纱帘闭合，右手仍握住边缘/)
-    assert.match(request.prompt, /上一镜动作与运镜：将纱帘拉合/)
+    assert.doesNotMatch(request.prompt, /上一镜动作与运镜：将纱帘拉合/)
     assert.match(request.prompt, /本镜开始状态：纱帘闭合，右手仍握住边缘/)
     assert.match(request.prompt, /本镜在成片第 4 秒的结束状态：右手放下，纱帘保持闭合/)
     assert.match(request.prompt, /下一镜「全景收尾」起点：右手放下，纱帘保持闭合/)
-    assert.match(request.prompt, /下一镜动作与运镜：缓慢拉远/)
+    assert.doesNotMatch(request.prompt, /下一镜动作与运镜：缓慢拉远/)
+    assert.match(request.prompt, /邻镜仅提供接点，不重演前镜或提前执行下一镜/)
     assert.match(request.prompt, /可换机位和景别/)
     assert.match(request.prompt, /不能重置动作/)
   }
   assert.deepEqual(buildVideoRequest(workflow, shot, 'video').image_urls, [shot.images[0].url])
+})
+
+test('image start preserves an ongoing contact rather than resetting every shot before the action', () => {
+  const workflow = fixture(), shot = workflow.shots[1]
+  const prompt = buildImageRequest(workflow, shot, 'image').prompt
+  assert.match(prompt, /本镜开始状态：纱帘闭合，右手仍握住边缘/)
+  assert.match(prompt, /切入瞬间的起始姿势与手部接触状态/)
+  assert.match(prompt, /已经握住、接触或拉动商品时保留动作进度，不退回接触前/)
+  assert.doesNotMatch(prompt, /手部与商品接触前的起始姿势/)
+})
+
+test('neighbor execution scripts do not leak into the current video, even without structured states', () => {
+  const workflow = fixture(), shot = workflow.shots[1]
+  workflow.shots[0].motion = 'PREVIOUS_OPERATION_DO_NOT_REPEAT'
+  workflow.shots[0].connection.endState = ''
+  workflow.shots[2].motion = 'NEXT_OPERATION_DO_NOT_PERFORM'
+  workflow.shots[2].connection.startState = ''
+  workflow.shots[2].imagePrompt = 'NEXT_FRAME_DO_NOT_RENDER'
+  const prompt = buildVideoRequest(workflow, shot, 'video').prompt
+  assert.doesNotMatch(prompt, /PREVIOUS_OPERATION|NEXT_OPERATION|NEXT_FRAME/)
+  assert.ok(prompt.includes(shot.motion))
+  assert.match(prompt, /首帧与已确认的实际动作衔接优先于旧稿起点，不回退或重演/)
+})
+
+test('confirmed actual tail state takes precedence over an outdated planned ending', () => {
+  const workflow = fixture(), shot = workflow.shots[1]
+  const source = previousShotTailSource(workflow, shot)
+  workflow.shots[0].connection.endState = 'STALE_PLANNED_END'
+  shot.motionObservation = {
+    sourceKey: source.sourceKey, targetMotion: shot.motion, confirmed: true, status: 'completed',
+    results: [{ previousState: 'ACTUAL_HAND_STILL_PULLING', motion: 'Continue moving right' }],
+  }
+  const prompt = buildVideoRequest(workflow, shot, 'video').prompt
+  assert.match(prompt, /上一镜「拉合纱帘」结束：ACTUAL_HAND_STILL_PULLING/)
+  assert.doesNotMatch(prompt, /STALE_PLANNED_END/)
+})
+
+test('captions stay out of generation prompts and are included only in composition', () => {
+  const workflow = fixture(), shot = workflow.shots[1]
+  shot.caption = '让日光柔和地落下来'
+  for (const request of [buildImageRequest(workflow, shot, 'image'), buildVideoRequest(workflow, shot, 'video')])
+    assert.ok(!request.prompt.includes(shot.caption))
+  assert.equal(buildCompositionRequest(workflow).clips[1].caption, shot.caption)
 })
 
 test('interior shots cut on planned motion rather than holding and restarting each shot', () => {
@@ -146,6 +190,10 @@ test('reference-based shots preserve intentional pauses and their actual transit
     const prompt = buildVideoRequest(workflow, shot, 'reference').prompt
     assert.match(prompt, /遵循参考视频原有的动作、运镜与叙事停顿/)
     assert.doesNotMatch(prompt, /旧稿的停留只保留|不提前停稳|切入即承接前镜/)
+    if (referenceBy === 'shot') {
+      assert.match(prompt, /复现本段的动作阶段和原有转场，不补整套操作或人为停留/)
+      assert.doesNotMatch(prompt, /完成全部动作与转场，之后自然停留/)
+    }
   }
 })
 

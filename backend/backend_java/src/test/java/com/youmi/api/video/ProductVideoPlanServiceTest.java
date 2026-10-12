@@ -1308,6 +1308,70 @@ class ProductVideoPlanServiceTest {
     assertEquals(0, second.path("source").path("images").size());
   }
 
+  @Test void storyboardRulesKeepOngoingContactAndPlanPostProductionCaptions() throws Exception {
+    replies(outline("person", "hands", "none"), details("person", "hands", "none"));
+    service.plan(new ProductVideoDtos.PlanRequest("窗帘", List.of(), 3, "3:4", null, null));
+    var systems = ArgumentCaptor.forClass(String.class);
+    verify(client, times(2)).completeVision(systems.capture(), anyString(), anyList(), anyDouble(), anyInt(), any(Duration.class));
+    String outlinePrompt = systems.getAllValues().get(0), executionPrompt = systems.getAllValues().get(1);
+    assertTrue(outlinePrompt.contains("本镜切入瞬间的状态，可处于动作途中"));
+    assertTrue(outlinePrompt.contains("本镜切出瞬间的状态，中间镜为下一镜留出接点"));
+    assertFalse(outlinePrompt.contains("动作完成时的画面"));
+    assertTrue(executionPrompt.contains("保留手部接触与动作进度，不退回接触前姿势"));
+    assertTrue(executionPrompt.contains("中间镜不强制完成整个操作或收尾"));
+    assertTrue(executionPrompt.contains("邻镜只提供接点"));
+    assertTrue(executionPrompt.contains("默认为每个分镜填写 caption"));
+    assertTrue(executionPrompt.contains("不写进 imagePrompt 或 motion"));
+    assertTrue(executionPrompt.contains("保留 currentShot.caption 的非空原文"));
+    assertTrue(executionPrompt.contains("用户明确不要字幕时返回空字符串"));
+  }
+
+  @Test void imageRolesAndEvidenceRulesReachBothPlanningStagesWithoutLockingScenes() throws Exception {
+    replies(outline("none", "hands"), details("none", "hands"));
+    var images = List.of("https://assets.example/product.png", "https://assets.example/person.png");
+    var roles = List.of(new ProductVideoDtos.ReferenceImageRole(1, "primary_product"),
+        new ProductVideoDtos.ReferenceImageRole(2, "person"));
+    var request = new ProductVideoDtos.PlanRequest("商品", images, 2, "3:4", null, null, null, null,
+        false, null, "default", null, roles);
+    service.plan(request);
+    var systems = ArgumentCaptor.forClass(String.class);
+    var inputs = ArgumentCaptor.forClass(String.class);
+    verify(client, times(2)).completeVision(systems.capture(), inputs.capture(), eq(images), anyDouble(), anyInt(), any(Duration.class));
+    for (String system : systems.getAllValues()) {
+      assertTrue(system.contains("逐图依据注明图N和对应可见位置"));
+      assertTrue(system.contains("用途标注不是固定场景开关"));
+      assertTrue(system.contains("不把一张图的颜色与另一款的结构组合"));
+      assertTrue(system.contains("不补全品牌、型号、数字或认证"));
+      assertTrue(system.contains("等二选一执行要求"));
+      assertFalse(system.contains("source.continuity 是用户确认的全片固定设定"));
+    }
+    var initial = mapper.readTree(inputs.getAllValues().get(0));
+    var expanded = mapper.readTree(inputs.getAllValues().get(1)).path("source");
+    for (JsonNode source : List.of(initial, expanded)) {
+      assertEquals(1, source.path("imageRoles").get(0).path("imageIndex").asInt());
+      assertEquals("primary_product", source.path("imageRoles").get(0).path("role").asText());
+      assertEquals("person", source.path("imageRoles").get(1).path("role").asText());
+    }
+  }
+
+  @Test void imageRolesRejectInvalidIndicesScopesAndDuplicateInputsWithoutBreakingLegacyRequests() throws Exception {
+    String legacy = "{\"brief\":\"商品\",\"images\":[\"https://assets.example/product.png\"],\"count\":1,\"ratio\":\"3:4\"}";
+    assertNull(mapper.readValue(legacy, ProductVideoDtos.PlanRequest.class).imageRoles());
+    for (var roles : List.of(
+        List.of(new ProductVideoDtos.ReferenceImageRole(0, "product")),
+        List.of(new ProductVideoDtos.ReferenceImageRole(2, "product")),
+        List.of(new ProductVideoDtos.ReferenceImageRole(1, "change_rules")),
+        List.of(new ProductVideoDtos.ReferenceImageRole(1, "product"), new ProductVideoDtos.ReferenceImageRole(1, "product")))) {
+      var request = new ProductVideoDtos.PlanRequest("商品", List.of("https://assets.example/product.png"), 1,
+          "3:4", null, null, null, null, false, null, "default", null, roles);
+      assertThrows(ApiException.class, () -> service.validate(request));
+    }
+    var duplicateImages = new ProductVideoDtos.PlanRequest("商品", List.of("https://assets.example/product.png", "https://assets.example/product.png"),
+        1, "3:4", null, null, null, null, false, null, "default", null,
+        List.of(new ProductVideoDtos.ReferenceImageRole(1, "product")));
+    assertThrows(ApiException.class, () -> service.validate(duplicateImages));
+  }
+
   @Test void ignoresLegacyCastingAndCanPlanEntirelyProductOnly() throws Exception {
     replies(outline("none"), details("none"));
     var request = mapper.readValue("{\"brief\":\"商品\",\"count\":1,\"ratio\":\"16:9\",\"talentMode\":\"person\"}", ProductVideoDtos.PlanRequest.class);
