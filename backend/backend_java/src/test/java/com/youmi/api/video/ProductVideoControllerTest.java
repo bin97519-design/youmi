@@ -4,6 +4,8 @@ import com.youmi.api.admin.AdminAuthService;
 import com.youmi.api.common.ApiException;
 import com.youmi.api.common.GlobalExceptionHandler;
 import com.youmi.api.credit.MiValueProperties;
+import com.youmi.api.image.ModelApiKeyDtos;
+import com.youmi.api.image.ModelApiKeyService;
 import com.youmi.api.selection.SelectionPoolService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -23,6 +25,7 @@ class ProductVideoControllerTest {
   private final VideoCompositionService compositions = mock(VideoCompositionService.class);
   private final SelectionPoolService products = mock(SelectionPoolService.class);
   private final ProductVideoPlanJobs jobs = mock(ProductVideoPlanJobs.class);
+  private final ProductVideoContinuityService reviews = mock(ProductVideoContinuityService.class);
   private MockMvc mvc;
 
   @BeforeEach void setup() {
@@ -30,10 +33,41 @@ class ProductVideoControllerTest {
     when(auth.requireUserId(null)).thenThrow(new ApiException(401, "未登录"));
     var pricing = new MiValueProperties();
     pricing.setPrices(Map.of("VIDEO", 50));
-    mvc = MockMvcBuilders.standaloneSetup(new ProductVideoController(auth, plans, compositions, products, pricing,
-        new AnmiaoVideoProperties(), new MinimaxVideoProperties()),
+    var controller = new ProductVideoController(auth, plans, compositions, products, pricing,
+        new AnmiaoVideoProperties(), new MinimaxVideoProperties());
+    controller.setContinuityReviews(reviews);
+    mvc = MockMvcBuilders.standaloneSetup(controller,
         new ProductVideoPlanJobController(auth, jobs))
         .setControllerAdvice(new GlobalExceptionHandler()).build();
+  }
+
+  @Test void continuityReviewEndpointsRequireLoginAndScopeEveryOperation() throws Exception {
+    String id = "00000000-0000-4000-8000-000000000001";
+    var state = new ProductVideoContinuityService.State(id, "queued", 0, "Review", List.of(), "", List.of(), "");
+    when(reviews.create(eq(7L), any())).thenReturn(state);
+    when(reviews.get(7L, id)).thenReturn(state);
+    when(reviews.cancel(7L, id)).thenReturn(state);
+    String body = "{\"id\":\"" + id + "\",\"kind\":\"boundaries\",\"clips\":[]}";
+    mvc.perform(post("/api/product-videos/continuity-reviews").contentType(MediaType.APPLICATION_JSON).content(body))
+        .andExpect(status().isUnauthorized());
+    verifyNoInteractions(reviews);
+    mvc.perform(post("/api/product-videos/continuity-reviews").header("Authorization", "Bearer test")
+        .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isOk()).andExpect(jsonPath("$.data.id").value(id));
+    mvc.perform(get("/api/product-videos/continuity-reviews/" + id).header("Authorization", "Bearer test")).andExpect(status().isOk());
+    mvc.perform(post("/api/product-videos/continuity-reviews/" + id + "/cancel").header("Authorization", "Bearer test")
+        .contentType(MediaType.APPLICATION_JSON).content("{}")).andExpect(status().isOk());
+    verify(reviews).create(eq(7L), argThat(request -> id.equals(request.id())));
+    verify(reviews).get(7L, id); verify(reviews).cancel(7L, id);
+  }
+
+  @Test void compositionChecksAnExplicitReviewReceiptBeforeRendering() throws Exception {
+    when(compositions.create(eq(7L), any())).thenReturn(new ProductVideoDtos.Composition("job", "queued", 0, "", ""));
+    mvc.perform(post("/api/product-videos/compositions").header("Authorization", "Bearer test")
+        .contentType(MediaType.APPLICATION_JSON).content("{\"clips\":[],\"ratio\":\"16:9\",\"continuityReviewId\":\"review\"}"))
+        .andExpect(status().isOk());
+    var order = inOrder(reviews, compositions);
+    order.verify(reviews).verifyComposition(eq(7L), eq("review"), anyList());
+    order.verify(compositions).create(eq(7L), any());
   }
 
   @Test void authenticatedPlanBindsJsonAndRejectsAnonymousAccess() throws Exception {
@@ -44,6 +78,37 @@ class ProductVideoControllerTest {
         .content("{\"brief\":\"product\",\"count\":1,\"images\":[\"https://assets/frame.png\"],\"ratio\":\"16:9\"}"))
         .andExpect(status().isOk()).andExpect(jsonPath("$.data.shots[0].title").value("shot"));
     verify(plans).plan(argThat(request -> request.images().get(0).equals("https://assets/frame.png")));
+  }
+
+  @Test void wholePeriodRefinementRequiresLoginAndPreservesTheSelectedIndex() throws Exception {
+    String body = "{\"index\":1,\"request\":{\"brief\":\"Product\",\"count\":1}}";
+    mvc.perform(post("/api/product-videos/refine-timeline").contentType(MediaType.APPLICATION_JSON).content(body))
+        .andExpect(status().isUnauthorized());
+    verifyNoInteractions(plans);
+    when(plans.refineTimeline(any())).thenReturn(new ProductVideoDtos.TimelineBeat(5, 15, "Action", "Camera", "Finish"));
+    mvc.perform(post("/api/product-videos/refine-timeline").header("Authorization", "Bearer test")
+        .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isOk()).andExpect(jsonPath("$.data.start").value(5));
+    verify(plans).refineTimeline(argThat(request -> request.index() == 1));
+  }
+
+  @Test void canvasReverseRequiresLoginAndReturnsTextWithoutSubmittingMedia() throws Exception {
+    String body = """
+        {"planningModel":"gem-3.8-flash","shotCount":2,"referenceVideo":{
+        "url":"https://assets/source.mp4","duration":15,"width":832,"height":1108,
+        "frames":[{"url":"https://assets/first.jpg","time":0.03},{"url":"https://assets/last.jpg","time":14.96}]}}
+        """;
+    when(plans.reversePrompt(any())).thenReturn(new ProductVideoDtos.ReversePromptResponse(
+        "lk888", "gem-3.8-flash", "视频提示词", 15, 2));
+    mvc.perform(post("/api/product-videos/reverse-prompt").contentType(MediaType.APPLICATION_JSON).content(body))
+        .andExpect(status().isUnauthorized());
+    verifyNoInteractions(plans);
+    mvc.perform(post("/api/product-videos/reverse-prompt").header("Authorization", "Bearer test")
+        .contentType(MediaType.APPLICATION_JSON).content(body))
+        .andExpect(status().isOk()).andExpect(jsonPath("$.data.promptText").value("视频提示词"))
+        .andExpect(jsonPath("$.data.frameCount").value(2));
+    verify(plans).reversePrompt(argThat(request -> request.shotCount() == 2
+        && "gem-3.8-flash".equals(request.planningModel()) && request.referenceVideo().frames().size() == 2));
+    verifyNoInteractions(compositions, jobs, products);
   }
 
   @Test void compositionAndStatusAreScopedToAuthenticatedUser() throws Exception {
@@ -73,6 +138,7 @@ class ProductVideoControllerTest {
         .andExpect(jsonPath("$.data.synchronizedAudio").value(true))
         .andExpect(jsonPath("$.data.referenceVideoReverse").value(true))
         .andExpect(jsonPath("$.data.referenceVideoHighlights").value(true))
+        .andExpect(jsonPath("$.data.canvasVideoReversePrompt").value(true))
         .andExpect(jsonPath("$.data.anmiaoVideo").value(false))
         .andExpect(jsonPath("$.data.anmiaoMiPerSecondByResolution['480p']").value(0))
         .andExpect(jsonPath("$.data.anmiaoMiPerSecondByResolution['720p']").value(0))
@@ -90,6 +156,37 @@ class ProductVideoControllerTest {
         .content("{\"brief\":\"product\",\"count\":4,\"ratio\":\"16:9\"}"))
         .andExpect(status().isGatewayTimeout()).andExpect(jsonPath("$.code").value(504))
         .andExpect(jsonPath("$.message").value("分镜策划超时（商品识图与整片策划）"));
+  }
+
+  @Test void capabilitiesReturnMappedModelsWithoutRequiringVaultDecryption() throws Exception {
+    var keys = mock(ModelApiKeyService.class);
+    when(keys.enabledModelOptions(ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, "product-video-image"))
+        .thenReturn(List.of(new ModelApiKeyDtos.ModelOption("tt-image-2.5", "Image model", "test")));
+    when(keys.enabledModelOptions(ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "product-video-video"))
+        .thenReturn(List.of(new ModelApiKeyDtos.ModelOption("minimax-h3", "MiniMax H3", "test")));
+    when(keys.resolve(anyString(), anyString(), anyString()))
+        .thenThrow(new ApiException(503, "vault unavailable"));
+    var minimax = new MinimaxVideoProperties();
+    var client = new MinimaxVideoClient(minimax, mock(VideoGenerationClient.class), new com.fasterxml.jackson.databind.ObjectMapper());
+    client.setModelApiKeyService(keys);
+    var pricing = new MiValueProperties();
+    pricing.setPrices(Map.of("VIDEO", 50));
+    when(plans.models()).thenReturn(List.of());
+    var controller = new ProductVideoController(auth, plans, compositions, products, pricing,
+        new AnmiaoVideoProperties(), minimax);
+    controller.setModelApiKeys(keys);
+    controller.setMinimaxClient(client);
+    var capabilitiesMvc = MockMvcBuilders.standaloneSetup(controller)
+        .setControllerAdvice(new GlobalExceptionHandler()).build();
+    capabilitiesMvc.perform(get("/api/product-videos/capabilities").header("Authorization", "Bearer test"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.imageModels[0].value").value("tt-image-2.5"))
+        .andExpect(jsonPath("$.data.videoModels[0].value").value("minimax-h3"))
+        .andExpect(jsonPath("$.data.hailuoH3Video").value(true));
+    verify(keys, never()).resolve(anyString(), anyString(), anyString());
+    verify(compositions).available();
+    verifyNoMoreInteractions(compositions);
+    verifyNoInteractions(products);
   }
 
   @Test void compositionBindsPerClipSpeedWithoutChangingLegacyTrimRequest() throws Exception {

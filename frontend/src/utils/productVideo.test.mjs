@@ -27,6 +27,7 @@ import {
   VIDEO_MODELS,
   WHOLE_VIDEO_30_MODELS,
   generationDuration,
+  videoPromptDuration,
   buildCompositionRequest,
   canGenerateVideo,
   pickImage,
@@ -35,6 +36,8 @@ import {
   removeVideo,
   selectedVideo,
   taskState,
+  imageGenerationNotices,
+  imageSubmissionRejected,
   videoGenerationNotices,
   videoGenerationStatus,
   compositionFingerprint,
@@ -106,7 +109,7 @@ test('H3 uses confirmed first frame with independent resolution and cannot make 
   shot.images = [{ id: 'image', url: 'https://assets.example/frame.png' }]
   shot.imageId = shot.approvedImageId = 'image'
   data.videoModel = MINIMAX_VIDEO_MODEL
-  data.videoDurationSeconds = 5
+  shot.duration = 5
   for (const option of MINIMAX_VIDEO_RESOLUTIONS) {
     data.minimaxResolution = option.value
     const request = buildVideoRequest(data, shot, 'h3')
@@ -116,7 +119,7 @@ test('H3 uses confirmed first frame with independent resolution and cannot make 
     assert.equal(request.first_frame_url, shot.images[0].url)
     assert.equal(Object.hasOwn(request, 'generate_audio'), false)
   }
-  data.videoDurationSeconds = 30
+  shot.duration = 30
   assert.throws(() => buildVideoRequest(data, shot, 'h3'), /4 至 15/)
   shot.productionMode = 'single_video'
   assert.equal(buildVideoRequest(data, shot, 'h3').durationSeconds, 15)
@@ -133,7 +136,7 @@ test('Hailuo H3首尾帧 uses adaptive ratio and Mini H3 resolutions', () => {
   shot.images = [{ id: 'image', url: 'https://assets.example/frame.png' }]
   shot.imageId = shot.approvedImageId = 'image'
   data.videoModel = HAILUO_H3_VIDEO_MODEL
-  data.videoDurationSeconds = 5
+  shot.duration = 5
   for (const option of MINIMAX_VIDEO_RESOLUTIONS) {
     data.minimaxResolution = option.value
     const request = buildVideoRequest(data, shot, 'hailuo-h3')
@@ -146,12 +149,12 @@ test('Hailuo H3首尾帧 uses adaptive ratio and Mini H3 resolutions', () => {
   }
 })
 
-test('per-second Seedance model uses explicit 4-15 seconds without changing existing video models', () => {
+test('per-second Seedance model uses each shot duration without changing fixed-duration video models', () => {
   const { data, shot } = fixture()
   shot.images = [{ id: 'image', url: 'https://assets.example/frame.png' }]
   shot.imageId = shot.approvedImageId = 'image'
   data.videoModel = ANMIAO_VIDEO_MODEL
-  data.videoDurationSeconds = 6
+  shot.duration = 6
   assert.equal(generationDuration(shot, data), 6)
   for (const option of ANMIAO_VIDEO_RESOLUTIONS) {
     data.videoResolution = option.value
@@ -164,8 +167,10 @@ test('per-second Seedance model uses explicit 4-15 seconds without changing exis
   data.videoResolution = '2k'
   assert.throws(() => buildVideoRequest(data, shot, 'wrong-resolution'), /画质需选择/)
   data.videoResolution = '720p'
-  data.videoDurationSeconds = 3
-  assert.throws(() => buildVideoRequest(data, shot, 'too-short'), /4 至 15/)
+  shot.duration = 3
+  assert.equal(buildVideoRequest(data, shot, 'minimum').durationSeconds, 4)
+  shot.duration = 16
+  assert.throws(() => buildVideoRequest(data, shot, 'too-long'), /4 至 15/)
   shot.productionMode = 'single_video'
   assert.equal(buildVideoRequest(data, shot, 'whole-15').durationSeconds, 15)
   shot.productionMode = 'single_video_30'
@@ -181,7 +186,7 @@ test('Seedance 2.0 fast model is sent as a configured per-second model with 480p
   shot.imageId = shot.approvedImageId = 'image'
   data.videoModel = ANMIAO20_FAST_VIDEO_MODEL
   data.videoResolution = '720p'
-  data.videoDurationSeconds = 5
+  shot.duration = 5
 
   const request = buildVideoRequest(data, shot, 'fast')
 
@@ -190,7 +195,10 @@ test('Seedance 2.0 fast model is sent as a configured per-second model with 480p
   assert.equal(request.resolution, '720p')
   assert.equal(Object.hasOwn(request, 'generate_audio'), false)
   data.videoResolution = '1080p'
-  assert.throws(() => buildVideoRequest(data, shot, 'fast-invalid-resolution'), /快速版.*480p.*720p/)
+  assert.throws(
+    () => buildVideoRequest(data, shot, 'fast-invalid-resolution'),
+    /快速版.*480p.*720p/,
+  )
 })
 
 test('Seedance 2.5 adds 4-30 second storyboard clips and an optional whole-30 model', () => {
@@ -198,7 +206,7 @@ test('Seedance 2.5 adds 4-30 second storyboard clips and an optional whole-30 mo
   shot.images = [{ id: 'image', url: 'https://assets.example/frame.png' }]
   shot.imageId = shot.approvedImageId = 'image'
   data.videoModel = ANMIAO25_VIDEO_MODEL
-  data.videoDurationSeconds = 30
+  shot.duration = 30
   data.ratio = '9:16'
   for (const option of ANMIAO25_VIDEO_RESOLUTIONS) {
     data.videoResolution = option.value
@@ -212,7 +220,7 @@ test('Seedance 2.5 adds 4-30 second storyboard clips and an optional whole-30 mo
   data.videoResolution = '4k'
   assert.throws(() => buildVideoRequest(data, shot, 'unsupported-4k'), /1080p/)
   data.videoResolution = '720p'
-  data.videoDurationSeconds = 31
+  shot.duration = 31
   assert.throws(() => buildVideoRequest(data, shot, 'too-long'), /4 至 30/)
 
   shot.productionMode = 'single_video_30'
@@ -226,6 +234,79 @@ test('Seedance 2.5 adds 4-30 second storyboard clips and an optional whole-30 mo
   assert.equal(whole.ratio, 'adaptive')
   data.wholeVideo30Resolution = '4k'
   assert.throws(() => buildVideoRequest(data, shot, 'wrong-whole-resolution'), /1080p/)
+})
+
+test('script timing reads the final second and explicit shot duration instead of action lengths', () => {
+  assert.equal(
+    videoPromptDuration(
+      '主体动作：1-2秒随动作转化光线；3秒松手侧立。\n节奏与结束：4秒内完成全遮蔽窗户。',
+    ),
+    4,
+  )
+  assert.equal(videoPromptDuration('0-2秒：拉帘。\n2秒至5.2秒：人物侧立。'), 5.2)
+  assert.equal(videoPromptDuration('0s–2s: opening\n2 sec to 6 seconds: closing'), 6)
+  assert.equal(
+    videoPromptDuration('主体动作：第3秒松手。\n节奏与结束：本镜时长：6秒，之后自然收尾。'),
+    6,
+  )
+  assert.equal(videoPromptDuration('本镜时长：4秒。参考原片时长为15秒。'), 4)
+  assert.equal(videoPromptDuration('在0.5秒内完成动作。'), 0.5)
+  assert.equal(videoPromptDuration('保持24帧每秒、1/50秒快门和1080P画质'), null)
+  assert.equal(videoPromptDuration('镜头缓慢推进，保持商品外观'), null)
+})
+
+test('script-driven storyboard requests update independently without changing saved media or trim timing', () => {
+  for (const model of [
+    MINIMAX_VIDEO_MODEL,
+    ANMIAO_VIDEO_MODEL,
+    ANMIAO25_VIDEO_MODEL,
+    ANMIAO20_FAST_VIDEO_MODEL,
+  ]) {
+    const { data, shot } = fixture()
+    data.videoModel = model
+    data.videoDurationSeconds = 15
+    shot.images = [{ id: 'image', url: 'https://assets.example/frame.png' }]
+    shot.imageId = shot.approvedImageId = 'image'
+    shot.videos = [{ id: 'old', url: 'https://assets.example/old.mp4', duration: 15 }]
+    shot.videoId = 'old'
+    shot.start = 1
+    shot.kept = true
+    shot.motion = '1-2秒拉帘；3秒松手。\n节奏与结束：4秒内完成动作。'
+    const next = { ...shot, id: 'next', motion: '0-3秒全景；3-7.2秒纹理特写。' }
+    data.shots.push(next)
+    const saved = JSON.stringify(data)
+    assert.equal(buildVideoRequest(data, shot, 'first').durationSeconds, 4)
+    assert.equal(buildVideoRequest(data, next, 'second').durationSeconds, 8)
+    assert.equal(JSON.stringify(data), saved)
+    shot.motion = '0-6秒：一镜到底，收尾完成。'
+    assert.equal(buildVideoRequest(data, shot, 'edited').durationSeconds, 6)
+    shot.motion = '单镜头缓慢推进'
+    shot.duration = 5.5
+    assert.equal(buildVideoRequest(data, shot, 'structured-fallback').durationSeconds, 6)
+    delete shot.duration
+    assert.equal(generationDuration(shot, data), 15)
+  }
+})
+
+test('reference segments and whole videos keep their structured timing, and scripts above the model limit are rejected', () => {
+  const { data, shot } = fixture()
+  data.videoModel = MINIMAX_VIDEO_MODEL
+  shot.images = [{ id: 'image', url: 'https://assets.example/frame.png' }]
+  shot.imageId = shot.approvedImageId = 'image'
+  shot.motion = '0-20秒：全景展示。'
+  assert.throws(() => buildVideoRequest(data, shot, 'over-limit'), /4 至 15/)
+  data.videoModel = ANMIAO25_VIDEO_MODEL
+  assert.equal(buildVideoRequest(data, shot, 'longer-model').durationSeconds, 20)
+  shot.motion = '0-31秒：全景展示。'
+  assert.throws(() => buildVideoRequest(data, shot, 'over-all-limits'), /4 至 30/)
+  shot.referenceRange = { start: 16, end: 21.2 }
+  shot.duration = 5.2
+  shot.motion = '在原片第16-21.2秒延续动作。'
+  assert.equal(buildVideoRequest(data, shot, 'reference').durationSeconds, 6)
+  shot.productionMode = 'single_video'
+  assert.equal(buildVideoRequest(data, shot, 'whole').durationSeconds, 15)
+  shot.productionMode = 'single_video_30'
+  assert.equal(buildVideoRequest(data, shot, 'whole-30').durationSeconds, 30)
 })
 
 test('audio is opt-in, reaches planning and generation, and source audio affects export fingerprints', () => {
@@ -301,10 +382,14 @@ test('whole-video prompts remove duplicate time labels while retaining distinct 
   ready.images = [{ id: 'image', url: 'https://assets.example/frame.png' }]
   ready.imageId = ready.approvedImageId = 'image'
   assert.equal(buildPlanRequest(data, 1, ready).currentShot.motion, expected)
+  assert.throws(() => buildVideoRequest(data, ready, 'incomplete'), /覆盖到第 30 秒/)
+  const validRaw = raw.replace('\n全片连续性', '\n12-30 秒：完成展示与收尾。\n全片连续性')
+  const validExpected = expected.replace('\n全片连续性', '\n12-30 秒：完成展示与收尾。\n全片连续性')
+  ready.motion = validRaw
   const request = buildVideoRequest(data, ready, 'whole-video')
-  assert.ok(request.prompt.includes(expected))
+  assert.ok(request.prompt.includes(validExpected))
   assert.match(request.prompt, /不锁定首帧构图/)
-  assert.equal(ready.motion, raw, 'Viewing and submitting do not rewrite the saved draft')
+  assert.equal(ready.motion, validRaw, 'Viewing and submitting do not rewrite the saved draft')
 })
 
 test('deleting a selected first frame selects another version and requires confirmation without deleting videos', () => {
@@ -898,6 +983,47 @@ test('terminal failures never stay generating and persistence is not premature s
     assert.equal(taskState(status), 'failed')
   assert.equal(taskState('SUCCESS'), 'completed')
   assert.equal(taskState('persisting'), 'processing')
+})
+
+test('successful first frame hides old failures without deleting versions or hiding new failures', () => {
+  const failure = { id: 'old', status: 'failed', error: '凭证中心主密钥未配置' }
+  const success = { id: 'success', status: 'completed', url: 'https://assets.example/frame.png' }
+  const images = [failure, success]
+  const before = JSON.stringify(images)
+  assert.deepEqual(imageGenerationNotices(), [])
+  assert.deepEqual(imageGenerationNotices([failure]), [failure])
+  assert.deepEqual(imageGenerationNotices(images), [])
+  assert.equal(JSON.stringify(images), before)
+  assert.deepEqual(imageGenerationNotices(JSON.parse(before)), [])
+  const retry = { id: 'retry', status: 'failed', error: '新一轮失败' }
+  assert.deepEqual(imageGenerationNotices([...images, retry]), [retry])
+  assert.deepEqual(imageGenerationNotices([...images, retry, { ...success, id: 'new' }]), [])
+})
+
+test('successful first frame keeps unconfirmed submissions and active generation visible', () => {
+  const success = { id: 'success', status: 'completed', url: 'https://assets.example/frame.png' }
+  for (const status of ['submitting', 'queued', 'processing', 'unknown']) {
+    const ongoing = { id: 'ongoing', status }
+    assert.deepEqual(imageGenerationNotices([ongoing, success]), [ongoing])
+  }
+  const failures = [1, 2, 3].map((id) => ({ id, status: 'failed' }))
+  assert.deepEqual(imageGenerationNotices(failures), failures.slice(-2))
+})
+
+test('only explicit pre-submission missing-master-key failures are known image rejections', () => {
+  assert.equal(imageSubmissionRejected({ status: 503, message: '凭证中心主密钥未配置' }), true)
+  assert.equal(imageSubmissionRejected({
+    status: 503,
+    message: '凭证中心主密钥未配置。请先核对生成记录，避免重复提交计费。',
+  }), true)
+  for (const error of [
+    undefined,
+    { message: '凭证中心主密钥未配置' },
+    { status: 502, message: '凭证中心主密钥未配置' },
+    { status: 503, message: '中转站暂时不可用' },
+    { status: 503, message: '状态查询中断：凭证中心主密钥未配置' },
+    { status: 503, message: '凭证中心主密钥未配置完成，但任务已提交' },
+  ]) assert.equal(imageSubmissionRejected(error), false)
 })
 
 test('successful video hides superseded failures without deleting history or hiding new failures', () => {

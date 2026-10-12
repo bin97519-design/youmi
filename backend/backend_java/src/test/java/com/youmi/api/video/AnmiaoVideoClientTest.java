@@ -104,7 +104,7 @@ class AnmiaoVideoClientTest {
     assertEquals("first_frame", body.get().path("content").path(1).path("role").asText());
     assertEquals("https://assets.example/frame.png",
         body.get().path("content").path(1).path("image_url").path("url").asText());
-    assertTrue(body.get().path("generate_audio").isMissingNode());
+    assertTrue(body.get().path("generate_audio").asBoolean());
     assertEquals("anmiao-video:99936297", response.getTaskId());
     assertEquals("queued", response.getStatus());
     verifyNoInteractions(media);
@@ -254,6 +254,31 @@ class AnmiaoVideoClientTest {
     verifyNoInteractions(media);
   }
 
+  @Test void bothSeedanceModelsKeepExplicitFirstAndLastFrameRoles() throws Exception {
+    start();
+    AtomicReference<JsonNode> body = new AtomicReference<>();
+    server.createContext("/contents/generations/tasks", exchange -> {
+      body.set(mapper.readTree(exchange.getRequestBody()));
+      respond(exchange, 200, "{\"id\":\"99936297\"}");
+    });
+    var properties = new AnmiaoVideoProperties();
+    properties.setApiKey("test-anmiao-key");
+    properties.setMiPerSecondByResolution(Map.of("720p", 5));
+    properties.setMiPerSecond25ByResolution(Map.of("720p", 7));
+    for (String model : List.of(AnmiaoVideoClient.MODEL, AnmiaoVideoClient.MODEL25)) {
+      var request = new VideoGenerationDtos.CreateTaskRequest("商品视频", model,
+          AnmiaoVideoClient.MODEL25.equals(model) ? "adaptive" : "9:16", 6, "720p", List.of(),
+          "https://assets.example/first.png", "https://assets.example/last.png",
+          null, true, null, null, null);
+      client(properties).createTask(request);
+      assertEquals(3, body.get().path("content").size());
+      assertEquals("first_frame", body.get().path("content").path(1).path("role").asText());
+      assertEquals("last_frame", body.get().path("content").path(2).path("role").asText());
+      assertEquals("https://assets.example/last.png",
+          body.get().path("content").path(2).path("image_url").path("url").asText());
+    }
+  }
+
   @Test void seedance25SubmitsThirtySecondsWithItsOwnModelAndRate() throws Exception {
     start();
     AtomicReference<JsonNode> body = new AtomicReference<>();
@@ -276,7 +301,7 @@ class AnmiaoVideoClientTest {
     assertEquals(30, body.get().path("duration").asInt());
     assertEquals("1080p", body.get().path("resolution").asText());
     assertEquals("adaptive", body.get().path("ratio").asText());
-    assertTrue(body.get().path("generate_audio").isMissingNode());
+    assertTrue(body.get().path("generate_audio").asBoolean());
   }
 
   @Test void seedance25RejectsFourKAndFixedFirstFrameRatioBeforeCharge() {
@@ -292,6 +317,29 @@ class AnmiaoVideoClientTest {
         "9:16", 30, "720p", List.of("https://assets.example/frame.png"),
         "https://assets.example/frame.png", null, null, true, null, null, null);
     assertTrue(assertThrows(ApiException.class, () -> client.price(wrongRatio)).getMessage().contains("自适应"));
+  }
+
+  @Test void bothSeedanceModelsForwardExplicitAudioChoiceAndKeepTheDefaultEnabled() throws Exception {
+    start();
+    AtomicReference<JsonNode> body = new AtomicReference<>();
+    server.createContext("/contents/generations/tasks", exchange -> {
+      body.set(mapper.readTree(exchange.getRequestBody()));
+      respond(exchange, 200, "{\"id\":\"99936297\"}");
+    });
+    var properties = new AnmiaoVideoProperties();
+    properties.setApiKey("test-anmiao-key");
+    properties.setMiPerSecondByResolution(Map.of("720p", 5));
+    properties.setMiPerSecond25ByResolution(Map.of("720p", 7));
+    for (String model : List.of(AnmiaoVideoClient.MODEL, AnmiaoVideoClient.MODEL25)) {
+      for (Boolean enabled : new Boolean[] { true, false, null }) {
+        var request = new VideoGenerationDtos.CreateTaskRequest("商品视频", model,
+            "adaptive", 6, "720p", List.of(), "https://assets.example/first.png", null,
+            null, enabled, null, null, null);
+        client(properties).createTask(request);
+        assertTrue(body.get().path("generate_audio").isBoolean());
+        assertEquals(enabled == null || enabled, body.get().path("generate_audio").asBoolean());
+      }
+    }
   }
 
   @Test void seedance25AllowsMultipleReferencesWithAnExplicitRatio() throws Exception {

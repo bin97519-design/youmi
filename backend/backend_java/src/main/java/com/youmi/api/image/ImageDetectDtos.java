@@ -1,11 +1,13 @@
 package com.youmi.api.image;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.List;
 
 public class ImageDetectDtos {
 
+  @JsonIgnoreProperties(ignoreUnknown = true)
   public record DetectRequest(String imageUrl, String layerId) {}
 
   public record DetectResponse(

@@ -86,9 +86,15 @@ public class AgentChatClient {
 
   public AiChatDtos.CompletionResult completeCanvasAgentVision(
       String systemPrompt, String userPrompt, List<String> imageUrls, Double temperature) throws Exception {
+    return completeCanvasAgentVision(systemPrompt, userPrompt, imageUrls, temperature, null);
+  }
+
+  public AiChatDtos.CompletionResult completeCanvasAgentVision(
+      String systemPrompt, String userPrompt, List<String> imageUrls, Double temperature,
+      Integer maxTokens) throws Exception {
     canvasAgentDropdown.set(true);
     try {
-      return completeVision(systemPrompt, userPrompt, imageUrls, temperature);
+      return completeVision(systemPrompt, userPrompt, imageUrls, temperature, maxTokens);
     } finally {
       canvasAgentDropdown.remove();
     }
@@ -111,7 +117,21 @@ public class AgentChatClient {
   public AiChatDtos.CompletionResult completeVision(
       String systemPrompt, String userPrompt, List<String> imageUrls,
       Double temperature, Integer maxTokens, Duration timeout) throws Exception {
+    return completeVisionForModel(properties.getModel(), systemPrompt, userPrompt, imageUrls,
+        temperature, maxTokens, timeout);
+  }
+
+  public AiChatDtos.CompletionResult completeVisionForModel(
+      String model, String systemPrompt, String userPrompt, List<String> imageUrls,
+      Double temperature) throws Exception {
+    return completeVisionForModel(model, systemPrompt, userPrompt, imageUrls, temperature, null, null);
+  }
+
+  private AiChatDtos.CompletionResult completeVisionForModel(
+      String model, String systemPrompt, String userPrompt, List<String> imageUrls,
+      Double temperature, Integer maxTokens, Duration timeout) throws Exception {
     requireConfigured();
+    if (model == null || model.isBlank()) throw new IllegalArgumentException("Agent vision model is empty");
     List<Map<String, Object>> content = new ArrayList<>();
     content.add(Map.of("type", "text", "text", userPrompt == null ? "" : userPrompt));
     if (imageUrls != null) {
@@ -130,7 +150,7 @@ public class AgentChatClient {
       messages.add(Map.of("role", "system", "content", systemPrompt));
     }
     messages.add(Map.of("role", "user", "content", content));
-    return completeRaw(messages, temperature, maxTokens, timeout);
+    return completeRaw(messages, temperature, maxTokens, timeout, model);
   }
 
   public AiChatDtos.CompletionResult completeConfiguredModel(
@@ -151,6 +171,20 @@ public class AgentChatClient {
       Double temperature,
       String source,
       String selectionMode) throws Exception {
+    return completeConfiguredModel(credential, systemPrompt, userPrompt, imageUrls, temperature,
+        source, selectionMode, null);
+  }
+
+  public AiChatDtos.CompletionResult completeConfiguredModel(
+      ResolvedModelApiKey credential, String systemPrompt, String userPrompt, List<String> imageUrls,
+      Double temperature, String source, String selectionMode, Integer maxTokens) throws Exception {
+    return completeConfiguredModel(credential, systemPrompt, userPrompt, imageUrls, temperature,
+        source, selectionMode, maxTokens, null);
+  }
+
+  public AiChatDtos.CompletionResult completeConfiguredModel(
+      ResolvedModelApiKey credential, String systemPrompt, String userPrompt, List<String> imageUrls,
+      Double temperature, String source, String selectionMode, Integer maxTokens, Duration timeout) throws Exception {
     if (credential == null || credential.apiKey() == null || credential.apiKey().isBlank()) {
       throw new IllegalStateException("识图推理模型 API Key 未配置");
     }
@@ -174,12 +208,13 @@ public class AgentChatClient {
     Map<String, Object> body = new LinkedHashMap<>();
     body.putAll(credential.defaultData());
     body.put("model", credential.model());
-    body.put("max_tokens", Math.max(200, properties.getMaxTokens()));
+    body.put("max_tokens", maxTokens == null ? Math.max(200, properties.getMaxTokens())
+        : Math.max(200, Math.min(16000, maxTokens)));
     body.put("temperature", temperature == null ? properties.getTemperature() : temperature);
     body.put("messages", messages);
     HttpRequest request = HttpRequest.newBuilder()
         .uri(URI.create(credential.generationEndpoint()))
-        .timeout(Duration.ofSeconds(Math.max(8, properties.getTimeoutSeconds())))
+        .timeout(timeout == null ? Duration.ofSeconds(Math.max(8, properties.getTimeoutSeconds())) : timeout)
         .header("Authorization", "Bearer " + credential.apiKey())
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
@@ -219,8 +254,14 @@ public class AgentChatClient {
 
   private AiChatDtos.CompletionResult completeRaw(
       List<Map<String, Object>> rawMessages, Double temperature, Integer maxTokens, Duration timeout) throws Exception {
+    return completeRaw(rawMessages, temperature, maxTokens, timeout, properties.getModel());
+  }
+
+  private AiChatDtos.CompletionResult completeRaw(
+      List<Map<String, Object>> rawMessages, Double temperature, Integer maxTokens, Duration timeout,
+      String model) throws Exception {
     Map<String, Object> body = new LinkedHashMap<>();
-    body.put("model", properties.getModel());
+    body.put("model", model);
     body.put("max_tokens", maxTokens == null ? Math.max(200, properties.getMaxTokens())
         : Math.max(200, Math.min(16000, maxTokens)));
     body.put("temperature", temperature == null ? properties.getTemperature() : temperature);
@@ -240,12 +281,12 @@ public class AgentChatClient {
     try {
       response = sendWithHandshakeRetry(request);
     } catch (Exception error) {
-      recordCall(canvasAgentDropdown.get() ? "canvas-agent" : "agent-chat", "chat", "teamorouter", properties.getModel(), null,
+      recordCall(canvasAgentDropdown.get() ? "canvas-agent" : "agent-chat", "chat", "teamorouter", model, null,
           canvasAgentDropdown.get() ? "dropdown" : "system_default",
           false, null, started, error);
       throw error;
     }
-    recordCall(canvasAgentDropdown.get() ? "canvas-agent" : "agent-chat", "chat", "teamorouter", properties.getModel(), null,
+    recordCall(canvasAgentDropdown.get() ? "canvas-agent" : "agent-chat", "chat", "teamorouter", model, null,
         canvasAgentDropdown.get() ? "dropdown" : "system_default",
         response.statusCode() >= 200 && response.statusCode() < 300, response.statusCode(), started, null);
     log.info("Agent model response status: {}", response.statusCode());
@@ -258,7 +299,7 @@ public class AgentChatClient {
     if (content.isBlank()) {
       throw new IllegalStateException("Agent model returned empty content");
     }
-    return new AiChatDtos.CompletionResult("teamorouter", properties.getModel(), content);
+    return new AiChatDtos.CompletionResult("teamorouter", model, content);
   }
 
   private void recordCall(String source, String operation, String provider, String model,

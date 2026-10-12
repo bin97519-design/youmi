@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -25,7 +26,8 @@ public class ProductVideoPlanJobs {
   private final ProductVideoPlanService plans;
   private final ObjectMapper mapper;
   private final Path root;
-  private final Map<Long, String> active = new ConcurrentHashMap<>();
+  private record JobKey(Long userId, String id) {}
+  private final Set<JobKey> active = ConcurrentHashMap.newKeySet();
   private final ThreadPoolExecutor executor = new ThreadPoolExecutor(
       2, 2, 0, TimeUnit.SECONDS, new ArrayBlockingQueue<>(8));
 
@@ -61,7 +63,7 @@ public class ProductVideoPlanJobs {
 
   public synchronized State get(Long userId, String id) throws Exception {
     Saved saved = read(userId, id);
-    if (running(saved.state()) && !id.equals(active.get(userId))) {
+    if (running(saved.state()) && !active.contains(new JobKey(userId, id))) {
       saved = withStatus(saved, "failed", "策划服务已重启，已完成部分已保留，请继续未完成分镜");
       write(userId, saved);
     }
@@ -74,15 +76,42 @@ public class ProductVideoPlanJobs {
     return schedule(userId, withStatus(read(userId, id), "queued", ""));
   }
 
+  public ProductVideoDtos.PlanResponse refine(Long userId, ProductVideoDtos.RefineRequest input) throws Exception {
+    if (input == null || input.request() == null || input.request().currentShot() == null)
+      throw new ApiException(400, "缺少待完善镜头");
+    plans.validate(input.request());
+    if (input.planJobId() != null && input.shotId() != null) {
+      Saved saved = null;
+      try { saved = read(userId, input.planJobId()); }
+      catch (ApiException error) { if (error.getCode() != 404) throw error; }
+      String prefix = "plan-" + input.planJobId() + "-";
+      if (saved != null && saved.outline() != null && input.shotId().startsWith(prefix)
+          && saved.request().referenceVideo() == null && input.request().referenceVideo() == null
+          && java.util.Objects.equals(saved.request().brief(), input.request().brief())
+          && java.util.Objects.equals(saved.request().images(), input.request().images())
+          && java.util.Objects.equals(saved.request().planningModel(), input.request().planningModel())
+          && java.util.Objects.equals(saved.request().productionMode(), input.request().productionMode())) {
+        String index = input.shotId().substring(prefix.length());
+        if (index.matches("[0-9]{1,2}")) {
+          int number = Integer.parseInt(index);
+          if (number < saved.outline().path("shots").size())
+            return plans.refineFromOutline(input.request(), saved.outline(), number);
+        }
+      }
+    }
+    return plans.plan(input.request());
+  }
+
   private State schedule(Long userId, Saved saved) throws Exception {
     String id = saved.state().id();
-    if (active.putIfAbsent(userId, id) != null) throw new ApiException(409, "当前已有分镜策划正在进行，请等待完成");
+    var key = new JobKey(userId, id);
+    if (!active.add(key)) throw new ApiException(409, "这条分镜策划正在进行，请等待完成");
     try {
       write(userId, saved);
       executor.execute(() -> run(userId, saved));
       return saved.state();
     } catch (Exception error) {
-      active.remove(userId, id);
+      active.remove(key);
       write(userId, withStatus(saved, "failed", "策划队列繁忙，请稍后继续"));
       throw new ApiException(503, "策划队列繁忙，请稍后继续");
     }
@@ -121,7 +150,7 @@ public class ProductVideoPlanJobs {
       String message = error instanceof ApiException ? error.getMessage() : "分镜响应未能完整解析，已完成部分已保留，可稍后继续";
       try { finish(userId, withStatus(read(userId, id), "failed", message)); }
       catch (Exception storageError) {
-        active.remove(userId, id);
+        active.remove(new JobKey(userId, id));
         log.error("Cannot save plan job {} failure", id, storageError);
       }
     }
@@ -129,7 +158,7 @@ public class ProductVideoPlanJobs {
 
   private synchronized void finish(Long userId, Saved saved) throws Exception {
     write(userId, saved);
-    active.remove(userId, saved.state().id());
+    active.remove(new JobKey(userId, saved.state().id()));
   }
 
   private Saved withStatus(Saved saved, String status, String error) {

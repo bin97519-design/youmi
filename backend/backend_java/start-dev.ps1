@@ -94,6 +94,16 @@ if (-not $env:MYSQL_PASSWORD) {
 if (-not $env:SERVER_PORT) {
   $env:SERVER_PORT = "8083"
 }
+# Use the existing vault key; replacing it would make stored credentials unreadable.
+foreach ($name in @("YOUMI_CREDENTIAL_MASTER_KEY", "YOUMI_CREDENTIAL_MASTER_KEY_VERSION")) {
+  $value = [Environment]::GetEnvironmentVariable($name, "User")
+  if ($value) {
+    [Environment]::SetEnvironmentVariable($name, $value, "Process")
+  }
+}
+if (-not $env:YOUMI_CREDENTIAL_MASTER_KEY) {
+  Write-Warning "Credential vault master key is missing. Model-managed generation requires the original YOUMI_CREDENTIAL_MASTER_KEY."
+}
 # Local credential development: plain HTTP is allowed only on a loopback-bound server.
 # Production still uses the HTTPS requirement from application.yml.
 $env:SERVER_ADDRESS = "127.0.0.1"

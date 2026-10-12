@@ -18,7 +18,8 @@ class VideoTaskControllerTest {
   final MinimaxVideoClient minimax = mock(MinimaxVideoClient.class);
   final AdminAuthService auth = mock(AdminAuthService.class);
   final MiValueService billing = mock(MiValueService.class);
-  final VideoTaskController controller = new VideoTaskController(legacy, billing, auth, chat, anmiao, minimax);
+  final VideoTaskHistory history = mock(VideoTaskHistory.class);
+  final VideoTaskController controller = new VideoTaskController(legacy, billing, auth, chat, anmiao, minimax, history);
 
   @Test void removedModelCannotFallThroughToLegacyTransportOrBilling() {
     when(auth.requireUserId("token")).thenReturn(7L);
@@ -90,7 +91,11 @@ class VideoTaskControllerTest {
     result.setStatus("completed");
     controller.get(created.getTaskId(), "token");
     verify(billing).commitByTaskId(created.getTaskId());
-    verifyNoInteractions(legacy, chat, anmiao);
+    verifyNoInteractions(legacy, chat);
+    verify(anmiao, never()).createTask(any());
+    verify(anmiao, never()).price(any());
+    verify(history).created(eq(7L), eq(request), eq(created), anyLong());
+    verify(history, times(2)).status(7L, result);
   }
 
   @Test void minimaxUnavailableDoesNotChargeAndRejectedOrFailedTaskRefunds() throws Exception {
@@ -120,7 +125,9 @@ class VideoTaskControllerTest {
     when(chat.create(7L, ChatVideoClientTest.request())).thenReturn(new VideoGenerationDtos.CreateTaskResponse());
     controller.create("token", ChatVideoClientTest.request());
     verify(chat).create(7L, ChatVideoClientTest.request());
-    verifyNoInteractions(legacy, billing, anmiao);
+    verifyNoInteractions(legacy, billing);
+    verify(anmiao, never()).createTask(any());
+    verify(anmiao, never()).price(any());
   }
 
   @Test void fifteenSecondRequestKeepsItsExistingRouteAndAccounting() throws Exception {
@@ -140,6 +147,7 @@ class VideoTaskControllerTest {
     verify(anmiao).isConfiguredKeyExcluded(request.model());
     verifyNoMoreInteractions(anmiao);
     verifyNoInteractions(chat);
+    verify(history).created(eq(7L), eq(request), eq(response), anyLong());
   }
 
   @Test void pollingChecksOwnershipAndRoutesToCorrectProvider() throws Exception {
@@ -160,6 +168,7 @@ class VideoTaskControllerTest {
   @Test void perSecondRequestUsesSeparateTransportAndDurationPrice() throws Exception {
     when(auth.requireUserId("token")).thenReturn(7L);
     var request = new VideoGenerationDtos.CreateTaskRequest("test", AnmiaoVideoClient.MODEL, "16:9", 6);
+    when(anmiao.supportsModel(AnmiaoVideoClient.MODEL)).thenReturn(true);
     var response = new VideoGenerationDtos.CreateTaskResponse();
     response.setTaskId("anmiao-video:123");
     when(anmiao.supportsModel(AnmiaoVideoClient.MODEL)).thenReturn(true);
@@ -251,6 +260,7 @@ class VideoTaskControllerTest {
     when(auth.requireUserId("token")).thenReturn(7L);
     var request = new VideoGenerationDtos.CreateTaskRequest("test", AnmiaoVideoClient.MODEL25,
         "adaptive", 30);
+    when(anmiao.supportsModel(AnmiaoVideoClient.MODEL25)).thenReturn(true);
     var response = new VideoGenerationDtos.CreateTaskResponse();
     response.setTaskId("anmiao-video:456");
     when(anmiao.supportsModel(AnmiaoVideoClient.MODEL25)).thenReturn(true);

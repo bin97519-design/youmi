@@ -25,6 +25,8 @@ public class ProductVideoController {
   private final AnmiaoVideoClient anmiaoClient;
   private ModelApiKeyService modelApiKeys;
   private MinimaxVideoClient minimaxClient;
+  private ProductVideoPlanJobs planJobs;
+  private ProductVideoContinuityService continuityReviews;
 
   public ProductVideoController(AdminAuthService auth, ProductVideoPlanService plans,
       VideoCompositionService compositions, SelectionPoolService products, MiValueProperties pricing,
@@ -52,6 +54,12 @@ public class ProductVideoController {
   @Autowired(required = false)
   void setModelApiKeys(ModelApiKeyService modelApiKeys) { this.modelApiKeys = modelApiKeys; }
 
+  @Autowired
+  void setPlanJobs(ProductVideoPlanJobs planJobs) { this.planJobs = planJobs; }
+
+  @Autowired
+  void setContinuityReviews(ProductVideoContinuityService reviews) { this.continuityReviews = reviews; }
+
   @GetMapping("/capabilities")
   public ApiResponse<?> capabilities(@RequestHeader(value = "Authorization", required = false) String token) {
     auth.requireUserId(token);
@@ -64,6 +72,14 @@ public class ProductVideoController {
     boolean configuredHailuo = minimaxClient != null && minimaxClient.hasConfiguredHailuoModel("product-video-video");
     return ApiResponse.ok(Map.ofEntries(
         Map.entry("composition", compositions.available()),
+        Map.entry("compositionResolutions", java.util.List.of("720p", "1080p", "2K", "4K")),
+        Map.entry("videoSubmissionRecovery", true),
+        Map.entry("localShotRefinement", true),
+        Map.entry("wholeTimelineEditing", true),
+        Map.entry("wholeTimelineRefinement", true),
+        Map.entry("wholeTimelineReview", continuityReviews != null && continuityReviews.available()),
+        Map.entry("continuityReview", continuityReviews != null && continuityReviews.available()),
+        Map.entry("audioSmoothing", true),
         Map.entry("videoPrice", pricing.getPrice(MiBizType.VIDEO)),
         Map.entry("imagePrices", pricing.getImagePrices()),
         Map.entry("planStageTimeoutSeconds", plans.stageTimeoutSeconds()),
@@ -75,6 +91,7 @@ public class ProductVideoController {
         Map.entry("wholeVideoShotCount", true), Map.entry("synchronizedAudio", true),
         Map.entry("referenceVideoReverse", true), Map.entry("longReferenceVideo", true),
         Map.entry("referenceVideoHighlights", true),
+        Map.entry("canvasVideoReversePrompt", true),
         Map.entry("fixedContinuity", true),
         Map.entry("fixedContinuityImages", true),
         Map.entry("wholeVideoOptionalContinuity", true),
@@ -93,10 +110,62 @@ public class ProductVideoController {
     return ApiResponse.ok(plans.plan(request));
   }
 
+  @PostMapping("/reverse-prompt")
+  public ApiResponse<ProductVideoDtos.ReversePromptResponse> reversePrompt(
+      @RequestHeader(value = "Authorization", required = false) String token,
+      @RequestBody ProductVideoDtos.ReversePromptRequest request) throws Exception {
+    auth.requireUserId(token);
+    return ApiResponse.ok(plans.reversePrompt(request));
+  }
+
+  @PostMapping("/refine")
+  public ApiResponse<ProductVideoDtos.PlanResponse> refine(
+      @RequestHeader(value = "Authorization", required = false) String token,
+      @RequestBody ProductVideoDtos.RefineRequest request) throws Exception {
+    return ApiResponse.ok(planJobs.refine(auth.requireUserId(token), request));
+  }
+
+  @PostMapping("/refine-timeline")
+  public ApiResponse<ProductVideoDtos.TimelineBeat> refineTimeline(
+      @RequestHeader(value = "Authorization", required = false) String token,
+      @RequestBody ProductVideoDtos.TimelineRefineRequest request) throws Exception {
+    auth.requireUserId(token);
+    return ApiResponse.ok(plans.refineTimeline(request));
+  }
+
   @PostMapping("/compositions")
   public ApiResponse<?> compose(@RequestHeader(value = "Authorization", required = false) String token,
       @RequestBody ProductVideoDtos.ComposeRequest request) throws Exception {
-    return ApiResponse.ok(compositions.create(auth.requireUserId(token), request));
+    Long userId = auth.requireUserId(token);
+    if (request != null && request.continuityReviewId() != null) {
+      if (continuityReviews == null) throw new ApiException(503, "视频检查服务尚未就绪");
+      continuityReviews.verifyComposition(userId, request.continuityReviewId(), request.clips());
+    }
+    return ApiResponse.ok(compositions.create(userId, request));
+  }
+
+  @PostMapping("/continuity-reviews")
+  public ApiResponse<?> review(@RequestHeader(value = "Authorization", required = false) String token,
+      @RequestBody ProductVideoContinuityService.Request request) throws Exception {
+    Long userId = auth.requireUserId(token);
+    if (continuityReviews == null) throw new ApiException(503, "视频检查服务尚未就绪");
+    return ApiResponse.ok(continuityReviews.create(userId, request));
+  }
+
+  @GetMapping("/continuity-reviews/{id}")
+  public ApiResponse<?> reviewStatus(@RequestHeader(value = "Authorization", required = false) String token,
+      @PathVariable String id) throws Exception {
+    Long userId = auth.requireUserId(token);
+    if (continuityReviews == null) throw new ApiException(503, "视频检查服务尚未就绪");
+    return ApiResponse.ok(continuityReviews.get(userId, id));
+  }
+
+  @PostMapping("/continuity-reviews/{id}/cancel")
+  public ApiResponse<?> cancelReview(@RequestHeader(value = "Authorization", required = false) String token,
+      @PathVariable String id) throws Exception {
+    Long userId = auth.requireUserId(token);
+    if (continuityReviews == null) throw new ApiException(503, "视频检查服务尚未就绪");
+    return ApiResponse.ok(continuityReviews.cancel(userId, id));
   }
 
   @GetMapping("/compositions/{id}")

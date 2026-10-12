@@ -52,7 +52,12 @@ public class MinimaxVideoClient {
   }
 
   public boolean hasConfiguredHailuoModel(String featureCode) {
-    return resolveHailuoCredential(featureCode).isPresent();
+    if (modelApiKeys == null) return false;
+    return modelApiKeys.enabledModelOptions(ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, featureCode)
+        .stream().anyMatch(option -> MODEL.equalsIgnoreCase(option.value())
+            || CONFIGURED_MODEL.equalsIgnoreCase(option.value())
+            || MODEL.equalsIgnoreCase(option.label())
+            || CONFIGURED_MODEL.equalsIgnoreCase(option.label()));
   }
 
   public boolean usesMappedHailuoAlias(String model, String featureCode) {
@@ -81,7 +86,7 @@ public class MinimaxVideoClient {
   }
 
   public boolean supportsConfiguredHailuoModel(String model) {
-    return CONFIGURED_MODEL.equals(model) && resolveHailuoCredential().isPresent();
+    return CONFIGURED_MODEL.equals(model) && hasConfiguredHailuoModel();
   }
 
   public VideoGenerationDtos.CreateTaskResponse createTask(VideoGenerationDtos.CreateTaskRequest request) throws Exception {

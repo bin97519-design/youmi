@@ -34,28 +34,41 @@ public class VideoTaskController {
   private final AnmiaoVideoClient anmiaoVideos;
   private final MinimaxVideoClient minimaxVideos;
   private ModelApiKeyService modelApiKeys;
+  private final VideoTaskHistory history;
+  private VideoTaskSubmissions submissions;
 
   public VideoTaskController(
       VideoGenerationClient videoGenerationClient,
       MiValueService miValueService,
       AdminAuthService adminAuthService, ChatVideoJobs chatVideos, AnmiaoVideoClient anmiaoVideos,
-      MinimaxVideoClient minimaxVideos) {
+      MinimaxVideoClient minimaxVideos, VideoTaskHistory history) {
     this.videoGenerationClient = videoGenerationClient;
     this.miValueService = miValueService;
     this.adminAuthService = adminAuthService;
     this.chatVideos = chatVideos;
     this.anmiaoVideos = anmiaoVideos;
     this.minimaxVideos = minimaxVideos;
+    this.history = history;
   }
 
   @org.springframework.beans.factory.annotation.Autowired(required = false)
   void setModelApiKeys(ModelApiKeyService modelApiKeys) { this.modelApiKeys = modelApiKeys; }
+
+  @org.springframework.beans.factory.annotation.Autowired
+  void setSubmissions(VideoTaskSubmissions submissions) { this.submissions = submissions; }
 
   @PostMapping
   public ApiResponse<VideoGenerationDtos.CreateTaskResponse> create(
       @RequestHeader(value = "Authorization", required = false) String authorization,
       @RequestBody VideoGenerationDtos.CreateTaskRequest request) throws Exception {
     Long userId = adminAuthService.requireUserId(authorization);
+    return submissions == null ? createForUser(userId, request)
+        : ApiResponse.ok(submissions.create(userId, request, () -> createForUser(userId, request).data()));
+  }
+
+  private ApiResponse<VideoGenerationDtos.CreateTaskResponse> createForUser(Long userId,
+      VideoGenerationDtos.CreateTaskRequest request) throws Exception {
+    long startedAt = System.currentTimeMillis();
     String featureCode = request == null ? null : request.featureCode();
     boolean productVideoCall = "product-video-video".equals(featureCode);
     if (featureCode != null && !featureCode.isBlank()
@@ -69,8 +82,11 @@ public class VideoTaskController {
       throw new ApiException(400, "该视频模型未映射到主图视频分镜视频生成功能");
     if (request != null && "minimax-h3-max".equals(request.model()))
       throw new ApiException(400, "原视频模型已移除，请重新选择视频模型");
-    if (request != null && ChatVideoClient.MODEL.equals(request.model()))
-      return ApiResponse.ok(chatVideos.create(userId, request));
+    if (request != null && ChatVideoClient.MODEL.equals(request.model())) {
+      VideoGenerationDtos.CreateTaskResponse response = chatVideos.create(userId, request);
+      history.created(userId, request, response, startedAt);
+      return ApiResponse.ok(response);
+    }
     boolean minimax = request != null && MinimaxVideoClient.supportsModel(request.model());
     boolean configuredModel = request != null && !minimax && (productVideoCall
         ? anmiaoVideos.supportsModel(request.model(), featureCode)
@@ -87,6 +103,7 @@ public class VideoTaskController {
         miValueService.linkTask(deduct.logId(), response.getTaskId());
         response.setConsumedMi(deduct.price());
         response.setBalance(miValueService.getBalance(userId));
+        history.created(userId, request, response, startedAt);
         return ApiResponse.ok(response);
       } catch (Exception error) {
         miValueService.rollback(userId, deduct.logId());
@@ -100,6 +117,7 @@ public class VideoTaskController {
       miValueService.commit(deduct.logId());
       response.setConsumedMi(deduct.price());
       response.setBalance(miValueService.getBalance(userId));
+      history.created(userId, request, response, startedAt);
       return ApiResponse.ok(response);
     } catch (Exception e) {
       miValueService.rollback(userId, deduct.logId());
@@ -127,12 +145,24 @@ public class VideoTaskController {
     return ApiResponse.ok(anmiaoVideos.configuredModels(featureCode));
   }
 
+  @GetMapping("/by-client-task-id")
+  public ApiResponse<VideoTaskSubmissions.Lookup> byClientTaskId(
+      @org.springframework.web.bind.annotation.RequestParam("client_task_id") String clientId,
+      @RequestHeader(value = "Authorization", required = false) String authorization) throws Exception {
+    Long userId = adminAuthService.requireUserId(authorization);
+    return ApiResponse.ok(submissions.lookup(userId, clientId));
+  }
+
   @GetMapping("/{taskId}")
   public ApiResponse<VideoGenerationDtos.TaskStatusResponse> get(
       @PathVariable String taskId,
       @RequestHeader(value = "Authorization", required = false) String authorization)
       throws Exception {
     Long userId = adminAuthService.requireUserId(authorization);
+    return ApiResponse.ok(refresh(userId, taskId));
+  }
+
+  VideoGenerationDtos.TaskStatusResponse refresh(Long userId, String taskId) throws Exception {
     if (!miValueService.isTaskOwnedByUser(userId, taskId, MiBizType.VIDEO)) {
       throw new ApiException(404, "Video task not found");
     }
@@ -157,7 +187,8 @@ public class VideoTaskController {
         miValueService.commitByTaskId(taskId);
       }
     }
-    return ApiResponse.ok(response);
+    history.status(userId, response);
+    return response;
   }
 
   private Optional<BigDecimal> providerCostInMi(JsonNode raw) {

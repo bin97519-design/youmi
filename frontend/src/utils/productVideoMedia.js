@@ -83,7 +83,9 @@ export function readProductVideoMediaSize(url, kind, timeoutMs = 12000) {
     const loaded = () => {
       const width = kind === 'video' ? media.videoWidth : media.naturalWidth
       const height = kind === 'video' ? media.videoHeight : media.naturalHeight
-      finish(positive(width) && positive(height) ? { width, height } : null)
+      finish(positive(width) && positive(height)
+        ? { width, height, ...(kind === 'video' && positive(media.duration) ? { duration: media.duration } : {}) }
+        : null)
     }
     const timer = setTimeout(() => finish(null), timeoutMs)
     media.onerror = () => finish(null)

@@ -4,6 +4,56 @@ export function isCopyableCanvasMedia(layer) {
   return isReviewableCanvasAsset(layer) && !layer.generating
 }
 
+const CLIPBOARD_MEDIA_FIELDS = [
+  'url',
+  'type',
+  'name',
+  'width',
+  'height',
+  'naturalWidth',
+  'naturalHeight',
+  'thumbnailUrl',
+  'posterUrl',
+  'duration',
+  'sourceType',
+  'genMeta',
+  'videoMeta',
+  'videoNodeDraft',
+  'prompt',
+  'zIndex',
+  'x',
+  'y',
+]
+
+export function canvasMediaClipboardEntries(layers, selectedIds, detectedElements = {}) {
+  const ids = new Set(selectedIds)
+  return layers
+    .filter((layer) => ids.has(layer.id) && isCopyableCanvasMedia(layer))
+    .slice()
+    .sort((left, right) => (left.zIndex || 0) - (right.zIndex || 0))
+    .map((layer) =>
+      JSON.parse(
+        JSON.stringify({
+          layerId: layer.id,
+          ...Object.fromEntries(CLIPBOARD_MEDIA_FIELDS.map((field) => [field, layer[field]])),
+          elements: layer.type === 'video' ? [] : detectedElements[layer.id] || [],
+        }),
+      ),
+    )
+}
+
+export function canvasMediaClipboardLayerFields(entry, imageThumbnailUrl) {
+  const fields = Object.fromEntries(
+    CLIPBOARD_MEDIA_FIELDS.filter((field) => Object.hasOwn(entry, field)).map((field) => [
+      field,
+      entry[field],
+    ]),
+  )
+  fields.type = entry.type === 'video' ? 'video' : 'image'
+  if (fields.type === 'image') fields.thumbnailUrl = imageThumbnailUrl
+  return JSON.parse(JSON.stringify(fields))
+}
+
 export function canvasMediaSummary(layers = []) {
   const media = layers.filter(isCopyableCanvasMedia)
   const videos = media.filter((layer) => layer.type === 'video').length

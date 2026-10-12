@@ -86,7 +86,15 @@ public final class CanvasAgentDtos {
       List<String> models,
       String conversationId,
       String agentModel,
-      VideoDraftSettings video) {
+      VideoDraftSettings video,
+      ReferenceVideo referenceVideo) {
+    public ChatRequest(String canvasId, String instruction, List<ChatMessage> history,
+        List<LayerContext> layers, List<String> selectedLayerIds, List<String> referenceLayerIds,
+        String model, String ratio, String resolution, Integer count, List<String> models,
+        String conversationId, String agentModel, VideoDraftSettings video) {
+      this(canvasId, instruction, history, layers, selectedLayerIds, referenceLayerIds,
+          model, ratio, resolution, count, models, conversationId, agentModel, video, null);
+    }
     public ChatRequest(String canvasId, String instruction, List<ChatMessage> history,
         List<LayerContext> layers, List<String> selectedLayerIds, List<String> referenceLayerIds,
         String model, String ratio, String resolution, Integer count, List<String> models,
@@ -131,6 +139,12 @@ public final class CanvasAgentDtos {
   public record VideoDraftSettings(
       String model, String ratio, String resolution, Integer duration,
       Boolean generateAudio, String referenceMode) {}
+
+  public record ReferenceVideo(
+      String url, String name, double duration, Integer width, Integer height,
+      String audioSummary, List<VideoFrame> frames) {}
+
+  public record VideoFrame(String url, double time) {}
 
   public record ChatResponse(
       String provider,

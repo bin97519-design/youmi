@@ -11,6 +11,8 @@ import {
   videoReferencePayload,
   videoReferenceLimit,
   isProviderReportedCostVideoModel,
+  supportsVideoAudioToggle,
+  videoAudioPayload,
 } from './chatVideoSettings.js'
 import {
   ANMIAO_VIDEO_MODEL,
@@ -116,6 +118,20 @@ test('legacy chat video keeps fixed duration, resolution and price', () => {
   assert.deepEqual(videoDurationOptions(model), [15])
   assert.equal(estimatedVideoMiCost(model, '480p', 15, null), 50)
   assert.equal(validVideoDuration(model, 6), false)
+})
+
+test('SD2 and SD2.5 send explicit audio on/off while H3 omits unsupported audio parameters', () => {
+  for (const model of [ANMIAO_VIDEO_MODEL, ANMIAO25_VIDEO_MODEL, 'seedance-2.0-fast-0826-720p']) {
+    assert.equal(supportsVideoAudioToggle(model), true)
+    assert.deepEqual(videoAudioPayload(model, true), { generate_audio: true })
+    assert.deepEqual(videoAudioPayload(model, false), { generate_audio: false })
+    assert.deepEqual(videoAudioPayload(model), { generate_audio: true })
+  }
+  for (const model of [MINIMAX_VIDEO_MODEL, 'minimax-h3-max']) {
+    assert.equal(supportsVideoAudioToggle(model), false)
+    assert.deepEqual(videoAudioPayload(model, false), {})
+    assert.deepEqual(videoAudioPayload(model, true), {})
+  }
 })
 
 test('per-second chat video exposes standard resolutions and 4-15 seconds', () => {

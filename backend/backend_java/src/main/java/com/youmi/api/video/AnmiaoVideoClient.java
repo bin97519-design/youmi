@@ -150,6 +150,7 @@ public class AnmiaoVideoClient {
       body.put("resolution", resolution(request));
       body.put("ratio", request.ratio());
       body.put("duration", request.durationSeconds());
+      body.put("generate_audio", request.generateAudio() == null || request.generateAudio());
       root = sendUrl(apiKey, "POST", endpoint, body);
       id = providerTaskId(root);
       if (!id.matches("[A-Za-z0-9_-]+")) throw new ApiException(502, "按秒视频接口未返回有效任务编号");

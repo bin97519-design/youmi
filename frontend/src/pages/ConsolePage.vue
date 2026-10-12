@@ -15,6 +15,7 @@ import {
   buildTotalTrendSeries,
 } from '../utils/consoleTrend'
 import { subscribeImageTaskPersistence } from '../utils/imageTaskSync'
+import { consoleTaskStatsUrl, mergeConsoleTaskStats, normalizeConsoleTaskStats } from '../utils/consoleTaskStats'
 import {
   canonicalModelApiProvider,
   filterModelApiKeys,
@@ -51,54 +52,52 @@ const modelApiKeyDialogOpen = ref(false)
 const stats = ref(null)
 const taskRows = ref([])
 const taskRowsTotal = ref(0)
+const statsKind = ref('all')
+const statsKinds = [
+  { key: 'all', label: '全部', icon: 'ri-apps-2-line' },
+  { key: 'image', label: '图片', icon: 'ri-image-line' },
+  { key: 'video', label: '视频', icon: 'ri-video-line' },
+  { key: 'enhance', label: '视频超分', icon: 'ri-hd-line' },
+]
+const statsKindLabel = computed(() => statsKinds.find((item) => item.key === statsKind.value).label)
+const statsResultUnit = computed(() => statsKind.value === 'all' ? '任务' : statsKind.value === 'image' ? '张' : '条')
+const statsResultMetric = computed(() => statsKind.value === 'all' ? 'tasks' : statsKind.value === 'image' ? 'images' : 'videos')
+function statsOutputLabel(images = 0, videos = 0) {
+  const parts = []
+  if (images) parts.push(`${images} 张图`)
+  if (videos) parts.push(`${videos} 条视频`)
+  return parts.join(' · ') || '0 项'
+}
+function isVideoTask(task) {
+  return ['VIDEO', 'VIDEO_ENHANCE'].includes(task.taskType)
+}
+function taskTypeLabel(task) {
+  return task.taskType === 'VIDEO_ENHANCE' ? '视频超分' : isVideoTask(task) ? '视频' : '图片'
+}
+let statsRequestSequence = 0
 const financeRefreshKey = ref(0)
 const elapsedClock = ref(Date.now())
 let elapsedTimer = null
 let taskRefreshTimer = null
 let unsubscribeTaskPersistence = null
 
-function parseImageUrls(raw) {
-  if (!raw) return []
-  if (Array.isArray(raw)) return raw.filter((url) => typeof url === 'string' && url.trim())
-  if (typeof raw !== 'string') return []
-  try {
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed)
-      ? parsed.filter((url) => typeof url === 'string' && url.trim())
-      : typeof parsed === 'string' && parsed.trim()
-        ? [parsed]
-        : []
-  } catch {
-    return raw.trim() ? [raw.trim()] : []
-  }
-}
-
-function normalizeImageStats(imageStats) {
-  if (!imageStats) return imageStats
-  return {
-    ...imageStats,
-    tasks: (imageStats.tasks || []).map((task) => {
-      const persisted = parseImageUrls(task.resultUrls)
-      const original = parseImageUrls(task.imageUrls)
-      const previewUrls = [...new Set(persisted.length ? persisted : original)]
-      const sourceStatus = String(task.status || '').trim().toLowerCase()
-      const failed = ['failed', 'error', 'cancelled', 'canceled'].includes(sourceStatus)
-      const imageGenerated = previewUrls.length > 0 && !failed
-      const persistStatus = String(
-        task.persistStatus || (persisted.length ? 'DONE' : sourceStatus === 'persisting' ? 'PENDING' : ''),
-      ).toUpperCase()
-      return {
-        ...task,
-        sourceStatus,
-        status: imageGenerated ? 'completed' : task.status,
-        persistStatus,
-        previewUrls,
-      }
-    }),
-  }
-}
-
 const taskImageViewer = reactive({ open: false, urls: [], index: 0, title: '' })
+const taskVideoViewer = reactive({ open: false, url: '', title: '' })
+const taskVideoCloseButton = ref(null)
+let previousVideoFocus = null
+function openTaskVideoViewer(task) {
+  if (!task.videoPreviewUrls?.length) return
+  previousVideoFocus = document.activeElement
+  taskVideoViewer.url = task.videoPreviewUrls[0]
+  taskVideoViewer.title = task.taskId
+  taskVideoViewer.open = true
+  nextTick(() => taskVideoCloseButton.value?.focus())
+}
+function closeTaskVideoViewer() {
+  taskVideoViewer.open = false
+  previousVideoFocus?.focus?.()
+  previousVideoFocus = null
+}
 const taskPromptTooltip = reactive({
   show: false,
   text: '',
@@ -350,23 +349,30 @@ const filteredRoles = computed(() => {
 })
 
 const filteredTasks = computed(() => {
-  return taskRows.value
+  if (statsKind.value === 'image') return taskRows.value
+  let list = taskRows.value
+  if (taskStatusFilter.value) list = list.filter((task) => taskStatusKey(task.status) === taskStatusFilter.value)
+  if (taskModelFilter.value) list = list.filter((task) => (task.requestedModel || task.model) === taskModelFilter.value)
+  if (taskUserFilter.value) list = list.filter((task) => String(task.userId) === taskUserFilter.value)
+  return list
 })
 
-/* ── 最近生图任务分页（客户端分页，复用 image-stats 接口重新加载） ── */
+/* Image tasks use server pagination; video and combined tasks retain the recent-task list. */
 const taskCurrentPage = ref(1)
 const taskPageSize = ref(10)
 const taskReloading = ref(false)
 
 const pagedTasks = computed(() => {
-  return filteredTasks.value
+  if (statsKind.value === 'image') return filteredTasks.value
+  const start = (taskCurrentPage.value - 1) * taskPageSize.value
+  return filteredTasks.value.slice(start, start + taskPageSize.value)
 })
-const taskTotal = computed(() => taskRowsTotal.value)
+const taskTotal = computed(() => statsKind.value === 'image' ? taskRowsTotal.value : filteredTasks.value.length)
 const taskTotalPages = computed(() => Math.max(1, Math.ceil(taskTotal.value / taskPageSize.value)))
 /* 筛选条件变化只重置页码，保留筛选值 */
 watch([taskStatusFilter, taskModelFilter, taskUserFilter], () => {
   taskCurrentPage.value = 1
-  if (stats.value) reloadTaskPage(1)
+  if (stats.value && statsKind.value === 'image') reloadTaskPage(1)
 })
 
 /* ── 日期范围筛选（最近生图任务） ── */
@@ -572,6 +578,77 @@ function buildImageTaskQuery(page = taskCurrentPage.value, includeTotal = true) 
   return qs ? `?${qs}` : ''
 }
 
+async function fetchImageTaskPage(page, includeTotal = true) {
+  const sequence = ++statsRequestSequence
+  const taskPage = await api('/api/admin/image-tasks' + buildImageTaskQuery(page, includeTotal))
+  if (sequence !== statsRequestSequence || statsKind.value !== 'image') return
+  taskRows.value = normalizeConsoleTaskStats({ tasks: taskPage?.tasks }).tasks
+  if (Number(taskPage?.total) >= 0) taskRowsTotal.value = Number(taskPage.total)
+  errorText.value = ''
+}
+
+async function fetchCombinedImageStats(dateFrom, dateTo) {
+  const params = new URLSearchParams({ page: '1', pageSize: '100', includeTotal: 'true' })
+  if (dateFrom) params.set('dateFrom', dateFrom)
+  if (dateTo) params.set('dateTo', dateTo)
+  const [imageStats, firstPage] = await Promise.all([
+    api(consoleTaskStatsUrl('image', dateFrom, dateTo)),
+    api(`/api/admin/image-tasks?${params}`),
+  ])
+  const pageCount = Math.min(5, Math.ceil((Number(firstPage?.total) || 0) / 100))
+  const remainingPages = await Promise.all(Array.from({ length: Math.max(0, pageCount - 1) }, (_, index) => {
+    const query = new URLSearchParams(params)
+    query.set('page', String(index + 2))
+    query.set('includeTotal', 'false')
+    return api(`/api/admin/image-tasks?${query}`)
+  }))
+  return { ...imageStats, tasks: [firstPage, ...remainingPages].flatMap((page) => page?.tasks || []) }
+}
+
+async function fetchTaskStats(page = taskCurrentPage.value) {
+  const sequence = ++statsRequestSequence
+  const kind = statsKind.value
+  const dateFrom = taskDateFrom.value
+  const dateTo = taskDateTo.value
+  let result, imageTaskPage
+  if (kind === 'all') {
+    result = mergeConsoleTaskStats(...await Promise.all([
+      fetchCombinedImageStats(dateFrom, dateTo),
+      api(consoleTaskStatsUrl('video', dateFrom, dateTo)),
+      api(consoleTaskStatsUrl('enhance', dateFrom, dateTo)),
+    ]))
+  } else if (kind === 'image') {
+    [result, imageTaskPage] = await Promise.all([
+      api(consoleTaskStatsUrl(kind, dateFrom, dateTo)),
+      api('/api/admin/image-tasks' + buildImageTaskQuery(page)),
+    ])
+  } else {
+    result = await api(consoleTaskStatsUrl(kind, dateFrom, dateTo))
+  }
+  if (sequence === statsRequestSequence && kind === statsKind.value) {
+    stats.value = normalizeConsoleTaskStats(result)
+    taskRows.value = kind === 'image'
+      ? normalizeConsoleTaskStats({ tasks: imageTaskPage?.tasks }).tasks
+      : stats.value.tasks
+    taskRowsTotal.value = Number(imageTaskPage?.total) || 0
+    errorText.value = ''
+  }
+}
+
+async function selectStatsKind(kind) {
+  if (statsKind.value === kind) return
+  statsKind.value = kind
+  stats.value = null
+  taskRows.value = []
+  taskRowsTotal.value = 0
+  taskCurrentPage.value = 1
+  taskModelFilter.value = ''
+  trendFilter.value = ''
+  trendSelectedKeys.value = []
+  hideTaskPromptTooltip()
+  await reloadTaskPage(1)
+}
+
 // 日期变化 → 重置页码并重新拉取（日期过滤在后端 SQL 完成）
 watch([taskDateFrom, taskDateTo], () => {
   if (Boolean(taskDateFrom.value) !== Boolean(taskDateTo.value)) return
@@ -584,11 +661,10 @@ async function reloadTaskPage(p) {
   taskReloading.value = true
   taskCurrentPage.value = target
   try {
-    const taskPage = await api('/api/admin/image-tasks' + buildImageTaskQuery(target))
-    taskRows.value = normalizeImageStats({ tasks: taskPage?.tasks }).tasks
-    taskRowsTotal.value = Number(taskPage?.total) || 0
+    if (statsKind.value === 'image' && stats.value) await fetchImageTaskPage(target)
+    else await fetchTaskStats(target)
   } catch (e) {
-    /* 静默失败，仍展示已分页数据 */
+    errorText.value = e.message || '任务统计加载失败'
   } finally {
     taskReloading.value = false
   }
@@ -631,7 +707,7 @@ const tabs = computed(() => {
     list.push({ key: 'ai-feature-mappings', label: 'AI功能映射', icon: 'ri-node-tree' })
     list.push({ key: 'finance', label: '财务统计', icon: 'ri-funds-line' })
   }
-  list.push({ key: 'stats', label: '生图统计', icon: 'ri-bar-chart-box-line' })
+  list.push({ key: 'stats', label: '生成统计', icon: 'ri-bar-chart-box-line' })
   return list
 })
 
@@ -839,14 +915,7 @@ async function loadConsole() {
   loading.value = true
   errorText.value = ''
   try {
-    const requests = [
-      api('/api/admin/image-stats'),
-      api('/api/admin/image-tasks' + buildImageTaskQuery(1)),
-    ]
-    const [imageStats, taskPage] = await Promise.all(requests)
-    stats.value = normalizeImageStats(imageStats)
-    taskRows.value = normalizeImageStats({ tasks: taskPage?.tasks }).tasks
-    taskRowsTotal.value = Number(taskPage?.total) || 0
+    await fetchTaskStats(1)
   } catch (error) {
     /* 非管理员请求 admin 接口返回 403 是预期行为，不必提示 */
     if (!/403|没有控制台权限/.test(error.message)) {
@@ -1374,11 +1443,8 @@ async function refreshTaskStatsSilently({ force = false } = {}) {
     return
   }
   try {
-    const taskPage = await api(
-      '/api/admin/image-tasks' + buildImageTaskQuery(taskCurrentPage.value, false),
-    )
-    taskRows.value = normalizeImageStats({ tasks: taskPage?.tasks }).tasks
-    if (Number(taskPage?.total) >= 0) taskRowsTotal.value = Number(taskPage.total)
+    if (statsKind.value === 'image') await fetchImageTaskPage(taskCurrentPage.value, false)
+    else await fetchTaskStats()
   } catch {
     // 保留当前数据，下一轮再同步任务状态与永久链接。
   }
@@ -1406,6 +1472,7 @@ function onVisibilityChange() {
 }
 
 function taskDuration(task) {
+  if (taskStatusKey(task?.status) === 'UNKNOWN') return '--'
   const startedAt = Date.parse(task?.createdAt || '')
   if (!Number.isFinite(startedAt)) return '-'
   const status = taskStatusKey(task?.status)
@@ -1432,6 +1499,7 @@ function taskResolution(task) {
 function isTaskRunning(task) {
   const status = taskStatusKey(task?.status)
   return (
+    status !== 'UNKNOWN' &&
     status !== 'COMPLETED' &&
     status !== 'FAILED' &&
     !task?.completedAt &&
@@ -1459,6 +1527,7 @@ const taskStatusLabelMap = {
   CANCELED: '已取消',
   PENDING: '等待中',
   PROCESSING: '生成中',
+  UNKNOWN: '待核对',
 }
 
 function roleLabel(code) {
@@ -1472,7 +1541,7 @@ function taskStatusKey(status) {
   if (['COMPLETED', 'SUCCEEDED', 'SUCCESS', 'DONE'].includes(value)) return 'COMPLETED'
   if (['FAILED', 'ERROR', 'CANCELLED', 'CANCELED'].includes(value)) return 'FAILED'
   if (['PENDING', 'WAITING', 'QUEUED', 'SUBMITTED'].includes(value)) return 'PENDING'
-  if (['PROCESSING', 'RUNNING', 'GENERATING', 'IN_PROGRESS', 'PERSISTING'].includes(value)) return 'PROCESSING'
+  if (['PROCESSING', 'RUNNING', 'GENERATING', 'IN_PROGRESS', 'PERSISTING', 'RESERVING', 'SUBMITTING'].includes(value)) return 'PROCESSING'
   return value
 }
 function taskStatusLabel(s) {
@@ -1579,13 +1648,13 @@ const trendTabs = [
 
 const trendDimensionConfig = computed(() => {
   if (trendDimension.value === 'model') {
-    return { rows: stats.value?.modelTrends || [], placeholder: '筛选模型', metric: 'images', unit: '张' }
+    return { rows: stats.value?.modelTrends || [], placeholder: '筛选模型', metric: statsResultMetric.value, unit: statsResultUnit.value }
   }
   if (trendDimension.value === 'shop') {
-    return { rows: stats.value?.shopTrends || [], placeholder: '筛选店铺', metric: 'images', unit: '张' }
+    return { rows: stats.value?.shopTrends || [], placeholder: '筛选店铺', metric: statsResultMetric.value, unit: statsResultUnit.value }
   }
   if (trendDimension.value === 'user') {
-    return { rows: stats.value?.userTrends || [], placeholder: '筛选账号或昵称', metric: 'images', unit: '张' }
+    return { rows: stats.value?.userTrends || [], placeholder: '筛选账号或昵称', metric: statsResultMetric.value, unit: statsResultUnit.value }
   }
   const daily = stats.value?.daily || []
   return {
@@ -1678,8 +1747,8 @@ const trendFilterCount = computed(() => {
 })
 
 const trendSubtitle = computed(() => {
-  if (trendDimension.value === 'total') return '按生图任务数统计'
-  if (trendShowsCurrentUser.value) return '本人近 14 天生图量'
+  if (trendDimension.value === 'total') return `按${statsKindLabel.value}任务数统计`
+  if (trendShowsCurrentUser.value) return statsKind.value === 'all' ? '本人近 14 天任务量' : `本人近 14 天${statsKindLabel.value}产出量`
   if (trendSelectedKeys.value.length) return '所选对象完整趋势'
   const rankingDay = trendVisibleSeries.value[0]?.rankingDay
   const today = trendDayLabels.value[trendDayLabels.value.length - 1]
@@ -1945,7 +2014,10 @@ function drawDonutChart() {
   const canvas = donutCanvas.value
   if (!canvas) return
   const models = stats.value?.models || []
-  if (!models.length) return
+  if (!models.length) {
+    canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height)
+    return
+  }
 
   const ctx = canvas.getContext('2d')
   const dpr = window.devicePixelRatio || 1
@@ -2081,7 +2153,7 @@ onUnmounted(() => {
       </RouterLink>
       <div class="console-head-copy">
         <h1>控制台</h1>
-        <p v-if="isAdmin">账号、角色、生图用量和费用统一管理。</p>
+        <p v-if="isAdmin">账号、角色、生成用量和费用统一管理。</p>
       </div>
       <div class="console-head-actions">
         <button
@@ -2115,6 +2187,17 @@ onUnmounted(() => {
 
     <p v-if="errorText" class="console-error">{{ errorText }}</p>
 
+    <section v-if="activeTab === 'stats'" class="console-stat-overview" aria-label="统计概览">
+      <h2>统计概览</h2>
+      <div class="console-trend-tabs console-stat-kind-tabs" role="tablist" aria-label="任务统计类型">
+        <button v-for="kind in statsKinds" :key="kind.key" type="button" role="tab"
+          :aria-selected="statsKind === kind.key" :class="{ active: statsKind === kind.key }"
+          :disabled="loading || taskReloading" @click="selectStatsKind(kind.key)">
+          <i :class="kind.icon" aria-hidden="true"></i>{{ kind.label }}
+        </button>
+      </div>
+    </section>
+
     <!-- Metrics with skeleton -->
     <section v-if="!['finance', 'api-keys', 'ai-feature-mappings'].includes(activeTab)" class="console-metrics">
       <template v-if="loading || (isAdmin && (!usersLoaded || !rolesLoaded))">
@@ -2138,8 +2221,8 @@ onUnmounted(() => {
           <small>含管理员与业务角色</small>
         </article>
         <article class="console-metric-card metric-tasks">
-          <i class="ri-image-ai-line console-metric-icon" aria-hidden="true"></i>
-          <span>生图任务</span>
+          <i :class="statsKind === 'all' ? 'ri-stack-line' : statsKind === 'image' ? 'ri-image-ai-line' : 'ri-video-line'" class="console-metric-icon" aria-hidden="true"></i>
+          <span>{{ statsKindLabel }}任务</span>
           <strong>{{ summary.totalTasks || 0 }}</strong>
           <small>完成 {{ summary.completedTasks || 0 }} 个</small>
         </article>
@@ -2147,11 +2230,12 @@ onUnmounted(() => {
           <i class="ri-coins-line console-metric-icon" aria-hidden="true"></i>
           <span>米值消耗</span>
           <strong>{{ formatMiValue(summary.totalMiCost) }}</strong>
-          <small>生成 {{ summary.totalImages || 0 }} 张图</small>
+          <small v-if="statsKind === 'all'">{{ statsOutputLabel(summary.totalImages, summary.totalVideos) }}</small>
+          <small v-else>{{ statsKind === 'enhance' ? '超分' : '生成' }} {{ statsKind === 'image' ? summary.totalImages || 0 : summary.totalVideos || 0 }} {{ statsResultUnit }}</small>
         </article>
         <article class="console-metric-card metric-success">
           <i class="ri-checkbox-circle-line console-metric-icon" aria-hidden="true"></i>
-          <span>整体生图成功率</span>
+          <span>{{ statsKind === 'all' ? '总体' : statsKindLabel }}成功率</span>
           <strong class="console-success-rate">{{ overallSuccessRate }}</strong>
           <small>成功 {{ summary.completedTasks || 0 }} / 已结束 {{ finishedTaskCount }}</small>
         </article>
@@ -3002,7 +3086,7 @@ onUnmounted(() => {
               <span class="console-legend-name">{{ model.model }}</span>
               <span class="console-legend-value">{{ model.tasks }} 任务</span>
               <span class="console-legend-sub">
-                {{ model.images }} 张 / {{ formatMiValue(model.miCost) }} 米值
+                {{ statsKind === 'all' ? statsOutputLabel(model.images, model.videos) : `${model[statsResultMetric] || 0} ${statsResultUnit}` }} / {{ formatMiValue(model.miCost) }} 米值
               </span>
             </div>
             <p v-if="!stats?.models?.length" class="console-empty">暂无模型统计。</p>
@@ -3120,7 +3204,7 @@ onUnmounted(() => {
                 @click="selectTrendOption(option)"
               >
                 <span>{{ option.label }}</span>
-                <small>今日 {{ option.todayValue || 0 }} 张</small>
+                <small>今日 {{ option.todayValue || 0 }} {{ statsResultUnit }}</small>
                 <i
                   v-if="trendSelectedKeys.includes(String(option.key))"
                   class="ri-check-line"
@@ -3142,7 +3226,7 @@ onUnmounted(() => {
             ></i>
             <b>{{ series.label }}</b>
             <small v-if="series.dailyTopOnly">
-              {{ series.todayLabel ? `${series.todayLabel} · 今日 ${series.todayValue || 0} 张` : '今日暂无' }}
+              {{ series.todayLabel ? `${series.todayLabel} · 今日 ${series.todayValue || 0} ${statsResultUnit}` : '今日暂无' }}
             </small>
             <small v-else>{{ trendSeriesTotal(series) }} {{ trendDimensionConfig.unit }}</small>
           </span>
@@ -3178,8 +3262,17 @@ onUnmounted(() => {
 
       <!-- 最近任务 + 筛选 -->
       <section class="console-card console-table-card">
-        <div class="console-card-head">
-          <h2>最近生图任务</h2>
+        <div class="console-card-head console-task-list-head">
+          <div class="console-task-heading">
+            <h2>{{ statsKind === 'all' ? '最近任务' : `最近${statsKindLabel}任务` }}</h2>
+            <div class="console-trend-tabs console-stat-kind-tabs console-task-kind-tabs" role="tablist" aria-label="最近任务类型">
+              <button v-for="kind in statsKinds" :key="kind.key" type="button" role="tab"
+                :aria-selected="statsKind === kind.key" :class="{ active: statsKind === kind.key }"
+                :disabled="loading || taskReloading" @click="selectStatsKind(kind.key)">
+                <i :class="kind.icon" aria-hidden="true"></i>{{ kind.label }}
+              </button>
+            </div>
+          </div>
           <div class="console-filters">
             <div class="custom-select console-filter-select" @click.stop="toggleDropdown('filterTaskStatus')">
               <div class="custom-select-trigger" :class="{ open: dropdownOpen.filterTaskStatus }">
@@ -3340,10 +3433,10 @@ onUnmounted(() => {
             <span>通道</span>
             <span>状态</span>
             <span class="task-resolution">分辨率</span>
-            <span>图片</span>
+            <span>结果 / 消耗</span>
             <span>耗时</span>
           </div>
-          <div v-for="task in pagedTasks" :key="task.taskId" class="console-row">
+          <div v-for="task in pagedTasks" :key="`${task.taskType || 'IMAGE'}:${task.userId}:${task.taskId}`" class="console-row">
             <span>{{ formatTime(task.createdAt) }}</span>
             <span class="task-summary">
               <strong
@@ -3354,7 +3447,10 @@ onUnmounted(() => {
               >
                 {{ task.prompt || '暂无提示词' }}
               </strong>
-              <small class="task-id" :title="task.taskId">ID · {{ task.taskId }}</small>
+              <span class="task-detail-line">
+                <small v-if="statsKind === 'all'" class="task-type-label">{{ taskTypeLabel(task) }}</small>
+                <small class="task-id" :title="task.taskId">ID · {{ task.taskId }}</small>
+              </span>
             </span>
             <span v-if="isAdmin">{{ task.userName || task.userId || '匿名' }}</span>
             <span>{{ task.requestedModel || task.model }}</span>
@@ -3363,14 +3459,17 @@ onUnmounted(() => {
               <span v-if="task.isFallback" class="fallback-badge" title="该图由 Proxy 兜底通道生成">兜底</span>
             </span>
             <span class="task-status-cell">
-              <span :class="['status-pill', taskStatusKey(task.status)]">{{ taskStatusLabel(task.status) }}</span>
+              <span :class="['status-pill', taskStatusKey(task.status)]" :title="task.errorMessage || ''">{{ taskStatusLabel(task.status) }}</span>
               <small
                 v-if="taskPersistStatus(task)"
                 :class="['persist-status', taskPersistStatus(task).className]"
               >{{ taskPersistStatus(task).label }}</small>
             </span>
             <span class="task-resolution">{{ taskResolution(task) }}</span>
-            <span class="task-image-cell">
+            <span class="task-image-cell" :class="{ 'task-video-cell': isVideoTask(task) }">
+              <button v-if="task.videoPreviewUrls?.length" class="task-video-preview" type="button" title="播放视频" @click="openTaskVideoViewer(task)">
+                <i class="ri-play-circle-line" aria-hidden="true"></i>播放{{ task.durationSeconds ? ` · ${task.durationSeconds}秒` : '' }}
+              </button>
               <span v-if="task.previewUrls?.length" class="task-thumbnails">
                 <button
                   v-for="(url, index) in task.previewUrls.slice(0, 3)"
@@ -3392,9 +3491,11 @@ onUnmounted(() => {
                   +{{ task.previewUrls.length - 3 }}
                 </button>
               </span>
-              <small>{{ task.imageCount || task.previewUrls?.length || 0 }} 张 / {{ formatMiValue(task.miCost) }} 米值</small>
+              <small :title="task.estimatedMi && isTaskRunning(task) ? `预计 ${formatMiValue(task.estimatedMi)} 米值，成功后计入消费` : ''">
+                {{ isVideoTask(task) ? task.videoCount || 0 : task.imageCount || task.previewUrls?.length || 0 }} {{ isVideoTask(task) ? '条' : '张' }} / {{ formatMiValue(task.miCost) }} 米值
+              </small>
             </span>
-            <span :class="['task-duration', { live: isTaskRunning(task) }]" :title="isTaskRunning(task) ? '任务进行中，耗时实时更新' : '从发起生图到任务结束的耗时'">{{ taskDuration(task) }}</span>
+            <span :class="['task-duration', { live: isTaskRunning(task) }]" :title="isTaskRunning(task) ? '任务进行中，耗时实时更新' : '从发起任务到结束的耗时'">{{ taskDuration(task) }}</span>
           </div>
           <p v-if="!taskReloading && pagedTasks.length === 0" class="console-empty">暂无匹配任务。</p>
         </div>
@@ -3418,6 +3519,14 @@ onUnmounted(() => {
       @download="downloadTaskImage"
     />
     <Teleport to="body">
+      <div v-if="taskVideoViewer.open" class="console-video-preview-overlay" @click.self="closeTaskVideoViewer" @keydown.esc="closeTaskVideoViewer">
+        <section class="console-video-preview-dialog" role="dialog" aria-modal="true" aria-label="视频任务结果">
+          <header><strong :title="taskVideoViewer.title">{{ taskVideoViewer.title }}</strong>
+            <button ref="taskVideoCloseButton" type="button" title="关闭" aria-label="关闭视频预览" @click="closeTaskVideoViewer"><i class="ri-close-line" aria-hidden="true"></i></button>
+          </header>
+          <video :src="taskVideoViewer.url" controls playsinline preload="metadata"></video>
+        </section>
+      </div>
       <Transition name="task-prompt-tooltip">
         <aside
           v-if="taskPromptTooltip.show"
@@ -3451,6 +3560,93 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.console-stat-overview {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 24px 0 14px;
+  padding-top: 18px;
+  border-top: 1px solid var(--console-border);
+}
+.console-stat-overview h2 { margin: 0; color: var(--console-text); font-size: 16px; font-weight: 600; }
+.console-stat-overview + .console-metrics { margin-top: 0; }
+.console-stats .console-table-card { min-width: 0; }
+.console-trend-tabs.console-stat-kind-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, auto);
+  width: fit-content;
+  max-width: 100%;
+  margin-bottom: 0;
+}
+.console-trend-tabs.console-stat-kind-tabs button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 10px; white-space: nowrap; }
+.console-card-head.console-task-list-head { flex-wrap: wrap; align-items: center; gap: 12px; }
+.console-task-list-head .console-filters { flex-wrap: wrap; align-items: center; gap: 12px; min-width: 0; }
+.console-task-list-head .console-filter-select {
+  box-sizing: border-box;
+  height: 38px;
+  padding: 0;
+}
+.console-task-list-head .console-filter-select .custom-select-trigger {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  min-height: 0;
+  padding: 0 10px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.console-task-heading { display: flex; flex-wrap: wrap; flex-shrink: 0; align-items: center; gap: 12px; min-width: 0; max-width: 100%; }
+.console-task-heading h2 { margin: 0; }
+.console-trend-tabs.console-task-kind-tabs { box-sizing: border-box; height: 38px; margin-bottom: 0; }
+.console-trend-tabs.console-task-kind-tabs button { height: 100%; }
+.task-detail-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.task-type-label { flex-shrink: 0; font-size: 11px; color: var(--console-muted); }
+.task-detail-line .task-id { flex: 1; }
+@media (max-width: 600px) {
+  .console-stat-overview { flex-direction: column; align-items: stretch; }
+  .console-trend-tabs.console-stat-kind-tabs { width: 100%; box-sizing: border-box; }
+  .console-trend-tabs.console-stat-kind-tabs button { gap: 4px; padding: 0 4px; }
+  .console-task-list-head .console-filters { width: 100%; align-items: stretch; }
+}
+.task-image-cell.task-video-cell { flex-direction: column; align-items: flex-start; gap: 4px; }
+.task-video-preview {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+  padding: 5px 8px;
+  border: 1px solid var(--console-border);
+  border-radius: 6px;
+  background: var(--console-surface);
+  color: var(--console-accent);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.console-video-preview-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: #000a;
+}
+.console-video-preview-dialog {
+  width: min(900px, 100%);
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--console-border);
+  border-radius: 8px;
+  background: var(--console-surface);
+  color: var(--console-text);
+}
+.console-video-preview-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.console-video-preview-dialog strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.console-video-preview-dialog button { flex-shrink: 0; width: 32px; height: 32px; border: 1px solid var(--console-border); border-radius: 6px; color: var(--console-text); background: var(--console-surface); cursor: pointer; }
+.console-video-preview-dialog video { display: block; width: 100%; max-height: 75vh; background: #000; }
+.status-pill.UNKNOWN { color: var(--console-muted); background: var(--console-surface-raised); }
 .tasks-table.tasks-table-admin .console-row {
   grid-template-columns: 112px minmax(220px, 1.6fr) 100px 110px 116px 92px 108px 152px 92px;
 }
@@ -6453,7 +6649,7 @@ onUnmounted(() => {
   }
 
   .console-stats {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

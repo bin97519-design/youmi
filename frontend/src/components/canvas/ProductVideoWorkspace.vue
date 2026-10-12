@@ -1,17 +1,34 @@
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import ThemedSelect from '../common/ThemedSelect.vue'
 import ProductVideoPromptField from './ProductVideoPromptField.vue'
 import ProductVideoTaskList from './ProductVideoTaskList.vue'
+import ProductVideoContinuityPanel from './ProductVideoContinuityPanel.vue'
+import ProductVideoWholeTimeline from './ProductVideoWholeTimeline.vue'
+import { wholeTimeline, wholeSeconds, wholeTimelineIssue, updateWholeTimeline, moveWholeBoundary, selectProductionMode } from '../../utils/productVideoWholeTimeline.js'
 import VideoEnhanceDialog from './VideoEnhanceDialog.vue'
 import { useProductVideo } from '../../composables/useProductVideo'
 import { useUserStore } from '../../stores/user'
+import { productVideoBatchCandidates } from '../../utils/productVideoBatch'
+import { exportTimeline, moveExportClip, exportClipRange, exportTime } from '../../utils/productVideoExport'
+import { buildContinuityReview, buildWholeVideoReview, currentWholeVideoReview, wholeVideoReviewIssue, currentContinuityReview, continuityReviewIssue, applyContinuityCut, reviewRunning, motionObservationRequired } from '../../utils/productVideoContinuityReview'
 import { fetchSelectionProducts, fetchSelectionProduct } from '../../utils/selectionPoolApi'
 import { normalizeSelectionProduct } from '../../utils/selectionProductFormat'
 import { uploadFileDirect } from '../../utils/ossUpload'
 import { formatMiValue } from '../../utils/miValue'
 import { writeTextToClipboard } from '../../utils/clipboard'
-import { inspectReferenceVideoFile } from '../../utils/referenceVideo'
+import { inspectReferenceVideoFile, extractReferenceVideoFrame } from '../../utils/referenceVideo'
+import {
+  SHOT_TRANSITIONS,
+  adjacentProductVideoShots,
+  shotConnection,
+  previousShotTailSource,
+  usableShotConnectionFrame,
+  validateShotConnectionVideo,
+  shotConnectionIssue,
+  shotBoundaryPreview,
+  usableMotionObservation,
+} from '../../utils/productVideoShotConnections'
 import {
   continuityEnabled,
   continuitySettings,
@@ -31,6 +48,9 @@ import {
   productVideoShotLimit,
   ANMIAO_VIDEO_RESOLUTIONS,
   ANMIAO25_VIDEO_MODEL,
+  isAnmiao25VideoModel,
+  isAnmiao20FastVideoModel,
+  ANMIAO20_FAST_VIDEO_RESOLUTIONS,
   HAILUO_H3_VIDEO_MODEL,
   ANMIAO25_VIDEO_RESOLUTIONS,
   MINIMAX_VIDEO_MODEL,
@@ -38,23 +58,24 @@ import {
   isRetiredVideoModel,
   isPerSecondVideoModel,
   VIDEO_RATIOS,
-  WHOLE_VIDEO_30_MODEL,
-  WHOLE_VIDEO_30_MODELS,
   isWholeVideo,
   generationDuration,
   canGenerateVideo,
   buildPlanRequest,
+  buildCompositionRequest,
   compositionFingerprint,
   pickImage,
   planningTimeoutMs,
   planningErrorMessage,
   normalizePromptLineBreaks,
   normalizeVideoPrompt,
+  setShotMotion,
   removeReference,
   removeImage,
   removeVideo,
   selectedImage,
   selectedVideo,
+  imageGenerationNotices,
   videoGenerationNotices,
   videoGenerationStatus,
   uid,
@@ -97,6 +118,7 @@ async function saveEnhancement(result) {
       const id = `enhance-${result.id}`
       if (!shot.videos.some((item) => item.id === id)) {
         shot.videos.push({
+          ...shot.videos.find((item) => item.url === source.url),
           id,
           url: result.resultUrl,
           duration: result.metadata.duration,
@@ -105,6 +127,7 @@ async function saveEnhancement(result) {
         })
       }
       shot.videoId = id
+      shot.kept = false
     },
     source.context,
   )
@@ -126,9 +149,19 @@ const {
   planning,
   composing,
   capabilities,
+  capabilitiesLoading,
+  capabilitiesError,
   planningModelOptions,
   imageModelOptions,
+  selectedImageModelValue,
+  effectiveImageModel,
+  imageModelIsMapped,
   videoModelOptions,
+  wholeVideo15ModelOptions,
+  wholeVideo30ModelOptions,
+  effectiveWholeVideo15Model,
+  effectiveWholeVideo30Model,
+  effectiveVideoModel,
   planningModelUnavailable,
   selectPlanningModel,
   selectImageModel,
@@ -139,13 +172,26 @@ const {
   plan,
   retryPlan,
   generate,
+  retryVideoSubmission,
+  batchConfig,
+  startBatchGeneration,
+  cancelBatch,
+  startContinuityReview,
+  cancelContinuityReview,
   compose,
 } = useProductVideo(
   computed(() => props.canvasId),
   activeTaskId,
 )
 const user = useUserStore()
-const currentVideoModelOptions = computed(() => videoModelOptions.value)
+const currentVideoModelOptions = computed(() =>
+  active.value?.productionMode === 'single_video' ? wholeVideo15ModelOptions.value : videoModelOptions.value,
+)
+const videoWorkflow = computed(() => ({
+  ...workflow.value,
+  videoModel: effectiveVideoModel.value,
+  wholeVideo30Model: effectiveWholeVideo30Model.value,
+}))
 const tab = ref('source'),
   activeId = ref(''),
   shotCount = ref(4),
@@ -173,6 +219,13 @@ const promptEdit = ref(null),
   promptTextarea = ref(null)
 const refining = ref(false),
   refinement = ref(null)
+const linkingShotId = ref('')
+const boundaryPreview = ref(null)
+const boundaryVideo = ref(null)
+const manualPreviousState = ref('')
+const manualMotion = ref('')
+const wholeBeatIndex = ref(0)
+let connectionController = null
 let refineSequence = 0
 const promptFields = computed(() => ({
   imagePrompt: { label: activeWholeVideo.value ? '开场首帧提示词' : '首帧提示词', maxLength: 3000 },
@@ -184,6 +237,7 @@ let restoreFocus,
 const active = computed(
   () => workflow.value.shots.find((shot) => shot.id === activeId.value) || workflow.value.shots[0],
 )
+watch(activeId, () => { wholeBeatIndex.value = 0 })
 const frame = computed(() => active.value && selectedImage(active.value))
 const fixedContinuity = computed(() => continuityEnabled(workflow.value))
 const fixedSettings = computed(() => continuitySettings(workflow.value))
@@ -217,6 +271,27 @@ const continuityFields = computed(() =>
   ),
 )
 const activeWholeVideo = computed(() => active.value && isWholeVideo(active.value.productionMode))
+const adjacentShots = computed(() =>
+  active.value ? adjacentProductVideoShots(workflow.value, active.value) : {},
+)
+const activeConnection = computed(() =>
+  active.value ? shotConnection(workflow.value, active.value) : {},
+)
+const transitionOptions = computed(() =>
+  SHOT_TRANSITIONS.filter((item) =>
+    adjacentShots.value.previous ? item.value !== 'opening' : item.value === 'opening',
+  ),
+)
+const connectionSource = computed(
+  () => active.value && previousShotTailSource(workflow.value, active.value),
+)
+watch([activeTaskId, activeId, () => connectionSource.value?.sourceKey], () => {
+  manualPreviousState.value = ''
+  manualMotion.value = ''
+})
+const connectionFrame = computed(
+  () => active.value && usableShotConnectionFrame(workflow.value, active.value),
+)
 const hasWholeVideos = computed(() =>
   workflow.value.shots.some((shot) => isWholeVideo(shot.productionMode)),
 )
@@ -252,9 +327,329 @@ const kept = computed(() => workflow.value.shots.filter((shot) => shot.kept && s
 const totalDuration = computed(() =>
   kept.value.reduce((sum, shot) => sum + Number(shot.duration || 0), 0).toFixed(1),
 )
-const stale = computed(
-  () => workflow.value.composition?.fingerprint !== compositionFingerprint(workflow.value),
-)
+const stale = computed(() => {
+  const fingerprint = compositionFingerprint(workflow.value)
+  return !fingerprint || workflow.value.composition?.fingerprint !== fingerprint
+})
+const outputShotId = ref('')
+const outputPreviewMode = ref('composition')
+const outputVideo = ref(null)
+const outputVideoAspect = ref(0)
+const outputDrag = ref(null)
+const outputDrop = ref(null)
+const outputTimeline = computed(() => exportTimeline(workflow.value.shots))
+const outputShot = computed(() => kept.value.find((shot) => shot.id === outputShotId.value) || kept.value[0])
+const outputRange = computed(() => exportClipRange(outputShot.value))
+const outputPreviewUrl = computed(() => outputPreviewMode.value === 'clip' ? outputRange.value?.url : workflow.value.composition?.url)
+const outputPreviewIssue = computed(() => outputPreviewMode.value === 'clip'
+  ? !outputRange.value ? '当前裁剪范围无效' : !outputRange.value.previewSupported ? '此倍速超出浏览器预览范围，请查看合成成片' : '' : '')
+const outputAspect = computed(() => {
+  const [width, height] = String(workflow.value.ratio || '3:4').split(':').map(Number)
+  return outputVideoAspect.value || (width > 0 && height > 0 ? width / height : 0.75)
+})
+const outputOrderLocked = computed(() => workflow.value.planningSource === 'reference' &&
+  workflow.value.referenceVideo?.segments?.length && !kept.value.every((shot) => shot.referenceStrategy === 'highlights'))
+const outputIssue = computed(() => {
+  if (!kept.value.length) return ''
+  for (const shot of kept.value) {
+    const issue = wholeVideoReviewIssue(workflow.value, shot, capabilities.value?.wholeTimelineReview === true)
+    if (issue) return issue
+  }
+  try { buildCompositionRequest(workflow.value); return continuityReviewIssue(workflow.value, capabilities.value?.continuityReview === true) } catch (e) { return e.message }
+})
+const motionReady = computed(() => !capabilities.value?.continuityReview || !active.value ||
+  !motionObservationRequired(workflow.value, active.value) || Boolean(usableMotionObservation(workflow.value, active.value)))
+function askContinuityReview(shotId = '') {
+  const context = captureTask()
+  ask(shotId ? '分析前镜实际动作' : '检查整片衔接', '使用当前策划模型分析实际视频采样，可能产生模型接口费用；不会生成或重生成视频。检查结果需人工确认。', () => {
+    if (isCurrent(context)) return startContinuityReview(shotId)
+  })
+}
+function acknowledgeReview(index, accepted) {
+  if (!currentContinuityReview(workflow.value) || workflow.value.continuityReview.status !== 'completed') return
+  change(data => {
+    const job = data.continuityReview
+    const ids = new Set(job.acknowledged || [])
+    if (accepted) ids.add(index); else ids.delete(index)
+    job.acknowledged = [...ids]
+  })
+}
+function acknowledgeWholeReview(accepted) {
+  if (currentContinuityReview(workflow.value) && workflow.value.continuityReview.status === 'completed')
+    change(data => { data.continuityReview.wholeAcknowledged = accepted })
+}
+function confirmManualContinuity() {
+  const context = captureTask()
+  let snapshot
+  try { snapshot = buildContinuityReview(workflow.value, globalThis.crypto.randomUUID()) }
+  catch (e) { error.value = e.message; return }
+  ask('确认人工审片', '请确认已查看各片段与镜间预览，人物、商品、动作及整片结构可接受。这里只记录人工判断，不代表AI检查通过，也不会调用模型。', () => {
+    try {
+      change(data => {
+        if (buildContinuityReview(data, snapshot.request.id).fingerprint !== snapshot.fingerprint) throw new Error('成片内容已改变，请重新审片')
+        data.compositionEditing = true
+        data.manualContinuityApproval = { id: snapshot.request.id, fingerprint: snapshot.fingerprint, confirmedAt: Date.now() }
+      }, context)
+    } catch (e) { if (isCurrent(context)) error.value = e.message }
+  })
+}
+function confirmManualMotion() {
+  const shot = active.value, source = shot && previousShotTailSource(workflow.value, shot)
+  if (!source || !manualPreviousState.value.trim() || !manualMotion.value.trim() ||
+    reviewRunning(shot.motionObservation) || shot.motionObservation?.status === 'unknown') return
+  try {
+    const snapshot = buildContinuityReview(workflow.value, globalThis.crypto.randomUUID(), shot)
+    shotChange(shot.id, item => {
+      if (item.motionObservation) {
+        item.motionObservationHistory ||= []
+        item.motionObservationHistory.push(item.motionObservation)
+      }
+      item.motionObservation = { id: snapshot.request.id, fingerprint: snapshot.fingerprint, snapshot: snapshot.request,
+        sourceKey: source.sourceKey, status: 'completed', confirmed: true, confirmedAt: Date.now(), manual: true, targetMotion: shot.motion,
+        stage: '实际动作已人工确认', results: [{ previousState: manualPreviousState.value.trim(), motion: manualMotion.value.trim() }] }
+      if (shotConnection(workflow.value, item).type !== 'continue') item.approvedImageId = ''
+    })
+  } catch (e) { error.value = e.message }
+}
+function previewPreviousMotion() {
+  const shot = active.value, source = shot && previousShotTailSource(workflow.value, shot)
+  const previous = shot && adjacentProductVideoShots(workflow.value, shot).previous
+  if (!source || !previous) return
+  const factor = previous.timingMode === 'speed' ? Number(selectedVideo(previous)?.duration) / Number(previous.duration) : 1
+  const end = source.time + .04, start = previous.timingMode === 'speed' ? 0 : Number(previous.start)
+  boundaryPreview.value = { clips: [{ url: source.url, start: Math.max(start, end - .8 * factor), end, playbackRate: factor,
+    label: '前镜实际结尾' }], index: 0, playing: true }
+}
+function confirmMotionObservation() {
+  const shot = active.value
+  if (!shot || shot.motionObservation?.status !== 'completed' ||
+    previousShotTailSource(workflow.value, shot)?.sourceKey !== shot.motionObservation.sourceKey) return
+  shotChange(shot.id, item => {
+    item.motionObservation.confirmed = true
+    item.motionObservation.confirmedAt = Date.now()
+    item.motionObservation.targetMotion = item.motion
+    if (shotConnection(workflow.value, item).type !== 'continue') item.approvedImageId = ''
+  })
+}
+function applyReviewCut(result) {
+  const context = captureTask(), jobId = workflow.value.continuityReview?.id
+  const changes = [result.suggestedPreviousEnd != null ? `前镜结束位置改为 ${result.suggestedPreviousEnd.toFixed(2)} 秒` : '',
+    result.suggestedCurrentStart != null ? `本镜起点改为 ${result.suggestedCurrentStart.toFixed(2)} 秒` : ''].filter(Boolean).join('；')
+  ask('应用剪辑点建议', `${changes}。原视频不变，成片时长会改变，应用后需重新检查。`, () => {
+    try {
+      change(data => {
+        if (data.continuityReview?.id !== jobId) throw new Error('检查结果已经改变')
+        applyContinuityCut(data, result)
+      }, context)
+      if (isCurrent(context)) notice.value = '剪辑点已调整，原视频保留；衔接检查待更新'
+    } catch (e) { if (isCurrent(context)) error.value = e.message }
+  })
+}
+function previewReviewBoundary(result) {
+  const sequence = { ...workflow.value, shots: workflow.value.shots.filter(shot => shot.kept) }
+  const shot = sequence.shots.find(item => item.id === result.currentId)
+  const clips = shot && shotBoundaryPreview(sequence, shot)
+  if (clips?.length === 2) boundaryPreview.value = { clips, index: 0, playing: true }
+}
+function editReviewShot(id) {
+  const shot = workflow.value.shots.find(item => item.id === id)
+  if (shot) openShot(shot, true)
+}
+function wholeLabels(shot) {
+  return Object.fromEntries((shot.wholeReview?.snapshot?.timeline || wholeTimeline(shot)).map((beat, i) => [`segment-${i}`, `${i + 1}. ${beat.start}-${beat.end} 秒`]))
+}
+function askWholeReview(shot) {
+  const context = captureTask()
+  ask('检查整片时段', '使用当前策划模型检查实际视频的各时段与内部衔接，可能产生模型接口费用；不会重生成视频。', () => {
+    if (isCurrent(context)) return startContinuityReview(shot.id, 'timeline')
+  })
+}
+function acknowledgeWholeSegment(shot, index, accepted) {
+  if (!currentWholeVideoReview(workflow.value, shot) || shot.wholeReview.status !== 'completed') return
+  shotChange(shot.id, item => {
+    const values = new Set(item.wholeReview.acknowledged || [])
+    if (accepted) values.add(index); else values.delete(index)
+    item.wholeReview.acknowledged = [...values]
+  })
+}
+function acknowledgeWholeStructure(shot, accepted) {
+  if (currentWholeVideoReview(workflow.value, shot) && shot.wholeReview.status === 'completed')
+    shotChange(shot.id, item => { item.wholeReview.wholeAcknowledged = accepted })
+}
+function confirmWholeManual(shot) {
+  const context = captureTask()
+  let snapshot
+  try { snapshot = buildWholeVideoReview(workflow.value, globalThis.crypto.randomUUID(), shot) }
+  catch (e) { error.value = e.message; return }
+  ask('确认整片人工审片', '请确认已查看实际整片，各时段的动作、商品、人物、内部衔接和收尾可接受。这里只记录人工判断，不调用模型。', () => {
+    try {
+      shotChange(shot.id, item => {
+        const task = getTask(context)
+        if (buildWholeVideoReview(task, snapshot.request.id, item).fingerprint !== snapshot.fingerprint) throw new Error('整片内容已经改变，请重新审片')
+        if (item.wholeManualApproval) { item.wholeManualApprovalHistory ||= []; item.wholeManualApprovalHistory.push(item.wholeManualApproval) }
+        item.wholeManualApproval = { id: snapshot.request.id, fingerprint: snapshot.fingerprint, confirmedAt: Date.now() }
+      }, context)
+    } catch (e) { if (isCurrent(context)) error.value = e.message }
+  })
+}
+function previewWholeSegment(shot, result) {
+  const beat = (shot.wholeReview?.snapshot?.timeline || wholeTimeline(shot))[result.index]
+  const video = selectedVideo(shot)
+  if (!beat || !video?.url || !currentWholeVideoReview(workflow.value, shot)) return
+  boundaryPreview.value = { clips: [{ url: video.url, start: beat.start, end: beat.end, playbackRate: 1,
+    label: `第 ${result.index + 1} 时段 ${beat.start}-${beat.end} 秒` }], index: 0, playing: true }
+}
+async function editWholeSegment(shot, segmentId) {
+  openShot(shot, true)
+  await nextTick()
+  const index = Number(String(segmentId).replace('segment-', ''))
+  if (Number.isInteger(index) && index >= 0 && index < wholeTimeline(shot).length) wholeBeatIndex.value = index
+}
+function mutateWholeTimeline(action) {
+  if (!active.value) return
+  try { shotChange(active.value.id, action); error.value = '' }
+  catch (e) { error.value = e.message }
+}
+function updateWholeBeat(index, key, value) {
+  mutateWholeTimeline(shot => {
+    const beats = wholeTimeline(shot).map(beat => ({ ...beat }))
+    if (!beats[index]) throw new Error('时段不存在')
+    beats[index][key] = value
+    if (key === 'description') Object.assign(beats[index], { action: '', camera: '', transition: '' })
+    updateWholeTimeline(shot, beats)
+    if (index === 0 && ['startState', 'description'].includes(key)) shot.approvedImageId = ''
+  })
+}
+function splitWholeBeat(index) {
+  mutateWholeTimeline(shot => {
+    const beats = wholeTimeline(shot).map(beat => ({ ...beat })), old = beats[index]
+    if (!old || beats.length >= 8 || old.end - old.start < 2) throw new Error('当前时段不能拆分')
+    const middle = Math.round((old.start + old.end) * 5) / 10
+    beats.splice(index, 1, { ...old, end: middle, endState: '' },
+      { ...old, start: middle, startState: '', transitionType: 'continue' })
+    updateWholeTimeline(shot, beats)
+  })
+}
+function removeWholeBeat(index) {
+  const shotId = active.value?.id, context = captureTask()
+  ask('合并移除时段', '所选时段会与相邻时段合并，整片时长保持不变，原视频保留。', () => {
+    try { shotChange(shotId, shot => {
+      const beats = wholeTimeline(shot).map(beat => ({ ...beat }))
+      if (beats.length < 2 || !beats[index]) throw new Error('当前时段不能移除')
+      const target = index ? index - 1 : 1
+      beats[target].description = index ? `${beats[target].description}；${beats[index].description}` : `${beats[index].description}；${beats[target].description}`
+      if (index) { beats[target].end = beats[index].end; beats[target].endState = beats[index].endState }
+      else { beats[target].start = 0; beats[target].startState = beats[index].startState; beats[target].transitionType = 'opening' }
+      beats.splice(index, 1); updateWholeTimeline(shot, beats)
+      wholeBeatIndex.value = Math.max(0, index - 1)
+    }, context) } catch (e) { if (isCurrent(context)) error.value = e.message }
+  })
+}
+function initializeWholeTimeline() {
+  mutateWholeTimeline(shot => updateWholeTimeline(shot, [{ start: 0, end: wholeSeconds(shot), action: '', camera: '', transition: '',
+    startState: '', endState: '', transitionType: 'opening', description: shot.motion?.trim() || '连续镜头完成商品展示与收尾。' }]))
+}
+async function refineWholeBeat(index) {
+  if (!active.value || refining.value || !capabilities.value?.wholeTimelineRefinement) return
+  if (planningModelUnavailable.value || !productReferenceUrls(workflow.value, active.value).length) {
+    error.value = '请先选择可用策划模型和商品参考图'
+    return
+  }
+  const context = captureTask(), shotId = active.value.id
+  const original = JSON.stringify({ timeline: wholeTimeline(active.value), motion: active.value.motion })
+  ask('完善当前时段', '只完善选中的整片时段，可能产生策划模型接口费用；不会修改其他时段或生成视频。', async () => {
+    if (!isCurrent(context)) return
+    const task = getTask(context), shot = task?.shots.find(item => item.id === shotId)
+    if (!shot || JSON.stringify({ timeline: wholeTimeline(shot), motion: shot.motion }) !== original) { error.value = '原时段已经改变'; return }
+    refining.value = true
+    try {
+      const problem = wholeTimelineIssue(shot)
+      if (problem) throw new Error(problem)
+      const beat = await request('/api/product-videos/refine-timeline', { request: buildPlanRequest(task, 1, shot), index }, (Number(capabilities.value?.planStageTimeoutSeconds) || 300) * 1000 + 30000)
+      if (!props.open || !isCurrent(context)) return
+      ask('采用时段完善结果', `第 ${index + 1} 时段：\n${beat.description}\n\n开始：${beat.startState}\n结束：${beat.endState}`, () => {
+        try { shotChange(shotId, item => {
+          if (JSON.stringify({ timeline: wholeTimeline(item), motion: item.motion }) !== original) throw new Error('原时段已改变，未覆盖你的修改')
+          const beats = wholeTimeline(item)
+          if (!beat || beat.start !== beats[index].start || beat.end !== beats[index].end) throw new Error('完善结果改变了时间范围')
+          const firstChanged = index === 0 && (beat.startState !== beats[0].startState || beat.description !== beats[0].description)
+          beats[index] = beat; updateWholeTimeline(item, beats)
+          if (firstChanged) item.approvedImageId = ''
+        }, context) } catch (e) { if (isCurrent(context)) error.value = e.message }
+      })
+    } catch (e) { if (isCurrent(context)) error.value = e.message }
+    finally { refining.value = false }
+  })
+}
+watch(activeTaskId, () => {
+  outputShotId.value = ''
+  outputPreviewMode.value = 'composition'
+  outputVideoAspect.value = 0
+  outputDrag.value = outputDrop.value = null
+})
+watch(() => kept.value.map((shot) => shot.id), (ids) => {
+  if (!ids.includes(outputShotId.value)) outputShotId.value = ids[0] || ''
+})
+watch(() => [outputPreviewUrl.value, outputShot.value?.id, outputShot.value?.start,
+  outputShot.value?.duration, outputShot.value?.timingMode], async () => {
+  outputVideoAspect.value = 0
+  await nextTick()
+  if (outputVideo.value?.readyState >= 1) prepareOutputPreview()
+})
+function selectOutputShot(shot, preview = false) {
+  outputShotId.value = shot.id
+  if (preview) outputPreviewMode.value = 'clip'
+  else void nextTick(() => dialog.value?.querySelector('.pv-export-clip-editor')?.scrollIntoView({ block: 'nearest' }))
+}
+function prepareOutputPreview() {
+  const element = outputVideo.value
+  if (!element) return
+  element.pause()
+  if (element.videoWidth && element.videoHeight) outputVideoAspect.value = element.videoWidth / element.videoHeight
+  const range = outputPreviewMode.value === 'clip' && outputRange.value
+  element.playbackRate = range?.previewSupported ? range.playbackRate : 1
+  element.currentTime = range ? range.start : 0
+}
+function boundOutputPreview(event) {
+  const range = outputPreviewMode.value === 'clip' && outputRange.value
+  if (!range || !event.target) return
+  const element = event.target
+  if (element.currentTime < range.start - 0.05) element.currentTime = range.start
+  if (element.currentTime >= range.end - 0.02) {
+    element.pause()
+    if (element.currentTime > range.end + 0.05) element.currentTime = range.end
+  }
+}
+function playOutputPreview(event) {
+  const range = outputPreviewMode.value === 'clip' && outputRange.value
+  if (range && event.target.currentTime >= range.end - 0.05) event.target.currentTime = range.start
+}
+function moveOutputShot(shot, offset) {
+  const index = kept.value.findIndex((item) => item.id === shot.id)
+  const target = kept.value[index + offset]
+  if (!target || outputOrderLocked.value) return
+  change((data) => { data.shots = moveExportClip(data.shots, shot.id, target.id, offset > 0) })
+}
+function dragOutputShot(event, shot) {
+  if (outputOrderLocked.value) { event.preventDefault(); return }
+  outputDrag.value = { id: shot.id, taskId: activeTaskId.value }
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData('text/plain', shot.id)
+}
+function overOutputShot(event, shot) {
+  if (!outputDrag.value || outputDrag.value.taskId !== activeTaskId.value || outputOrderLocked.value) return
+  event.preventDefault()
+  const bounds = event.currentTarget.getBoundingClientRect()
+  outputDrop.value = { id: shot.id, after: event.clientY > bounds.top + bounds.height / 2 }
+}
+function dropOutputShot(event, shot) {
+  event.preventDefault()
+  const source = outputDrag.value
+  const after = outputDrop.value?.id === shot.id && outputDrop.value.after
+  outputDrag.value = outputDrop.value = null
+  if (!source || source.taskId !== activeTaskId.value || outputOrderLocked.value) return
+  change((data) => { data.shots = moveExportClip(data.shots, source.id, shot.id, after) })
+}
 const canvasImages = computed(() =>
   props.layers.filter((layer) => layer.url && (!layer.type || layer.type === 'image')),
 )
@@ -270,18 +665,6 @@ const canvasPickerTitle = computed(() => {
   return field ? `${field.label} · 画布图片` : '画布图片'
 })
 const modelOptions = imageModelOptions
-const selectedImageModelOption = computed(
-  () =>
-    imageModelOptions.value.find((option) => option.value === workflow.value.imageModel) ||
-    imageModelOptions.value.find((option) => option.model === workflow.value.imageModel),
-)
-const selectedImageModelValue = computed(
-  () => selectedImageModelOption.value?.value || workflow.value.imageModel,
-)
-const imageModelIsMapped = computed(() => Boolean(selectedImageModelOption.value))
-const effectiveImageModel = computed(
-  () => selectedImageModelOption.value?.model || workflow.value.imageModel,
-)
 const ratioOptions = VIDEO_RATIOS.map((value) => ({ value, label: value }))
 const productImages = computed(() =>
   sourceProduct.value
@@ -312,10 +695,13 @@ watch(
   () => props.open,
   async (value) => {
     if (!value) {
+      connectionController?.abort()
       picker.value = ''
       enhanceSource.value = null
       promptEdit.value = null
       refinement.value = null
+      boundaryPreview.value = null
+      outputDrag.value = outputDrop.value = null
       refineSequence++
       restoreFocus?.focus()
       return
@@ -327,6 +713,8 @@ watch(
     dialog.value?.focus()
   },
 )
+watch(activeTaskId, () => connectionController?.abort())
+onBeforeUnmount(() => connectionController?.abort())
 watch(
   picker,
   (value) => {
@@ -336,6 +724,8 @@ watch(
 )
 
 function showTasks() {
+  boundaryPreview.value = null
+  outputDrag.value = outputDrop.value = null
   showingTasks.value = true
   promptEdit.value = null
   refinement.value = null
@@ -363,6 +753,10 @@ function startTask() {
 }
 
 function set(key, value) {
+  if (key === 'productionMode') {
+    change(data => selectProductionMode(data, value))
+    return
+  }
   change((data) => {
     data[key] = value
   })
@@ -374,13 +768,98 @@ function speedLabel(shot) {
 function updateShot(key, value) {
   if (active.value)
     shotChange(active.value.id, (shot) => {
-      shot[key] =
-        key === 'motion'
-          ? normalizeVideoPrompt(shot, value)
-          : promptFields.value[key]
+      if (key === 'motion') { setShotMotion(shot, value); return }
+      shot[key] = promptFields.value[key]
             ? normalizePromptLineBreaks(value)
             : value
     })
+}
+function updateConnection(key, value) {
+  const shot = active.value
+  if (!shot) return
+  const connection = shotConnection(workflow.value, shot)
+  shotChange(shot.id, (item) => {
+    item.connection = { ...connection, [key]: String(value).slice(0, 200) }
+    item.approvedImageId = ''
+  })
+}
+async function extractConnectionFrame() {
+  if (!active.value || activeWholeVideo.value || linkingShotId.value) return
+  const context = captureTask()
+  const shot = active.value
+  const source = previousShotTailSource(workflow.value, shot)
+  if (!source) {
+    error.value = '请先完成上一镜视频，并确定它的成片裁剪范围'
+    return
+  }
+  const controller = new AbortController()
+  connectionController = controller
+  linkingShotId.value = shot.id
+  const timer = setTimeout(() => controller.abort(new Error('提取衔接帧超时，请重试')), 180000)
+  error.value = ''
+  try {
+    let connection = usableShotConnectionFrame(workflow.value, shot)
+    if (!connection) {
+      const result = await extractReferenceVideoFrame(source.url, source.time, {
+        signal: controller.signal,
+      })
+      const url = await uploadFileDirect(result.file, {
+        dir: 'product-video/shot-connections',
+        signal: controller.signal,
+      })
+      connection = { ...source, url, sourceUrl: source.url, time: result.time }
+    }
+    controller.signal.throwIfAborted()
+    const currentTask = getTask(context)
+    const currentShot = currentTask?.shots.find((item) => item.id === shot.id)
+    if (
+      !currentShot ||
+      previousShotTailSource(currentTask, currentShot)?.sourceKey !== source.sourceKey
+    )
+      throw new Error('上一镜视频或裁剪范围已经改变，请重新提取')
+    shotChange(
+      shot.id,
+      (item) => {
+        item.connectionFrame = connection
+        if (shotConnection(currentTask, item).type === 'continue') {
+          let image = item.images.find(
+            (entry) =>
+              entry.url === connection.url && entry.sourceConnectionKey === source.sourceKey,
+          )
+          if (!image) {
+            image = {
+              id: uid(),
+              url: connection.url,
+              source: 'shot-connection',
+              status: 'completed',
+              sourceConnectionKey: source.sourceKey,
+            }
+            item.images.push(image)
+          }
+          pickImage(item, image.id)
+        }
+      },
+      context,
+    )
+    if (isCurrent(context))
+      notice.value =
+        shotConnection(currentTask, currentShot).type === 'continue'
+          ? '上一镜结束帧已作为本镜首帧，待确认'
+          : '上一镜结束帧已加入本镜衔接参考'
+  } catch (e) {
+    if (e.name !== 'AbortError' && isCurrent(context)) error.value = e.message
+  } finally {
+    clearTimeout(timer)
+    if (connectionController === controller) {
+      connectionController = null
+      linkingShotId.value = ''
+    }
+  }
+}
+function removeConnectionFrame() {
+  shotChange(active.value.id, (shot) => {
+    shot.connectionFrame = null
+  })
 }
 async function copyPrompt(key) {
   try {
@@ -414,10 +893,8 @@ async function closePrompt(apply = false) {
   const edit = promptEdit.value
   if (apply && edit)
     shotChange(edit.shotId, (shot) => {
-      shot[edit.key] =
-        edit.key === 'motion'
-          ? normalizeVideoPrompt(shot, edit.value)
-          : normalizePromptLineBreaks(edit.value)
+      if (edit.key === 'motion') setShotMotion(shot, edit.value)
+      else shot[edit.key] = normalizePromptLineBreaks(edit.value)
     })
   promptEdit.value = null
   await nextTick()
@@ -443,7 +920,11 @@ async function refineShot() {
     error.value = '当前服务尚未支持整片可选固定设定，请更新后端后重新打开工作区'
     return
   }
-  const original = { imagePrompt: shot.imagePrompt, motion: shot.motion }
+  const original = {
+    imagePrompt: shot.imagePrompt,
+    motion: shot.motion,
+    connection: JSON.stringify(shot.connection || null),
+  }
   const context = captureTask()
   if (
     continuityReferenceImages(workflow.value, shot).length &&
@@ -460,9 +941,11 @@ async function refineShot() {
   refining.value = true
   error.value = ''
   try {
+    const local = capabilities.value?.localShotRefinement && !shot.referenceRange
+    const payload = buildPlanRequest(workflow.value, 1, shot)
     const result = await request(
-      '/api/product-videos/plan',
-      buildPlanRequest(workflow.value, 1, shot),
+      local ? '/api/product-videos/refine' : '/api/product-videos/plan',
+      local ? { planJobId: workflow.value.planJob?.id, shotId: shot.id, request: payload } : payload,
       planningTimeoutMs(shot.referenceRange ? 3 : 1, capabilities.value?.planStageTimeoutSeconds),
     )
     if (sequence !== refineSequence || !props.open || !isCurrent(context)) return
@@ -479,6 +962,7 @@ async function refineShot() {
       design: resultShot.design || '',
       concept: result.summary?.concept || '',
       timeline: resultShot.timeline || [],
+      connection: resultShot.connection || null,
     }
     await nextTick()
     dialog.value.querySelector('.pv-refine-dialog textarea')?.focus()
@@ -495,18 +979,20 @@ function applyRefinement() {
   if (
     !shot ||
     shot.imagePrompt !== result.original.imagePrompt ||
-    shot.motion !== result.original.motion
+    shot.motion !== result.original.motion ||
+    JSON.stringify(shot.connection || null) !== result.original.connection
   ) {
     error.value = '原分镜内容已经改变，请关闭预览后重新完善'
     return
   }
   shotChange(shot.id, (item) => {
     item.imagePrompt = normalizePromptLineBreaks(result.imagePrompt)
-    item.motion = normalizePromptLineBreaks(result.motion)
+    setShotMotion(item, normalizePromptLineBreaks(result.motion))
     item.purpose = result.purpose
     item.design = result.design
     item.concept = result.concept
     item.timeline = result.timeline
+    item.connection = result.connection
     if (isWholeVideo(item.productionMode))
       item.timelineCount = result.timeline.length || item.timelineCount || 4
     item.approvedImageId = ''
@@ -514,7 +1000,8 @@ function applyRefinement() {
   refinement.value = null
   notice.value = '分镜提示词已更新，原素材已保留；首帧待重新确认'
 }
-function openShot(shot) {
+function openShot(shot, composition = false) {
+  if (composition) change(data => { data.compositionEditing = true })
   activeId.value = shot.id
   tab.value = 'shots'
 }
@@ -853,12 +1340,56 @@ function deleteImage(imageId) {
   )
 }
 function busy(shot, field) {
-  return shot[field].some((item) => ['submitting', 'processing'].includes(item.status))
+  return shot[field].some((item) => ['submitting', 'processing', 'unknown'].includes(item.status))
+}
+function retryUnknownVideo(item) {
+  const context = captureTask(), shotId = active.value.id
+  ask('核对并重试原提交', '使用原请求编号，不新建第二条视频；已接收的任务会直接返回原任务。',
+    () => retryVideoSubmission(shotId, item.id, context))
+}
+function openBoundaryPreview() {
+  const clips = shotBoundaryPreview(workflow.value, active.value)
+  if (clips.length !== 2) return
+  boundaryPreview.value = { clips, index: 0, playing: true }
+}
+async function replayBoundaryVideo() {
+  boundaryPreview.value.index = 0
+  boundaryPreview.value.playing = true
+  await nextTick()
+  if (boundaryVideo.value?.readyState >= 1) startBoundaryVideo({ target: boundaryVideo.value })
+}
+function startBoundaryVideo(event) {
+  const media = event.target, preview = boundaryPreview.value
+  const index = Number(media.dataset.previewIndex)
+  const item = preview?.clips[index]
+  if (!item || preview.index !== index) return
+  media.playbackRate = item.playbackRate
+  media.currentTime = item.start
+  const play = () => {
+    if (boundaryVideo.value === media && boundaryPreview.value?.index === index && boundaryPreview.value.playing)
+      void media.play().catch(() => {})
+  }
+  if (media.seeking) media.addEventListener('seeked', play, { once: true })
+  else play()
+}
+function advanceBoundaryVideo(event) {
+  const preview = boundaryPreview.value
+  if (!preview || Number(event.target.dataset.previewIndex) !== preview.index
+    || event.target.currentTime < preview.clips[preview.index].end - .025) return
+  event.target.pause()
+  if (preview.index === 0) preview.index = 1
+  else preview.playing = false
 }
 function videoModelForShot(shot) {
   return shot.productionMode === 'single_video_30'
-    ? (workflow.value.wholeVideo30Model ?? WHOLE_VIDEO_30_MODEL)
-    : workflow.value.videoModel
+    ? effectiveWholeVideo30Model.value
+    : shot.productionMode === 'single_video'
+      ? effectiveWholeVideo15Model.value
+      : effectiveVideoModel.value
+}
+function videoModelsForShot(shot) {
+  return shot.productionMode === 'single_video_30' ? wholeVideo30ModelOptions.value
+    : shot.productionMode === 'single_video' ? wholeVideo15ModelOptions.value : videoModelOptions.value
 }
 function perSecondVideo(shot) {
   return isPerSecondVideoModel(videoModelForShot(shot))
@@ -875,14 +1406,15 @@ function videoResolutionForShot(shot) {
 function resolutionOptionsForShot(shot) {
   if ([MINIMAX_VIDEO_MODEL, HAILUO_H3_VIDEO_MODEL].includes(videoModelForShot(shot)))
     return MINIMAX_VIDEO_RESOLUTIONS
-  return videoModelForShot(shot) === ANMIAO25_VIDEO_MODEL
+  if (isAnmiao20FastVideoModel(videoModelForShot(shot))) return ANMIAO20_FAST_VIDEO_RESOLUTIONS
+  return isAnmiao25VideoModel(videoModelForShot(shot))
     ? ANMIAO25_VIDEO_RESOLUTIONS
     : ANMIAO_VIDEO_RESOLUTIONS
 }
 function invalidAnmiaoDuration(shot) {
   if (!perSecondVideo(shot)) return false
-  const duration = generationDuration(shot, workflow.value)
-  const maxDuration = videoModelForShot(shot) === ANMIAO25_VIDEO_MODEL ? 30 : 15
+  const duration = generationDuration(shot, videoWorkflow.value)
+  const maxDuration = isAnmiao25VideoModel(videoModelForShot(shot)) ? 30 : 15
   return !Number.isInteger(duration) || duration < 4 || duration > maxDuration
 }
 function invalidAnmiaoResolution(shot) {
@@ -895,7 +1427,7 @@ function videoPrice(shot) {
   if (isRetiredVideoModel(videoModelForShot(shot))) return null
   if (videoUsesReportedCost(shot)) return null
   if (perSecondVideo(shot)) {
-    const model25 = videoModelForShot(shot) === ANMIAO25_VIDEO_MODEL
+    const model25 = isAnmiao25VideoModel(videoModelForShot(shot))
     const minimax = [MINIMAX_VIDEO_MODEL, HAILUO_H3_VIDEO_MODEL].includes(videoModelForShot(shot))
     const available = minimax
       ? capabilities.value?.minimaxVideo
@@ -908,7 +1440,7 @@ function videoPrice(shot) {
         ? capabilities.value?.anmiao25MiPerSecondByResolution
         : capabilities.value?.anmiaoMiPerSecondByResolution
     const rate = Number(rates?.[videoResolutionForShot(shot)])
-    return available && rate > 0 ? rate * generationDuration(shot, workflow.value) : null
+    return available && rate > 0 ? rate * generationDuration(shot, videoWorkflow.value) : null
   }
   return capabilities.value?.videoPrice
 }
@@ -924,19 +1456,33 @@ function videoUsesReportedCost(shot) {
 }
 function generateShot(kind) {
   const shot = active.value
+  const context = captureTask()
+  if (kind === 'video') {
+    if (!videoModelsForShot(shot).length) {
+      error.value = shot.productionMode === 'single_video_30'
+        ? '当前没有支持 30 秒整片的可用视频模型' : '当前没有可用的视频模型，请刷新模型列表'
+      return
+    }
+    try {
+      validateShotConnectionVideo(workflow.value, shot)
+    } catch (e) {
+      error.value = e.message
+      return
+    }
+  }
   if (kind === 'video' && isRetiredVideoModel(videoModelForShot(shot))) {
     error.value = '原视频模型已移除，请重新选择视频模型'
     return
   }
   if (kind === 'video' && invalidAnmiaoDuration(shot)) {
-    error.value = `按秒视频时长需为 4 至 ${videoModelForShot(shot) === ANMIAO25_VIDEO_MODEL ? 30 : 15} 的整数秒`
+    error.value = `按秒视频时长需为 4 至 ${isAnmiao25VideoModel(videoModelForShot(shot)) ? 30 : 15} 的整数秒`
     return
   }
   if (kind === 'video' && invalidAnmiaoResolution(shot)) {
     error.value =
       videoModelForShot(shot) === MINIMAX_VIDEO_MODEL
         ? 'MiniMax H3 画质需选择 768P、1080P、2K 或 4K'
-        : videoModelForShot(shot) === ANMIAO25_VIDEO_MODEL
+        : isAnmiao25VideoModel(videoModelForShot(shot))
           ? 'SD2.5 画质需选择 480p、720p 或 1080p'
           : '按秒视频画质需选择 480p、720p、1080p 或 4K'
     return
@@ -959,15 +1505,18 @@ function generateShot(kind) {
       : isWholeVideo(shot.productionMode)
         ? '生成整片视频'
         : '生成分镜视频',
-    `${shot.title}：本次 ${price == null ? '费用以生成成功后接口返回为准' : `${formatMiValue(price)} 米值`}${kind === 'video' ? (isWholeVideo(shot.productionMode) ? `，生成 1 条 ${generationDuration(shot, workflow.value)} 秒整片` : `，生成 ${generationDuration(shot, workflow.value)} 秒原片`) : '，生成 1 张 2K 图片'}。`,
-    () => generate(shot.id, kind),
+    `${shot.title}：本次 ${price == null ? '费用以生成成功后接口返回为准' : `${formatMiValue(price)} 米值`}${kind === 'video' ? (isWholeVideo(shot.productionMode) ? `，生成 1 条 ${generationDuration(shot, videoWorkflow.value)} 秒整片` : `，生成 ${generationDuration(shot, videoWorkflow.value)} 秒原片`) : '，生成 1 张 2K 图片'}。`,
+    () => generate(shot.id, kind, context),
   )
 }
 async function batchGenerate() {
+  if (!capabilities.value?.videoSubmissionRecovery) { error.value = '请刷新模型列表后再批量生成'; return }
   const context = captureTask()
-  const shots = workflow.value.shots.filter(
-    (shot) => canGenerateVideo(shot) && !selectedVideo(shot) && !busy(shot, 'videos'),
-  )
+  const shots = productVideoBatchCandidates(workflow.value)
+  if (shots.some((shot) => !videoModelsForShot(shot).length)) {
+    error.value = '部分视频没有支持其整片时长的可用模型，请刷新模型列表'
+    return
+  }
   if (shots.some((shot) => isRetiredVideoModel(videoModelForShot(shot)))) {
     error.value = '原视频模型已移除，请重新选择视频模型'
     return
@@ -981,6 +1530,13 @@ async function batchGenerate() {
     return
   }
   const prices = shots.map(videoPrice)
+  try {
+    shots.filter(shot => shotConnection(workflow.value, shot).type !== 'continue')
+      .forEach((shot) => validateShotConnectionVideo(workflow.value, shot))
+  } catch (e) {
+    error.value = e.message
+    return
+  }
   if (!shots.length || prices.some((price, index) =>
     price == null && !videoUsesReportedCost(shots[index]),
   )) {
@@ -989,12 +1545,11 @@ async function batchGenerate() {
       : '按秒视频所选画质尚未配置密钥和每秒米值单价'
     return
   }
+  const configuration = batchConfig(workflow.value, shots.map(shot => shot.id))
   ask(
     '批量生成视频',
-    `${shots.length} 个视频，共 ${shots.reduce((sum, shot) => sum + generationDuration(shot, workflow.value), 0)} 秒，${prices.every((price) => price != null) ? `预计 ${formatMiValue(prices.reduce((sum, price) => sum + price, 0))} 米值` : '费用以生成成功后接口返回为准'}。`,
-    async () => {
-      for (const shot of shots) await generate(shot.id, 'video', context)
-    },
+    `${shots.length} 个视频，共 ${shots.reduce((sum, shot) => sum + generationDuration(shot, videoWorkflow.value), 0)} 秒，${prices.every((price) => price != null) ? `预计 ${formatMiValue(prices.reduce((sum, price) => sum + price, 0))} 米值` : '费用以生成成功后接口返回为准'}。`,
+    () => startBatchGeneration(shots.map(shot => shot.id), configuration, context),
   )
 }
 async function generatePlan() {
@@ -1157,7 +1712,8 @@ async function download() {
 }
 function onKeydown(event) {
   if (event.key === 'Escape') {
-    if (confirmation.value) confirmation.value = null
+    if (boundaryPreview.value) boundaryPreview.value = null
+    else if (confirmation.value) confirmation.value = null
     else if (promptEdit.value) void closePrompt()
     else if (refinement.value) refinement.value = null
     else if (picker.value) picker.value = ''
@@ -1165,6 +1721,7 @@ function onKeydown(event) {
   }
   if (event.key !== 'Tab') return
   const focusRoot =
+    dialog.value.querySelector('.pv-boundary-preview') ||
     dialog.value.querySelector('.pv-confirm') ||
     dialog.value.querySelector('.pv-prompt-dialog') ||
     dialog.value.querySelector('.pv-refine-dialog') ||
@@ -1585,6 +2142,15 @@ function onKeydown(event) {
                 </label>
               </fieldset>
             </div>
+            <label v-if="singleVideoPlan">
+              视频模型
+              <ThemedSelect
+                :model-value="workflow.productionMode === 'single_video_30' ? effectiveWholeVideo30Model : effectiveWholeVideo15Model"
+                :options="workflow.productionMode === 'single_video_30' ? wholeVideo30ModelOptions : wholeVideo15ModelOptions"
+                aria-label="整片视频模型"
+                @update:model-value="workflow.productionMode === 'single_video_30' ? set('wholeVideo30Model', $event) : selectVideoModel($event)"
+              />
+            </label>
             <section v-if="!referenceMode" class="pv-continuity" aria-label="全片固定设定">
               <label class="pv-audio-option">
                 <input
@@ -1679,8 +2245,8 @@ function onKeydown(event) {
               :title="
                 [ANMIAO25_VIDEO_MODEL, MINIMAX_VIDEO_MODEL].includes(
                   workflow.productionMode === 'single_video_30'
-                    ? (workflow.wholeVideo30Model ?? WHOLE_VIDEO_30_MODEL)
-                    : workflow.videoModel,
+                    ? effectiveWholeVideo30Model
+                    : workflow.productionMode === 'single_video' ? effectiveWholeVideo15Model : effectiveVideoModel,
                 )
                   ? '模型原生带声，此选项仅用于安排声音提示词，不控制接口音轨'
                   : workflow.productionMode === 'single_video_30'
@@ -1706,8 +2272,8 @@ function onKeydown(event) {
               {{
                 [ANMIAO25_VIDEO_MODEL, MINIMAX_VIDEO_MODEL].includes(
                   workflow.productionMode === 'single_video_30'
-                    ? (workflow.wholeVideo30Model ?? WHOLE_VIDEO_30_MODEL)
-                    : workflow.videoModel,
+                    ? effectiveWholeVideo30Model
+                    : workflow.productionMode === 'single_video' ? effectiveWholeVideo15Model : effectiveVideoModel,
                 )
                   ? '声音策划'
                   : '音画同步'
@@ -1823,10 +2389,20 @@ function onKeydown(event) {
                 </small>
               </span>
             </button>
-            <button v-if="workflow.shots.length > 1" class="pv-batch" @click="batchGenerate">
+            <button v-if="workflow.shots.length > 1" class="pv-batch"
+              :disabled="['running', 'waiting_confirmation', 'waiting_submission'].includes(workflow.batchVideoJob?.status)"
+              @click="batchGenerate">
               <i aria-hidden="true" class="ri-video-add-line"></i>
               批量生成视频
             </button>
+            <div v-if="workflow.batchVideoJob" class="pv-batch-status" role="status">
+              <span>{{ workflow.batchVideoJob.stage }}</span>
+              <small v-if="workflow.batchVideoJob.error">{{ workflow.batchVideoJob.error }}</small>
+              <button v-if="['running', 'waiting_confirmation', 'waiting_submission'].includes(workflow.batchVideoJob.status)"
+                class="pv-icon" title="停止后续提交" aria-label="停止后续提交" @click="cancelBatch()">
+                <i aria-hidden="true" class="ri-stop-line"></i>
+              </button>
+            </div>
           </aside>
           <div v-if="!active" class="pv-empty">
             <i aria-hidden="true" class="ri-film-line"></i>
@@ -1881,7 +2457,7 @@ function onKeydown(event) {
                   <summary>镜头设计与衔接</summary>
                   <p>{{ active.design }}</p>
                   <ol
-                    v-if="active.timeline?.length"
+                    v-if="active.timeline?.length && !capabilities?.wholeTimelineEditing"
                     class="pv-story-timeline"
                     aria-label="整片时间轴"
                   >
@@ -1912,6 +2488,144 @@ function onKeydown(event) {
                 {{ refining ? '正在完善' : activeWholeVideo ? '完善整片' : '完善分镜' }}
               </button>
             </div>
+            <ProductVideoWholeTimeline v-if="activeWholeVideo && capabilities?.wholeTimelineEditing"
+              :shot="active" :selected-index="wholeBeatIndex" :refining="refining" :disabled="busy(active, 'videos') || refining"
+              :can-refine="capabilities?.wholeTimelineRefinement && !planningModelUnavailable && Boolean(productReferenceUrls(workflow, active).length)"
+              @select="wholeBeatIndex = $event" @update="updateWholeBeat" @boundary="(index, end) => mutateWholeTimeline(shot => moveWholeBoundary(shot, index, end))"
+              @initialize="initializeWholeTimeline" @refine="refineWholeBeat" @split="splitWholeBeat" @remove="removeWholeBeat" />
+            <p v-if="activeWholeVideo && wholeTimelineIssue(active)" class="pv-hint" role="status">{{ wholeTimelineIssue(active) }}</p>
+            <ProductVideoContinuityPanel v-if="activeWholeVideo && capabilities?.wholeTimelineReview && selectedVideo(active)?.url"
+              :workflow="workflow" :model-options="planningModelOptions" :job-override="active.wholeReview"
+              :current-override="currentWholeVideoReview(workflow, active)" :manual-approved="Boolean(active.wholeManualApproval && currentWholeVideoReview(workflow, active, active.wholeManualApproval))"
+              :heading="`${active.title} · 整片时段检查`" :labels="wholeLabels(active)"
+              @start="askWholeReview(active)" @cancel="cancelContinuityReview(active.id, 'timeline')" @model="selectPlanningModel" @manual="confirmWholeManual(active)"
+              @acknowledge="(index, value) => acknowledgeWholeSegment(active, index, value)" @acknowledge-whole="acknowledgeWholeStructure(active, $event)"
+              @preview="previewWholeSegment(active, $event)" @edit="editWholeSegment(active, $event)" />
+            <details v-if="!activeWholeVideo" class="pv-shot-connection" aria-label="镜头衔接">
+              <summary>
+                镜头衔接
+                <span>
+                  {{ adjacentShots.previous?.title || '开场' }} → {{ active.title }} →
+                  {{ adjacentShots.next?.title || '收尾' }}
+                </span>
+              </summary>
+              <div class="pv-connection-toolbar">
+                <label>
+                  进入方式
+                  <ThemedSelect
+                    :model-value="activeConnection.type"
+                    :options="transitionOptions"
+                    aria-label="进入本镜的方式"
+                    @update:model-value="updateConnection('type', $event)"
+                  />
+                </label>
+                <button
+                  v-if="adjacentShots.previous"
+                  :disabled="
+                    !connectionSource ||
+                    Boolean(linkingShotId) ||
+                    busy(active, 'images') ||
+                    busy(active, 'videos')
+                  "
+                  @click="extractConnectionFrame"
+                >
+                  <i
+                    :class="
+                      linkingShotId === active.id ? 'ri-loader-4-line pv-spin' : 'ri-film-line'
+                    "
+                    aria-hidden="true"
+                  ></i>
+                  {{ linkingShotId === active.id ? '正在提取' : '提取衔接帧' }}
+                </button>
+                <button :disabled="shotBoundaryPreview(workflow, active).length !== 2" @click="openBoundaryPreview">
+                  <i class="ri-play-circle-line" aria-hidden="true"></i>衔接预览
+                </button>
+                <button v-if="capabilities?.continuityReview && adjacentShots.previous"
+                  :disabled="!connectionSource || reviewRunning(active.motionObservation) || planningModelUnavailable"
+                  @click="askContinuityReview(active.id)">
+                  <i :class="reviewRunning(active.motionObservation) ? 'ri-loader-4-line pv-spin' : 'ri-scan-2-line'" aria-hidden="true"></i>
+                  {{ reviewRunning(active.motionObservation) ? '分析中' : active.motionObservation?.status === 'unknown' ? '核对原分析' : '分析前镜动作' }}
+                </button>
+                <button v-if="adjacentShots.previous" :disabled="!connectionSource" @click="previewPreviousMotion">
+                  <i class="ri-film-line" aria-hidden="true"></i>前镜动作预览
+                </button>
+                <button v-if="reviewRunning(active.motionObservation)" class="pv-icon" title="停止后续分析" aria-label="停止后续分析"
+                  :disabled="active.motionObservation.status === 'stopping'" @click="cancelContinuityReview(active.id)">
+                  <i class="ri-stop-line" aria-hidden="true"></i>
+                </button>
+              </div>
+              <div v-if="active.motionObservation" class="pv-motion-observation" role="status">
+                <strong>{{ usableMotionObservation(workflow, active) ? '实际动作已确认' :
+                  currentContinuityReview(workflow, active.motionObservation, active) ? active.motionObservation.stage : '前镜或提示词已改变，动作分析待更新' }}</strong>
+                <p v-if="active.motionObservation.results?.[0]">{{ active.motionObservation.results[0].previousState }}</p>
+                <p v-if="active.motionObservation.results?.[0]">{{ active.motionObservation.results[0].motion }}</p>
+                <p v-if="active.motionObservation.error || active.motionObservation.pollError">{{ active.motionObservation.error || active.motionObservation.pollError }}</p>
+                <button v-if="active.motionObservation.status === 'completed' && !usableMotionObservation(workflow, active)"
+                  :disabled="connectionSource?.sourceKey !== active.motionObservation.sourceKey" @click="confirmMotionObservation">
+                  <i class="ri-check-line" aria-hidden="true"></i>确认实际动作参考
+                </button>
+              </div>
+              <details v-if="capabilities?.continuityReview && connectionSource" class="pv-manual-motion">
+                <summary>人工确认前镜动作</summary>
+                <label>实际结束状态<textarea v-model="manualPreviousState" maxlength="400" rows="2" aria-label="人工观察的前镜结束状态" /></label>
+                <label>动作阶段、方向与速度<textarea v-model="manualMotion" maxlength="400" rows="2" aria-label="人工观察的前镜动作" /></label>
+                <button :disabled="!manualPreviousState.trim() || !manualMotion.trim() || reviewRunning(active.motionObservation) || active.motionObservation?.status === 'unknown'"
+                  @click="confirmManualMotion"><i class="ri-check-line" aria-hidden="true"></i>确认人工动作观察</button>
+              </details>
+              <p v-if="shotConnectionIssue(workflow, active)" class="pv-hint" role="status">
+                {{ shotConnectionIssue(workflow, active) }}
+              </p>
+              <p v-if="adjacentShots.previous?.connection?.endState" class="pv-connection-state">
+                上一镜结束：{{ adjacentShots.previous.connection.endState }}
+              </p>
+              <div class="pv-connection-fields">
+                <label>
+                  本镜开始状态
+                  <textarea
+                    :value="activeConnection.startState"
+                    aria-label="本镜开始状态"
+                    maxlength="200"
+                    @input="updateConnection('startState', $event.target.value)"
+                  ></textarea>
+                </label>
+                <label>
+                  本镜结束状态
+                  <textarea
+                    :value="activeConnection.endState"
+                    aria-label="本镜结束状态"
+                    maxlength="200"
+                    @input="updateConnection('endState', $event.target.value)"
+                  ></textarea>
+                </label>
+              </div>
+              <label>
+                进入本镜的转场
+                <textarea
+                  :value="activeConnection.transition"
+                  aria-label="进入本镜的转场"
+                  maxlength="200"
+                  @input="updateConnection('transition', $event.target.value)"
+                ></textarea>
+              </label>
+              <p v-if="adjacentShots.next?.connection?.startState" class="pv-connection-state">
+                下一镜开始：{{ adjacentShots.next.connection.startState }}
+              </p>
+              <div v-if="active.connectionFrame" class="pv-connection-frame">
+                <img :src="active.connectionFrame.url" alt="上一镜成片结束画面" />
+                <span>
+                  {{ active.connectionFrame.title }} · {{ active.connectionFrame.time }} 秒
+                  <strong>{{ connectionFrame ? '衔接帧已就绪' : '来源已变更，待重新提取' }}</strong>
+                </span>
+                <button
+                  class="pv-icon"
+                  title="移除衔接帧"
+                  aria-label="移除衔接帧"
+                  @click="removeConnectionFrame"
+                >
+                  <i class="ri-close-line" aria-hidden="true"></i>
+                </button>
+              </div>
+            </details>
             <div v-if="activeUsesAnchor" class="pv-continuity-anchor" aria-label="分镜一致性">
               <img v-if="anchor" :src="anchor.url" alt="全片基准图" />
               <i v-else aria-hidden="true" class="ri-lock-line"></i>
@@ -2031,15 +2745,12 @@ function onKeydown(event) {
                         : '当前图片模型未配置单价，暂不可生成'
                     }}
                   </p>
-                  <p v-if="!modelOptions.length" class="pv-task-status error" role="status">
-                    请先在控制台 AI 功能映射中配置分镜生图模型
-                  </p>
                   <p
-                    v-else-if="!imageModelIsMapped"
-                    class="pv-task-status error"
+                    v-if="!imageModelOptions.length"
+                    :class="['pv-task-status', { error: !capabilitiesLoading }]"
                     role="status"
                   >
-                    当前图片模型未映射，请重新选择
+                    {{ capabilitiesError || (capabilitiesLoading ? '模型列表加载中' : '请先在控制台 AI 功能映射中配置分镜生图模型') }}
                   </p>
                   <div class="pv-actions">
                     <button
@@ -2089,7 +2800,7 @@ function onKeydown(event) {
                     </div>
                   </details>
                   <p
-                    v-for="item in active.images.filter((entry) => !entry.url).slice(-2)"
+                    v-for="item in imageGenerationNotices(active.images)"
                     :key="item.id"
                     :class="['pv-task-status', { error: item.error }]"
                   >
@@ -2173,36 +2884,29 @@ function onKeydown(event) {
                     {{
                       isWholeVideo(active.productionMode)
                         ? `${generationDuration(active)} 秒整片`
-                        : `${generationDuration(active, workflow)} 秒原片`
+                        : `${generationDuration(active, videoWorkflow)} 秒原片`
                     }}
                     <ThemedSelect
                       v-if="active.productionMode === 'single_video_30'"
-                      :model-value="workflow.wholeVideo30Model ?? WHOLE_VIDEO_30_MODEL"
-                      :options="WHOLE_VIDEO_30_MODELS"
+                      :model-value="effectiveWholeVideo30Model"
+                      :options="wholeVideo30ModelOptions"
                       aria-label="视频模型"
                       @update:model-value="set('wholeVideo30Model', $event)"
                     />
                     <ThemedSelect
                       v-else
-                      :model-value="workflow.videoModel"
+                      :model-value="videoModelForShot(active)"
                       :options="currentVideoModelOptions"
                       aria-label="视频模型"
                       @update:model-value="selectVideoModel"
                     />
                   </label>
                   <p
-                    v-if="active.productionMode !== 'single_video_30' && !currentVideoModelOptions.length"
-                    class="pv-task-status error"
+                    v-if="!videoModelsForShot(active).length"
+                    :class="['pv-task-status', { error: !capabilitiesLoading }]"
                     role="status"
                   >
-                    请先在控制台 AI 功能映射中配置分镜视频模型
-                  </p>
-                  <p
-                    v-else-if="active.productionMode !== 'single_video_30' && !currentVideoModelOptions.some((option) => option.value === workflow.videoModel)"
-                    class="pv-task-status error"
-                    role="status"
-                  >
-                    当前视频模型未映射，请重新选择
+                    {{ capabilitiesError || (capabilitiesLoading ? '模型列表加载中' : active.productionMode === 'single_video_30' ? '当前没有支持 30 秒整片的可用视频模型' : '请先在控制台 AI 功能映射中配置分镜视频模型') }}
                   </p>
                   <p
                     v-if="isRetiredVideoModel(videoModelForShot(active))"
@@ -2219,7 +2923,7 @@ function onKeydown(event) {
                       aria-label="按秒视频画质"
                       @update:model-value="
                         set(
-                          videoModelForShot(active) === MINIMAX_VIDEO_MODEL
+                          [MINIMAX_VIDEO_MODEL, HAILUO_H3_VIDEO_MODEL].includes(videoModelForShot(active))
                             ? 'minimaxResolution'
                             : active.productionMode === 'single_video_30'
                               ? 'wholeVideo30Resolution'
@@ -2230,29 +2934,39 @@ function onKeydown(event) {
                     />
                   </label>
                   <label v-if="perSecondVideo(active) && !activeWholeVideo">
-                    原片时长（秒）
+                    生成时长（秒）
                     <input
-                      :value="
-                        active.referenceRange
-                          ? generationDuration(active, workflow)
-                          : (workflow.videoDurationSeconds ?? 15)
-                      "
-                      :readonly="Boolean(active.referenceRange)"
+                      :value="generationDuration(active, videoWorkflow)"
+                      readonly
                       type="number"
                       min="4"
-                      :max="videoModelForShot(active) === ANMIAO25_VIDEO_MODEL ? 30 : 15"
+                      :max="isAnmiao25VideoModel(videoModelForShot(active)) ? 30 : 15"
                       step="1"
                       aria-label="按秒视频时长"
-                      @input="set('videoDurationSeconds', Number($event.target.value))"
                     />
                   </label>
+                  <p
+                    v-if="invalidAnmiaoDuration(active)"
+                    class="pv-task-status error"
+                    role="status"
+                  >
+                    脚本时长超出模型范围（4 至
+                    {{ isAnmiao25VideoModel(videoModelForShot(active)) ? 30 : 15 }}
+                    秒），请调整脚本或更换模型
+                  </p>
+                  <p
+                    v-if="perSecondVideo(active) && videoPrice(active) == null && !videoUsesReportedCost(active)"
+                    class="pv-task-status error"
+                    role="status"
+                  >
+                    所选画质尚未配置接口密钥和每秒米值单价
+                  </p>
                   <div class="pv-actions">
                     <button
                       class="pv-primary"
                       :disabled="
-                        !canGenerateVideo(active) ||
-                        (active.productionMode !== 'single_video_30' &&
-                          !currentVideoModelOptions.some((option) => option.value === workflow.videoModel)) ||
+                        !canGenerateVideo(active) || !motionReady || Boolean(wholeTimelineIssue(active)) ||
+                        !videoModelsForShot(active).length ||
                         isRetiredVideoModel(videoModelForShot(active)) ||
                         busy(active, 'videos') ||
                         (perSecondVideo(active) &&
@@ -2264,7 +2978,9 @@ function onKeydown(event) {
                     >
                       <i aria-hidden="true" class="ri-video-add-line"></i>
                       {{ busy(active, 'videos') ? '生成中' : video ? '重新生成视频' : '生成视频' }}
-                      <small v-if="videoPrice(active) != null">{{ formatMiValue(videoPrice(active)) }} 米值</small>
+                      <small v-if="videoPrice(active) != null">
+                        {{ formatMiValue(videoPrice(active)) }} 米值
+                      </small>
                     </button>
                     <button :disabled="uploading" @click="videoInput.click()">
                       <i aria-hidden="true" class="ri-upload-2-line"></i>
@@ -2289,14 +3005,18 @@ function onKeydown(event) {
                     {{ item.id === active.videos.at(-1)?.id ? '本次生成：' : '上次生成：'
                     }}{{ videoGenerationStatus(item) }}
                   </p>
+                  <button v-for="item in videoNotices.filter(value => value.status === 'unknown' && value.submissionTracked)"
+                    :key="`retry-${item.id}`" :disabled="!capabilities?.videoSubmissionRecovery" @click="retryUnknownVideo(item)">
+                    <i class="ri-refresh-line" aria-hidden="true"></i>核对原提交
+                  </button>
                 </div>
               </section>
             </div>
           </section>
         </main>
 
-        <main v-else-if="!showingTasks" class="pv-output pv-scroll">
-          <section class="pv-timeline">
+        <main v-else-if="!showingTasks" class="pv-output">
+          <section class="pv-timeline pv-scroll" aria-label="成片片段编辑">
             <div class="pv-section-head">
               <h3>成片顺序</h3>
               <span>{{ kept.length }} 个片段 · {{ totalDuration }} 秒</span>
@@ -2306,15 +3026,33 @@ function onKeydown(event) {
               <p>暂无保留片段</p>
               <button @click="tab = 'shots'">返回分镜选片</button>
             </div>
-            <article v-for="(shot, index) in kept" :key="shot.id" class="pv-timeline-shot">
-              <div class="pv-section-head">
-                <strong>{{ index + 1 }}. {{ shot.title }}</strong>
+            <article v-for="(shot, index) in kept" :key="shot.id"
+              class="pv-timeline-shot" :class="{ selected: outputShot?.id === shot.id,
+                'drop-before': outputDrop?.id === shot.id && !outputDrop.after,
+                'drop-after': outputDrop?.id === shot.id && outputDrop.after }"
+              :data-shot-id="shot.id" @dragover="overOutputShot($event, shot)" @drop="dropOutputShot($event, shot)">
+              <div class="pv-export-clip-head">
+                <button class="pv-icon pv-drag-handle" :title="outputOrderLocked ? '原片等长分段需保留原顺序' : '拖动排序'" aria-label="拖动排序"
+                  :draggable="!outputOrderLocked" :disabled="Boolean(outputOrderLocked)"
+                  @dragstart="dragOutputShot($event, shot)" @dragend="outputDrag = outputDrop = null">
+                  <i class="ri-draggable" aria-hidden="true"></i>
+                </button>
+                <button class="pv-export-clip-select" :aria-label="`选择片段 ${shot.title}`"
+                  :title="shot.title"
+                  :aria-pressed="outputShot?.id === shot.id" @click="selectOutputShot(shot)">
+                  <img v-if="selectedImage(shot)?.url" :src="selectedImage(shot).url" alt="" />
+                  <i v-else class="ri-film-line" aria-hidden="true"></i>
+                  <span><strong>{{ String(index + 1).padStart(2, '0') }} · {{ shot.title }}</strong>
+                    <small>{{ Number(shot.duration || 0).toFixed(1) }} 秒 · {{ shot.timingMode === 'speed' ? speedLabel(shot) : '截取片段' }}</small>
+                  </span>
+                </button>
                 <div class="pv-actions">
                   <button
                     class="pv-icon"
                     title="前移"
                     aria-label="前移"
-                    @click="moveShot(shot.id, -1)"
+                    :disabled="index === 0 || Boolean(outputOrderLocked)"
+                    @click="moveOutputShot(shot, -1)"
                   >
                     <i aria-hidden="true" class="ri-arrow-up-line"></i>
                   </button>
@@ -2322,17 +3060,10 @@ function onKeydown(event) {
                     class="pv-icon"
                     title="后移"
                     aria-label="后移"
-                    @click="moveShot(shot.id, 1)"
+                    :disabled="index === kept.length - 1 || Boolean(outputOrderLocked)"
+                    @click="moveOutputShot(shot, 1)"
                   >
                     <i aria-hidden="true" class="ri-arrow-down-line"></i>
-                  </button>
-                  <button
-                    class="pv-icon"
-                    title="编辑分镜"
-                    aria-label="编辑分镜"
-                    @click="openShot(shot)"
-                  >
-                    <i aria-hidden="true" class="ri-edit-line"></i>
                   </button>
                   <button
                     class="pv-icon"
@@ -2344,17 +3075,30 @@ function onKeydown(event) {
                   </button>
                 </div>
               </div>
+            </article>
+              <div v-if="outputShot" class="pv-export-clip-editor">
+              <div class="pv-export-editor-head">
+                <div><strong>片段设置</strong><small>{{ outputShot.title }}</small></div>
+                <div class="pv-actions">
+                  <button class="pv-icon" title="预览片段" aria-label="预览片段" @click="selectOutputShot(outputShot, true)">
+                    <i class="ri-play-circle-line" aria-hidden="true"></i>
+                  </button>
+                  <button class="pv-icon" title="编辑分镜" aria-label="编辑分镜" @click="openShot(outputShot, true)">
+                    <i class="ri-edit-line" aria-hidden="true"></i>
+                  </button>
+                </div>
+              </div>
               <div class="pv-timing-bar">
                 <div
                   class="pv-timing-modes"
                   role="group"
-                  :aria-label="`${shot.title} 片段处理方式`"
+                  :aria-label="`${outputShot.title} 片段处理方式`"
                 >
                   <button
-                    :class="{ active: shot.timingMode !== 'speed' }"
-                    :aria-pressed="shot.timingMode !== 'speed'"
+                    :class="{ active: outputShot.timingMode !== 'speed' }"
+                    :aria-pressed="outputShot.timingMode !== 'speed'"
                     @click="
-                      shotChange(shot.id, (item) => {
+                      shotChange(outputShot.id, (item) => {
                         item.timingMode = 'trim'
                       })
                     "
@@ -2363,11 +3107,11 @@ function onKeydown(event) {
                     截取片段
                   </button>
                   <button
-                    :class="{ active: shot.timingMode === 'speed' }"
-                    :aria-pressed="shot.timingMode === 'speed'"
+                    :class="{ active: outputShot.timingMode === 'speed' }"
+                    :aria-pressed="outputShot.timingMode === 'speed'"
                     :disabled="!capabilities?.clipSpeed"
                     @click="
-                      shotChange(shot.id, (item) => {
+                      shotChange(outputShot.id, (item) => {
                         item.timingMode = 'speed'
                       })
                     "
@@ -2376,25 +3120,26 @@ function onKeydown(event) {
                     整段加速
                   </button>
                 </div>
-                <span v-if="shot.timingMode === 'speed'" class="pv-speed-value">
-                  {{ speedLabel(shot) }}
+                <span v-if="outputShot.timingMode === 'speed'" class="pv-speed-value">
+                  {{ speedLabel(outputShot) }}
                 </span>
               </div>
               <div class="pv-settings">
-                <label v-if="shot.timingMode === 'speed'">
+                <label v-if="outputShot.timingMode === 'speed'">
                   原片时长（秒）
-                  <input :value="selectedVideo(shot).duration || 15" readonly />
+                  <input :value="selectedVideo(outputShot).duration || 15" readonly />
                 </label>
                 <label v-else>
                   起点（秒）
                   <input
+                    :aria-label="`${outputShot.title} 起点（秒）`"
                     type="number"
                     min="0"
-                    :max="selectedVideo(shot).duration || 15"
+                    :max="selectedVideo(outputShot).duration || 15"
                     step="0.1"
-                    :value="shot.start"
+                    :value="outputShot.start"
                     @input="
-                      shotChange(shot.id, (item) => {
+                      shotChange(outputShot.id, (item) => {
                         item.start = Number($event.target.value)
                       })
                     "
@@ -2402,27 +3147,28 @@ function onKeydown(event) {
                 </label>
                 <label>
                   {{
-                    shot.referenceRange
+                    outputShot.referenceRange
                       ? '原片分段时长（秒）'
-                      : shot.timingMode === 'speed'
+                      : outputShot.timingMode === 'speed'
                         ? '目标时长（秒）'
                         : '截取时长（秒）'
                   }}
                   <input
+                    :aria-label="`${outputShot.title} 时长（秒）`"
                     type="number"
-                    :readonly="Boolean(shot.referenceRange)"
+                    :readonly="Boolean(outputShot.referenceRange)"
                     min="0.5"
                     :max="
                       Math.min(
                         30,
-                        (selectedVideo(shot).duration || 15) -
-                          (shot.timingMode === 'speed' ? 0 : Number(shot.start)),
+                        (selectedVideo(outputShot).duration || 15) -
+                          (outputShot.timingMode === 'speed' ? 0 : Number(outputShot.start)),
                       )
                     "
                     step="0.1"
-                    :value="shot.duration"
+                    :value="outputShot.duration"
                     @input="
-                      shotChange(shot.id, (item) => {
+                      shotChange(outputShot.id, (item) => {
                         item.duration = Number($event.target.value)
                       })
                     "
@@ -2432,35 +3178,65 @@ function onKeydown(event) {
               <label>
                 字幕
                 <input
-                  :value="shot.caption"
+                  :aria-label="`${outputShot.title} 字幕`"
+                  :value="outputShot.caption"
                   maxlength="120"
                   @input="
-                    shotChange(shot.id, (item) => {
+                    shotChange(outputShot.id, (item) => {
                       item.caption = $event.target.value
                     })
                   "
                 />
               </label>
-            </article>
+              </div>
           </section>
           <section class="pv-output-preview">
-            <h3>成片预览</h3>
-            <div class="pv-preview">
+            <div class="pv-section-head pv-output-preview-head">
+              <h3>{{ outputPreviewMode === 'clip' ? '片段预览' : '成片预览' }}</h3>
+              <span v-if="workflow.composition?.url && stale" class="pv-preview-stale" role="status">预览待更新</span>
+              <div class="pv-timing-modes" role="group" aria-label="预览范围">
+                <button :class="{ active: outputPreviewMode === 'composition' }" :aria-pressed="outputPreviewMode === 'composition'"
+                  @click="outputPreviewMode = 'composition'">成片</button>
+                <button :class="{ active: outputPreviewMode === 'clip' }" :aria-pressed="outputPreviewMode === 'clip'"
+                  :disabled="!outputShot" @click="outputPreviewMode = 'clip'">片段</button>
+              </div>
+            </div>
+            <div class="pv-output-player" :style="{ '--pv-output-aspect': outputAspect }">
               <video
-                v-if="workflow.composition?.url"
-                :src="workflow.composition.url"
+                v-if="outputPreviewUrl && !outputPreviewIssue"
+                ref="outputVideo" :key="`${outputPreviewMode}-${outputPreviewUrl}-${outputShot?.id || ''}`"
+                :src="outputPreviewUrl"
                 controls
                 playsinline
+                preload="metadata"
+                @loadedmetadata="prepareOutputPreview" @timeupdate="boundOutputPreview"
+                @seeked="boundOutputPreview" @play="playOutputPreview"
               />
               <span v-else>
                 {{
-                  compositionBusy ? `合成中 ${workflow.composition?.progress || 0}%` : '暂无成片'
+                  outputPreviewIssue || (compositionBusy ? `合成中 ${workflow.composition?.progress || 0}%` : '暂无成片')
                 }}
               </span>
             </div>
-            <p v-if="workflow.composition?.url && stale" class="pv-hint">
-              分镜或剪辑已修改，请重新合成
-            </p>
+            <div class="pv-output-preview-meta">
+              <span>{{ outputPreviewMode === 'clip' ? outputShot?.title : `${kept.length} 个片段 · ${totalDuration} 秒` }}</span>
+              <small>MP4 · 30fps</small>
+            </div>
+            <div class="pv-output-settings pv-scroll">
+            <template v-for="shot in kept.filter(item => isWholeVideo(item.productionMode))" :key="shot.id">
+            <ProductVideoContinuityPanel v-if="capabilities?.wholeTimelineReview"
+              :workflow="workflow" :model-options="planningModelOptions" :job-override="shot.wholeReview"
+              :current-override="currentWholeVideoReview(workflow, shot)" :manual-approved="Boolean(shot.wholeManualApproval && currentWholeVideoReview(workflow, shot, shot.wholeManualApproval))"
+              :heading="`${shot.title} · 整片时段检查`" :labels="wholeLabels(shot)"
+              @start="askWholeReview(shot)" @cancel="cancelContinuityReview(shot.id, 'timeline')" @model="selectPlanningModel" @manual="confirmWholeManual(shot)"
+              @acknowledge="(index, value) => acknowledgeWholeSegment(shot, index, value)" @acknowledge-whole="acknowledgeWholeStructure(shot, $event)"
+              @preview="previewWholeSegment(shot, $event)" @edit="editWholeSegment(shot, $event)" />
+            </template>
+            <ProductVideoContinuityPanel v-if="capabilities?.continuityReview && kept.length > 1"
+              :workflow="workflow" :model-options="planningModelOptions"
+              @start="askContinuityReview()" @cancel="cancelContinuityReview()" @model="selectPlanningModel" @manual="confirmManualContinuity"
+              @acknowledge="acknowledgeReview" @acknowledge-whole="acknowledgeWholeReview"
+              @apply-cut="applyReviewCut" @preview="previewReviewBoundary" @edit="editReviewShot" />
             <p
               v-if="workflow.composition?.error || workflow.composition?.pollError"
               class="pv-task-status error"
@@ -2478,8 +3254,10 @@ function onKeydown(event) {
                 />
               </label>
               <label>
-                输出格式
-                <input value="MP4 · 720p · 30fps" readonly />
+                导出画质
+                <ThemedSelect :model-value="workflow.exportResolution || '720p'"
+                  :options="(capabilities?.compositionResolutions || ['720p']).map(value => ({ value, label: value }))"
+                  aria-label="导出画质" @update:model-value="set('exportResolution', $event)" />
               </label>
             </div>
             <div class="pv-section-head">
@@ -2493,6 +3271,14 @@ function onKeydown(event) {
                 保留原声
               </label>
             </div>
+            <label v-if="capabilities?.audioSmoothing" class="pv-audio-option">
+              <input type="checkbox" :checked="workflow.smoothAudio === true"
+                @change="set('smoothAudio', $event.target.checked)" />响度统一与切点柔化
+            </label>
+            <details class="pv-output-music">
+              <summary><i class="ri-music-2-line" aria-hidden="true"></i>背景音乐
+                <small>{{ workflow.musicName || '未添加' }}</small>
+              </summary>
             <div class="pv-section-head">
               <h3>背景音乐</h3>
               <button :disabled="uploading" @click="musicInput.click()">
@@ -2530,14 +3316,54 @@ function onKeydown(event) {
                 />
               </label>
             </template>
+            </details>
             <p v-if="capabilities && !capabilities.composition" class="pv-task-status error">
               成片服务尚未就绪，请配置合成服务
             </p>
-            <div class="pv-actions">
+            </div>
+          </section>
+          <section v-if="kept.length" class="pv-cut-timeline" aria-label="成片时间轴">
+            <div class="pv-section-head"><h3>时间轴</h3><span>{{ exportTime(totalDuration) }}</span></div>
+            <div class="pv-cut-timeline-scroll">
+              <div class="pv-cut-timeline-track" :style="{
+                gridTemplateColumns: outputTimeline.map(item => `${Math.max(item.duration, 0.5)}fr`).join(' '),
+                minWidth: `${outputTimeline.length * 90}px`,
+              }">
+                <button v-for="(item, index) in outputTimeline" :key="item.shot.id" class="pv-cut-segment"
+                  :class="{ active: outputShot?.id === item.shot.id }" :aria-label="`时间轴片段 ${item.shot.title}`"
+                  :aria-pressed="outputShot?.id === item.shot.id" @click="selectOutputShot(item.shot, true)">
+                  <img v-if="selectedImage(item.shot)?.url" :src="selectedImage(item.shot).url" alt="" />
+                  <span><strong>{{ index + 1 }} · {{ item.shot.title }}</strong>
+                    <small>{{ exportTime(item.start) }} – {{ exportTime(item.end) }}</small></span>
+                </button>
+              </div>
+            </div>
+          </section>
+        </main>
+        <footer v-if="!showingTasks" class="pv-footer" :class="{ 'pv-export-footer': tab === 'output' }">
+          <div v-if="tab === 'output'" class="pv-export-summary" role="status">
+            <strong>{{ kept.length }} 个片段 · {{ totalDuration }} 秒</strong>
+            <span v-if="compositionBusy">合成中 {{ workflow.composition?.progress || 0 }}%</span>
+            <span v-else-if="outputIssue" class="pv-export-warning">{{ outputIssue }}</span>
+            <span v-else-if="workflow.composition?.url">{{ stale ? '预览待更新' : '成片已就绪' }}</span>
+            <span v-else>{{ kept.length ? '待合成' : '暂无保留片段' }}</span>
+            <progress v-if="compositionBusy" :value="workflow.composition?.progress || 0" max="100" aria-label="合成进度" />
+          </div>
+          <span v-else>
+            {{ workflow.shots.length }} {{ hasWholeVideos ? '条视频' : '个分镜' }} ·
+            {{ kept.length }} 个已保留
+          </span>
+            <div v-if="tab === 'output'" class="pv-actions pv-export-actions">
+              <button v-if="capabilities?.continuityReview && kept.length > 1"
+                :disabled="reviewRunning(workflow.continuityReview) || planningModelUnavailable || compositionBusy"
+                @click="askContinuityReview()">
+                <i :class="reviewRunning(workflow.continuityReview) ? 'ri-loader-4-line pv-spin' : 'ri-scan-2-line'" aria-hidden="true"></i>
+                {{ reviewRunning(workflow.continuityReview) ? '检查中' : workflow.continuityReview?.status === 'unknown' ? '核对原检查' : '检查整片' }}
+              </button>
               <button
                 class="pv-primary"
                 :disabled="
-                  !kept.length || compositionBusy || !capabilities?.composition || uploading
+                  !kept.length || Boolean(outputIssue) || compositionBusy || !capabilities?.composition || uploading
                 "
                 @click="compose"
               >
@@ -2547,29 +3373,21 @@ function onKeydown(event) {
                 ></i>
                 {{ compositionBusy ? '合成中' : '合成视频' }}
               </button>
-              <button :disabled="!workflow.composition?.url || stale" @click="download">
+              <button :disabled="!workflow.composition?.url || stale || compositionBusy" @click="download">
                 <i aria-hidden="true" class="ri-download-line"></i>
-                下载
+                下载成片
               </button>
-              <button :disabled="!workflow.composition?.url || stale" @click="openEnhancement()">
+              <button class="pv-icon" title="视频超分" aria-label="视频超分" :disabled="!workflow.composition?.url || stale || compositionBusy" @click="openEnhancement()">
                 <i aria-hidden="true" class="ri-magic-line"></i>
-                视频超分
               </button>
               <button
-                :disabled="!workflow.composition?.url || stale"
+                class="pv-icon" title="回传选品库" aria-label="回传选品库"
+                :disabled="!workflow.composition?.url || stale || compositionBusy"
                 @click="openProducts('publish')"
               >
                 <i aria-hidden="true" class="ri-archive-line"></i>
-                回传选品库
               </button>
             </div>
-          </section>
-        </main>
-        <footer v-if="!showingTasks" class="pv-footer">
-          <span>
-            {{ workflow.shots.length }} {{ hasWholeVideos ? '条视频' : '个分镜' }} ·
-            {{ kept.length }} 个已保留
-          </span>
           <button @click="emit('close')">返回画布</button>
         </footer>
 
@@ -2768,6 +3586,25 @@ function onKeydown(event) {
             </div>
           </section>
         </div>
+        <div v-if="boundaryPreview" class="pv-sub-overlay">
+          <section class="pv-boundary-preview" role="dialog" aria-modal="true" aria-label="衔接预览">
+            <div class="pv-section-head">
+              <h3>衔接预览</h3>
+              <button class="pv-icon" title="关闭预览" aria-label="关闭预览" @click="boundaryPreview = null">
+                <i class="ri-close-line" aria-hidden="true"></i>
+              </button>
+            </div>
+            <video ref="boundaryVideo" :key="boundaryPreview.index" :src="boundaryPreview.clips[boundaryPreview.index].url"
+              :data-preview-index="boundaryPreview.index"
+              controls playsinline @loadedmetadata="startBoundaryVideo" @timeupdate="advanceBoundaryVideo" @ended="advanceBoundaryVideo" />
+            <div class="pv-actions">
+              <span>{{ boundaryPreview.clips[boundaryPreview.index].label }}</span>
+              <button title="重播衔接" aria-label="重播衔接" @click="replayBoundaryVideo">
+                <i class="ri-restart-line" aria-hidden="true"></i>
+              </button>
+            </div>
+          </section>
+        </div>
         <div v-if="confirmation" class="pv-sub-overlay pv-confirm-overlay">
           <section class="pv-confirm" role="alertdialog" aria-labelledby="pv-confirm-title">
             <h3 id="pv-confirm-title">{{ confirmation.title }}</h3>
@@ -2817,6 +3654,21 @@ function onKeydown(event) {
 </template>
 
 <style scoped>
+.pv-boundary-preview {
+  width: min(720px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  padding: 16px;
+  border: 1px solid var(--border-color, #3b3c41);
+  border-radius: 8px;
+  background: var(--bg-panel, #222329);
+}
+.pv-boundary-preview video {
+  display: block;
+  width: 100%;
+  height: min(54vh, 420px);
+  object-fit: contain;
+  background: #15161a;
+}
 .pv-overlay {
   position: fixed;
   inset: 0;
@@ -2844,6 +3696,106 @@ function onKeydown(event) {
 .pv-workspace * {
   box-sizing: border-box;
   letter-spacing: 0;
+}
+.pv-shot-connection {
+  margin: 12px 0;
+  padding: 10px 0;
+  border-top: 1px solid var(--canvas-border);
+  border-bottom: 1px solid var(--canvas-border);
+}
+.pv-shot-connection summary {
+  cursor: pointer;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.pv-shot-connection summary span {
+  margin-left: 10px;
+  color: var(--canvas-text-muted);
+  font-weight: 400;
+}
+.pv-connection-toolbar {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 12px 0;
+}
+.pv-workspace .pv-connection-toolbar > label:not(.pv-check) {
+  width: 200px;
+  max-width: 100%;
+  margin-bottom: 0;
+}
+.pv-workspace .pv-connection-toolbar > button {
+  height: 36px;
+  min-height: 36px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.pv-connection-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 10px 0;
+}
+.pv-shot-connection label {
+  display: grid;
+  gap: 6px;
+  color: var(--canvas-text-muted);
+}
+.pv-workspace .pv-shot-connection textarea {
+  width: 100%;
+  min-width: 0;
+  height: 66px;
+  min-height: 66px;
+  padding: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+.pv-connection-state {
+  color: var(--canvas-text-muted);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.pv-motion-observation {
+  margin: 10px 0;
+  padding: 10px 0;
+  border-top: 1px solid var(--canvas-border);
+  font-size: 12px;
+}
+.pv-motion-observation p {
+  margin: 6px 0;
+  color: var(--canvas-text-muted);
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+.pv-connection-frame {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.pv-connection-frame img {
+  width: 72px;
+  height: 54px;
+  object-fit: contain;
+  background: var(--canvas-node-bg);
+}
+.pv-connection-frame span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.pv-connection-frame strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+}
+@media (max-width: 700px) {
+  .pv-connection-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 .pv-header,
 .pv-footer,
@@ -3465,6 +4417,19 @@ function onKeydown(event) {
   width: 100%;
   margin-top: 12px;
 }
+.pv-batch-status {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.pv-batch-status small {
+  grid-column: 1 / -1;
+  color: var(--canvas-text-subtle);
+}
 .pv-shot-editor {
   padding: 18px 24px;
 }
@@ -3818,26 +4783,345 @@ function onKeydown(event) {
 }
 .pv-output {
   display: grid;
-  grid-template-columns: minmax(260px, 0.9fr) minmax(320px, 1.1fr);
+  grid-template-columns: minmax(320px, 0.95fr) minmax(320px, 1.25fr);
+  grid-template-rows: minmax(0, 1fr) auto;
   flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 .pv-output > section {
-  padding: 20px 24px;
+  padding: 16px 20px;
   min-width: 0;
 }
 .pv-timeline {
   border-right: 1px solid var(--canvas-border);
 }
 .pv-timeline-shot {
-  border-bottom: 1px solid var(--canvas-border);
-  padding: 14px 0 8px;
+  border: 1px solid var(--canvas-border);
+  border-radius: 6px;
+  margin-top: 8px;
+  position: relative;
 }
-.pv-timeline-shot .pv-section-head strong {
+.pv-timeline-shot.selected {
+  border-color: var(--canvas-accent-border);
+}
+.pv-timeline-shot.drop-before::before,
+.pv-timeline-shot.drop-after::after {
+  content: '';
+  position: absolute;
+  height: 3px;
+  background: var(--canvas-accent);
+  left: 0;
+  right: 0;
+  z-index: 1;
+}
+.pv-timeline-shot.drop-before::before {
+  top: -6px;
+}
+.pv-timeline-shot.drop-after::after {
+  bottom: -6px;
+}
+.pv-export-clip-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px;
+}
+.pv-export-clip-head .pv-actions {
+  flex-wrap: nowrap;
+  gap: 3px;
+  margin: 0;
+}
+.pv-workspace button.pv-drag-handle {
+  flex-basis: 20px;
+  width: 20px;
+  cursor: grab;
+  color: var(--canvas-text-subtle);
+}
+.pv-workspace button.pv-export-clip-select {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  justify-content: flex-start;
+  gap: 10px;
+}
+.pv-export-clip-select img,
+.pv-export-clip-select > i {
+  width: 32px;
+  height: 40px;
+  flex: 0 0 32px;
+  object-fit: cover;
+  border-radius: 3px;
+}
+.pv-export-clip-select > i {
+  display: grid;
+  place-items: center;
+  background: var(--canvas-input);
+  font-size: 22px;
+}
+.pv-export-clip-select > span {
+  min-width: 0;
+}
+.pv-export-clip-select strong {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.pv-export-clip-select small {
+  display: block;
+  margin-top: 3px;
+}
+.pv-export-clip-editor {
+  border-top: 1px solid var(--canvas-border);
+  margin-top: 16px;
+  padding: 10px 0 0;
+}
+.pv-export-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.pv-export-editor-head .pv-actions {
+  margin: 0;
+  flex-shrink: 0;
+}
+.pv-export-editor-head > div:first-child {
+  min-width: 0;
   overflow-wrap: anywhere;
 }
-.pv-timeline-shot .pv-actions {
-  flex-wrap: nowrap;
+.pv-export-editor-head small {
+  display: block;
+  margin-top: 3px;
+}
+.pv-export-clip-editor .pv-settings {
+  margin: 10px 0;
+}
+.pv-workspace .pv-export-clip-editor label {
+  margin-bottom: 10px;
   gap: 4px;
+}
+.pv-workspace .pv-export-clip-editor .pv-settings label {
+  margin-bottom: 0;
+}
+.pv-output-preview {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.pv-output-preview > :not(.pv-output-settings) {
+  flex-shrink: 0;
+}
+.pv-output-settings {
+  min-height: 0;
+  flex: 1;
+  padding-top: 10px;
+}
+.pv-workspace .pv-output-settings label {
+  margin-bottom: 12px;
+  gap: 4px;
+}
+.pv-output-settings .pv-settings {
+  margin: 0;
+}
+.pv-output-preview-head {
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.pv-output-preview-head .pv-timing-modes {
+  margin-left: auto;
+}
+.pv-preview-stale {
+  font-size: 11px;
+  color: var(--warning-color, #e9ba68);
+}
+.pv-output-player {
+  --pv-player-height: clamp(140px, 25vh, 270px);
+  height: var(--pv-player-height);
+  max-height: 100%;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  overflow: hidden;
+}
+.pv-output-player video {
+  display: block;
+  width: min(100%, calc(var(--pv-player-height) * var(--pv-output-aspect)));
+  aspect-ratio: var(--pv-output-aspect);
+  height: auto;
+  max-height: 100%;
+  object-fit: contain;
+  background: #111215;
+  border-radius: 4px;
+}
+.pv-output-player > span {
+  color: var(--canvas-text-subtle);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+.pv-output-preview-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--canvas-text-muted);
+}
+.pv-output-preview-meta > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.pv-output-preview-meta small {
+  white-space: nowrap;
+}
+.pv-output-music summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  list-style: none;
+}
+.pv-output-music summary::before {
+  content: '+';
+  width: 12px;
+}
+.pv-output-music[open] summary::before {
+  content: '-';
+}
+.pv-output-music summary small {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 60%;
+}
+.pv-output > .pv-cut-timeline {
+  grid-column: 1 / -1;
+  padding: 10px 20px 12px;
+  border-top: 1px solid var(--canvas-border);
+  background: var(--canvas-input);
+}
+.pv-cut-timeline .pv-section-head {
+  margin-bottom: 8px;
+  font-size: 11px;
+  color: var(--canvas-text-muted);
+}
+.pv-cut-timeline-scroll {
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.pv-cut-timeline-track {
+  display: grid;
+  width: 100%;
+  gap: 4px;
+}
+.pv-workspace button.pv-cut-segment {
+  height: 48px;
+  min-width: 0;
+  padding: 4px 6px;
+  justify-content: flex-start;
+  text-align: left;
+  overflow: hidden;
+}
+.pv-cut-segment img {
+  width: 28px;
+  height: 36px;
+  object-fit: cover;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.pv-cut-segment span {
+  min-width: 0;
+}
+.pv-cut-segment strong,
+.pv-cut-segment small {
+  display: block;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+.pv-cut-segment strong {
+  font-size: 11px;
+  font-weight: 500;
+}
+.pv-cut-segment small {
+  margin-top: 2px;
+  font-size: 10px;
+}
+.pv-export-footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 12px;
+}
+.pv-export-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.pv-export-summary strong {
+  color: var(--canvas-text);
+  font-size: 12px;
+}
+.pv-export-summary .pv-export-warning {
+  color: var(--warning-color, #e9ba68);
+}
+[data-theme='light'] .pv-preview-stale,
+[data-theme='light'] .pv-export-summary .pv-export-warning {
+  color: #8a5b12;
+}
+.pv-export-summary progress {
+  width: min(100%, 220px);
+  height: 4px;
+  accent-color: var(--canvas-accent);
+}
+.pv-export-actions {
+  margin: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.pv-export-clip-select:focus-visible,
+.pv-cut-segment:focus-visible {
+  outline: 2px solid var(--canvas-accent);
+  outline-offset: 2px;
+}
+@media (min-width: 1200px) {
+  .pv-output-preview {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(190px, 0.9fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    column-gap: 20px;
+  }
+  .pv-output-preview-head {
+    grid-column: 1 / -1;
+  }
+  .pv-output-player {
+    --pv-player-height: clamp(140px, calc(100dvh - 550px), 360px);
+    grid-column: 1;
+    grid-row: 2;
+    align-self: center;
+  }
+  .pv-output-preview-meta {
+    grid-column: 1;
+    grid-row: 3;
+  }
+  .pv-output-settings {
+    grid-column: 2;
+    grid-row: 2 / 4;
+    padding-top: 0;
+  }
 }
 .pv-music {
   display: flex;
@@ -4022,9 +5306,43 @@ function onKeydown(event) {
   .pv-tabs button {
     flex: 1;
   }
-  .pv-source,
-  .pv-output {
+  .pv-source {
     display: block;
+  }
+  .pv-output {
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  .pv-output > section {
+    padding: 12px;
+    overflow: visible;
+    flex-shrink: 0;
+  }
+  .pv-output-preview {
+    order: -1;
+    border-bottom: 1px solid var(--canvas-border);
+  }
+  .pv-output-settings {
+    overflow: visible;
+    flex: none;
+  }
+  .pv-output-player {
+    --pv-player-height: 210px;
+  }
+  .pv-output > .pv-cut-timeline {
+    padding: 10px 12px;
+  }
+  .pv-export-footer {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    padding: 10px 12px;
+  }
+  .pv-export-footer > button {
+    display: none;
+  }
+  .pv-export-actions {
+    justify-content: flex-start;
   }
   .pv-plan-source,
   .pv-reference-video-preview {

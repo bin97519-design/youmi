@@ -7,6 +7,7 @@ import { useTheme } from '../composables/useTheme';
 import { apiPath } from '../utils/apiBase';
 import { buildOssThumbnailUrl } from '../utils/ossImage';
 import { createStoredZip } from '../utils/storedZip';
+import { canvasDocumentAssetCounts, isCanvasDocumentImageLayer } from '../utils/canvasDocumentAssets';
 
 const router = useRouter();
 const canvas = useCanvasStore();
@@ -47,13 +48,8 @@ function layerCount(doc) {
   return Array.isArray(doc?.payload?.layers) ? doc.payload.layers.length : 0;
 }
 
-function isRealImageLayer(layer) {
-  if (!layer?.url) return false;
-  return !['placeholder', 'text', 'image-placeholder', 'video'].includes(layer.type);
-}
-
 function downloadableLayers(doc) {
-  return (doc?.payload?.layers || []).filter(isRealImageLayer);
+  return (Array.isArray(doc?.payload?.layers) ? doc.payload.layers : []).filter(isCanvasDocumentImageLayer);
 }
 
 function imageCount(doc) {
@@ -93,6 +89,10 @@ const documents = computed(() => {
   }
   return sorted.sort((left, right) => toTimestamp(right.updatedAt) - toTimestamp(left.updatedAt));
 });
+
+const documentAssetCounts = computed(() =>
+  new Map(documents.value.map((doc) => [doc.id, canvasDocumentAssetCounts(doc)])),
+);
 
 function createDocument() {
   if (!userStore.requireLogin()) return;
@@ -461,9 +461,19 @@ onBeforeUnmount(() => {
             <i class="ri-image-line" aria-hidden="true"></i>
           </span>
           <span v-if="doc.meta?.editing" class="editing-badge">编辑中</span>
-          <span class="image-count-badge">
-            <i class="ri-image-2-line" aria-hidden="true"></i>
-            {{ imageCount(doc) }}
+          <span class="media-counts-badge" :class="{ 'below-editing': doc.meta?.editing }">
+            <span :title="`图片 ${documentAssetCounts.get(doc.id).images} 张`" :aria-label="`图片 ${documentAssetCounts.get(doc.id).images} 张`">
+              <i class="ri-image-2-line" aria-hidden="true"></i>
+              {{ documentAssetCounts.get(doc.id).images }}
+            </span>
+            <span :title="`视频 ${documentAssetCounts.get(doc.id).videos} 个`" :aria-label="`视频 ${documentAssetCounts.get(doc.id).videos} 个`">
+              <i class="ri-video-line" aria-hidden="true"></i>
+              {{ documentAssetCounts.get(doc.id).videos }}
+            </span>
+            <span :title="`文本 ${documentAssetCounts.get(doc.id).texts} 个`" :aria-label="`文本 ${documentAssetCounts.get(doc.id).texts} 个`">
+              <i class="ri-text" aria-hidden="true"></i>
+              {{ documentAssetCounts.get(doc.id).texts }}
+            </span>
           </span>
           <span class="open-overlay">
             <i class="ri-arrow-right-up-line" aria-hidden="true"></i>
@@ -980,7 +990,7 @@ main.canvas-list {
 }
 
 .editing-badge,
-.image-count-badge {
+.media-counts-badge {
   position: absolute;
   top: 10px;
   display: inline-flex;
@@ -1002,8 +1012,27 @@ main.canvas-list {
   background: #6ee7b7;
 }
 
-.image-count-badge {
+.media-counts-badge {
   right: 10px;
+  max-width: calc(100% - 20px);
+  height: auto;
+  min-height: 24px;
+  flex-wrap: wrap;
+  column-gap: 10px;
+  padding: 4px 8px;
+  box-sizing: border-box;
+  font-variant-numeric: tabular-nums;
+}
+
+.media-counts-badge > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.media-counts-badge.below-editing {
+  top: 44px;
 }
 
 .open-overlay {

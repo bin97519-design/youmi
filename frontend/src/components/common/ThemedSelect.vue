@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 const props = defineProps({
   modelValue: {
@@ -14,14 +14,19 @@ const props = defineProps({
     type: String,
     default: '选择选项',
   },
+  disabled: Boolean,
+  floating: Boolean,
+  menuMinWidth: { type: Number, default: 0 },
 })
 
 const emit = defineEmits(['update:modelValue', 'change'])
 
 const root = ref(null)
+const menu = ref(null)
 const optionButtons = ref([])
 const open = ref(false)
 const activeIndex = ref(-1)
+const menuStyle = ref({})
 
 const selectedIndex = computed(() =>
   props.options.findIndex((option) => String(option.value) === String(props.modelValue)),
@@ -30,14 +35,44 @@ const selectedLabel = computed(
   () => props.options[selectedIndex.value]?.label || props.options[0]?.label || '请选择',
 )
 
-function focusOption(index) {
+function focusOption(index, direction = 1) {
   if (!props.options.length) return
-  const nextIndex = (index + props.options.length) % props.options.length
-  activeIndex.value = nextIndex
-  nextTick(() => optionButtons.value[nextIndex]?.focus())
+  for (let offset = 0; offset < props.options.length; offset++) {
+    const nextIndex =
+      (((index + offset * direction) % props.options.length) + props.options.length) %
+      props.options.length
+    if (props.options[nextIndex].disabled) continue
+    activeIndex.value = nextIndex
+    nextTick(() => optionButtons.value[nextIndex]?.focus())
+    return
+  }
+}
+
+function positionMenu() {
+  if (!props.floating || !root.value) return
+  const rect = root.value.getBoundingClientRect()
+  const gap = 6
+  const margin = 8
+  const desiredHeight = Math.min(280, props.options.length * 34 + 10)
+  const below = window.innerHeight - rect.bottom - gap - margin
+  const above = rect.top - gap - margin
+  const opensBelow = below >= desiredHeight || below >= above
+  const height = Math.max(34, Math.min(desiredHeight, opensBelow ? below : above))
+  const width = Math.min(Math.max(rect.width, props.menuMinWidth), window.innerWidth - margin * 2)
+  menuStyle.value = {
+    position: 'fixed',
+    zIndex: 12000,
+    top: `${opensBelow ? rect.bottom + gap : Math.max(margin, rect.top - gap - height)}px`,
+    left: `${Math.max(margin, Math.min(rect.left, window.innerWidth - margin - width))}px`,
+    right: 'auto',
+    width: `${width}px`,
+    maxHeight: `${height}px`,
+  }
 }
 
 function showMenu() {
+  if (props.disabled) return
+  positionMenu()
   open.value = true
   focusOption(selectedIndex.value >= 0 ? selectedIndex.value : 0)
 }
@@ -54,6 +89,7 @@ function toggleMenu() {
 }
 
 function selectOption(option) {
+  if (props.disabled || option.disabled) return
   emit('update:modelValue', option.value)
   emit('change', option.value)
   closeMenu({ restoreFocus: true })
@@ -72,21 +108,45 @@ function onOptionKeydown(event, index) {
     focusOption(index + 1)
   } else if (event.key === 'ArrowUp') {
     event.preventDefault()
-    focusOption(index - 1)
+    focusOption(index - 1, -1)
+  } else if (event.key === 'Home' || event.key === 'End') {
+    event.preventDefault()
+    focusOption(event.key === 'Home' ? 0 : props.options.length - 1, event.key === 'Home' ? 1 : -1)
   } else if (event.key === 'Escape') {
     event.preventDefault()
     closeMenu({ restoreFocus: true })
   } else if (event.key === 'Tab') {
     closeMenu()
+    root.value?.querySelector('.themed-select-trigger')?.focus()
   }
 }
 
 function onDocumentPointerDown(event) {
-  if (root.value && !root.value.contains(event.target)) closeMenu()
+  if (root.value && !root.value.contains(event.target) && !menu.value?.contains(event.target))
+    closeMenu()
 }
 
-onMounted(() => document.addEventListener('pointerdown', onDocumentPointerDown))
-onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPointerDown))
+function onViewportChange() {
+  if (open.value) positionMenu()
+}
+
+watch(
+  () => props.disabled,
+  (disabled) => {
+    if (disabled) closeMenu()
+  },
+)
+
+onMounted(() => {
+  document.addEventListener('pointerdown', onDocumentPointerDown, true)
+  window.addEventListener('resize', onViewportChange)
+  window.addEventListener('scroll', onViewportChange, true)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', onDocumentPointerDown, true)
+  window.removeEventListener('resize', onViewportChange)
+  window.removeEventListener('scroll', onViewportChange, true)
+})
 </script>
 
 <template>
@@ -94,6 +154,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
     <button
       type="button"
       class="themed-select-trigger"
+      :disabled="disabled"
       :aria-label="ariaLabel"
       aria-haspopup="listbox"
       :aria-expanded="open"
@@ -104,29 +165,45 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
       <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
     </button>
 
-    <Transition name="themed-select-menu">
-      <div v-if="open" class="themed-select-options" role="listbox" :aria-label="ariaLabel">
-        <button
-          v-for="(option, index) in options"
-          :key="option.value"
-          :ref="(element) => (optionButtons[index] = element)"
-          type="button"
-          class="themed-select-option"
-          :class="{ active: String(option.value) === String(modelValue) }"
-          role="option"
-          :aria-selected="String(option.value) === String(modelValue)"
-          @click="selectOption(option)"
-          @keydown="onOptionKeydown($event, index)"
+    <Teleport to="body" :disabled="!floating">
+      <Transition name="themed-select-menu">
+        <div
+          v-if="open"
+          ref="menu"
+          class="themed-select-options"
+          :style="floating ? menuStyle : null"
+          role="listbox"
+          :aria-label="ariaLabel"
+          @pointerdown.stop
+          @click.stop
+          @dblclick.stop
+          @keydown.stop
+          @wheel.stop
         >
-          <span>{{ option.label }}</span>
-          <i
-            v-if="String(option.value) === String(modelValue)"
-            class="ri-check-line"
-            aria-hidden="true"
-          ></i>
-        </button>
-      </div>
-    </Transition>
+          <button
+            v-for="(option, index) in options"
+            :key="option.value"
+            :ref="(element) => (optionButtons[index] = element)"
+            type="button"
+            :disabled="disabled || option.disabled"
+            tabindex="-1"
+            class="themed-select-option"
+            :class="{ active: String(option.value) === String(modelValue) }"
+            role="option"
+            :aria-selected="String(option.value) === String(modelValue)"
+            @click="selectOption(option)"
+            @keydown="onOptionKeydown($event, index)"
+          >
+            <span>{{ option.label }}</span>
+            <i
+              v-if="String(option.value) === String(modelValue)"
+              class="ri-check-line"
+              aria-hidden="true"
+            ></i>
+          </button>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -178,6 +255,12 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
   background: var(--canvas-surface-hover);
 }
 
+.themed-select-trigger:disabled,
+.themed-select-option:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
 .themed-select.open .themed-select-trigger,
 .themed-select-trigger:focus-visible {
   color: var(--canvas-accent);
@@ -192,6 +275,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
 }
 
 .themed-select-options {
+  box-sizing: border-box;
   position: absolute;
   z-index: 80;
   top: calc(100% + 6px);

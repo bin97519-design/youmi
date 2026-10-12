@@ -13,7 +13,6 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
@@ -29,7 +28,8 @@ public class VideoCompositionService {
   private final Path root;
   private final String ffmpeg;
   private final String ffprobe;
-  private final Map<Long, String> active = new ConcurrentHashMap<>();
+  private record JobKey(Long userId, String id) {}
+  private final java.util.Set<JobKey> active = ConcurrentHashMap.newKeySet();
   private final ThreadPoolExecutor executor = new ThreadPoolExecutor(
       2, 2, 0, TimeUnit.SECONDS, new ArrayBlockingQueue<>(8));
   private static final long MAX_BYTES = 150L * 1024 * 1024;
@@ -68,13 +68,13 @@ public class VideoCompositionService {
     if (request.musicUrl() != null && !request.musicUrl().isBlank()) ownedObject(userId, request.musicUrl());
     if (!available()) throw new ApiException(503, "成片服务未就绪，请配置 FFmpeg、FFprobe 和素材存储");
     String id = UUID.randomUUID().toString();
-    if (active.putIfAbsent(userId, id) != null) throw new ApiException(409, "当前已有成片正在合成，请等待完成");
+    active.add(new JobKey(userId, id));
     var state = new ProductVideoDtos.Composition(id, "queued", 0, "", "");
     try {
       write(userId, state);
       executor.execute(() -> compose(userId, id, request));
     } catch (Exception error) {
-      active.remove(userId, id);
+      active.remove(new JobKey(userId, id));
       write(userId, new ProductVideoDtos.Composition(id, "failed", 0, "", "合成队列繁忙，请稍后再试"));
       throw new ApiException(503, "合成队列繁忙，请稍后再试");
     }
@@ -85,7 +85,7 @@ public class VideoCompositionService {
     Path file = directory(userId, id).resolve("state.json");
     if (!Files.isRegularFile(file)) throw new ApiException(404, "成片任务不存在");
     var state = mapper.readValue(Files.readString(file), ProductVideoDtos.Composition.class);
-    if (List.of("queued", "processing").contains(state.status()) && !id.equals(active.get(userId))) {
+    if (List.of("queued", "processing").contains(state.status()) && !active.contains(new JobKey(userId, id))) {
       state = new ProductVideoDtos.Composition(id, "failed", state.progress(), "", "合成服务已重启，请重新合成，原始片段已保留");
       write(userId, state);
     }
@@ -107,7 +107,7 @@ public class VideoCompositionService {
     if (request == null || request.clips() == null || request.clips().isEmpty() || request.clips().size() > 48) {
       throw new ApiException(400, "成片需要 1 至 48 个片段");
     }
-    dimensions(request.ratio());
+    dimensions(request.ratio(), request.resolution());
     if (!Double.isFinite(request.musicVolume()) || request.musicVolume() < 0 || request.musicVolume() > 1) {
       throw new ApiException(400, "音乐音量需在 0 至 1 之间");
     }
@@ -140,6 +140,19 @@ public class VideoCompositionService {
     };
   }
 
+  static int[] dimensions(String ratio, String resolution) {
+    int[] base = dimensions(ratio);
+    int shortSide = switch (resolution == null ? "720p" : resolution) {
+      case "720p" -> 720;
+      case "1080p" -> 1080;
+      case "2K" -> 1440;
+      case "4K" -> 2160;
+      default -> throw new ApiException(400, "导出画质需为 720p、1080p、2K 或 4K");
+    };
+    return new int[] { (int) Math.round(base[0] * shortSide / 720.0 / 2) * 2,
+        (int) Math.round(base[1] * shortSide / 720.0 / 2) * 2 };
+  }
+
   private void compose(Long userId, String id, ProductVideoDtos.ComposeRequest request) {
     Path dir = directory(userId, id);
     try {
@@ -168,7 +181,7 @@ public class VideoCompositionService {
       try { write(userId, new ProductVideoDtos.Composition(id, "failed", 0, "", message)); }
       catch (Exception ignored) { }
     } finally {
-      active.remove(userId, id);
+      active.remove(new JobKey(userId, id));
       try (var files = Files.list(dir)) {
         files.filter(path -> !path.getFileName().toString().equals("state.json"))
             .forEach(path -> { try { Files.deleteIfExists(path); } catch (Exception ignored) { } });
@@ -176,7 +189,7 @@ public class VideoCompositionService {
     }
   }
 
-  private void download(Long userId, String url, Path target) throws Exception {
+  void download(Long userId, String url, Path target) throws Exception {
     try (InputStream input = oss.openObjectStream(ownedObject(userId, url)); var output = Files.newOutputStream(target)) {
       byte[] buffer = new byte[65536];
       long size = 0;
@@ -189,7 +202,7 @@ public class VideoCompositionService {
   }
 
   Path renderLocal(ProductVideoDtos.ComposeRequest request, List<Path> sources, Path music, Path dir) throws Exception {
-    int[] size = dimensions(request.ratio());
+    int[] size = dimensions(request.ratio(), request.resolution());
     StringBuilder manifest = new StringBuilder();
     for (int i = 0; i < sources.size(); i++) {
       var clip = request.clips().get(i);
@@ -233,12 +246,15 @@ public class VideoCompositionService {
       if (request.keepOriginalAudio()) {
         String audio = "aresample=48000:async=1:first_pts=0,"
             + (hasAudio && speed ? audioTempo(duration / clip.duration()) + "," : "")
-            + "apad,atrim=duration=" + number(clip.duration());
+            + (hasAudio && request.smoothAudio() ? "loudnorm=I=-18:TP=-2:LRA=7,aresample=48000," : "")
+            + "apad,atrim=duration=" + number(clip.duration())
+            + (request.smoothAudio() ? ",afade=t=in:st=0:d=0.015,afade=t=out:st="
+                + number(Math.max(0, clip.duration() - .015)) + ":d=0.015" : "");
         clipCommand.addAll(List.of("-map", hasAudio ? "0:a:0" : "1:a:0", "-af", audio,
             "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k"));
       } else clipCommand.add("-an");
       clipCommand.add(name);
-      run(clipCommand, dir, dir.resolve("render-" + i + ".log"), 180);
+      run(clipCommand, dir, dir.resolve("render-" + i + ".log"), renderTimeout(request));
       manifest.append("file '").append(name).append("'\n");
     }
     Files.writeString(dir.resolve("clips.txt"), manifest, StandardCharsets.UTF_8);
@@ -250,18 +266,22 @@ public class VideoCompositionService {
     command.addAll(List.of("-map", "0:v:0", "-vf", "subtitles=captions.ass", "-c:v", "libx264", "-preset", "fast",
         "-crf", "20", "-pix_fmt", "yuv420p", "-threads", "2"));
     if (request.keepOriginalAudio() && music != null) command.addAll(List.of("-filter_complex",
-        "[1:a:0]volume=" + number(request.musicVolume()) + "[music];"
+        "[1:a:0]volume=" + number(request.musicVolume()) + musicFade(request) + "[music];"
             + "[0:a:0][music]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95:level=0:latency=1[audio]",
         "-map", "[audio]", "-c:a", "aac", "-b:a", "192k"));
     else if (request.keepOriginalAudio()) command.addAll(List.of("-map", "0:a:0", "-c:a", "aac", "-b:a", "192k"));
-    else if (music != null) command.addAll(List.of("-map", "1:a:0", "-af", "volume=" + number(request.musicVolume()),
+    else if (music != null) command.addAll(List.of("-map", "1:a:0", "-af", "volume=" + number(request.musicVolume()) + musicFade(request),
         "-c:a", "aac", "-b:a", "192k", "-shortest"));
     command.addAll(List.of("-t", number(request.clips().stream().mapToDouble(ProductVideoDtos.Clip::duration).sum()),
         "-movflags", "+faststart", "output.mp4"));
-    run(command, dir, dir.resolve("compose.log"), 300);
+    run(command, dir, dir.resolve("compose.log"), Math.max(300, renderTimeout(request)));
     Path output = dir.resolve("output.mp4");
     if (!Files.isRegularFile(output) || Files.size(output) < 100) throw new ApiException(502, "合成未返回有效视频");
     return output;
+  }
+
+  private int renderTimeout(ProductVideoDtos.ComposeRequest request) {
+    return "4K".equals(request.resolution()) ? 900 : "2K".equals(request.resolution()) ? 600 : 300;
   }
 
   static String audioTempo(double factor) {
@@ -273,9 +293,12 @@ public class VideoCompositionService {
   }
 
   static String subtitles(List<ProductVideoDtos.Clip> clips, int[] size) {
+    double scale = Math.min(size[0], size[1]) / 720.0;
     StringBuilder text = new StringBuilder("[Script Info]\nScriptType: v4.00+\nPlayResX: " + size[0] + "\nPlayResY: " + size[1]
         + "\nWrapStyle: 0\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        + "Style: Default,Microsoft YaHei,32,&H00FFFFFF,&H00FFFFFF,&H00202020,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,36,36,40,1\n"
+        + "Style: Default,Microsoft YaHei," + Math.round(32 * scale)
+        + ",&H00FFFFFF,&H00FFFFFF,&H00202020,&H80000000,0,0,0,0,100,100,0,0,1," + Math.round(2 * scale)
+        + ",0,2," + Math.round(36 * scale) + "," + Math.round(36 * scale) + "," + Math.round(40 * scale) + ",1\n"
         + "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n");
     double start = 0;
     for (var clip : clips) {
@@ -296,6 +319,12 @@ public class VideoCompositionService {
   }
 
   private static String number(double value) { return String.format(Locale.ROOT, "%.3f", value); }
+
+  private static String musicFade(ProductVideoDtos.ComposeRequest request) {
+    if (!request.smoothAudio()) return "";
+    double total = request.clips().stream().mapToDouble(ProductVideoDtos.Clip::duration).sum();
+    return ",afade=t=in:st=0:d=0.15,afade=t=out:st=" + number(Math.max(0, total - .3)) + ":d=0.3";
+  }
 
   private void run(List<String> command, Path dir, Path output, int seconds) throws Exception {
     Process process = new ProcessBuilder(command).directory(dir.toFile()).redirectErrorStream(true)

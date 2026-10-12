@@ -19,6 +19,33 @@ class ProductVideoPlanJobsTest {
   private final ProductVideoDtos.ShotPlan shot = new ProductVideoDtos.ShotPlan("细节", "首帧", "动作", "", 4, "展示", "策划");
   private final String id = "550e8400-e29b-41d4-a716-446655440000";
 
+  @Test void refinementReusesOnlyOwnedUnchangedPersistedOutlineAndOtherwiseReplans() throws Exception {
+    var outline = mapper.readTree("{\"analysis\":\"Product facts\",\"concept\":\"Story\",\"shots\":[{}]}");
+    var result = new ProductVideoDtos.PlanResponse("mock", List.of(shot), null);
+    when(plans.plan(eq(request), any(), anyList(), any())).thenAnswer(invocation -> {
+      ProductVideoPlanService.ProgressListener progress = invocation.getArgument(3);
+      progress.save("Outline", outline, List.of(), "mock");
+      return result;
+    });
+    var jobs = new ProductVideoPlanJobs(plans, mapper, dir.toString());
+    try { jobs.create(1L, new ProductVideoPlanJobs.CreateRequest(id, request)); finished(jobs); }
+    finally { jobs.close(); }
+    var refine = new ProductVideoDtos.PlanRequest(request.brief(), request.images(), 1, request.ratio(), shot, List.of());
+    when(plans.refineFromOutline(eq(refine), eq(outline), eq(0))).thenReturn(result);
+    when(plans.plan(any(ProductVideoDtos.PlanRequest.class))).thenReturn(result);
+    jobs = new ProductVideoPlanJobs(plans, mapper, dir.toString());
+    try {
+      assertEquals(result, jobs.refine(1L, new ProductVideoDtos.RefineRequest(id, "plan-" + id + "-0", refine)));
+      verify(plans, times(1)).refineFromOutline(refine, outline, 0);
+      jobs.refine(2L, new ProductVideoDtos.RefineRequest(id, "plan-" + id + "-0", refine));
+      verify(plans).plan(refine);
+      var changed = new ProductVideoDtos.PlanRequest("Changed product", List.of(), 1, "16:9", shot, List.of());
+      jobs.refine(1L, new ProductVideoDtos.RefineRequest(id, "plan-" + id + "-0", changed));
+      verify(plans).plan(changed);
+      verify(plans, times(1)).refineFromOutline(any(), any(), anyInt());
+    } finally { jobs.close(); }
+  }
+
   @Test void planningModelIsPersistedAndRetryDoesNotSwitchProvider() throws Exception {
     var selected = new ProductVideoDtos.PlanRequest("商品", List.of(), 1, "16:9", null, null,
         "storyboard", null, false, null, "gem-3.8-flash");
@@ -45,9 +72,13 @@ class ProductVideoPlanJobsTest {
   }
 
   private ProductVideoPlanJobs.State finished(ProductVideoPlanJobs jobs) throws Exception {
+    return finished(jobs, 1L, id);
+  }
+
+  private ProductVideoPlanJobs.State finished(ProductVideoPlanJobs jobs, long userId, String jobId) throws Exception {
     long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(4);
     while (System.nanoTime() < until) {
-      var state = jobs.get(1L, id);
+      var state = jobs.get(userId, jobId);
       if (List.of("failed", "completed").contains(state.status())) return state;
       Thread.sleep(10);
     }
@@ -66,14 +97,116 @@ class ProductVideoPlanJobsTest {
       assertEquals(id, jobs.create(1L, new ProductVideoPlanJobs.CreateRequest(id, request)).id());
       assertEquals(404, assertThrows(ApiException.class, () -> jobs.get(2L, id)).getCode());
       assertEquals(404, assertThrows(ApiException.class, () -> jobs.get(1L, "../../escape")).getCode());
-      assertEquals(409, assertThrows(ApiException.class, () -> jobs.create(1L,
-          new ProductVideoPlanJobs.CreateRequest("another-job-id", request))).getCode());
+      assertEquals("queued", jobs.create(1L,
+          new ProductVideoPlanJobs.CreateRequest("another-job-id", request)).status());
       release.countDown();
       assertEquals("completed", finished(jobs).status());
+      assertEquals("completed", finished(jobs, 1L, "another-job-id").status());
       var reopened = new ProductVideoPlanJobs(plans, mapper, dir.toString());
       try { assertEquals(List.of(shot), reopened.get(1L, id).result().shots()); }
       finally { reopened.close(); }
-      verify(plans, times(1)).plan(eq(request), isNull(), anyList(), any());
+      verify(plans, times(2)).plan(eq(request), isNull(), anyList(), any());
+    } finally { release.countDown(); jobs.close(); }
+  }
+
+  @Test void sameUserCanRunTwoIndependentPlansAndQueueAnotherWithoutLosingOwnership() throws Exception {
+    var started = new CountDownLatch(2);
+    var release = new CountDownLatch(1);
+    when(plans.plan(eq(request), isNull(), anyList(), any())).thenAnswer(invocation -> {
+      ProductVideoPlanService.ProgressListener progress = invocation.getArgument(3);
+      progress.save("商品识图与整片策划", null, List.of(), "mock");
+      started.countDown();
+      assertTrue(release.await(4, TimeUnit.SECONDS));
+      return new ProductVideoDtos.PlanResponse("mock", List.of(shot), null);
+    });
+    var jobs = new ProductVideoPlanJobs(plans, mapper, dir.toString());
+    try {
+      jobs.create(1L, new ProductVideoPlanJobs.CreateRequest(id, request));
+      jobs.create(1L, new ProductVideoPlanJobs.CreateRequest("second-plan-job", request));
+      assertTrue(started.await(4, TimeUnit.SECONDS), "Both plans must start before either finishes");
+      assertEquals("processing", jobs.get(1L, id).status());
+      assertEquals("processing", jobs.get(1L, "second-plan-job").status());
+      assertEquals("processing", jobs.create(1L, new ProductVideoPlanJobs.CreateRequest(id, request)).status());
+      jobs.create(1L, new ProductVideoPlanJobs.CreateRequest("third-plan-job", request));
+      assertEquals("queued", jobs.get(1L, "third-plan-job").status());
+      verify(plans, times(2)).plan(eq(request), isNull(), anyList(), any());
+      release.countDown();
+      for (String jobId : List.of(id, "second-plan-job", "third-plan-job"))
+        assertEquals("completed", finished(jobs, 1L, jobId).status());
+      verify(plans, times(3)).plan(eq(request), isNull(), anyList(), any());
+    } finally { release.countDown(); jobs.close(); }
+  }
+
+  @Test void finishingOrFailingOnePlanDoesNotInterruptAnotherPlanForTheSameUser() throws Exception {
+    var other = new ProductVideoDtos.PlanRequest("另一件商品", List.of(), 4, "16:9", null, null);
+    var started = new CountDownLatch(1);
+    var release = new CountDownLatch(1);
+    when(plans.plan(eq(other), isNull(), anyList(), any())).thenAnswer(invocation -> {
+      ProductVideoPlanService.ProgressListener progress = invocation.getArgument(3);
+      progress.save("独立商品策划", null, List.of(), "mock");
+      started.countDown();
+      assertTrue(release.await(4, TimeUnit.SECONDS));
+      return new ProductVideoDtos.PlanResponse("mock", List.of(shot), null);
+    });
+    when(plans.plan(eq(request), any(), anyList(), any()))
+        .thenThrow(new ApiException(504, "当前任务超时"))
+        .thenReturn(new ProductVideoDtos.PlanResponse("mock", List.of(shot), null));
+    var jobs = new ProductVideoPlanJobs(plans, mapper, dir.toString());
+    try {
+      jobs.create(1L, new ProductVideoPlanJobs.CreateRequest("independent-job", other));
+      assertTrue(started.await(4, TimeUnit.SECONDS));
+      jobs.create(1L, new ProductVideoPlanJobs.CreateRequest(id, request));
+      assertEquals("failed", finished(jobs).status());
+      assertEquals("processing", jobs.get(1L, "independent-job").status());
+      jobs.retry(1L, id);
+      assertEquals("completed", finished(jobs).status());
+      assertEquals("processing", jobs.get(1L, "independent-job").status());
+      release.countDown();
+      assertEquals("completed", finished(jobs, 1L, "independent-job").status());
+    } finally { release.countDown(); jobs.close(); }
+  }
+
+  @Test void equalJobIdsFromDifferentUsersRemainIndependent() throws Exception {
+    var started = new CountDownLatch(2);
+    var release = new CountDownLatch(1);
+    when(plans.plan(eq(request), isNull(), anyList(), any())).thenAnswer(invocation -> {
+      started.countDown();
+      assertTrue(release.await(4, TimeUnit.SECONDS));
+      return new ProductVideoDtos.PlanResponse("mock", List.of(shot), null);
+    });
+    var jobs = new ProductVideoPlanJobs(plans, mapper, dir.toString());
+    try {
+      for (long userId : new long[]{1L, 2L}) jobs.create(userId, new ProductVideoPlanJobs.CreateRequest(id, request));
+      assertTrue(started.await(4, TimeUnit.SECONDS));
+      for (long userId : new long[]{1L, 2L}) assertEquals("queued", jobs.get(userId, id).status());
+      release.countDown();
+      for (long userId : new long[]{1L, 2L}) assertEquals("completed", finished(jobs, userId, id).status());
+      verify(plans, times(2)).plan(eq(request), isNull(), anyList(), any());
+    } finally { release.countDown(); jobs.close(); }
+  }
+
+  @Test void fullQueueRejectsOnlyTheExtraPlanAndItsRetryCanRunAfterCapacityReturns() throws Exception {
+    var started = new CountDownLatch(2);
+    var release = new CountDownLatch(1);
+    when(plans.plan(eq(request), any(), anyList(), any())).thenAnswer(invocation -> {
+      started.countDown();
+      assertTrue(release.await(4, TimeUnit.SECONDS));
+      return new ProductVideoDtos.PlanResponse("mock", List.of(shot), null);
+    });
+    var jobs = new ProductVideoPlanJobs(plans, mapper, dir.toString());
+    try {
+      for (int i = 0; i < 10; i++) jobs.create(1L, new ProductVideoPlanJobs.CreateRequest("queued-plan-" + i, request));
+      assertTrue(started.await(4, TimeUnit.SECONDS));
+      var rejected = assertThrows(ApiException.class,
+          () -> jobs.create(1L, new ProductVideoPlanJobs.CreateRequest("overflow-plan-job", request)));
+      assertEquals(503, rejected.getCode());
+      assertEquals("failed", jobs.get(1L, "overflow-plan-job").status());
+      for (int i = 0; i < 10; i++) assertEquals("queued", jobs.get(1L, "queued-plan-" + i).status());
+      release.countDown();
+      for (int i = 0; i < 10; i++) assertEquals("completed", finished(jobs, 1L, "queued-plan-" + i).status());
+      jobs.retry(1L, "overflow-plan-job");
+      assertEquals("completed", finished(jobs, 1L, "overflow-plan-job").status());
+      verify(plans, times(11)).plan(eq(request), any(), anyList(), any());
     } finally { release.countDown(); jobs.close(); }
   }
 

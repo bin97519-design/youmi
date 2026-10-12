@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  canvasMediaClipboardEntries,
+  canvasMediaClipboardLayerFields,
   canvasMediaSummary,
   isCopyableCanvasMedia,
   partitionCanvasMediaCopies,
@@ -15,6 +17,77 @@ const video = {
   height: 480,
 }
 const image = { id: 'image-1', type: 'image', url: 'https://cdn.test/image.png' }
+
+test('clipboard keeps video media metadata but excludes pending tasks and image detection', () => {
+  const source = {
+    ...video,
+    zIndex: 2,
+    x: 120,
+    y: 80,
+    naturalWidth: 1080,
+    naturalHeight: 1440,
+    posterUrl: 'https://cdn.test/poster.jpg',
+    thumbnailUrl: 'https://cdn.test/thumb.jpg',
+    duration: 15,
+    genMeta: { model: 'minimax-h3', duration: 15 },
+    videoMeta: { model: 'minimax-h3', resolution: '768p' },
+    videoNodeDraft: { prompt: '脚本', references: [{ url: '/scene.png' }] },
+    taskId: 'completed-task',
+  }
+  const before = JSON.stringify(source)
+  const [entry] = canvasMediaClipboardEntries(
+    [source, { ...video, id: 'pending', generating: true }],
+    [source.id, 'pending'],
+    { [source.id]: [{ name: 'not-an-image' }] },
+  )
+  const pasted = canvasMediaClipboardLayerFields(entry)
+  for (const field of [
+    'url',
+    'type',
+    'posterUrl',
+    'thumbnailUrl',
+    'duration',
+    'naturalWidth',
+    'naturalHeight',
+  ]) {
+    assert.equal(pasted[field], source[field])
+  }
+  assert.equal(pasted.width, 360)
+  assert.equal(pasted.height, 480)
+  assert.deepEqual(pasted.videoMeta, source.videoMeta)
+  assert.deepEqual(pasted.videoNodeDraft, source.videoNodeDraft)
+  pasted.videoNodeDraft.references[0].url = '/changed.png'
+  assert.equal(entry.videoNodeDraft.references[0].url, '/scene.png')
+  assert.deepEqual(entry.elements, [])
+  assert.equal('taskId' in pasted, false)
+  assert.equal('layerId' in pasted, false)
+  assert.equal('elements' in pasted, false)
+  pasted.genMeta.model = 'changed'
+  assert.equal(entry.genMeta.model, 'minimax-h3')
+  entry.genMeta.duration = 4
+  assert.equal(JSON.stringify(source), before)
+})
+
+test('clipboard supports mixed selections and legacy images while retaining image detections', () => {
+  const legacy = { ...image, type: undefined, zIndex: 1 }
+  const detections = { [legacy.id]: [{ box: [0, 0, 1, 1] }] }
+  const entries = canvasMediaClipboardEntries(
+    [{ ...video, zIndex: 2 }, legacy, { id: 'text', type: 'text', url: image.url }],
+    [legacy.id, video.id, 'text'],
+    detections,
+  )
+  assert.deepEqual(
+    entries.map((entry) => entry.layerId),
+    [legacy.id, video.id],
+  )
+  assert.equal(canvasMediaSummary(entries), '1 张图片、1 个视频')
+  const fields = canvasMediaClipboardLayerFields(entries[0], 'https://cdn.test/resized.jpg')
+  assert.equal(fields.type, 'image')
+  assert.equal(fields.thumbnailUrl, 'https://cdn.test/resized.jpg')
+  assert.deepEqual(entries[0].elements, detections[legacy.id])
+  entries[0].elements[0].box[0] = 0.5
+  assert.equal(detections[legacy.id][0].box[0], 0)
+})
 
 test('cross-canvas copies accept finished videos and images, not pending media or text', () => {
   assert.equal(isCopyableCanvasMedia(video), true)

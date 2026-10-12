@@ -2,11 +2,78 @@ package com.youmi.api.ai;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.youmi.api.common.ApiException;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 public final class VisionJsonSupport {
   private VisionJsonSupport() {}
+
+  public static List<VisionElement> parseElements(ObjectMapper mapper, String text) {
+    String json = extractNormalizedJsonArray(text);
+    JsonNode array;
+    try {
+      array = json == null ? null : mapper.readTree(json);
+    } catch (Exception error) {
+      throw new ApiException(502, "Agent 分层结果格式异常，请重试", error);
+    }
+    if (array == null || !array.isArray()) {
+      throw new ApiException(502, "Agent 未返回有效分层结果，请重试");
+    }
+    List<VisionElement> elements = new ArrayList<>();
+    for (JsonNode node : array) {
+      String name = node.path("object_name").asText(node.path("name").asText(node.path("object").asText("")))
+          .replaceAll("\\s*\\([^)]*\\)\\s*", "").trim();
+      if (name.isBlank()) continue;
+      JsonNode box = null;
+      for (String key : List.of("box_2d", "box.2d", "bbox_2d", "box2d", "bbox")) {
+        JsonNode candidate = node.get(key);
+        if (candidate != null && candidate.isArray()) { box = candidate; break; }
+      }
+      if (box == null || box.size() != 4) continue;
+      double[] coordinates = new double[4];
+      boolean valid = true;
+      double scale = 1;
+      for (int index = 0; index < 4; index++) {
+        JsonNode value = box.get(index);
+        double number = value.isNumber() ? value.asDouble() : Double.NaN;
+        if (!Double.isFinite(number) || Math.abs(number) > 1000) { valid = false; break; }
+        if (Math.abs(number) > 1.05) scale = 1000;
+        coordinates[index] = number;
+      }
+      if (!valid) continue;
+      for (int index = 0; index < 4; index++) {
+        coordinates[index] = Math.round(Math.max(0, Math.min(1, coordinates[index] / scale)) * 1000) / 1000.0;
+      }
+      // Models return [top, left, bottom, right]; the canvas uses [left, top, right, bottom].
+      double top = coordinates[0], left = coordinates[1], bottom = coordinates[2], right = coordinates[3];
+      if (bottom <= top || right <= left) continue;
+      elements.add(new VisionElement(name, List.of(left, top, right, bottom)));
+    }
+    if (!array.isEmpty() && elements.isEmpty()) {
+      throw new ApiException(502, "Agent 未返回有效元素坐标，请重试");
+    }
+    Map<String, Integer> counts = new LinkedHashMap<>();
+    for (VisionElement element : elements) counts.merge(element.objectName(), 1, Integer::sum);
+    Set<String> usedNames = new HashSet<>(counts.keySet());
+    Map<String, Integer> sequences = new LinkedHashMap<>();
+    List<VisionElement> unique = new ArrayList<>();
+    for (VisionElement element : elements) {
+      String name = element.objectName();
+      if (counts.get(name) > 1) {
+        String candidate;
+        do { candidate = name + sequences.merge(name, 1, Integer::sum); } while (usedNames.contains(candidate));
+        usedNames.add(candidate);
+        name = candidate;
+      }
+      unique.add(new VisionElement(name, element.box2d()));
+    }
+    return unique;
+  }
 
   static String extractNormalizedJsonArray(String text) {
     if (text == null || text.isBlank()) return null;
@@ -14,37 +81,6 @@ public final class VisionJsonSupport {
     int end = text.lastIndexOf(']');
     if (start < 0 || end <= start) return null;
     return normalizeNumbersOutsideStrings(text.substring(start, end + 1));
-  }
-
-  public static List<VisionElement> parseElements(ObjectMapper mapper, String text) throws Exception {
-    String json = extractNormalizedJsonArray(text);
-    if (json == null) return List.of();
-    JsonNode array = mapper.readTree(json);
-    if (!array.isArray()) return List.of();
-    List<VisionElement> result = new ArrayList<>();
-    for (JsonNode node : array) {
-      String name = node.path("object_name").asText(node.path("name").asText(node.path("object").asText("")));
-      JsonNode box = node.path("box_2d");
-      if (!box.isArray()) box = node.path("bbox_2d");
-      if (!box.isArray()) box = node.path("box2d");
-      if (!box.isArray()) box = node.path("bbox");
-      if (name.isBlank() || !box.isArray() || box.size() != 4) continue;
-      double top = normalizeCoord(box.get(0).asDouble());
-      double left = normalizeCoord(box.get(1).asDouble());
-      double bottom = normalizeCoord(box.get(2).asDouble());
-      double right = normalizeCoord(box.get(3).asDouble());
-      List<Double> bounds = List.of(Math.min(left, right), Math.min(top, bottom),
-          Math.max(left, right), Math.max(top, bottom));
-      if (bounds.get(2) <= bounds.get(0) || bounds.get(3) <= bounds.get(1)) continue;
-      name = name.replaceAll("\\s*\\([^)]*\\)\\s*", "").trim();
-      if (!name.isBlank()) result.add(new VisionElement(name, bounds));
-    }
-    return List.copyOf(result);
-  }
-
-  private static double normalizeCoord(double value) {
-    double normalized = Math.abs(value) > 1.05 ? value / 1000.0 : value;
-    return Math.max(0.0, Math.min(1.0, normalized));
   }
 
   /**

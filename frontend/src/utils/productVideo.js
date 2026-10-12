@@ -1,10 +1,22 @@
 import { MAX_REFERENCE_SHOTS } from './referenceVideo.js'
+import { setWholeMotion, wholeTimelineIssue, wholeTimeline, wholeStatePrompt } from './productVideoWholeTimeline.js'
 import {
   continuityEnabled,
   planningContinuityReferences,
   productReferenceUrls,
   imageContinuityReferences,
 } from './productVideoContinuity.js'
+import {
+  shotConnectionPrompt,
+  shotMotionHandoffPrompt,
+  usableShotConnectionFrame,
+  validateShotConnectionVideo,
+  usableMotionObservation,
+  executionProductVideoShots,
+  adjacentProductVideoShots,
+  previousShotTailSource,
+  shotConnection,
+} from './productVideoShotConnections.js'
 
 export const productVideoShotLimit = (workflow) =>
   (workflow.referenceStrategy !== 'highlights' &&
@@ -38,9 +50,34 @@ export const ANMIAO20_FAST_VIDEO_MODEL = 'doubao-seedance-2-0-fast-260128'
 export const ANMIAO25_VIDEO_MODEL = 'doubao-seedance-2-5-260628'
 export const MINIMAX_VIDEO_MODEL = 'minimax-h3'
 export const HAILUO_H3_VIDEO_MODEL = 'hailuo-h3-shouweizhen'
+export function mappedImageModelOption(model, options = []) {
+  const normalize = (value) => String(value ?? '').trim().toLowerCase()
+  const requested = normalize(model)
+  if (!requested) return undefined
+  const matches = (value) => normalize(value) === requested
+  // Image route names can distinguish providers that use the same model ID.
+  return options.find((option) => matches(option.value)) ||
+    options.find((option) => matches(option.model))
+}
+export function mappedVideoModelOption(model, options = [], hailuoH3Available = false) {
+  const normalize = (value) => String(value ?? '').trim().toLowerCase()
+  const requested = normalize(model)
+  if (!requested) return undefined
+  const matches = (value) => normalize(value) === requested
+  return (
+    options.find((option) => matches(option.value)) ||
+    options.find((option) => matches(option.label)) ||
+    (hailuoH3Available && requested === MINIMAX_VIDEO_MODEL
+      ? options.find((option) => normalize(option.value) === HAILUO_H3_VIDEO_MODEL)
+      : undefined)
+  )
+}
 export const isRetiredVideoModel = (model) => model === 'minimax-h3-max'
 export const isAnmiao20FastVideoModel = (model) =>
-  String(model || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').includes('doubao-seedance-2-0-fast')
+  String(model || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .includes('doubao-seedance-2-0-fast')
 export const ANMIAO20_FAST_VIDEO_RESOLUTIONS = ANMIAO_VIDEO_RESOLUTIONS.filter((option) =>
   ['480p', '720p'].includes(option.value),
 )
@@ -51,24 +88,87 @@ export const MINIMAX_VIDEO_RESOLUTIONS = [
   { value: '4k', label: '4K' },
 ]
 export const isAnmiao25VideoModel = (model) =>
-  model === ANMIAO25_VIDEO_MODEL || String(model || '').toLowerCase().includes('seedance-2.5-guanfang-anmiao')
+  model === ANMIAO25_VIDEO_MODEL ||
+  String(model || '')
+    .toLowerCase()
+    .includes('seedance-2.5-guanfang-anmiao')
 export const isPerSecondVideoModel = (model) =>
-  [ANMIAO_VIDEO_MODEL, ANMIAO25_VIDEO_MODEL, MINIMAX_VIDEO_MODEL, HAILUO_H3_VIDEO_MODEL].includes(model) ||
+  [ANMIAO_VIDEO_MODEL, ANMIAO25_VIDEO_MODEL, MINIMAX_VIDEO_MODEL, HAILUO_H3_VIDEO_MODEL].includes(
+    model,
+  ) ||
   isAnmiao20FastVideoModel(model) ||
-  String(model || '').toLowerCase().includes('seedance-2.0-guanfang-anmiao') ||
+  String(model || '')
+    .toLowerCase()
+    .includes('seedance-2.0-guanfang-anmiao') ||
   isAnmiao25VideoModel(model)
 export const WHOLE_VIDEO_30_MODELS = [
   { value: WHOLE_VIDEO_30_MODEL, label: 'SD2.5 整片 30 秒' },
   { value: ANMIAO25_VIDEO_MODEL, label: 'SD2.5 满血按秒 · 30 秒' },
 ]
 export const isWholeVideo = (mode) => ['single_video', 'single_video_30'].includes(mode)
+export function wholeVideoModelOptions(options = [], seconds = 15) {
+  return options.filter((option) =>
+    !isRetiredVideoModel(option.value) &&
+    (seconds === 30
+      ? option.value === WHOLE_VIDEO_30_MODEL || isAnmiao25VideoModel(option.value)
+      : seconds === 15 && option.value !== WHOLE_VIDEO_30_MODEL),
+  )
+}
+export function videoPromptDuration(value) {
+  const text = normalizePromptLineBreaks(value)
+  for (const pattern of [
+    /(?:本镜|镜头|分镜|片段)时长\s*[:：=为是]?\s*(\d+(?:\.\d+)?)\s*(?:秒钟?|s(?:ec(?:ond)?s?)?)(?![a-z])/gi,
+    /(?:总时长|视频时长|时长)\s*[:：=为是]?\s*(\d+(?:\.\d+)?)\s*(?:秒钟?|s(?:ec(?:ond)?s?)?)(?![a-z])/gi,
+  ]) {
+    const explicit = [...text.matchAll(pattern)]
+      .map((match) => Number(match[1]))
+      .filter((seconds) => seconds > 0)
+    if (explicit.length) return Math.max(...explicit)
+  }
+
+  // Read the end of each script time range, not the length of its individual actions.
+  const ranges = [
+    ...text.matchAll(
+      /(?<![\d./:+-])(\d+(?:\.\d+)?)\s*(?:秒钟?|s(?:ec(?:ond)?s?)?)?\s*[-~～—–至到]\s*(\d+(?:\.\d+)?)\s*(?:秒钟?|s(?:ec(?:ond)?s?)?)(?![a-z])/gi,
+    ),
+  ]
+    .filter((match) => Number(match[2]) > Number(match[1]))
+    .map((match) => Number(match[2]))
+  const points = [
+    ...text.matchAll(/(?<![\d./:+-])(\d+(?:\.\d+)?)\s*(?:秒钟?|s(?:ec(?:ond)?s?)?)(?![a-z])/gi),
+  ]
+    .map((match) => Number(match[1]))
+    .filter((seconds) => seconds > 0)
+  return ranges.length || points.length ? Math.max(...ranges, ...points) : null
+}
 export const generationDuration = (shot, workflow) => {
   if (shot.productionMode === 'single_video_30') return 30
-  if (shot.referenceRange && isPerSecondVideoModel(workflow?.videoModel))
-    return Math.max(4, Math.ceil(Number(shot.duration) - 0.000001))
-  if (!isWholeVideo(shot.productionMode) && isPerSecondVideoModel(workflow?.videoModel))
-    return Number(workflow.videoDurationSeconds ?? 15)
+  if (!isWholeVideo(shot.productionMode) && isPerSecondVideoModel(workflow?.videoModel)) {
+    const planned = Number(shot.referenceRange ? shot.duration : shot.scriptDuration ?? shot.duration)
+    const seconds =
+      (!shot.referenceRange && videoPromptDuration(shot.motion)) ||
+      (Number.isFinite(planned) && planned > 0
+        ? planned
+        : Number(workflow.videoDurationSeconds ?? 15))
+    return Math.max(4, Math.ceil(seconds - 0.000001))
+  }
   return 15
+}
+export function executionDuration(shot, workflow) {
+  if (isWholeVideo(shot.productionMode)) return generationDuration(shot, workflow)
+  if (shot.referenceRange) return Number(shot.duration)
+  return videoPromptDuration(shot.motion) || Number(shot.scriptDuration) || Number(shot.duration) || 4
+}
+
+export function setShotMotion(shot, value) {
+  if (isWholeVideo(shot.productionMode)) { setWholeMotion(shot, normalizeVideoPrompt(shot, value)); return }
+  shot.motion = normalizeVideoPrompt(shot, value)
+  if (isWholeVideo(shot.productionMode) || shot.referenceRange) return
+  const seconds = videoPromptDuration(shot.motion)
+  if (seconds) {
+    shot.scriptDuration = seconds
+    if (!selectedVideo(shot)) shot.duration = seconds
+  }
 }
 export const uid = () =>
   globalThis.crypto?.randomUUID?.() ||
@@ -118,6 +218,7 @@ export function newProductVideo() {
     timelineCount: 4,
     generateAudio: false,
     keepOriginalAudio: false,
+    smoothAudio: false,
     brief: '',
     references: [],
     shots: [],
@@ -133,6 +234,7 @@ export function newProductVideo() {
     musicUrl: '',
     musicName: '',
     musicVolume: 0.25,
+    exportResolution: '1080p',
     composition: null,
   }
 }
@@ -266,6 +368,7 @@ export function newShot(plan = {}) {
     concept: plan.concept || '',
     productionMode: plan.productionMode || 'storyboard',
     timeline: plan.timeline || [],
+    ...(plan.connection ? { connection: { ...plan.connection } } : {}),
     ...(plan.referenceRange ? { referenceRange: { ...plan.referenceRange } } : {}),
     ...(plan.referenceStrategy ? { referenceStrategy: plan.referenceStrategy } : {}),
     ...(isWholeVideo(plan.productionMode)
@@ -347,6 +450,8 @@ export function buildPlanRequest(workflow, count, shot) {
   if (highlights && timelineCount > sourceVideo.segments.length)
     throw new Error('精华镜头数量不能超过原片分段数')
   const shared = planningContinuityReferences(workflow, shot)
+  const previousId = adjacentProductVideoShots(workflow, shot).previous?.id
+  const observedMotion = usableMotionObservation(workflow, shot)?.results[0]
   return {
     brief: workflow.brief,
     ...(shared.instruction ? { continuity: shared.instruction } : {}),
@@ -387,17 +492,24 @@ export function buildPlanRequest(workflow, count, shot) {
           imagePrompt: normalizePromptLineBreaks(shot.imagePrompt),
           motion: normalizeVideoPrompt(shot),
           caption: shot.caption,
-          duration: shot.duration,
+          duration: executionDuration(shot, workflow),
           purpose: shot.purpose || '',
           design: shot.design || '',
-          ...(singleVideo ? { productionMode: mode, timeline: shot.timeline || [] } : {}),
+          ...(shot.connection ? { connection: { ...shot.connection } } : {}),
+          ...(singleVideo ? { productionMode: mode, timeline: wholeTimeline(shot) } : {}),
         }
       : null,
-    contextShots: workflow.shots.map((item) => ({
+    contextShots: executionProductVideoShots(workflow, shot).map((item) => ({
       title: item.title,
       purpose: item.purpose || '',
-      design: item.design || '',
+      design: item.id === previousId && observedMotion
+        ? `${String(item.design || '').slice(0, 700)}\n实际视频结束状态：${observedMotion.previousState}\n实际运动：${observedMotion.motion}`
+        : item.design || '',
       concept: item.concept || '',
+      motion: normalizeVideoPrompt(item),
+      duration: executionDuration(item, workflow),
+      ...(item.connection ? { connection: { ...item.connection } } : {}),
+      current: item.id === shot?.id,
     })),
   }
 }
@@ -449,6 +561,17 @@ export function buildImageRequest(workflow, shot, clientId) {
   if (!refs.length) throw new Error('请为这个分镜选择商品参考图或上传固定商品图')
   if (!shot.imagePrompt.trim()) throw new Error('请填写首帧画面')
   const shared = imageContinuityReferences(workflow, shot, refs)
+  const connectionFrame = isWholeVideo(shot.productionMode)
+    ? null
+    : usableShotConnectionFrame(workflow, shot)
+  if (!isWholeVideo(shot.productionMode) && shot.connectionFrame && !connectionFrame)
+    throw new Error('上一镜视频或裁剪范围已改变，请重新提取衔接帧或移除旧参考')
+  const imageUrls = [
+    ...new Set([...shared.urls, ...(connectionFrame ? [connectionFrame.url] : [])]),
+  ]
+  const frameDirection = connectionFrame
+    ? `图${imageUrls.indexOf(connectionFrame.url) + 1}是上一镜成片结束时的真实画面。只用于承接人物位置、手部、商品开合、光线及动作阶段；按本镜构图和景别变化，不当作新的商品或人物参考。`
+    : ''
   return {
     model: workflow.imageModel,
     size: workflow.ratio,
@@ -456,22 +579,26 @@ export function buildImageRequest(workflow, shot, clientId) {
     n: 1,
     output_format: 'png',
     client_task_id: clientId,
-    image_urls: shared.urls,
-    prompt: `${productAppearanceConstraint('所选商品参考图')}\n\n${shared.instruction}\n\n商品资料（仅供核对商品特征）：${workflow.brief}\n\n当前镜头首帧：\n${normalizePromptLineBreaks(shot.imagePrompt).trim()}\n\n生成要求：生成单张视频起始帧，以当前镜头描述安排人物、场景、构图和光线，不要把后续动作或多个镜头画成拼图。人物出镜时，按描述呈现服装、位置、视线、手部与商品接触前的起始姿势，为下一步动作留出空间。使用参考图中的同一商品，保持颜色、材质、结构、数量、比例和商品自带的品牌标识，不更换或编造品牌。不要额外叠加字幕、营销文案、水印或未经提供的产品功能。`,
+    image_urls: imageUrls,
+    prompt: `${productAppearanceConstraint('所选商品参考图')}\n\n${shared.instruction}\n\n${shotConnectionPrompt(workflow, shot)}\n${frameDirection}\n\n商品资料（仅供核对商品特征）：${workflow.brief}\n\n当前镜头首帧：\n${normalizePromptLineBreaks(shot.imagePrompt).trim()}\n\n生成要求：生成单张视频起始帧，以当前镜头描述安排人物、场景、构图和光线，不要把后续动作或多个镜头画成拼图。人物出镜时，按描述呈现服装、位置、视线、手部与商品接触前的起始姿势，为下一步动作留出空间。使用参考图中的同一商品，保持颜色、材质、结构、数量、比例和商品自带的品牌标识，不更换或编造品牌。不要额外叠加字幕、营销文案、水印或未经提供的产品功能。`,
   }
 }
 
 export function buildVideoRequest(workflow, shot, clientId) {
   if (!canGenerateVideo(shot)) throw new Error('请先确认当前分镜图片')
+  validateShotConnectionVideo(workflow, shot)
   const image = selectedImage(shot)
   const singleVideo = isWholeVideo(shot.productionMode)
+  const timelineIssue = wholeTimelineIssue(shot)
+  if (timelineIssue) throw new Error(timelineIssue)
   const whole30 = shot.productionMode === 'single_video_30'
   const duration = generationDuration(shot, workflow)
+  const executionShot = { ...shot, duration: executionDuration(shot, workflow) }
   const model = whole30 ? (workflow.wholeVideo30Model ?? WHOLE_VIDEO_30_MODEL) : workflow.videoModel
   if (isRetiredVideoModel(model)) throw new Error('原视频模型已移除，请重新选择视频模型')
   const anmiaoVideo = isPerSecondVideoModel(model)
   const minimax = model === MINIMAX_VIDEO_MODEL || model === HAILUO_H3_VIDEO_MODEL
-  const anmiao25Video = model === ANMIAO25_VIDEO_MODEL
+  const anmiao25Video = isAnmiao25VideoModel(model)
   const anmiao20Fast = isAnmiao20FastVideoModel(model)
   const maxDuration = anmiao25Video ? 30 : 15
   const minDuration = 4
@@ -498,7 +625,7 @@ export function buildVideoRequest(workflow, shot, clientId) {
           ? 'SD2.5 视频画质需选择 480p、720p 或 1080p'
           : anmiao20Fast
             ? 'Seedance 2.0 快速版画质需选择 480p 或 720p'
-          : '按秒视频画质需选择 480p、720p、1080p 或 4K',
+            : '按秒视频画质需选择 480p、720p、1080p 或 4K',
     )
   const timelineCount = Number(shot.timelineCount ?? shot.timeline?.length)
   const countDirection =
@@ -511,7 +638,7 @@ export function buildVideoRequest(workflow, shot, clientId) {
     ? `这是一条完整的 ${duration} 秒电商视频，必须按提示词里的全部时间段完成开场、展示和收尾。需要切换镜头时按策划的衔接执行；明确要求一镜到底时保持连续。不要仅做第一个动作后一直停留。`
     : shot.referenceRange
       ? `本片段对应参考视频第 ${shot.referenceRange.start} 至 ${shot.referenceRange.end} 秒，成片使用 ${shot.duration} 秒。严格在前 ${shot.duration} 秒完成全部动作与转场，之后自然停留；按提示词衔接，不新增剧情。`
-      : '单个连续镜头，不换场、不跳切、不突然变焦，动作完成后自然停留。'
+      : '本镜内部连续拍摄，不换场、不跳切、不突然变焦。'
   const continuity = singleVideo
     ? `首帧只定义第 0 秒开场，后续按时间轴切换机位和景别，不锁定首帧构图。同一角色再次出镜时保持身份与服装；${continuityEnabled(workflow, shot) ? '固定场景人物已开启，全片不得换房间、换人换装' : '允许按脚本切换场景或角色，不强制同一房间或同一人物'}。商品始终不变。第一段从首帧已有状态开始，不凭空变出或替换人物、商品。`
     : '沿用首帧中的同一人物、服装、商品、场景和光线。动作从首帧已有的姿势和手部位置自然开始，不要凭空增加人物或道具。'
@@ -519,8 +646,20 @@ export function buildVideoRequest(workflow, shot, clientId) {
     workflow.generateAudio === true
       ? '\n声音要求：生成与画面同步的音轨，按策划时间轴安排环境声和动作音效，接触、摩擦等声音与实际动作同时发生。仅在策划明确安排说话时生成对白并对齐口型，不额外添加旁白、广告语或背景音乐。'
       : ''
+  const opening = `以提供的首帧图片作为第 0 秒画面。\n${productAppearanceConstraint('已确认首帧')}`
+  const statePrompt = wholeStatePrompt(shot)
+  const action = `${singleVideo ? '整片时间轴与镜头安排' : '当前镜头动作与运镜'}：\n${normalizeVideoPrompt(shot).trim()}${statePrompt ? `\n${statePrompt}` : ''}`
+  const requirements = `连续性要求：${continuity}保持商品颜色、材质、结构、数量和品牌标识，避免肢体畸变、商品变形和穿模。${direction}${countDirection}${shotMotionHandoffPrompt(workflow, executionShot)}不要额外添加字幕、水印或营销文案。${audio}`
+  const baseLength = [opening, action, requirements].join('\n\n').length
+  const connectionBudget = Math.max(0, 2400 - baseLength - 2)
+  const observation = usableMotionObservation(workflow, shot)?.results[0]
+  if (observation && connectionBudget < String(observation.previousState || '').length + String(observation.motion || '').length + 160)
+    throw new Error('视频提示词过长，无法保留实际动作衔接，请精简本镜动作描述')
+  const connection = shotConnectionPrompt(workflow, executionShot, connectionBudget)
+  const prompt = [opening, connection, action, requirements].filter(Boolean).join('\n\n')
+  if (prompt.length > 2400) throw new Error('视频提示词过长，请精简当前镜头动作与运镜')
   return {
-    prompt: `以提供的首帧图片作为第 0 秒画面。\n${productAppearanceConstraint('已确认首帧')}\n\n${singleVideo ? '整片时间轴与镜头安排' : '当前镜头动作与运镜'}：\n${normalizeVideoPrompt(shot).trim()}\n\n连续性要求：${continuity}保持商品颜色、材质、结构、数量和品牌标识，避免肢体畸变、商品变形和穿模。${direction}${countDirection}不要额外添加字幕、水印或营销文案。${audio}`,
+    prompt,
     model,
     ratio: anmiao25Video || model === HAILUO_H3_VIDEO_MODEL ? 'adaptive' : workflow.ratio,
     resolution:
@@ -562,6 +701,22 @@ export function buildCompositionRequest(workflow) {
   const clips = shots.map((shot) => {
     const video = selectedVideo(shot)
     if (!video) throw new Error(`${shot.title} 尚无可用视频`)
+    if (video.sourceConnectionKey) {
+      const sequence = { ...workflow, shots }
+      const previous = adjacentProductVideoShots(sequence, shot).previous
+      const source = previousShotTailSource(sequence, shot)
+      if (!previous?.kept || video.sourceConnectionKey !== source?.sourceKey)
+        throw new Error(`${shot.title} ${shotConnection(workflow, shot).type === 'continue' ? '动作接力' : ''}使用的衔接参考已过期，请更新本镜视频或恢复对应的前镜版本和裁剪`)
+    }
+    if (!isWholeVideo(shot.productionMode) && shotConnection(workflow, shot).type === 'continue') {
+      const sequence = { ...workflow, shots }
+      const previous = adjacentProductVideoShots(sequence, shot).previous
+      const source = previousShotTailSource(sequence, shot)
+      if (!previous?.kept || !source || video.sourceConnectionKey !== source.sourceKey)
+        throw new Error(
+          `${shot.title} 的动作接力与上一镜成片不一致，请保留对应前镜并重新生成，或改用景别匹配`,
+        )
+    }
     const mode = shot.timingMode || 'trim'
     if (!['trim', 'speed'].includes(mode)) throw new Error(`${shot.title} 的片段处理方式无效`)
     const start = mode === 'speed' ? 0 : Number(shot.start),
@@ -590,10 +745,12 @@ export function buildCompositionRequest(workflow) {
   })
   return {
     clips,
+    ...(workflow.exportResolution ? { resolution: workflow.exportResolution } : {}),
     ratio: workflow.ratio,
     musicUrl: workflow.musicUrl,
     musicVolume: Number(workflow.musicVolume),
     ...(workflow.keepOriginalAudio === true ? { keepOriginalAudio: true } : {}),
+    ...(workflow.smoothAudio === true && (workflow.keepOriginalAudio === true || workflow.musicUrl) ? { smoothAudio: true } : {}),
   }
 }
 
@@ -615,11 +772,23 @@ export function taskState(value) {
   return 'processing'
 }
 
-export function videoGenerationNotices(videos = []) {
-  const lastPlayable = videos.findLastIndex((entry) => entry.url)
-  return videos
+function generationNotices(entries) {
+  const lastPlayable = entries.findLastIndex((entry) => entry.url)
+  return entries
     .filter((entry, index) => !entry.url && (entry.status !== 'failed' || index > lastPlayable))
     .slice(-2)
+}
+
+export function imageGenerationNotices(images = []) {
+  return generationNotices(images)
+}
+
+export function videoGenerationNotices(videos = []) {
+  return generationNotices(videos)
+}
+
+export function imageSubmissionRejected(error) {
+  return error?.status === 503 && /^凭证中心主密钥未配置(?:[。.]|$)/.test(error.message || '')
 }
 
 export function videoGenerationStatus(entry) {

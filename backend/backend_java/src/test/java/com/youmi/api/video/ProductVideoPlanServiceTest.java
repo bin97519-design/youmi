@@ -8,6 +8,7 @@ import com.youmi.api.ai.AiChatDtos;
 import com.youmi.api.ai.GemAgentClient;
 import com.youmi.api.ai.CanvasAgentDtos;
 import com.youmi.api.common.ApiException;
+import com.youmi.api.image.ModelApiKeyService;
 import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.List;
@@ -21,6 +22,125 @@ class ProductVideoPlanServiceTest {
   private final AgentChatClient client = mock(AgentChatClient.class);
   private final ProductVideoPlanService service = new ProductVideoPlanService(client, mapper, 180);
 
+  @Test void wholePeriodRefinementUsesOneCallAndCannotChangeOtherPeriodsOrTheirTiming() throws Exception {
+    when(client.isConfigured()).thenReturn(true);
+    when(client.completeVision(anyString(), anyString(), anyList(), anyDouble(), anyInt(), any(Duration.class)))
+        .thenReturn(new AiChatDtos.CompletionResult("mock", "test", """
+            {"action":"Inspect","camera":"Closer","transition":"Finish","startState":"Closed",
+            "endState":"Closed","transitionType":"match_cut","description":"Inspect the already closed curtain, without repeating the pull."}
+            """));
+    var timeline = List.of(new ProductVideoDtos.TimelineBeat(0, 5, "Pull", "Follow", "Match", "Open", "Closed", "opening", "Original first period"),
+        new ProductVideoDtos.TimelineBeat(5, 15, "Inspect", "Closer", "End", "Closed", "Closed", "match_cut", "Original second period"));
+    var current = new ProductVideoDtos.ShotPlan("Whole", "Frame", "0-5 秒：Pull\n5-15 秒：Inspect", "", 15, "Purpose", "Design", "single_video", timeline);
+    var request = new ProductVideoDtos.PlanRequest("Curtain", List.of("https://assets.example/product.png"), 1,
+        "3:4", current, List.of(), "single_video", 2);
+    var result = service.refineTimeline(new ProductVideoDtos.TimelineRefineRequest(request, 1));
+    assertEquals(5, result.start()); assertEquals(15, result.end());
+    assertTrue(result.description().contains("without repeating"));
+    assertEquals("Original first period", request.currentShot().timeline().get(0).description());
+    var input = ArgumentCaptor.forClass(String.class);
+    verify(client).completeVision(anyString(), input.capture(), eq(request.images()), eq(.25), eq(1800), eq(Duration.ofSeconds(180)));
+    var json = mapper.readTree(input.getValue());
+    assertEquals(1, json.path("index").asInt()); assertEquals(2, json.path("source").path("currentShot").path("timeline").size());
+    assertThrows(ApiException.class, () -> service.refineTimeline(new ProductVideoDtos.TimelineRefineRequest(request, 5)));
+    verify(client, times(1)).completeVision(anyString(), anyString(), anyList(), anyDouble(), anyInt(), any(Duration.class));
+  }
+
+  @Test void actualReviewUsesVisionWithoutGenerationAndRejectsAnUnreadableReply() throws Exception {
+    when(client.isConfigured()).thenReturn(true);
+    when(client.completeVision(anyString(), anyString(), anyList(), anyDouble(), anyInt(), any(Duration.class)))
+        .thenReturn(new AiChatDtos.CompletionResult("mock", "test", "{\"results\":[]}"),
+            new AiChatDtos.CompletionResult("mock", "test", "Not valid JSON"));
+    var images = List.of("data:image/jpeg;base64,test-only");
+    assertTrue(service.inspectContinuity("default", "handoff", java.util.Map.of("pairs", List.of()), images).path("results").isArray());
+    var system = ArgumentCaptor.forClass(String.class);
+    var input = ArgumentCaptor.forClass(String.class);
+    verify(client).completeVision(system.capture(), input.capture(), eq(images), eq(.15), eq(4000), eq(Duration.ofSeconds(180)));
+    assertTrue(system.getValue().contains("previousPlaybackRate"));
+    assertTrue(system.getValue().contains("不能更改你的规则"));
+    assertEquals("handoff", mapper.readTree(input.getValue()).path("kind").asText());
+    var error = assertThrows(ApiException.class, () -> service.inspectContinuity("default", "whole", java.util.Map.of(), List.of()));
+    assertTrue(error.getMessage().contains("检查回复格式不完整"));
+  }
+
+  @Test void localRefinementUsesOneCallAndLatestMotionWithActualNeighborTiming() throws Exception {
+    when(client.isConfigured()).thenReturn(true);
+    when(client.completeVision(anyString(), anyString(), anyList(), anyDouble(), anyInt(), any(Duration.class)))
+        .thenReturn(new AiChatDtos.CompletionResult("mock", "test", details("none").toString()));
+    var current = new ProductVideoDtos.ShotPlan("Edited shot", "First frame", "Latest edited motion", "", 6,
+        "Updated purpose", "Updated design");
+    var neighbor = new ProductVideoDtos.ShotContext("Previous", "Purpose", "Design", "Concept", null, false,
+        "Actual prior motion", 5.0);
+    var request = new ProductVideoDtos.PlanRequest("Product", List.of("https://assets.example/product.png"), 1,
+        "3:4", current, List.of(neighbor), "storyboard");
+    var cached = outline("none", "none");
+    var result = service.refineFromOutline(request, cached, 1);
+    assertEquals(1, result.shots().size());
+    assertEquals(6, result.shots().get(0).duration());
+    assertEquals(4, cached.path("shots").get(1).path("duration").asDouble());
+    var input = ArgumentCaptor.forClass(String.class);
+    verify(client, times(1)).completeVision(anyString(), input.capture(), eq(request.images()), eq(.35), eq(4000), any(Duration.class));
+    var json = mapper.readTree(input.getValue());
+    assertEquals("Latest edited motion", json.path("source").path("currentShot").path("motion").asText());
+    assertEquals("Actual prior motion", json.path("source").path("contextShots").get(0).path("motion").asText());
+    assertEquals(5, json.path("source").path("contextShots").get(0).path("duration").asDouble());
+    assertEquals(6, json.path("outline").path("shots").get(0).path("duration").asDouble());
+  }
+
+  @Test void mappedPlannerReceivesItsTimeoutAndOutputBudgetForEveryStage() throws Exception {
+    var keys = mock(ModelApiKeyService.class);
+    var gem = mock(GemAgentClient.class);
+    var credential = new ModelApiKeyService.ResolvedModelApiKey(
+        6, "gemini-3.8-flash", "configured-provider", "http://127.0.0.1/v1",
+        "/chat/completions", "", "local-test-only", java.util.Map.of());
+    when(keys.resolve("gemini-3.8-flash", ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
+        "product-video-planning")).thenReturn(java.util.Optional.of(credential));
+    when(client.completeConfiguredModel(eq(credential), anyString(), anyString(), anyList(), eq(0.35),
+        eq("product-video-planning"), eq("dropdown"), anyInt(), eq(Duration.ofSeconds(300))))
+        .thenReturn(new AiChatDtos.CompletionResult("configured-provider", credential.model(),
+                outline("hands", "none", "person", "none").toString()),
+            new AiChatDtos.CompletionResult("configured-provider", credential.model(),
+                details("hands", "none", "person", "none").toString()));
+    var selectedService = new ProductVideoPlanService(client, mapper, 300, gem, keys);
+    var images = List.of("https://assets.example/product.png");
+    var request = new ProductVideoDtos.PlanRequest("窗帘", images, 4, "3:4", null, null,
+        "storyboard", null, false, null, credential.model());
+
+    assertEquals(4, selectedService.plan(request).shots().size());
+
+    var tokens = ArgumentCaptor.forClass(Integer.class);
+    verify(client, times(2)).completeConfiguredModel(eq(credential), anyString(), anyString(), eq(images),
+        eq(0.35), eq("product-video-planning"), eq("dropdown"), tokens.capture(), eq(Duration.ofSeconds(300)));
+    assertEquals(List.of(4400, 8000), tokens.getAllValues());
+    verify(client, never()).completeConfiguredModel(any(), anyString(), anyString(), anyList(), anyDouble());
+    verifyNoInteractions(gem);
+  }
+
+  @Test void mappedPlannerTimeoutReportsTheActualBudgetWithoutAutomaticResubmission() throws Exception {
+    var keys = mock(ModelApiKeyService.class);
+    var gem = mock(GemAgentClient.class);
+    var credential = new ModelApiKeyService.ResolvedModelApiKey(
+        6, "gemini-3.8-flash", "configured-provider", "http://127.0.0.1/v1",
+        "/chat/completions", "", "local-test-only", java.util.Map.of());
+    when(keys.resolve(credential.model(), ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
+        "product-video-planning")).thenReturn(java.util.Optional.of(credential));
+    when(client.completeConfiguredModel(eq(credential), anyString(), anyString(), anyList(), anyDouble(),
+        eq("product-video-planning"), eq("dropdown"), anyInt(), eq(Duration.ofSeconds(300))))
+        .thenThrow(new HttpTimeoutException("test timeout"));
+    var request = new ProductVideoDtos.PlanRequest("窗帘", List.of(), 4, "3:4", null, null,
+        "storyboard", null, false, null, credential.model());
+
+    var failure = assertThrows(ApiException.class,
+        () -> new ProductVideoPlanService(client, mapper, 300, gem, keys).plan(request));
+
+    assertEquals(504, failure.getCode());
+    assertTrue(failure.getMessage().contains("商品识图与整片策划"));
+    assertTrue(failure.getMessage().contains("等待上限 300 秒"));
+    verify(client, times(1)).completeConfiguredModel(eq(credential), anyString(), anyString(), anyList(),
+        anyDouble(), eq("product-video-planning"), eq("dropdown"), anyInt(), eq(Duration.ofSeconds(300)));
+    verifyNoInteractions(gem);
+  }
+
   @Test void planningModelListDoesNotExposeLegacyModelNameOrUnconfiguredGemPlaceholder() {
     when(client.isConfigured()).thenReturn(true);
     when(client.model()).thenReturn("gpt-5.6-luna");
@@ -30,6 +150,84 @@ class ProductVideoPlanServiceTest {
     var options = new ProductVideoPlanService(client, mapper, 180, gem).models();
 
     assertEquals(List.of(new CanvasAgentDtos.AgentModelOption("default", "默认策划模型", true)), options);
+  }
+
+  @Test void canvasReverseReusesReferenceAnalysisWithoutProductPlanningOrGeneration() throws Exception {
+    when(client.isConfigured()).thenReturn(true);
+    when(client.completeVision(anyString(), anyString(), anyList(), anyDouble(), anyInt(), any(Duration.class)))
+        .thenReturn(new AiChatDtos.CompletionResult("mock", "test-model", referenceAnalysis(2).toString()));
+    var response = service.reversePrompt(canvasReverseRequest("default", 12));
+    assertEquals("test-model", response.model());
+    assertEquals(12, response.duration());
+    assertEquals(2, response.frameCount());
+    assertTrue(response.promptText().contains("[0-6 秒]"));
+    assertTrue(response.promptText().contains("[6-12 秒]"));
+    assertTrue(response.promptText().contains("运镜：摄影机固定"));
+    assertTrue(response.promptText().contains("材质动态：褶皱依次压缩"));
+    assertTrue(response.promptText().contains("未做原音轨转写"));
+    var system = ArgumentCaptor.forClass(String.class);
+    var input = ArgumentCaptor.forClass(String.class);
+    verify(client, times(1)).completeVision(system.capture(), input.capture(),
+        eq(List.of("https://assets.example/first.jpg", "https://assets.example/last.jpg")),
+        eq(0.2), eq(12000), eq(Duration.ofSeconds(180)));
+    assertTrue(system.getValue().contains("同一条参考视频按时间顺序"));
+    assertTrue(system.getValue().contains("不要声称逐帧看过视频"));
+    assertFalse(system.getValue().contains("替换为用户商品"));
+    assertEquals(12, mapper.readTree(input.getValue()).path("sourceDuration").asDouble());
+    verify(client).isConfigured();
+    verifyNoMoreInteractions(client);
+  }
+
+  @Test void canvasReverseSupportsTheExistingGemModelAndTwoMinuteInput() throws Exception {
+    var gem = mock(GemAgentClient.class);
+    when(gem.isConfigured()).thenReturn(true);
+    var analysis = referenceAnalysis(2);
+    ((ObjectNode) analysis.path("shots").get(0)).put("sourceEnd", 60);
+    ((ObjectNode) analysis.path("shots").get(1)).put("sourceStart", 60).put("sourceEnd", 120);
+    when(gem.complete(anyString(), anyString(), anyList(), anyDouble(), eq(true), anyInt(), any(Duration.class)))
+        .thenReturn(new AiChatDtos.CompletionResult("lk888", GemAgentClient.MODEL, analysis.toString()));
+    var gemService = new ProductVideoPlanService(client, mapper, 180, gem);
+    assertTrue(gemService.reversePrompt(canvasReverseRequest(GemAgentClient.MODEL, 120))
+        .promptText().contains("[60-120 秒]"));
+    verify(gem, times(1)).complete(anyString(), anyString(), anyList(), eq(0.2), eq(true), eq(12000), any(Duration.class));
+    verifyNoInteractions(client);
+  }
+
+  @Test void canvasReverseRejectsInvalidSourcesBeforeAnyModelCall() {
+    assertThrows(ApiException.class, () -> service.reversePrompt(null));
+    for (double duration : new double[]{0, Double.NaN, 121}) {
+      assertThrows(ApiException.class, () -> service.reversePrompt(canvasReverseRequest("default", duration)));
+    }
+    var reference = canvasReverseRequest("default", 12).referenceVideo();
+    for (var frames : List.of(List.<ProductVideoDtos.ReferenceFrame>of(),
+        List.of(new ProductVideoDtos.ReferenceFrame("file:///secret", 0), reference.frames().get(1)),
+        List.of(reference.frames().get(1), reference.frames().get(0)))) {
+      var invalid = new ProductVideoDtos.ReferenceVideo(reference.url(), "test", 12, 1920, 1080, "", frames);
+      assertThrows(ApiException.class, () -> service.reversePrompt(new ProductVideoDtos.ReversePromptRequest(invalid, "default", 2)));
+    }
+    assertThrows(ApiException.class, () -> service.reversePrompt(canvasReverseRequest("unknown", 12)));
+    verify(client).model();
+    verifyNoMoreInteractions(client);
+  }
+
+  @Test void canvasReverseRejectsMissingModelAndIncompleteTimeline() throws Exception {
+    assertTrue(assertThrows(ApiException.class, () -> service.reversePrompt(canvasReverseRequest("default", 12)))
+        .getMessage().contains("尚未配置"));
+    when(client.isConfigured()).thenReturn(true);
+    var analysis = referenceAnalysis(2);
+    ((ObjectNode) analysis.path("shots").get(1)).put("sourceStart", 5);
+    when(client.completeVision(anyString(), anyString(), anyList(), anyDouble(), anyInt(), any(Duration.class)))
+        .thenReturn(new AiChatDtos.CompletionResult("mock", "test", analysis.toString()));
+    assertTrue(assertThrows(ApiException.class, () -> service.reversePrompt(canvasReverseRequest("default", 12)))
+        .getMessage().contains("时间轴"));
+  }
+
+  private ProductVideoDtos.ReversePromptRequest canvasReverseRequest(String model, double duration) {
+    var reference = new ProductVideoDtos.ReferenceVideo("https://assets.example/source.mp4", "video", duration,
+        1920, 1080, "未分析原音轨", List.of(
+            new ProductVideoDtos.ReferenceFrame("https://assets.example/first.jpg", 0.03),
+            new ProductVideoDtos.ReferenceFrame("https://assets.example/last.jpg", Math.max(0.04, duration - 0.04))));
+    return new ProductVideoDtos.ReversePromptRequest(reference, model, 2);
   }
 
   @Test void fixedContinuityReachesOutlineAndEveryDetailBatchWithoutChangingBriefOrReferences() throws Exception {
@@ -44,12 +242,12 @@ class ProductVideoPlanServiceTest {
           assertEquals(List.of("https://assets.example/product.jpg"), invocation.getArgument(2));
           String result = input.has("outline")
               ? details(java.util.Collections.nCopies(input.path("outline").path("shots").size(), "none").toArray(String[]::new)).toString()
-              : outline("none", "none", "none").toString();
+              : outline("none", "none", "none", "none", "none", "none").toString();
           return new AiChatDtos.CompletionResult("mock", "test", result);
         });
-    var request = new ProductVideoDtos.PlanRequest("商品信息", List.of("https://assets.example/product.jpg"), 3,
+    var request = new ProductVideoDtos.PlanRequest("商品信息", List.of("https://assets.example/product.jpg"), 6,
         "3:4", null, List.of(), "storyboard", null, false, null, "default", "同一客厅、白衣人物、白色纱帘");
-    assertEquals(3, service.plan(request).shots().size());
+    assertEquals(6, service.plan(request).shots().size());
     assertEquals(3, inputs.size());
     for (int i = 0; i < inputs.size(); i++) {
       var source = inputs.get(i).has("source") ? inputs.get(i).path("source") : inputs.get(i);
@@ -1088,7 +1286,7 @@ class ProductVideoPlanServiceTest {
   }
 
   @Test void plansStoryBeforePromptsAndAllowsMixedPeopleNeeds() throws Exception {
-    replies(outline("person", "hands", "none"), details("person", "hands"), details("none"));
+    replies(outline("person", "hands", "none"), details("person", "hands", "none"));
     var images = List.of("https://assets.example/product.png");
     var result = service.plan(new ProductVideoDtos.PlanRequest("儿童床垫", images, 3, "3:4", null, null));
     assertEquals(3, result.shots().size());
@@ -1098,21 +1296,15 @@ class ProductVideoPlanServiceTest {
     assertTrue(result.summary().analysis().contains("尚未经验证"));
     var systems = ArgumentCaptor.forClass(String.class);
     var inputs = ArgumentCaptor.forClass(String.class);
-    verify(client, times(3)).completeVision(systems.capture(), inputs.capture(), eq(images), eq(0.35), anyInt(), eq(Duration.ofSeconds(180)));
+    verify(client, times(2)).completeVision(systems.capture(), inputs.capture(), eq(images), eq(0.35), anyInt(), eq(Duration.ofSeconds(180)));
     assertTrue(systems.getAllValues().get(0).contains("人物是否出现由该镜头的表达需要决定"));
     assertFalse(systems.getAllValues().get(0).contains("每个分镜首帧都必须有成年模特"));
     var second = mapper.readTree(inputs.getAllValues().get(1));
     assertEquals("本镜表达目的3", second.path("story").path("shots").get(2).path("purpose").asText());
-    assertEquals(2, second.path("outline").path("shots").size());
-    assertEquals(2, second.path("source").path("count").asInt());
+    assertEquals(3, second.path("outline").path("shots").size());
+    assertEquals(3, second.path("source").path("count").asInt());
     assertEquals(0, second.path("completedShots").size());
-    var third = mapper.readTree(inputs.getAllValues().get(2));
-    assertEquals(1, third.path("outline").path("shots").size());
-    assertEquals(1, third.path("source").path("count").asInt());
-    assertEquals("本镜表达目的3", third.path("outline").path("shots").get(0).path("purpose").asText());
-    assertEquals(3, third.path("startShotNumber").asInt());
-    assertEquals(2, third.path("completedShots").size());
-    assertEquals(result.shots().get(0).imagePrompt(), third.path("completedShots").get(0).path("imagePrompt").asText());
+    assertEquals(1, second.path("startShotNumber").asInt());
     assertEquals(0, second.path("source").path("images").size());
   }
 
@@ -1192,33 +1384,38 @@ class ProductVideoPlanServiceTest {
   @Test void laterBatchTimeoutReturnsNoPartialPlanAndDoesNotRetry() throws Exception {
     when(client.isConfigured()).thenReturn(true);
     when(client.completeVision(anyString(), anyString(), anyList(), anyDouble(), anyInt(), any(Duration.class)))
-        .thenReturn(new AiChatDtos.CompletionResult("mock", "test", outline("none", "hands", "person", "none").toString()))
-        .thenReturn(new AiChatDtos.CompletionResult("mock", "test", details("none", "hands").toString()))
+        .thenReturn(new AiChatDtos.CompletionResult("mock", "test", outline("none", "hands", "person", "none", "person", "none").toString()))
+        .thenReturn(new AiChatDtos.CompletionResult("mock", "test", details("none", "hands", "person", "none").toString()))
         .thenThrow(new HttpTimeoutException("request timed out"));
-    var request = new ProductVideoDtos.PlanRequest("商品", List.of(), 4, "16:9", null, null);
+    var request = new ProductVideoDtos.PlanRequest("商品", List.of(), 6, "16:9", null, null);
     var before = mapper.writeValueAsString(request);
     var error = assertThrows(ApiException.class, () -> service.plan(request));
     assertEquals(504, error.getCode());
-    assertTrue(error.getMessage().contains("镜头 3-4 提示词展开"));
+    assertTrue(error.getMessage().contains("镜头 5-6 提示词展开"));
     assertTrue(error.getMessage().contains("180 秒"));
     assertEquals(before, mapper.writeValueAsString(request));
     verify(client, times(3)).completeVision(anyString(), anyString(), anyList(), anyDouble(), anyInt(), any(Duration.class));
   }
 
-  @Test void eightShotsUseFourSmallBatchesWithFullStoryContext() throws Exception {
+  @Test void eightShotsUseTwoBoundedBatchesWithFullStoryAndCompletedShotContext() throws Exception {
     replies(outline("none", "none", "none", "none", "none", "none", "none", "none"),
-        details("none", "none"), details("none", "none"), details("none", "none"), details("none", "none"));
+        details("none", "none", "none", "none"), details("none", "none", "none", "none"));
     var result = service.plan(new ProductVideoDtos.PlanRequest("商品", List.of(), 8, "16:9", null, null));
     assertEquals(8, result.shots().size());
     assertEquals("本镜表达目的8", result.shots().get(7).purpose());
     var inputs = ArgumentCaptor.forClass(String.class);
-    verify(client, times(5)).completeVision(anyString(), inputs.capture(), anyList(), anyDouble(), anyInt(), eq(Duration.ofSeconds(180)));
-    for (int i = 1; i < 5; i++) {
+    var budgets = ArgumentCaptor.forClass(Integer.class);
+    verify(client, times(3)).completeVision(anyString(), inputs.capture(), anyList(), anyDouble(), budgets.capture(), eq(Duration.ofSeconds(180)));
+    assertEquals(List.of(8800, 8000, 8000), budgets.getAllValues());
+    for (int i = 1; i < 3; i++) {
       var input = mapper.readTree(inputs.getAllValues().get(i));
-      assertEquals(2, input.path("outline").path("shots").size());
+      assertEquals(4, input.path("outline").path("shots").size());
       assertEquals(8, input.path("story").path("shots").size());
-      assertEquals((i - 1) * 2 + 1, input.path("startShotNumber").asInt());
+      assertEquals((i - 1) * 4 + 1, input.path("startShotNumber").asInt());
+      assertEquals((i - 1) * 4, input.path("completedShots").size());
     }
+    assertEquals(result.shots().get(0).imagePrompt(),
+        mapper.readTree(inputs.getAllValues().get(2)).at("/completedShots/0/imagePrompt").asText());
   }
 
   @Test void planningTimeoutIsBoundedIndependentlyOfNormalAgent() {
@@ -1228,21 +1425,29 @@ class ProductVideoPlanServiceTest {
   }
 
   @Test void checkpointsSurviveLaterTimeoutAndResumeOnlyRemainingShots() throws Exception {
-    var full = outline("none", "hands", "person", "none");
+    var full = outline("none", "hands", "person", "none", "person", "none");
     when(client.isConfigured()).thenReturn(true);
     when(client.completeVision(anyString(), anyString(), anyList(), anyDouble(), anyInt(), any(Duration.class)))
         .thenReturn(new AiChatDtos.CompletionResult("mock", "test", full.toString()))
-        .thenReturn(new AiChatDtos.CompletionResult("mock", "test", details("none", "hands").toString()))
+        .thenReturn(new AiChatDtos.CompletionResult("mock", "test", details("none", "hands", "person", "none").toString()))
         .thenThrow(new HttpTimeoutException("request timed out"))
         .thenReturn(new AiChatDtos.CompletionResult("mock", "test", details("person", "none").toString()));
     var saved = new java.util.concurrent.atomic.AtomicReference<List<ProductVideoDtos.ShotPlan>>(List.of());
-    var request = new ProductVideoDtos.PlanRequest("商品", List.of(), 4, "16:9", null, null);
+    var request = new ProductVideoDtos.PlanRequest("商品", List.of(), 6, "16:9", null, null);
+    var responses = new java.util.HashMap<String, String>();
+    var progress = new ProductVideoPlanService.ProgressListener() {
+      public void save(String stage, JsonNode outline, List<ProductVideoDtos.ShotPlan> shots, String provider) { saved.set(shots); }
+      public void response(String stage, String content) { responses.put(stage, content); }
+      public String previousResponse(String stage) { return responses.get(stage); }
+    };
     assertThrows(ApiException.class, () -> service.plan(request, null, List.of(),
-        (stage, outline, shots, provider) -> saved.set(shots)));
-    assertEquals(2, saved.get().size());
-    var result = service.plan(request, full, saved.get(), (stage, outline, shots, provider) -> {});
-    assertEquals(4, result.shots().size());
-    assertEquals(saved.get().get(0), result.shots().get(0));
+        progress));
+    assertEquals(4, saved.get().size());
+    assertEquals("4", responses.get("detail-batch-size"));
+    var existingShots = saved.get();
+    var result = service.plan(request, full, existingShots, progress);
+    assertEquals(6, result.shots().size());
+    assertEquals(existingShots.get(0), result.shots().get(0));
     verify(client, times(4)).completeVision(anyString(), anyString(), anyList(), anyDouble(), anyInt(), any(Duration.class));
   }
 
@@ -1255,6 +1460,30 @@ class ProductVideoPlanServiceTest {
     assertEquals(2, service.parseDetails(full.toString(), batch, story, 2).size());
     assertThrows(ApiException.class, () -> service.parseDetails(details("person", "hands", "person", "none").toString(), batch, story, 2));
     assertThrows(ApiException.class, () -> service.parseDetails(details("person").toString(), batch, story, 2));
+  }
+
+  @Test void legacyAndNewCachedBatchBoundariesResumeWithoutRepeatingModelRequests() throws Exception {
+    for (int batchSize : new int[]{2, 4}) {
+      reset(client);
+      when(client.isConfigured()).thenReturn(true);
+      var full = outline("none", "none", "none", "none", "none", "none");
+      var responses = new java.util.HashMap<String, String>();
+      if (batchSize == 4) responses.put("detail-batch-size", "4");
+      for (int start = 0; start < 6; start += batchSize)
+        responses.put("details-" + start, details(java.util.Collections.nCopies(
+            Math.min(batchSize, 6 - start), "none").toArray(String[]::new)).toString());
+      var progress = new ProductVideoPlanService.ProgressListener() {
+        public void save(String stage, JsonNode outline, List<ProductVideoDtos.ShotPlan> shots, String provider) {}
+        public void response(String stage, String content) { responses.put(stage, content); }
+        public String previousResponse(String stage) { return responses.get(stage); }
+      };
+      var request = new ProductVideoDtos.PlanRequest("商品", List.of(), 6, "16:9", null, null);
+      var result = service.plan(request, full, List.of(), progress);
+      assertEquals(6, result.shots().size());
+      assertEquals(batchSize == 4 ? "4" : null, responses.get("detail-batch-size"));
+      assertEquals("本镜表达目的6", result.shots().get(5).purpose());
+      verify(client, never()).completeVision(anyString(), anyString(), anyList(), anyDouble(), anyInt(), any(Duration.class));
+    }
   }
 
   @Test void savesUnparseableProviderResponseBeforeRejectingIt() throws Exception {

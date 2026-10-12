@@ -17,6 +17,43 @@ class VideoCompositionServiceTest {
   @TempDir Path temp;
   final ObjectMapper mapper = new ObjectMapper();
 
+  @Test void exportResolutionsScaleAllRatiosAndSubtitlesWithoutChangingLegacyDefaults() {
+    assertArrayEquals(new int[]{1920, 1080}, VideoCompositionService.dimensions("16:9", "1080p"));
+    assertArrayEquals(new int[]{1440, 1920}, VideoCompositionService.dimensions("3:4", "2K"));
+    assertArrayEquals(new int[]{2160, 3840}, VideoCompositionService.dimensions("9:16", "4K"));
+    assertArrayEquals(new int[]{1280, 720}, VideoCompositionService.dimensions("16:9", null));
+    assertThrows(ApiException.class, () -> VideoCompositionService.dimensions("16:9", "8K"));
+    String captions = VideoCompositionService.subtitles(List.of(new ProductVideoDtos.Clip("x", 0, 1, "Product")), new int[]{3840, 2160});
+    assertTrue(captions.contains("Microsoft YaHei,96,"));
+    assertTrue(captions.contains("PlayResX: 3840"));
+  }
+
+  @Test void realHighResolutionExportsHaveRequestedDimensionsAndDuration() throws Exception {
+    String ffmpeg = System.getenv("YOUMI_FFMPEG"), ffprobe = System.getenv("YOUMI_FFPROBE");
+    Assumptions.assumeTrue(ffmpeg != null && ffprobe != null);
+    Path source = temp.resolve("resolution-source.mp4");
+    run(List.of(ffmpeg, "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=160x90:d=1:r=30",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", source.toString()));
+    var service = new VideoCompositionService(mock(OssStorageService.class), mapper, temp.toString(), ffmpeg, ffprobe);
+    try {
+      for (String resolution : List.of("1080p", "2K", "4K")) {
+        Path dir = Files.createDirectory(temp.resolve(resolution));
+        Path output = service.renderLocal(new ProductVideoDtos.ComposeRequest(
+            List.of(new ProductVideoDtos.Clip("x", 0, .5, "Product")), "16:9", "", 0, false, resolution), List.of(source), null, dir);
+        Path metadata = dir.resolve("dimensions.json");
+        var process = new ProcessBuilder(ffprobe, "-v", "error", "-show_entries", "stream=width,height:format=duration", "-of", "json", output.toString())
+            .redirectOutput(metadata.toFile()).start();
+        assertTrue(process.waitFor(30, TimeUnit.SECONDS));
+        assertEquals(0, process.exitValue());
+        var json = mapper.readTree(Files.readString(metadata));
+        int[] dimensions = VideoCompositionService.dimensions("16:9", resolution);
+        assertEquals(dimensions[0], json.path("streams").get(0).path("width").asInt());
+        assertEquals(dimensions[1], json.path("streams").get(0).path("height").asInt());
+        assertEquals(.5, json.path("format").path("duration").asDouble(), .05);
+      }
+    } finally { service.close(); }
+  }
+
   @Test void longCompositionAcceptsMoreThanEightClipsWithBoundedTotalDuration() {
     var clips = java.util.stream.IntStream.range(0, 14)
         .mapToObj(i -> new ProductVideoDtos.Clip("source", 0, 7.5, "")).toList();
@@ -50,6 +87,7 @@ class VideoCompositionServiceTest {
   @Test void audioDefaultsOffForLegacyRequestsAndLargeSpeedFactorsAreChained() throws Exception {
     var legacy = mapper.readValue("{\"clips\":[],\"ratio\":\"16:9\",\"musicVolume\":0}", ProductVideoDtos.ComposeRequest.class);
     assertFalse(legacy.keepOriginalAudio());
+    assertFalse(legacy.smoothAudio());
     assertEquals("atempo=2,atempo=1.875000000", VideoCompositionService.audioTempo(3.75));
     assertEquals("atempo=2,atempo=2,atempo=2,atempo=1.875000000", VideoCompositionService.audioTempo(15));
   }
@@ -95,8 +133,38 @@ class VideoCompositionServiceTest {
     } finally { service.close(); }
   }
 
+  @Test void smoothingNormalizesDifferentOriginalLevelsWithoutChangingClipTiming() throws Exception {
+    String ffmpeg = System.getenv("YOUMI_FFMPEG"), ffprobe = System.getenv("YOUMI_FFPROBE");
+    Assumptions.assumeTrue(ffmpeg != null && ffprobe != null);
+    var sources = new java.util.ArrayList<Path>();
+    for (double volume : new double[]{.03, .3}) {
+      Path source = temp.resolve("level-" + volume + ".mp4");
+      run(List.of(ffmpeg, "-y", "-v", "error", "-f", "lavfi", "-i", "color=green:s=64x64:d=2:r=10",
+          "-f", "lavfi", "-i", "aevalsrc=" + volume + "*sin(2*PI*440*t):s=48000:d=2", "-c:v", "libx264", "-c:a", "aac", source.toString()));
+      sources.add(source);
+    }
+    var service = new VideoCompositionService(mock(OssStorageService.class), mapper, temp.toString(), ffmpeg, ffprobe);
+    try {
+      Path directory = Files.createDirectory(temp.resolve("smooth-audio"));
+      var request = new ProductVideoDtos.ComposeRequest(List.of(new ProductVideoDtos.Clip("a", 0, 2, ""),
+          new ProductVideoDtos.Clip("b", 0, 2, "")), "1:1", "", .25, true, "720p", true);
+      Path result = service.renderLocal(request, sources, null, directory);
+      Path pcm = directory.resolve("audio.pcm");
+      run(List.of(ffmpeg, "-y", "-v", "error", "-i", result.toString(), "-vn", "-ac", "1", "-ar", "8000", "-f", "s16le", pcm.toString()));
+      byte[] samples = Files.readAllBytes(pcm);
+      assertEquals(4, samples.length / 16000.0, .12);
+      double first = rms(samples, .5), second = rms(samples, 2.5);
+      assertTrue(first > .01 && second > .01);
+      assertTrue(Math.abs(20 * Math.log10(first / second)) < 2, "Clip levels must stay within 2 dB");
+    } finally { service.close(); }
+  }
+
   private double rms(byte[] pcm, double start) {
-    int first = (int) (start * 8000), count = 1600;
+    return rms(pcm, start, .2);
+  }
+
+  private double rms(byte[] pcm, double start, double seconds) {
+    int first = (int) (start * 8000), count = (int) (seconds * 8000);
     var buffer = java.nio.ByteBuffer.wrap(pcm).order(java.nio.ByteOrder.LITTLE_ENDIAN);
     double sum = 0;
     for (int i = first; i < first + count; i++) {
@@ -104,6 +172,32 @@ class VideoCompositionServiceTest {
       sum += sample * sample;
     }
     return Math.sqrt(sum / count);
+  }
+
+  @Test void optionalMusicFadesStayContinuousWithAndWithoutOriginalAudio() throws Exception {
+    String ffmpeg = System.getenv("YOUMI_FFMPEG"), ffprobe = System.getenv("YOUMI_FFPROBE");
+    Assumptions.assumeTrue(ffmpeg != null && ffprobe != null);
+    Path source = temp.resolve("fade-source.mp4"), music = temp.resolve("fade-music.wav");
+    run(List.of(ffmpeg, "-y", "-v", "error", "-f", "lavfi", "-i", "color=green:s=64x64:d=3:r=10",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", source.toString()));
+    run(List.of(ffmpeg, "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=220:duration=1", music.toString()));
+    var service = new VideoCompositionService(mock(OssStorageService.class), mapper, temp.toString(), ffmpeg, ffprobe);
+    try {
+      for (boolean keepOriginal : new boolean[]{false, true}) {
+        Path directory = Files.createDirectory(temp.resolve("music-fade-" + keepOriginal));
+        var request = new ProductVideoDtos.ComposeRequest(List.of(new ProductVideoDtos.Clip("a", 0, 3, "")),
+            "1:1", "music", .5, keepOriginal, "720p", true);
+        Path result = service.renderLocal(request, List.of(source), music, directory);
+        Path pcm = directory.resolve("audio.pcm");
+        run(List.of(ffmpeg, "-y", "-v", "error", "-i", result.toString(), "-vn", "-ac", "1", "-ar", "8000", "-f", "s16le", pcm.toString()));
+        byte[] samples = Files.readAllBytes(pcm);
+        assertEquals(3, samples.length / 16000.0, .12);
+        double middle = rms(samples, 1.5, .02);
+        assertTrue(middle > .01);
+        assertTrue(rms(samples, 0, .02) < middle * .3, "Music onset must be softened");
+        assertTrue(rms(samples, 2.975, .02) < middle * .2, "Music ending must be softened");
+      }
+    } finally { service.close(); }
   }
 
   @Test void validatesDurationRatiosAndSubtitles() {

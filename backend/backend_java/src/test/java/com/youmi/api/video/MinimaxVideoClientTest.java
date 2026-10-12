@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import com.youmi.api.common.ApiException;
 import com.youmi.api.image.ModelApiKeyService;
+import com.youmi.api.image.ModelApiKeyDtos;
 import com.youmi.api.image.ModelApiKeyService.ResolvedModelApiKey;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -53,6 +54,10 @@ class MinimaxVideoClientTest {
     properties.setMiPerSecondByResolution(Map.of("768p", 5, "1080p", 10, "2k", 15, "4k", 30));
     client = new MinimaxVideoClient(properties, media, mapper);
     ModelApiKeyService modelApiKeys = mock(ModelApiKeyService.class);
+    when(modelApiKeys.enabledModelOptions(ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "canvas-video"))
+        .thenReturn(List.of(new ModelApiKeyDtos.ModelOption(MinimaxVideoClient.CONFIGURED_MODEL, "Mini H3", "test")));
+    when(modelApiKeys.enabledModelOptions(ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "product-video-video"))
+        .thenReturn(List.of(new ModelApiKeyDtos.ModelOption(MinimaxVideoClient.MODEL, "MiniMax H3", "test")));
     String baseUrl = "http://127.0.0.1:" + server.getAddress().getPort();
     ResolvedModelApiKey configuredKey = new ResolvedModelApiKey(9L,
         MinimaxVideoClient.CONFIGURED_MODEL, "开放 API", baseUrl, "/v1/media/generate",
@@ -80,6 +85,36 @@ class MinimaxVideoClientTest {
     assertFalse(MinimaxVideoClient.supportsModel("minimax-h3-max"));
     var request = new VideoGenerationDtos.CreateTaskRequest("test", "minimax-h3-max", "16:9", 5);
     assertThrows(ApiException.class, () -> client.createTask(request));
+    assertEquals(0, calls.get());
+  }
+
+  @Test void configuredModelDiscoveryDoesNotDecryptCredentialsOrCallProvider() {
+    var keys = mock(ModelApiKeyService.class);
+    when(keys.enabledModelOptions(ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "product-video-video"))
+        .thenReturn(List.of(new ModelApiKeyDtos.ModelOption(MinimaxVideoClient.MODEL, "MiniMax H3", "test")));
+    when(keys.resolve(anyString(), anyString(), anyString()))
+        .thenThrow(new ApiException(503, "vault unavailable"));
+    client.setModelApiKeyService(keys);
+    assertTrue(client.hasConfiguredHailuoModel("product-video-video"));
+    assertTrue(client.usesMappedHailuoAlias(MinimaxVideoClient.MODEL, "product-video-video"));
+    assertFalse(client.hasConfiguredHailuoModel("canvas-video"));
+    verify(keys, never()).resolve(anyString(), anyString(), anyString());
+    var request = new VideoGenerationDtos.CreateTaskRequest("camera move", MinimaxVideoClient.MODEL,
+        "adaptive", 5, "768p", List.of("https://assets.example/first.png"),
+        "https://assets.example/first.png", null, null, false, null, null, "test", "product-video-video");
+    assertThrows(ApiException.class, () -> client.createTask(request));
+    assertEquals(0, calls.get());
+  }
+
+  @Test void configuredModelDiscoveryRespectsFeatureMappingAndModelAliases() {
+    var keys = mock(ModelApiKeyService.class);
+    client.setModelApiKeyService(keys);
+    assertFalse(client.hasConfiguredHailuoModel("product-video-video"));
+    when(keys.enabledModelOptions(ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "canvas-video"))
+        .thenReturn(List.of(new ModelApiKeyDtos.ModelOption("custom-model", MinimaxVideoClient.CONFIGURED_MODEL, "test")));
+    assertTrue(client.supportsConfiguredHailuoModel(MinimaxVideoClient.CONFIGURED_MODEL));
+    assertFalse(client.supportsConfiguredHailuoModel("other-model"));
+    assertFalse(client.hasConfiguredHailuoModel("product-video-video"));
     assertEquals(0, calls.get());
   }
 

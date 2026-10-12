@@ -1,12 +1,94 @@
 export const MAX_REFERENCE_SECONDS = 120.5
 export const MAX_REFERENCE_SHOTS = 48
+export const MAX_REFERENCE_VIDEO_BYTES = 150 * 1024 * 1024
 const SAMPLE_SIZE = 48
 
-function waitFor(target, event, errorEvent = 'error') {
+export function referenceVideoReadError(code) {
+  if (code === 1) return '视频读取已中断，请重试'
+  if (code === 2) return '视频读取遇到网络错误，请检查连接后重试'
+  if (code === 3) return '浏览器无法解码此视频，请换用 MP4（H.264）格式'
+  if (code === 4) return '视频内容无法播放或编码不受支持，请换用 MP4（H.264）格式'
+  return '无法读取视频画面，请重试或重新上传视频'
+}
+
+export async function fetchReferenceVideoFile(url, options = {}) {
+  const controller = new AbortController()
+  const abort = () => controller.abort(options.signal.reason)
+  options.signal?.throwIfAborted()
+  options.signal?.addEventListener('abort', abort, { once: true })
+  const timer = setTimeout(
+    () => controller.abort(new Error('下载源视频超时，请检查网络后重试')),
+    120000,
+  )
+  try {
+    // Read a fresh full file instead of reusing the preview's partial media cache.
+    const response = await fetch(url, {
+      mode: 'cors',
+      credentials: 'omit',
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+    if (!response.ok) {
+      if ([401, 403].includes(response.status))
+        throw new Error('源视频地址无访问权限或已过期，请重新上传视频')
+      if (response.status === 404) throw new Error('源视频文件不存在，请重新上传视频')
+      throw new Error(`下载源视频失败（${response.status}），请稍后重试`)
+    }
+    const type = response.headers.get('content-type') || ''
+    if (/text\/|application\/json|application\/xml/i.test(type))
+      throw new Error('视频地址返回的不是视频文件，请重新上传视频')
+    const total = Number(response.headers.get('content-length')) || 0
+    if (total > MAX_REFERENCE_VIDEO_BYTES)
+      throw new Error('单次反推支持最大 150MB 的视频，请先压缩或截取视频')
+    const chunks = []
+    let size = 0
+    if (response.body) {
+      const reader = response.body.getReader()
+      try {
+        while (true) {
+          controller.signal.throwIfAborted()
+          const { done, value } = await reader.read()
+          if (done) break
+          size += value.byteLength
+          if (size > MAX_REFERENCE_VIDEO_BYTES)
+            throw new Error('单次反推支持最大 150MB 的视频，请先压缩或截取视频')
+          chunks.push(value)
+          if (total) options.onProgress?.(Math.min(99, Math.round((size / total) * 100)))
+        }
+      } finally {
+        await reader.cancel().catch(() => {})
+        reader.releaseLock()
+      }
+    } else {
+      const blob = await response.blob()
+      size = blob.size
+      if (size > MAX_REFERENCE_VIDEO_BYTES)
+        throw new Error('单次反推支持最大 150MB 的视频，请先压缩或截取视频')
+      chunks.push(blob)
+    }
+    controller.signal.throwIfAborted()
+    if (!size) throw new Error('源视频文件为空，请重新上传视频')
+    options.onProgress?.(100)
+    return new File(chunks, 'reference-video.mp4', { type: type || 'video/mp4' })
+  } catch (error) {
+    if (controller.signal.aborted) throw controller.signal.reason
+    if (error instanceof TypeError)
+      throw new Error('无法下载源视频，请检查网络或视频地址的跨域访问权限', { cause: error })
+    throw error
+  } finally {
+    clearTimeout(timer)
+    options.signal?.removeEventListener('abort', abort)
+  }
+}
+
+function waitFor(target, event, errorEvent = 'error', signal) {
   return new Promise((resolve, reject) => {
+    let timer = null
     const cleanup = () => {
       target.removeEventListener(event, complete)
       target.removeEventListener(errorEvent, fail)
+      signal?.removeEventListener('abort', abort)
+      clearTimeout(timer)
     }
     const complete = () => {
       cleanup()
@@ -14,16 +96,28 @@ function waitFor(target, event, errorEvent = 'error') {
     }
     const fail = () => {
       cleanup()
-      reject(new Error('无法读取参考视频，请换用 MP4（H.264）格式'))
+      reject(new Error(referenceVideoReadError(target.error?.code)))
     }
+    const abort = () => {
+      cleanup()
+      reject(signal.reason || new DOMException('Aborted', 'AbortError'))
+    }
+    if (signal?.aborted) return abort()
     target.addEventListener(event, complete, { once: true })
     target.addEventListener(errorEvent, fail, { once: true })
+    signal?.addEventListener('abort', abort, { once: true })
+    timer = setTimeout(() => {
+      cleanup()
+      reject(new Error('读取视频超时，请检查网络或重新上传视频'))
+    }, 30000)
   })
 }
 
-async function seek(video, time) {
+async function seek(video, time, signal) {
+  signal?.throwIfAborted()
+  if (video.readyState < 2) await waitFor(video, 'loadeddata', 'error', signal)
   if (Math.abs(video.currentTime - time) < 0.015 && video.readyState >= 2) return
-  const ready = waitFor(video, 'seeked')
+  const ready = waitFor(video, 'seeked', 'error', signal)
   video.currentTime = time
   await ready
 }
@@ -114,7 +208,7 @@ export function referenceVideoSegments(samples, duration) {
   return segments
 }
 
-export function selectReferenceFrameTimes(samples, duration, maximum = 8) {
+export function selectReferenceFrameTimes(samples, duration, maximum = 8, minimum = 3) {
   if (!samples.length || !Number.isFinite(duration) || duration <= 0) return []
   if (samples.length === 1) return [samples[0].time]
   const cuts = detectReferenceCuts(samples, duration, maximum)
@@ -127,7 +221,7 @@ export function selectReferenceFrameTimes(samples, duration, maximum = 8) {
   }
 
   const suggestedCount = Math.min(maximum, cuts.length + 1)
-  const target = Math.min(maximum, Math.max(3, suggestedCount + 1))
+  const target = Math.min(maximum, Math.max(minimum, suggestedCount + 1))
   while (chosen.length < target) {
     const sorted = chosen.toSorted((left, right) => left - right)
     let start = sorted[0]
@@ -161,14 +255,46 @@ function canvasFile(canvas, index) {
   )
 }
 
-async function extractFrame(video, time, index) {
-  await seek(video, time)
-  const scale = Math.min(1, 960 / Math.max(video.videoWidth, video.videoHeight))
+async function extractFrame(video, time, index, signal, maxDimension = 960) {
+  await seek(video, time, signal)
+  const scale = Math.min(1, maxDimension / Math.max(video.videoWidth, video.videoHeight))
   const canvas = document.createElement('canvas')
   canvas.width = Math.max(2, Math.round(video.videoWidth * scale))
   canvas.height = Math.max(2, Math.round(video.videoHeight * scale))
   canvas.getContext('2d', { alpha: false }).drawImage(video, 0, 0, canvas.width, canvas.height)
   return { time: Number(time.toFixed(2)), file: await canvasFile(canvas, index) }
+}
+
+export async function extractReferenceVideoFrame(url, time, options = {}) {
+  const file = await fetchReferenceVideoFile(url, options)
+  const objectUrl = URL.createObjectURL(file)
+  const video = document.createElement('video')
+  video.preload = 'auto'
+  video.muted = true
+  video.playsInline = true
+  try {
+    const loaded = waitFor(video, 'loadedmetadata', 'error', options.signal)
+    video.src = objectUrl
+    await loaded
+    if (
+      !Number.isFinite(time) ||
+      time < 0 ||
+      !Number.isFinite(video.duration) ||
+      time > video.duration + 0.05
+    )
+      throw new Error('上一镜成片结束位置超出视频实际时长')
+    return await extractFrame(
+      video,
+      Math.max(0, Math.min(time, video.duration - 0.04)),
+      0,
+      options.signal,
+      4096,
+    )
+  } finally {
+    video.removeAttribute('src')
+    video.load()
+    URL.revokeObjectURL(objectUrl)
+  }
 }
 
 export function summarizeAudioLevels(levels, windowSeconds = 0.5) {
@@ -227,21 +353,29 @@ async function inspectAudio(file) {
   }
 }
 
-export async function inspectReferenceVideoFile(file, maximumFrames = 8) {
-  const objectUrl = URL.createObjectURL(file)
+export async function inspectReferenceVideoFile(file, maximumFrames = 8, options = {}) {
+  const remote = typeof file === 'string'
+  const sourceFile = remote
+    ? await fetchReferenceVideoFile(file, {
+        signal: options.signal,
+        onProgress: options.onDownloadProgress,
+      })
+    : file
+  const objectUrl = URL.createObjectURL(sourceFile)
   const video = document.createElement('video')
   video.preload = 'auto'
   video.muted = true
   video.playsInline = true
   try {
-    const loaded = waitFor(video, 'loadedmetadata')
+    options.signal?.throwIfAborted()
+    const loaded = waitFor(video, 'loadedmetadata', 'error', options.signal)
     video.src = objectUrl
     await loaded
     const duration = Number(video.duration)
     if (!Number.isFinite(duration) || duration <= 0) throw new Error('无法读取参考视频时长')
     if (duration > MAX_REFERENCE_SECONDS)
       throw new Error('单次反推支持最长 2 分钟，请先截取需要参考的片段')
-    const longVideo = duration > 30.5
+    const longVideo = duration > 30.5 && !options.compact
     const sampleCount = Math.min(longVideo ? 288 : 64, Math.max(12, Math.ceil(duration / 0.45)))
     const small = document.createElement('canvas')
     small.width = SAMPLE_SIZE
@@ -250,18 +384,26 @@ export async function inspectReferenceVideoFile(file, maximumFrames = 8) {
     const samples = []
     for (let index = 0; index < sampleCount; index += 1) {
       const time = Math.min(Math.max(0.03, duration - 0.04), (index * duration) / (sampleCount - 1))
-      await seek(video, time)
+      await seek(video, time, options.signal)
       samples.push({ time, signature: signature(context, video) })
+      options.onProgress?.(Math.round(((index + 1) / sampleCount) * 75))
     }
     const segments = longVideo ? referenceVideoSegments(samples, duration) : null
     const times = segments
       ? segments.flatMap(({ start, end }) => [start + 0.03, (start + end) / 2, end - 0.04])
-      : selectReferenceFrameTimes(samples, duration, maximumFrames)
+      : selectReferenceFrameTimes(
+          samples,
+          duration,
+          maximumFrames,
+          options.compact ? maximumFrames : 3,
+        )
     const suggestedShotCount =
       segments?.length ?? estimateReferenceShotCount(samples, duration, maximumFrames)
     const frames = []
     for (let index = 0; index < times.length; index += 1) {
-      frames.push(await extractFrame(video, times[index], index))
+      options.signal?.throwIfAborted()
+      frames.push(await extractFrame(video, times[index], index, options.signal))
+      options.onProgress?.(75 + Math.round(((index + 1) / times.length) * 25))
     }
     return {
       duration: Number(duration.toFixed(2)),
@@ -269,7 +411,10 @@ export async function inspectReferenceVideoFile(file, maximumFrames = 8) {
       height: video.videoHeight,
       suggestedShotCount,
       ...(segments ? { segments } : {}),
-      audioSummary: await inspectAudio(file),
+      audioSummary:
+        remote || options.compact
+          ? '未分析原音轨，不提供口播转写或声音内容识别。'
+          : await inspectAudio(file),
       frames,
     }
   } finally {

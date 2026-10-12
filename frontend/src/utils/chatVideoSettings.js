@@ -22,10 +22,28 @@ const isAnmiao20VideoModel = (model) =>
   model === ANMIAO_VIDEO_MODEL ||
   isAnmiao20FastVideoModel(model) ||
   String(model || '').toLowerCase().includes('seedance-2.0-guanfang-anmiao')
+export const SEEDANCE_FIRST_LAST_MODE = 'first_last_frame'
+export const supportsVideoFrameMode = (model) =>
+  isAnmiao20VideoModel(model) || isAnmiao25VideoModel(model) ||
+  [MINIMAX_VIDEO_MODEL, HAILUO_H3_VIDEO_MODEL].includes(model)
+export const videoFrameModeValue = (model) =>
+  [MINIMAX_VIDEO_MODEL, HAILUO_H3_VIDEO_MODEL].includes(model) ? 'shouweizhen' : SEEDANCE_FIRST_LAST_MODE
+export const videoReferenceModeForRequest = (model, mode) =>
+  model === HAILUO_H3_VIDEO_MODEL ||
+  (supportsVideoFrameMode(model) && ['shouweizhen', SEEDANCE_FIRST_LAST_MODE].includes(mode))
+    ? videoFrameModeValue(model)
+    : 'cankaosheng'
+export const isVideoFrameMode = (model, mode) =>
+  supportsVideoFrameMode(model) && mode === videoFrameModeValue(model)
+export const supportsVideoAudioToggle = (model) =>
+  ![MINIMAX_VIDEO_MODEL, HAILUO_H3_VIDEO_MODEL].includes(model) && !isRetiredVideoModel(model)
+export const videoAudioPayload = (model, enabled) =>
+  supportsVideoAudioToggle(model) ? { generate_audio: enabled !== false } : {}
 
 export function videoResolutionForModel(model) {
   if (model === MINIMAX_VIDEO_MODEL || model === HAILUO_H3_VIDEO_MODEL) return '768p'
-  return isAnmiao20VideoModel(model) || isAnmiao25VideoModel(model) ||
+  return isAnmiao20VideoModel(model) ||
+    isAnmiao25VideoModel(model) ||
     String(model).endsWith('-720p')
     ? '720p'
     : '480p'
@@ -38,8 +56,7 @@ export function videoResolutionOptions(model) {
   if (isAnmiao20FastVideoModel(model))
     return ANMIAO20_FAST_VIDEO_RESOLUTIONS.map((option) => option.value)
   if (isAnmiao20VideoModel(model)) return ANMIAO_VIDEO_RESOLUTIONS.map((option) => option.value)
-  if (isAnmiao25VideoModel(model))
-    return ANMIAO25_VIDEO_RESOLUTIONS.map((option) => option.value)
+  if (isAnmiao25VideoModel(model)) return ANMIAO25_VIDEO_RESOLUTIONS.map((option) => option.value)
   return [videoResolutionForModel(model)]
 }
 
@@ -59,9 +76,12 @@ export function validVideoDuration(model, duration) {
   return videoDurationOptions(model).includes(duration)
 }
 
-export function videoRatioForRequest(model, referenceCount, ratio) {
+export function videoRatioForRequest(model, referenceCount, ratio, mode = '') {
   if (model === HAILUO_H3_VIDEO_MODEL) return 'adaptive'
-  return isAnmiao25VideoModel(model) && referenceCount === 1 ? 'adaptive' : ratio
+  return isAnmiao25VideoModel(model) &&
+    (referenceCount === 1 || (referenceCount > 0 && isVideoFrameMode(model, mode)))
+    ? 'adaptive'
+    : ratio
 }
 
 export function estimatedVideoMiCost(
@@ -96,7 +116,8 @@ export function estimatedVideoMiCost(
 export function videoReferenceLimit(model, mode) {
   if (isRetiredVideoModel(model)) return 0
   if (model === HAILUO_H3_VIDEO_MODEL) return 2
-  if (model === MINIMAX_VIDEO_MODEL) return mode === 'shouweizhen' ? 2 : 9
+  if (isVideoFrameMode(model, mode)) return 2
+  if (model === MINIMAX_VIDEO_MODEL) return 9
   return isAnmiao25VideoModel(model) ? 30 : isAnmiao20VideoModel(model) ? 9 : 15
 }
 
@@ -112,7 +133,7 @@ export function videoReferencePayload(model, mode, imageUrls) {
       ...(imageUrls[1] ? { last_frame_url: imageUrls[1] } : {}),
     }
   }
-  if (model === MINIMAX_VIDEO_MODEL && mode === 'shouweizhen') {
+  if (isVideoFrameMode(model, mode)) {
     return { first_frame_url: imageUrls[0], last_frame_url: imageUrls[1] }
   }
   return { image_urls: imageUrls }

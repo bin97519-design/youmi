@@ -15,9 +15,7 @@ export function validateImageUploadSize(file) {
 export function base64ImageToFile(value, fileName = `image-${Date.now()}`) {
   const source = String(value || '').trim()
   const dataUrl = source.startsWith('data:') ? source : `data:image/png;base64,${source}`
-  const match = dataUrl.match(
-    /^data:(image\/[a-zA-Z0-9.+-]+)(?:;[^,]*)?;base64,([\s\S]+)$/,
-  )
+  const match = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+)(?:;[^,]*)?;base64,([\s\S]+)$/)
   if (!match) throw new Error('图片 Base64 格式不正确')
 
   const mimeType = match[1].toLowerCase()
@@ -57,9 +55,12 @@ function readUploadSign(payload) {
   return data
 }
 
-function putToOss(uploadUrl, file, headers = {}, onProgress) {
+function putToOss(uploadUrl, file, headers = {}, onProgress, signal) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason || new DOMException('Aborted', 'AbortError'))
     const xhr = new XMLHttpRequest()
+    const abort = () => xhr.abort()
+    const cleanup = () => signal?.removeEventListener('abort', abort)
     xhr.open('PUT', uploadUrl)
     Object.entries(headers || {}).forEach(([key, value]) => {
       if (value != null && String(value).trim()) xhr.setRequestHeader(key, String(value))
@@ -74,14 +75,28 @@ function putToOss(uploadUrl, file, headers = {}, onProgress) {
       }
     }
     xhr.onload = () => {
+      cleanup()
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve()
         return
       }
       reject(new Error(`OSS direct upload failed: ${xhr.status}`))
     }
-    xhr.onerror = () => reject(new Error('OSS direct upload network error'))
-    xhr.send(file)
+    xhr.onerror = () => {
+      cleanup()
+      reject(new Error('OSS direct upload network error'))
+    }
+    xhr.onabort = () => {
+      cleanup()
+      reject(signal?.reason || new DOMException('Aborted', 'AbortError'))
+    }
+    signal?.addEventListener('abort', abort, { once: true })
+    try {
+      xhr.send(file)
+    } catch (error) {
+      cleanup()
+      reject(error)
+    }
   })
 }
 
@@ -90,6 +105,7 @@ export async function uploadFileDirect(file, options = {}) {
   validateImageUploadSize(file)
   const signResponse = await fetch(apiPath('/api/file/oss-sign'), {
     method: 'POST',
+    signal: options.signal,
     headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(options.headers || {}) },
     body: JSON.stringify({
       fileName: file.name || 'upload.png',
@@ -106,7 +122,7 @@ export async function uploadFileDirect(file, options = {}) {
     )
   }
   const sign = readUploadSign(signPayload)
-  await putToOss(sign.uploadUrl, file, sign.headers, options.onProgress)
+  await putToOss(sign.uploadUrl, file, sign.headers, options.onProgress, options.signal)
   if (options.onProgress) {
     options.onProgress({ loaded: file.size || 0, total: file.size || 0, percent: 100 })
   }
