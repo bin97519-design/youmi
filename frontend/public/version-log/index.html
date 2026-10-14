@@ -17,7 +17,7 @@
 </head>
 <body>
   <header class="hero">
-    <small>YOUMI RELEASES · v2.0.12</small>
+    <small>YOUMI RELEASES · v2.0.13</small>
     <h1>有米 AI 更新历程</h1>
     <p>记录每一次功能更新和体验改进，最新内容始终排在最前面。</p>
     <nav class="actions">
@@ -28,11 +28,29 @@
   <main><div class="timeline">
       <div class="date"><span>2026-10-14</span><i></i></div>
       <article class="release latest">
-        <div class="meta"><b>v2.0.12</b><small>最新版本</small></div>
-        <h2>文本 AI 编辑与文生视频组合升级</h2>
-        <p>新增文本节点 AI 编写与修改，统一文本、图片和视频节点编辑样式，支持一键创建文生视频分组并默认横排，补齐 OSS 对象管理与预览。</p>
+        <div class="meta"><b>v2.0.13</b><small>最新版本</small></div>
+        <h2>新版画布与节点交互升级</h2>
+        <p>新增独立新版画布，优化节点创建、背景与分组样式，完善项目管理、图片提示词恢复和视频模型映射。</p>
 
         <div class="sections">
+        <section class="release-section">
+          <h3>新版画布</h3>
+          <ul><li>新增新版画布入口和独立编辑页面，保留原画布；新版文档与面板布局单独标识和保存。</li><li>采用深色点阵背景、顶部工作区栏、底部浮动工具栏，支持图片、视频和剧本节点；音频与智能剪辑明确标注尚未接入。</li><li>双击空白画布在鼠标旁打开节点菜单，新节点落在双击位置，平移和缩放后保持正确定位，菜单自动避开窗口边缘。</li><li>统一节点深灰底色与细灰白选中边框；分组显示深灰底板、框外标题和四角选中标记，优化分组工具栏。</li><li>新增项目菜单，支持查看新版项目、创建、切换、重命名、导出和确认删除；新版入口采用独立节点连线图标。</li><li>调整手机尺寸下的创建入口与工具栏布局，避免横向溢出。</li></ul>
+        </section>
+        <section class="release-section">
+          <h3>生成与编辑修复</h3>
+          <ul><li>完善图片节点原始提示词恢复、生成设置保存与连接来源记录，保留已有输入和参考素材。</li><li>原画布增加节点对话窗口显示开关，可统一显示或隐藏图片、视频和文本编辑框。</li><li>MiniMax H3 支持画布视频模型密钥映射，查询沿用任务提交时的密钥，并按服务商实际返回用量处理费用。</li></ul>
+        </section></div>
+      </article>
+    <div class="date"><span>2026-10-14</span><i></i></div>
+    <details class="release">
+      <summary>
+        <b>v2.0.12</b>
+        <span><strong>文本 AI 编辑与文生视频组合升级</strong><small>新增文本节点 AI 编写与修改，统一文本、图片和视频节点编辑样式，支持一键创建文生视频分组并默认横排，补齐 OSS 对象管理与预览。</small></span>
+        <em>查看更多</em>
+      </summary>
+      <!-- No visuals for this release. -->
+      <div class="sections">
         <section class="release-section">
           <h3>文本创作</h3>
           <ul><li>文本节点新增独立编辑框，可选择已配置的 Agent 模型，结合图片和文本参考进行 AI 编写或修改；保留双击手动编辑。</li><li>生成失败、停止等待、切换画布或删除节点时保留原文；等待期间手动修改正文后，新结果需要确认才能采用。</li><li>文本要求、模型和参考素材随画布保存，连接的参考内容自动同步；新增独立文本接口、输入长度校验和用量记录。</li></ul>
@@ -45,7 +63,7 @@
           <h3>云文件管理</h3>
           <ul><li>控制台新增 OSS 对象管理，支持浏览目录、分页列表、当前页筛选、媒体预览、下载和单个对象删除。</li><li>支持按当前目录及子目录的最后修改日期预览匹配对象，确认后批量删除；删除前显示范围与对象数量。</li></ul>
         </section></div>
-      </article>
+    </details>
     <div class="date"><span>2026-10-14</span><i></i></div>
     <details class="release">
       <summary>
@@ -458,6 +476,6 @@
           <ul><li>建立用户、登录、数据隔离、米值和生图任务管理。</li><li>上线运营控制台，提供任务、模型、用户、用量和趋势统计。</li><li>完成深色、浅色主题以及主要页面的响应式适配。</li></ul>
         </section></div>
     </details></div></main>
-  <footer>有米 AI · 当前版本 v2.0.12</footer>
+  <footer>有米 AI · 当前版本 v2.0.13</footer>
 </body>
 </html>

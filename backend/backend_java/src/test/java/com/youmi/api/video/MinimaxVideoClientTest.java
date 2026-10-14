@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import com.youmi.api.common.ApiException;
+import com.youmi.api.ai.AiCallLogService;
 import com.youmi.api.image.ModelApiKeyService;
 import com.youmi.api.image.ModelApiKeyDtos;
 import com.youmi.api.image.ModelApiKeyService.ResolvedModelApiKey;
@@ -27,6 +28,8 @@ class MinimaxVideoClientTest {
   final AtomicReference<JsonNode> submitted = new AtomicReference<>();
   final AtomicReference<String> response = new AtomicReference<>("{\"code\":200,\"data\":{\"task_id\":123456}}");
   final AtomicInteger calls = new AtomicInteger();
+  final AtomicReference<String> authorization = new AtomicReference<>();
+  ModelApiKeyService modelApiKeys;
   HttpServer server;
   MinimaxVideoClient client;
 
@@ -34,6 +37,7 @@ class MinimaxVideoClientTest {
     server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
     server.createContext("/v1/media/", exchange -> {
       calls.incrementAndGet();
+      authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
       assertTrue(List.of("Bearer test-only", "Bearer configured-only")
           .contains(exchange.getRequestHeaders().getFirst("Authorization")));
       if (exchange.getRequestMethod().equals("POST")) {
@@ -53,7 +57,7 @@ class MinimaxVideoClientTest {
     properties.setApiKey("test-only");
     properties.setMiPerSecondByResolution(Map.of("768p", 5, "1080p", 10, "2k", 15, "4k", 30));
     client = new MinimaxVideoClient(properties, media, mapper);
-    ModelApiKeyService modelApiKeys = mock(ModelApiKeyService.class);
+    modelApiKeys = mock(ModelApiKeyService.class);
     when(modelApiKeys.enabledModelOptions(ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "canvas-video"))
         .thenReturn(List.of(new ModelApiKeyDtos.ModelOption(MinimaxVideoClient.CONFIGURED_MODEL, "Mini H3", "test")));
     when(modelApiKeys.enabledModelOptions(ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "product-video-video"))
@@ -79,6 +83,130 @@ class MinimaxVideoClientTest {
   static VideoGenerationDtos.CreateTaskRequest request(int duration, String resolution, List<String> images, String first, String last) {
     return new VideoGenerationDtos.CreateTaskRequest("camera move", MinimaxVideoClient.MODEL, "3:4", duration,
         resolution, images, first, last, null, true, null, null, "client-id");
+  }
+
+  ResolvedModelApiKey mapCanvasMinimax() {
+    var credential = new ResolvedModelApiKey(10L, MinimaxVideoClient.MODEL, "Mapped channel",
+        "http://127.0.0.1:" + server.getAddress().getPort(), "/v1/media/generate",
+        "/v1/media/status?task_id={task_id}", "configured-only", Map.of());
+    when(modelApiKeys.resolve(MinimaxVideoClient.MODEL,
+        ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "canvas-video"))
+        .thenReturn(Optional.of(credential));
+    when(modelApiKeys.resolveById(10L, ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION))
+        .thenReturn(credential);
+    when(modelApiKeys.isFeatureMappingConfigured("canvas-video")).thenReturn(true);
+    return credential;
+  }
+
+  @Test void canvasSixReferenceImagesUseMappedKeyAndEndpointWithoutSwitchingToHailuo() throws Exception {
+    mapCanvasMinimax();
+    properties.setApiKey("wrong-default");
+    properties.setBaseUrl("http://127.0.0.1:1");
+    properties.setMiPerSecondByResolution(Map.of());
+    var logs = mock(AiCallLogService.class);
+    client.setAiCallLogService(logs);
+    List<String> images = java.util.stream.IntStream.range(0, 6)
+        .mapToObj(i -> "https://assets.example/ref-" + i + ".png").toList();
+    var request = request(15, "768p", images, null, null);
+
+    assertEquals(0, client.price(request));
+    var created = client.createTask(request);
+
+    assertEquals("minimax-h3:key:10:123456", created.getTaskId());
+    assertEquals(MinimaxVideoClient.MODEL, created.getModel());
+    assertEquals("Mapped channel", created.getProvider());
+    assertEquals("Bearer configured-only", authorization.get());
+    JsonNode body = submitted.get(), params = body.path("params");
+    assertEquals(MinimaxVideoClient.MODEL, body.path("model").asText());
+    assertEquals("cankaosheng", params.path("mode").asText());
+    assertEquals(mapper.valueToTree(images), params.path("image_url"));
+    assertEquals("3:4", params.path("aspect_ratio").asText());
+    assertEquals("15", params.path("duration").asText());
+    assertEquals("768P", params.path("resolution").asText());
+    assertFalse(params.has("images"));
+    verify(logs).record(eq("canvas-video"), eq("video_generate"), eq("Mapped channel"),
+        eq(MinimaxVideoClient.MODEL), eq(10L), eq("dropdown"), eq(true), isNull(), anyLong(), isNull());
+  }
+
+  @Test void mappedMinimaxKeepsTextReferenceAndFirstLastFrameProtocols() throws Exception {
+    mapCanvasMinimax();
+    client.createTask(request(5, "1080p", List.of(), null, null));
+    JsonNode params = submitted.get().path("params");
+    assertEquals("cankaosheng", params.path("mode").asText());
+    assertFalse(params.has("images"));
+    assertFalse(params.has("image_url"));
+    String first = "https://assets.example/first.png", last = "https://assets.example/last.png";
+    client.createTask(request(5, "2k", List.of(first), first, last));
+    params = submitted.get().path("params");
+    assertEquals("shouweizhen", params.path("mode").asText());
+    assertEquals(mapper.valueToTree(List.of(first, last)), params.path("images"));
+    assertFalse(params.has("image_url"));
+    List<String> nine = java.util.stream.IntStream.range(0, 9)
+        .mapToObj(i -> "https://assets.example/" + i + ".png").toList();
+    client.createTask(request(5, "768p", nine, null, null));
+    assertEquals(9, submitted.get().path("params").path("image_url").size());
+    assertThrows(ApiException.class, () -> client.createTask(request(5, "720p", nine, null, null)));
+    assertEquals(3, calls.get());
+  }
+
+  @Test void mappedQueriesPinTheOriginalKeyEvenIfFeatureMappingChanges() throws Exception {
+    mapCanvasMinimax();
+    var created = client.createTask(request(5, "768p", List.of(), null, null));
+    clearInvocations(modelApiKeys);
+    when(modelApiKeys.resolve(MinimaxVideoClient.MODEL,
+        ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "canvas-video"))
+        .thenThrow(new ApiException(503, "changed mapping must not be used"));
+    properties.setApiKey("wrong-default");
+    properties.setBaseUrl("http://127.0.0.1:1");
+    response.set("{\"state\":\"running\",\"is_final\":false,\"progress\":\"45%\"}");
+
+    var status = client.getTask(created.getTaskId(), 7L);
+
+    assertEquals("processing", status.getStatus());
+    assertEquals(45, status.getProgress());
+    assertEquals("Mapped channel", status.getProvider());
+    assertEquals("Bearer configured-only", authorization.get());
+    verify(modelApiKeys).resolveById(10L, ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION);
+    verify(modelApiKeys, never()).resolve(anyString(), anyString(), anyString());
+    when(modelApiKeys.resolveById(10L, ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION))
+        .thenThrow(new ApiException(503, "original key unavailable"));
+    assertThrows(ApiException.class, () -> client.getTask(created.getTaskId(), 7L));
+    assertEquals(2, calls.get());
+  }
+
+  @Test void missingOrUnreadableMappedKeyDoesNotFallBackToEnvironmentKey() {
+    when(modelApiKeys.isFeatureMappingConfigured("canvas-video")).thenReturn(true);
+    assertEquals(400, assertThrows(ApiException.class,
+        () -> client.createTask(request(5, "768p", List.of(), null, null))).getCode());
+    when(modelApiKeys.resolve(MinimaxVideoClient.MODEL,
+        ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "canvas-video"))
+        .thenThrow(new ApiException(503, "vault unavailable"));
+    assertTrue(assertThrows(ApiException.class,
+        () -> client.createTask(request(5, "768p", List.of(), null, null)))
+        .getMessage().contains("vault unavailable"));
+    assertEquals(0, calls.get());
+  }
+
+  @Test void mappedProviderBusinessErrorIsRecordedAgainstSelectedKeyWithoutFallback() {
+    mapCanvasMinimax();
+    var logs = mock(AiCallLogService.class);
+    client.setAiCallLogService(logs);
+    response.set("{\"code\":403,\"msg\":\"insufficient provider quota\"}");
+    assertTrue(assertThrows(ApiException.class,
+        () -> client.createTask(request(5, "768p", List.of(), null, null)))
+        .getMessage().contains("insufficient provider quota"));
+    assertEquals(1, calls.get());
+    assertEquals("Bearer configured-only", authorization.get());
+    verify(logs).record(eq("canvas-video"), eq("video_generate"), eq("Mapped channel"),
+        eq(MinimaxVideoClient.MODEL), eq(10L), eq("dropdown"), eq(false), eq(502), anyLong(), eq("ApiException"));
+  }
+
+  @Test void legacyTaskQueriesKeepEnvironmentCredentialsEvenWhenModelMappingExists() throws Exception {
+    mapCanvasMinimax();
+    response.set("{\"state\":\"running\",\"is_final\":false,\"progress\":\"45%\"}");
+    assertEquals("processing", client.getTask("minimax-h3:123456", 7L).getStatus());
+    assertEquals("Bearer test-only", authorization.get());
+    verify(modelApiKeys, never()).resolveById(anyLong(), anyString());
   }
 
   @Test void removedModelIsRejectedBeforeCallingProvider() {

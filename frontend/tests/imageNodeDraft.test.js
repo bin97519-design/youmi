@@ -5,7 +5,11 @@ import vm from 'node:vm'
 import { reactive, computed } from 'vue'
 import { createRequire } from 'node:module'
 import { parse as parseVue, compileScript, compileTemplate } from '@vue/compiler-sfc'
-import { normalizeImageNodeDraft, imageNodeGenerationOptions } from '../src/utils/imageNodeDraft.js'
+import {
+  normalizeImageNodeDraft,
+  imageNodeGenerationOptions,
+  initialImageNodeDraft,
+} from '../src/utils/imageNodeDraft.js'
 import {
   canvasGenerationDimensions,
   emptyMediaNodeDimensions,
@@ -95,6 +99,192 @@ function loadFunction(context, name) {
   vm.runInContext(script.slice(node.start, node.end), context)
 }
 
+test('node generation retains empty input connections without copying outgoing or self connections', () => {
+  const draft = normalizeImageNodeDraft({ prompt: 'Generate' }, {}, options)
+  const edges = [
+    { fromLayerId: 'empty-text', fromPort: 'right', toLayerId: 'node', toPort: 'left' },
+    { fromLayerId: 'node', fromPort: 'left', toLayerId: 'image', toPort: 'right' },
+    { fromLayerId: 'empty-text', fromPort: 'right', toLayerId: 'node', toPort: 'left' },
+    { fromLayerId: 'node', fromPort: 'right', toLayerId: 'output', toPort: 'left' },
+    { fromLayerId: 'node', fromPort: 'left', toLayerId: 'node', toPort: 'right' },
+  ]
+  const request = imageNodeGenerationOptions({ id: 'node' }, draft, edges)
+  assert.deepEqual(request.connectionSourceLayerIds, ['empty-text', 'image'])
+  assert.deepEqual(request.referenceImageUrls, [])
+  assert.equal(request.imageNodeDraft.prompt, 'Generate')
+})
+
+test('legacy generated images restore their prompt once without overwriting an intentionally cleared draft', () => {
+  const replay = { displayText: 'Original instruction', prompt: 'Full generated prompt' }
+  assert.equal(initialImageNodeDraft(source, replay).prompt, replay.displayText)
+  assert.equal(initialImageNodeDraft(source, { prompt: replay.prompt }).prompt, replay.prompt)
+  assert.equal(initialImageNodeDraft(source).prompt, '')
+  const restored = initialImageNodeDraft({ ...source, imageNodeDraft: { prompt: '' } }, replay)
+  assert.equal(restored.prompt, replay.displayText)
+  assert.equal(restored.generationPromptInitialized, true)
+  const cleared = normalizeImageNodeDraft({ ...restored, prompt: '' }, {}, options)
+  assert.equal(initialImageNodeDraft({ ...source, imageNodeDraft: cleared }, replay).prompt, '')
+})
+
+test('replaying text-connected images does not require an unrelated image reference', () => {
+  for (const type of ['text', 'image']) {
+    const reference = { id: 'reference', type, text: '', url: type === 'image' ? source.url : '' }
+    const output = {
+      ...source,
+      genMeta: { prompt: 'Generate', model: 'a', sourceLayerIds: [reference.id] },
+    }
+    const context = vm.createContext({
+      layers: { value: [reference, output] },
+      generationHistory: { value: [] },
+      doc: { value: { payload: { chat: [] } } },
+      connections: { value: [] },
+      isRealImageLayer: (layer) => layer?.type === 'image' && Boolean(layer.url),
+      chatModel: { value: 'a' },
+      chatRatio: { value: '3:4' },
+      chatResolution: { value: '2K' },
+    })
+    for (const name of ['normalizeLayerReplayUrls', 'getLayerGenerationReplay'])
+      loadFunction(context, name)
+    assert.equal(
+      context.getLayerGenerationReplay(output).missingRequiredReference,
+      type === 'image',
+    )
+  }
+})
+
+test('actual multi-model submission gives every result independent drafts and all input connections', async () => {
+  for (const count of [1, 2]) {
+    const models = ['a', 'b', 'c']
+    const imageReference = { ...source, id: 'image-ref' }
+    const original = {
+      id: 'node',
+      type: 'image-placeholder',
+      url: '',
+      x: 100,
+      y: 120,
+      width: 360,
+      height: 480,
+      zIndex: 1,
+    }
+    const doc = {
+      payload: { layers: [original, imageReference, { id: 'empty-text', type: 'text', text: '' }] },
+    }
+    const edges = {
+      value: [
+        {
+          id: 'original',
+          fromLayerId: 'node',
+          fromPort: 'left',
+          toLayerId: 'empty-text',
+          toPort: 'right',
+        },
+        {
+          id: 'image',
+          fromLayerId: imageReference.id,
+          fromPort: 'right',
+          toLayerId: 'node',
+          toPort: 'left',
+        },
+      ],
+    }
+    const draft = normalizeImageNodeDraft(
+      {
+        prompt: 'Keep the fabric and lighting',
+        config: { models, ratio: '3:4', resolution: '2K', count },
+        references: [{ layerId: imageReference.id, url: imageReference.url }],
+        connectedLayerIds: [imageReference.id],
+      },
+      {},
+      models,
+    )
+    const submissions = []
+    const context = vm.createContext({
+      props: { id: 'canvas' },
+      layers: { value: doc.payload.layers },
+      connections: edges,
+      isRealImageLayer: (layer) => layer.type === 'image' && Boolean(layer.url),
+      getEditorPrompt: () => '',
+      userStore: { requireLogin: () => true },
+      selectedLayerId: { value: original.id },
+      selectedLayerIds: { value: [original.id] },
+      chatReferenceImages: { value: [] },
+      chatGenerationCount: { value: 1 },
+      chatModel: { value: 'a' },
+      chatModels: { value: ['a'] },
+      chatModelOptions: models,
+      chatRatio: { value: '1:1' },
+      chatResolution: { value: '1K' },
+      WAVESPEED_MULTI_ANGLE_MODEL: 'angle',
+      CHAT_GENERATION_COUNT_MIN: 1,
+      CHAT_GENERATION_COUNT_MAX: 4,
+      normalizeImageNodeDraft,
+      buildElementLocationHint: () => [],
+      buildElementEditPrompt: ({ instruction }) => instruction,
+      addChatMessages: () => {},
+      firstGenerationReferenceLayer: () => null,
+      visibleCanvasWorldRect: () => ({ x: 0, y: 0, width: 1200, height: 1000 }),
+      canvasGenerationDimensions,
+      CANVAS_IMAGE_WIDTH: 360,
+      PLACEHOLDER_WIDTH: 300,
+      findVisibleGenerationPlacement: () => ({ x: 500, y: 100 }),
+      createGenerationClientTaskId: () => `key-${Math.random()}`,
+      layerName: () => 'Generated',
+      placeholderStatusText: () => 'Submitted',
+      pushUndo: () => {},
+      persistConnections: () => {},
+      canvas: { updateDocument: (id, fn) => fn(doc), flushNow: () => {} },
+      _submittingPlaceholderIds: new Set(),
+      activeChatTaskCount: { value: 0 },
+      submitImageTask: async (request) => {
+        submissions.push(request)
+        return `task-${submissions.length}`
+      },
+      updateChatMessage: () => {},
+      updateGeneratingPlaceholder: () => {},
+      startImagePoll: async () => false,
+    })
+    for (const name of [
+      'normalizeChatGenerationCount',
+      'normalizeChatModelSelection',
+      'resolveGenerationSourceLayerIds',
+      'connectCreationSources',
+      'addGeneratingPlaceholderLayer',
+      'sendChat',
+    ])
+      loadFunction(context, name)
+    const result = await context.sendChat(imageNodeGenerationOptions(original, draft, edges.value))
+    assert.equal(result.placeholderIds.length, models.length * count)
+    assert.equal(submissions.length, models.length * count)
+    assert.equal(result.placeholderIds[0], original.id)
+    for (const id of result.placeholderIds) {
+      const output = doc.payload.layers.find((layer) => layer.id === id)
+      assert.equal(output.imageNodeDraft.prompt, draft.prompt)
+      assert.deepEqual(Array.from(output.imageNodeDraft.config.models), models)
+      assert.equal(output.imageNodeDraft.config.count, count)
+      assert.equal(output.imageNodeDraft.references[0].url, imageReference.url)
+      assert.equal(output.genMeta.sourceLayerIds.includes('empty-text'), true)
+      assert.equal(output.clientTaskId === original.clientTaskId, id === original.id)
+      for (const sourceId of ['empty-text', imageReference.id]) {
+        const matches = edges.value.filter(
+          (edge) =>
+            (edge.fromLayerId === sourceId && edge.toLayerId === id) ||
+            (edge.fromLayerId === id && edge.fromPort === 'left' && edge.toLayerId === sourceId),
+        )
+        assert.equal(matches.length, 1)
+      }
+    }
+    doc.payload.layers.find(
+      (layer) => layer.id === result.placeholderIds[1],
+    ).imageNodeDraft.prompt = 'Edited'
+    assert.equal(original.imageNodeDraft.prompt, draft.prompt)
+    assert.equal(draft.prompt, 'Keep the fabric and lighting')
+    assert.deepEqual(
+      submissions.map((request) => request.model).sort(),
+      models.flatMap((model) => Array(count).fill(model)),
+    )
+  }
+})
+
 test('actual placeholder helper reuses only an unlocked empty image node and preserves its draft and position', () => {
   for (const variant of ['blank', 'image', 'locked', 'busy']) {
     const original = {
@@ -183,6 +373,7 @@ test('actual image submission snapshots a node draft and resets submission state
       saved++
     },
     imageNodeErrors: errors,
+    connections: { value: [] },
     imageNodeGenerationOptions,
     sendChat: async (request) => {
       requests.push(request)
@@ -231,6 +422,8 @@ test('actual editor activation preserves separate drafts and keeps uploads attac
     inlineDialogModification: state,
     inlineDialogUploading: { value: false },
     normalizeImageNodeDraft,
+    initialImageNodeDraft,
+    getLayerGenerationReplay: () => null,
     chatModelOptions: options,
     imageNodeDefaults: () => ({ model: 'a', ratio: '3:4', resolution: '2K' }),
     isEditableImageNode: (layer) => Boolean(layer?.url && !layer.locked),

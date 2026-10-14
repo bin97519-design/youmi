@@ -229,9 +229,31 @@ class VideoTaskControllerTest {
     verify(legacy, never()).createTask(any());
   }
 
-  @Test void configuredMiniH3SettlesReportedCostRegardlessOfProviderLabel() throws Exception {
+  @Test void mappedCanvasMinimaxLinksSelectedCredentialTaskWithoutLegacyCharge() throws Exception {
     when(auth.requireUserId("token")).thenReturn(7L);
-    String taskId = "hailuo-h3:key:9:123456";
+    var images = java.util.stream.IntStream.range(0, 6)
+        .mapToObj(i -> "https://assets.example/" + i + ".png").toList();
+    var request = new VideoGenerationDtos.CreateTaskRequest("slow camera move", MinimaxVideoClient.MODEL,
+        "3:4", 15, "768p", images, null, null, null, true, null, null, "client-id");
+    when(minimax.price(request)).thenReturn(0);
+    when(billing.checkAndDeduct(7L, MiBizType.VIDEO, 0))
+        .thenReturn(new MiValueDtos.DeductResult(12L, 0, 0, 0, MiBizType.VIDEO));
+    var created = new VideoGenerationDtos.CreateTaskResponse();
+    created.setTaskId("minimax-h3:key:10:123456");
+    created.setModel(MinimaxVideoClient.MODEL);
+    created.setProvider("Mapped channel");
+    when(minimax.createTask(request)).thenReturn(created);
+
+    assertEquals(created.getTaskId(), controller.create("token", request).data().getTaskId());
+    verify(billing).linkTask(12L, created.getTaskId());
+    verify(billing, never()).commit(anyLong());
+    verifyNoInteractions(legacy, anmiao, chat);
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(strings = {"hailuo-h3:key:9:123456", "minimax-h3:key:10:123456"})
+  void configuredMiniH3SettlesReportedCostRegardlessOfProviderLabel(String taskId) throws Exception {
+    when(auth.requireUserId("token")).thenReturn(7L);
     when(billing.isTaskOwnedByUser(7L, taskId, MiBizType.VIDEO)).thenReturn(true);
     var completed = new VideoGenerationDtos.TaskStatusResponse();
     completed.setProvider("开放 API");
@@ -246,9 +268,10 @@ class VideoTaskControllerTest {
     verify(billing, never()).rollbackByTaskId(taskId);
   }
 
-  @Test void configuredMiniH3WaitsForReportedCostInsteadOfSettlingZero() throws Exception {
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(strings = {"hailuo-h3:key:9:123456", "minimax-h3:key:10:123456"})
+  void configuredMiniH3WaitsForReportedCostInsteadOfSettlingZero(String taskId) throws Exception {
     when(auth.requireUserId("token")).thenReturn(7L);
-    String taskId = "hailuo-h3:key:9:123456";
     when(billing.isTaskOwnedByUser(7L, taskId, MiBizType.VIDEO)).thenReturn(true);
     var completed = new VideoGenerationDtos.TaskStatusResponse();
     completed.setProvider("开放 API");

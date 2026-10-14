@@ -32,6 +32,7 @@ export function normalizeImageNodeDraft(value = {}, defaults = {}, modelOptions 
     }))
   return {
     prompt: String(value.prompt || '').slice(0, 10000),
+    ...(value.generationPromptInitialized ? { generationPromptInitialized: true } : {}),
     config: {
       model: models[0] || '',
       models,
@@ -95,7 +96,26 @@ export function syncImageNodeConnectedReferences(value, connectedReferences, mod
   )
 }
 
-export function imageNodeGenerationOptions(layer, draft) {
+export function initialImageNodeDraft(layer, replay = null) {
+  const existing = layer.imageNodeDraft
+  if (existing && (!replay || existing.generationPromptInitialized)) return existing
+  return {
+    ...existing,
+    prompt: existing?.prompt || replay?.displayText || replay?.prompt || '',
+    ...(replay ? { generationPromptInitialized: true } : {}),
+    references: existing?.references || (layer.url
+      ? [{
+          id: `inline-source-${layer.id}`,
+          url: layer.url,
+          name: layer.name || '当前图片',
+          layerId: layer.id,
+          isSource: true,
+        }]
+      : []),
+  }
+}
+
+export function imageNodeGenerationOptions(layer, draft, connections = []) {
   const prompt = canvasReferenceTextPrompt(draft.prompt, draft.referenceTexts, 10000)
   const references = draft.references.filter(
     (reference) => reference.url && !reference.url.startsWith('blob:'),
@@ -117,6 +137,16 @@ export function imageNodeGenerationOptions(layer, draft) {
     })),
     generationCount: draft.config.count,
     taskConfig: { ...draft.config },
+    imageNodeDraft: draft,
+    connectionSourceLayerIds: [...new Set(
+      connections.map((edge) =>
+        edge.toLayerId === layer.id
+          ? edge.fromLayerId
+          : edge.fromLayerId === layer.id && edge.fromPort === 'left'
+            ? edge.toLayerId
+            : '',
+      ).filter((id) => id && id !== layer.id),
+    )],
     preserveComposer: true,
     nodeGeneration: true,
     ...(!layer.url && layer.type === 'image-placeholder' ? { reuseLayerId: layer.id } : {}),

@@ -211,7 +211,8 @@ public class VideoTaskController {
 
   private boolean usesProviderReportedCostTask(String taskId,
       VideoGenerationDtos.TaskStatusResponse response) {
-    return (taskId != null && taskId.startsWith(MinimaxVideoClient.CONFIGURED_PREFIX + "key:"))
+    return (taskId != null && (taskId.startsWith(MinimaxVideoClient.CONFIGURED_PREFIX + "key:")
+        || taskId.startsWith(MinimaxVideoClient.MAPPED_PREFIX)))
         || ModelApiKeyService.usesProviderReportedCost(response.getProvider());
   }
 

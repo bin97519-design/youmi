@@ -24,6 +24,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 public class MinimaxVideoClient {
   public static final String MODEL = "minimax-h3";
   public static final String PREFIX = "minimax-h3:";
+  public static final String MAPPED_PREFIX = PREFIX + "key:";
   public static final String CONFIGURED_MODEL = "hailuo-h3-shouweizhen";
   public static final String CONFIGURED_PREFIX = "hailuo-h3:";
   public static final Set<String> RESOLUTIONS = Set.of("768p", "1080p", "2k", "4k");
@@ -76,6 +77,7 @@ public class MinimaxVideoClient {
     // Model-managed Mini H3 reports its actual cost in the status response;
     // channel labels are user-defined and must not gate task submission.
     if (configuredModel) return 0;
+    if (resolveMappedMinimaxCredential(request).isPresent()) return 0;
     if ((!configuredModel && !properties.hasKey()) || rate == 0)
       throw new ApiException(503, "Mini H3 首尾帧所选画质尚未配置模型密钥和每秒米值单价");
     return Math.multiplyExact(rate, request.durationSeconds());
@@ -100,14 +102,18 @@ public class MinimaxVideoClient {
     params.put("mode", frames.isEmpty() ? "cankaosheng" : "shouweizhen");
     if (!frames.isEmpty()) params.put("images", frames);
     else if (!request.normalizedImageUrls().isEmpty()) params.put("image_url", request.normalizedImageUrls());
-    JsonNode root = send("POST", "/v1/media/generate",
-        Map.of("model", request.model(), "prompt", request.prompt().trim(), "params", params));
+    Map<String, Object> body = Map.of(
+        "model", request.model(), "prompt", request.prompt().trim(), "params", params);
+    var credential = resolveMappedMinimaxCredential(request);
+    JsonNode root = credential.isPresent()
+        ? sendMappedMinimax(credential.get(), "POST", credential.get().generationEndpoint(), body)
+        : send("POST", "/v1/media/generate", body);
     String id = text(root.path("data"), "task_id");
     if (!id.matches("[0-9]+")) throw new ApiException(502, "MiniMax H3 未返回有效任务编号，请核对中转站记录后再重试");
     var result = new VideoGenerationDtos.CreateTaskResponse();
-    result.setProvider("lk888-minimax");
+    result.setProvider(credential.map(ResolvedModelApiKey::provider).orElse("lk888-minimax"));
     result.setModel(request.model());
-    result.setTaskId(PREFIX + id);
+    result.setTaskId(credential.map(key -> MAPPED_PREFIX + key.id() + ":" + id).orElse(PREFIX + id));
     result.setStatus("queued");
     result.setRaw(root);
     return result;
@@ -116,10 +122,29 @@ public class MinimaxVideoClient {
   public VideoGenerationDtos.TaskStatusResponse getTask(String taskId, Long userId) throws Exception {
     if (taskId != null && taskId.startsWith(CONFIGURED_PREFIX))
       return getConfiguredHailuoTask(taskId, userId);
-    if (taskId == null || !taskId.matches("minimax-h3:[0-9]+"))
-      throw new ApiException(400, "MiniMax H3 任务编号无效");
-    String id = taskId.substring(PREFIX.length());
-    JsonNode root = send("GET", "/v1/media/status?task_id=" + id, null);
+    ResolvedModelApiKey credential = null;
+    String id;
+    // Keep polling with the task's original key, even after feature mappings change.
+    if (taskId != null && taskId.startsWith(MAPPED_PREFIX)) {
+      if (!taskId.matches("minimax-h3:key:[0-9]+:[0-9]+") || modelApiKeys == null)
+        throw new ApiException(400, "MiniMax H3 任务编号无效");
+      int keyEnd = taskId.indexOf(':', MAPPED_PREFIX.length());
+      try {
+        long keyId = Long.parseLong(taskId.substring(MAPPED_PREFIX.length(), keyEnd));
+        credential = modelApiKeys.resolveById(keyId, ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION);
+      } catch (NumberFormatException error) {
+        throw new ApiException(400, "MiniMax H3 任务编号无效");
+      }
+      if (credential == null) throw new ApiException(503, "MiniMax H3 原任务密钥不可用");
+      id = taskId.substring(keyEnd + 1);
+    } else {
+      if (taskId == null || !taskId.matches("minimax-h3:[0-9]+"))
+        throw new ApiException(400, "MiniMax H3 任务编号无效");
+      id = taskId.substring(PREFIX.length());
+    }
+    JsonNode root = credential != null
+        ? sendMappedMinimax(credential, "GET", configuredTaskEndpoint(credential, id), null)
+        : send("GET", "/v1/media/status?task_id=" + id, null);
     String state = text(root, "state");
     if (!Set.of("pending", "running", "success", "failed").contains(state))
       throw new ApiException(502, "MiniMax H3 返回未知任务状态，请稍后继续查询");
@@ -129,7 +154,7 @@ public class MinimaxVideoClient {
     String status = terminal ? (state.equals("success") ? "completed" : "failed")
         : state.equals("pending") ? "queued" : "processing";
     var result = new VideoGenerationDtos.TaskStatusResponse();
-    result.setProvider("lk888-minimax");
+    result.setProvider(credential != null ? credential.provider() : "lk888-minimax");
     result.setTaskId(taskId);
     result.setStatus(status);
     result.setStage(first(text(root, "status"), status.equals("queued") ? "中转站排队中" : "中转站生成中"));
@@ -264,6 +289,39 @@ public class MinimaxVideoClient {
     String modelType = com.youmi.api.image.ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION;
     return modelApiKeys.resolve(CONFIGURED_MODEL, modelType, featureCode)
         .or(() -> modelApiKeys.resolve(MODEL, modelType, featureCode));
+  }
+
+  private java.util.Optional<ResolvedModelApiKey> resolveMappedMinimaxCredential(
+      VideoGenerationDtos.CreateTaskRequest request) {
+    if (modelApiKeys == null || !MODEL.equals(request.model())
+        || !"canvas-video".equals(featureCode(request))) return java.util.Optional.empty();
+    var credential = modelApiKeys.resolve(MODEL, ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "canvas-video");
+    if (credential.isEmpty() && modelApiKeys.isFeatureMappingConfigured("canvas-video"))
+      throw new ApiException(400, "MiniMax H3 未绑定到画布视频功能，请检查模型映射");
+    return credential;
+  }
+
+  private JsonNode sendMappedMinimax(ResolvedModelApiKey credential, String method,
+      String endpoint, Object body) throws Exception {
+    long started = System.nanoTime();
+    try {
+      JsonNode root = sendUrl(credential.apiKey(), method, endpoint, body);
+      recordMappedMinimaxCall(credential, method, true, started, null);
+      return root;
+    } catch (Exception error) {
+      recordMappedMinimaxCall(credential, method, false, started, error);
+      throw error;
+    }
+  }
+
+  private void recordMappedMinimaxCall(ResolvedModelApiKey credential, String method,
+      boolean success, long started, Exception error) {
+    if (aiCallLogService != null) aiCallLogService.record("canvas-video",
+        "POST".equals(method) ? "video_generate" : "video_query", credential.provider(), MODEL,
+        credential.id(), "dropdown", success,
+        error instanceof ApiException ? ((ApiException) error).getCode() : null,
+        (System.nanoTime() - started) / 1_000_000L,
+        error == null ? null : error.getClass().getSimpleName());
   }
 
   private String featureCode(VideoGenerationDtos.CreateTaskRequest request) {

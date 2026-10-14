@@ -31,7 +31,7 @@ import {
   canvasSelectionContent,
   canvasSelectionExportEntry,
 } from '../utils/canvasSelection'
-import { normalizeImageNodeDraft, imageNodeGenerationOptions, syncImageNodeConnectedReferences } from '../utils/imageNodeDraft'
+import { normalizeImageNodeDraft, imageNodeGenerationOptions, syncImageNodeConnectedReferences, initialImageNodeDraft } from '../utils/imageNodeDraft'
 import { CANVAS_TEXT_NODE_LAYOUT, emptyMediaNodeDimensions, canvasGenerationDimensions, legacyEmptyTextNodeLayout } from '../utils/canvasEmptyNodeLayout'
 import { selectedConnectionMedia, selectionBounds, missingNodeConnections, incomingImageReferencesByNode, incomingVideoReferencesByNode, incomingTextReferencesByNode } from '../utils/canvasNodeConnections'
 import { canvasReferenceTextPrompt } from '../utils/canvasReferenceTexts'
@@ -391,6 +391,7 @@ const chatSkipPillSync = ref(false)
 const _undoRestoring = ref(false) // 撤销恢复期间跳过自动检测
 const _mounted = ref(false) // 组件是否已挂载（用于防止 polling 越界）
 const rightPanelVisible = ref(true)
+const conversationWindowsVisible = ref(false)
 const isReversePromptCanvas = computed(() => props.id === 'reverse-prompt')
 const reversePromptPending = ref(false)
 const reversePromptError = ref('')
@@ -1125,6 +1126,7 @@ const activeChatReferenceId = ref('')
 const inlineDialogModification = reactive({
   layerId: '',
   text: '',
+  generationPromptInitialized: false,
   submitting: false,
   model: '',
   models: [],
@@ -1357,7 +1359,7 @@ function isEditableImageNode(layer) {
 }
 
 function isImageNodeEditorVisible(layer) {
-  return isEditableImageNode(layer) &&
+  return conversationWindowsVisible.value && isEditableImageNode(layer) &&
     selectedLayerId.value === layer.id && selectedLayerIds.value.length <= 1 &&
     inlineDialogModification.layerId === layer.id
 }
@@ -1374,6 +1376,7 @@ function imageNodeDefaults(layer) {
 
 function applyImageNodeDraft(draft) {
   inlineDialogModification.text = draft.prompt
+  inlineDialogModification.generationPromptInitialized = Boolean(draft.generationPromptInitialized)
   inlineDialogModification.model = draft.config.model
   inlineDialogModification.models = [...draft.config.models]
   inlineDialogModification.ratio = draft.config.ratio
@@ -1408,13 +1411,7 @@ function activateImageNodeEditor(layer) {
   activeImageNodeCanvasId = props.id
   inlineDialogModification.layerId = isEditableImageNode(layer) ? layer.id : ''
   if (!inlineDialogModification.layerId) return
-  const initial = layer.imageNodeDraft || {
-    prompt: '',
-    references: layer.url ? [{
-      id: `inline-source-${layer.id}`, url: layer.url, name: layer.name || '当前图片',
-      layerId: layer.id, isSource: true,
-    }] : [],
-  }
+  const initial = initialImageNodeDraft(layer, getLayerGenerationReplay(layer))
   const references = initial.references?.map(reference =>
     reference.isSource && reference.layerId === layer.id && layer.url
       ? { ...reference, url: layer.url } : reference,
@@ -1469,7 +1466,7 @@ async function submitInlineLayerDialogModification(layer) {
   inlineDialogModification.submitting = true
   imageNodeErrors[layer.id] = ''
   try {
-    const submitted = await sendChat(imageNodeGenerationOptions(layer, draft))
+    const submitted = await sendChat(imageNodeGenerationOptions(layer, draft, connections.value))
     if (submitted?.placeholderIds?.length) showCopyPasteToast('图片生成任务已提交')
   } catch (error) {
     imageNodeErrors[layer.id] = error.message || '提交失败，请稍后重试'
@@ -5278,6 +5275,11 @@ function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '',
       type: 'placeholder',
       name: layerName(index),
       prompt,
+      ...(placement.imageNodeDraft ? {
+        imageNodeDraft: normalizeImageNodeDraft({
+          ...placement.imageNodeDraft, generationPromptInitialized: true,
+        }, {}, chatModelOptions),
+      } : {}),
       // 客户端幂等键（顶层 + genMeta 各存一份：resume 时从 genMeta 取用，保险）
       clientTaskId,
       ...(genMeta.taskId ? { taskId: genMeta.taskId, queryPending: true } : {}),
@@ -5348,10 +5350,9 @@ function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '',
 }
 
 function connectCreationSources(sourceIds, targetId) {
-  const videoTarget = layers.value.some((layer) => layer.id === targetId && layer.type === 'video')
   const existing = new Set(
     connections.value.map((item) =>
-      videoTarget && item.fromLayerId === targetId && item.fromPort === 'left'
+      item.fromLayerId === targetId && item.fromPort === 'left'
         ? `${item.toLayerId}:${targetId}`
         : `${item.fromLayerId}:${item.toLayerId}`,
     ),
@@ -5378,6 +5379,7 @@ function resolveGenerationSourceLayerIds({
   referenceImageUrls = [],
   referenceLayerIds = [],
   referenceTextLayerIds = [],
+  connectionSourceLayerIds = [],
   selectedElements = [],
   targetLayerId = '',
 } = {}) {
@@ -5389,6 +5391,9 @@ function resolveGenerationSourceLayerIds({
   }
 
   referenceLayerIds.forEach(addLayer)
+  connectionSourceLayerIds.forEach(id => {
+    if (id !== targetLayerId && layers.value.some(layer => layer.id === id)) sourceIds.add(id)
+  })
   referenceTextLayerIds.forEach(id => {
     const layer = layers.value.find(item => item.id === id)
     if (layer?.type === 'text' && String(layer.text || '').trim()) sourceIds.add(id)
@@ -8395,7 +8400,8 @@ function getLayerGenerationReplay(layer) {
   ]
   const creationType = record?.creationType || meta.creationType || ''
   const requiresReferenceImage = Boolean(
-    messageReplay?.requiresReferenceImage || creationType || sourceLayerIds.length,
+    messageReplay?.requiresReferenceImage || creationType ||
+    sourceLayerIds.some(id => isRealImageLayer(layers.value.find(item => item.id === id))),
   )
 
   return {
@@ -11068,6 +11074,7 @@ const imageNodeModelOptions = computed(() =>
 )
 const imageNodeDraft = computed(() => normalizeImageNodeDraft({
   prompt: inlineDialogModification.text,
+  generationPromptInitialized: inlineDialogModification.generationPromptInitialized,
   config: {
     model: inlineDialogModification.model, models: inlineDialogModification.models,
     ratio: inlineDialogModification.ratio, resolution: inlineDialogModification.resolution,
@@ -11135,18 +11142,7 @@ watch(
         inlineDialogModification.layerId === layer.id && activeImageNodeCanvasId === canvasId
           ? imageNodeDraft.value
           : normalizeImageNodeDraft(
-              layer.imageNodeDraft || {
-                references: layer.url
-                  ? [
-                      {
-                        id: `inline-source-${layer.id}`,
-                        url: layer.url,
-                        layerId: layer.id,
-                        isSource: true,
-                      },
-                    ]
-                  : [],
-              },
+              initialImageNodeDraft(layer, getLayerGenerationReplay(layer)),
               imageNodeDefaults(layer),
               chatModelOptions,
             )
@@ -11186,7 +11182,7 @@ function isEditableTextNode(layer) {
 }
 
 function isTextNodeEditorVisible(layer) {
-  return isEditableTextNode(layer) && selectedLayerId.value === layer.id && selectedLayerIds.value.length <= 1
+  return conversationWindowsVisible.value && isEditableTextNode(layer) && selectedLayerId.value === layer.id && selectedLayerIds.value.length <= 1
 }
 
 function textNodeReferenceError(layer) {
@@ -11392,6 +11388,7 @@ const videoNodeCanvasImages = computed(() =>
 
 function isVideoNodeEditorVisible(layer) {
   return (
+    conversationWindowsVisible.value &&
     layer.type === 'video' &&
     !layer.locked &&
     selectedLayerId.value === layer.id &&
@@ -12433,6 +12430,8 @@ async function sendChat(options = {}) {
       ? sendOptions.referenceLayerIds
       : [],
     referenceTextLayerIds: Array.isArray(sendOptions.referenceTextLayerIds) ? sendOptions.referenceTextLayerIds : [],
+    connectionSourceLayerIds: sendOptions.nodeGeneration && Array.isArray(sendOptions.connectionSourceLayerIds)
+      ? sendOptions.connectionSourceLayerIds : [],
     selectedElements,
     targetLayerId,
   })
@@ -12584,6 +12583,7 @@ async function sendChat(options = {}) {
         skipFlush: true,
         reuseLayerId: index === 0 ? sendOptions.reuseLayerId : '',
         nodeGeneration: Boolean(sendOptions.nodeGeneration),
+        imageNodeDraft: sendOptions.nodeGeneration ? sendOptions.imageNodeDraft : null,
       },
     )
     return {
@@ -15713,7 +15713,18 @@ async function loadImageForCropUncached(layer) {
           :title="rightPanelVisible ? '隐藏对话框' : '显示对话框'"
           @click="rightPanelVisible = !rightPanelVisible"
         >
-          ▮
+          <i class="ri-layout-right-line" aria-hidden="true"></i>
+        </button>
+        <button
+          type="button"
+          class="panel-visibility-btn"
+          :class="{ active: conversationWindowsVisible }"
+          :title="conversationWindowsVisible ? '关闭图片、视频和文本节点对话窗口' : '开启图片、视频和文本节点对话窗口'"
+          :aria-label="conversationWindowsVisible ? '关闭图片、视频和文本节点对话窗口' : '开启图片、视频和文本节点对话窗口'"
+          :aria-pressed="conversationWindowsVisible"
+          @click="conversationWindowsVisible = !conversationWindowsVisible"
+        >
+          <i :class="conversationWindowsVisible ? 'ri-chat-3-line' : 'ri-chat-off-line'" aria-hidden="true"></i>
         </button>
         <button @click="router.push('/canvas')">×</button>
       </div>
