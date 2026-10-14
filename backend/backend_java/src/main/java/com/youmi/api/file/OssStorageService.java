@@ -5,10 +5,14 @@ import com.aliyun.oss.OSS;
 import com.aliyun.oss.OSSClientBuilder;
 import com.aliyun.oss.model.AbortMultipartUploadRequest;
 import com.aliyun.oss.model.CompleteMultipartUploadRequest;
+import com.aliyun.oss.model.DeleteObjectsRequest;
 import com.aliyun.oss.model.GeneratePresignedUrlRequest;
 import com.aliyun.oss.model.InitiateMultipartUploadRequest;
 import com.aliyun.oss.model.InitiateMultipartUploadResult;
+import com.aliyun.oss.model.ListObjectsRequest;
+import com.aliyun.oss.model.ObjectListing;
 import com.aliyun.oss.model.OSSObject;
+import com.aliyun.oss.model.OSSObjectSummary;
 import com.aliyun.oss.model.ObjectMetadata;
 import com.aliyun.oss.model.PartETag;
 import com.aliyun.oss.model.SetBucketCORSRequest;
@@ -29,6 +33,7 @@ import java.net.URI;
 import java.net.URL;
 import java.net.URLConnection;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Date;
@@ -427,6 +432,182 @@ public class OssStorageService {
       oss.deleteObject(properties.getBucketName(), objectName);
     } catch (Exception exception) {
       throw new ApiException(502, "Delete OSS file failed: " + exception.getMessage());
+    }
+  }
+
+  public Map<String, Object> listAdminObjects(String requestedPrefix, String marker, Integer requestedLimit) {
+    String prefix = normalizeAdminPrefix(requestedPrefix);
+    int limit = requestedLimit == null ? 100 : Math.max(1, Math.min(requestedLimit, 200));
+    try {
+      ListObjectsRequest request = new ListObjectsRequest(properties.getBucketName());
+      request.setPrefix(prefix);
+      request.setDelimiter("/");
+      request.setMaxKeys(limit);
+      if (!isBlank(marker)) request.setMarker(marker);
+      ObjectListing listing = ossClient().listObjects(request);
+
+      List<Map<String, Object>> objects = new ArrayList<>();
+      for (String folder : listing.getCommonPrefixes()) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("key", folder);
+        item.put("name", folder.substring(prefix.length(), folder.length() - 1));
+        item.put("folder", true);
+        objects.add(item);
+      }
+      for (OSSObjectSummary summary : listing.getObjectSummaries()) {
+        if (summary.getKey().equals(prefix)) continue;
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("key", summary.getKey());
+        item.put("name", summary.getKey().substring(prefix.length()));
+        item.put("folder", false);
+        item.put("size", summary.getSize());
+        item.put("lastModified", summary.getLastModified());
+        item.put("url", getFileUrl(summary.getKey()));
+        item.put("previewUrl", getPresignedFileUrl(summary.getKey()));
+        objects.add(item);
+      }
+      objects.sort((left, right) -> {
+        boolean leftFolder = Boolean.TRUE.equals(left.get("folder"));
+        boolean rightFolder = Boolean.TRUE.equals(right.get("folder"));
+        if (leftFolder != rightFolder) return leftFolder ? -1 : 1;
+        return String.valueOf(left.get("name")).compareToIgnoreCase(String.valueOf(right.get("name")));
+      });
+
+      Map<String, Object> result = new LinkedHashMap<>();
+      result.put("prefix", prefix);
+      result.put("objects", objects);
+      result.put("truncated", listing.isTruncated());
+      result.put("nextMarker", listing.getNextMarker());
+      return result;
+    } catch (Exception exception) {
+      throw new ApiException(502, "OSS 对象列表读取失败：" + exception.getMessage());
+    }
+  }
+
+  public Map<String, Object> uploadAdminObject(MultipartFile file, String requestedKey) {
+    if (file == null || file.isEmpty()) throw new ApiException(400, "请选择要上传的文件");
+    String objectName = normalizeAdminObjectName(requestedKey);
+    try {
+      ObjectMetadata metadata = new ObjectMetadata();
+      metadata.setContentType(file.getContentType() == null ? "application/octet-stream" : file.getContentType());
+      metadata.setContentLength(file.getSize());
+      ossClient().putObject(properties.getBucketName(), objectName, file.getInputStream(), metadata);
+      Map<String, Object> result = new LinkedHashMap<>();
+      result.put("key", objectName);
+      result.put("url", getFileUrl(objectName));
+      return result;
+    } catch (Exception exception) {
+      throw new ApiException(502, "OSS 文件上传失败：" + exception.getMessage());
+    }
+  }
+
+  public String normalizeAdminObjectName(String objectName) {
+    if (isBlank(objectName)) throw new ApiException(400, "对象路径不能为空");
+    String normalized = objectName.trim().replace('\\', '/');
+    while (normalized.startsWith("/")) normalized = normalized.substring(1);
+    if (normalized.isBlank() || normalized.contains("?") || normalized.contains("#")
+        || normalized.chars().anyMatch(Character::isISOControl)
+        || java.util.Arrays.stream(normalized.split("/", -1)).anyMatch(segment -> segment.equals(".") || segment.equals(".."))) {
+      throw new ApiException(400, "对象路径包含不支持的字符");
+    }
+    return normalized;
+  }
+
+  private String normalizeAdminPrefix(String requestedPrefix) {
+    if (isBlank(requestedPrefix)) return "";
+    String normalized = requestedPrefix.trim().replace('\\', '/');
+    while (normalized.startsWith("/")) normalized = normalized.substring(1);
+    if (normalized.contains("?") || normalized.contains("#")
+        || normalized.chars().anyMatch(Character::isISOControl)
+        || java.util.Arrays.stream(normalized.split("/", -1)).anyMatch(segment -> segment.equals(".") || segment.equals(".."))) {
+      throw new ApiException(400, "目录路径包含不支持的字符");
+    }
+    return normalized.endsWith("/") ? normalized : normalized + "/";
+  }
+
+  public Map<String, Object> previewAdminDateDeletion(String requestedPrefix, String fromDate, String toDate) {
+    return scanAdminDateRange(requestedPrefix, fromDate, toDate, false);
+  }
+
+  public Map<String, Object> deleteAdminObjectsByDate(String requestedPrefix, String fromDate, String toDate) {
+    return scanAdminDateRange(requestedPrefix, fromDate, toDate, true);
+  }
+
+  private Map<String, Object> scanAdminDateRange(
+      String requestedPrefix, String fromDate, String toDate, boolean deleteMatches) {
+    String prefix = normalizeAdminPrefix(requestedPrefix);
+    if (isBlank(prefix)) throw new ApiException(400, "请先进入一个目录，再执行按日期批量操作");
+    LocalDate start;
+    LocalDate end;
+    try {
+      start = LocalDate.parse(fromDate);
+      end = LocalDate.parse(toDate);
+    } catch (Exception exception) {
+      throw new ApiException(400, "请选择有效的开始和结束日期");
+    }
+    if (start.isAfter(end)) throw new ApiException(400, "开始日期不能晚于结束日期");
+    ZoneId zone = ZoneId.of("Asia/Shanghai");
+    long startMillis = start.atStartOfDay(zone).toInstant().toEpochMilli();
+    long endExclusiveMillis = end.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli();
+
+    try {
+      OSS oss = ossClient();
+      List<Map<String, Object>> sample = new ArrayList<>();
+      long matchedCount = 0;
+      long matchedBytes = 0;
+      String marker = null;
+      do {
+        ListObjectsRequest request = new ListObjectsRequest(properties.getBucketName());
+        request.setPrefix(prefix);
+        request.setMaxKeys(1000);
+        if (!isBlank(marker)) request.setMarker(marker);
+        ObjectListing listing = oss.listObjects(request);
+        List<String> deleteKeys = new ArrayList<>();
+        for (OSSObjectSummary summary : listing.getObjectSummaries()) {
+          long modifiedMillis = summary.getLastModified().getTime();
+          if (modifiedMillis < startMillis || modifiedMillis >= endExclusiveMillis) continue;
+          matchedCount++;
+          matchedBytes += summary.getSize();
+          if (sample.size() < 50) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("key", summary.getKey());
+            item.put("size", summary.getSize());
+            item.put("lastModified", summary.getLastModified());
+            sample.add(item);
+          }
+          if (deleteMatches) deleteKeys.add(summary.getKey());
+        }
+        if (deleteMatches && !deleteKeys.isEmpty()) {
+          DeleteObjectsRequest deleteRequest = new DeleteObjectsRequest(properties.getBucketName());
+          deleteRequest.setKeys(deleteKeys);
+          oss.deleteObjects(deleteRequest);
+        }
+        if (!listing.isTruncated()) break;
+        String nextMarker = listing.getNextMarker();
+        if (isBlank(nextMarker) && !listing.getObjectSummaries().isEmpty()) {
+          nextMarker = listing.getObjectSummaries().get(listing.getObjectSummaries().size() - 1).getKey();
+        }
+        if (isBlank(nextMarker) || nextMarker.equals(marker)) {
+          throw new IllegalStateException("OSS object pagination did not advance");
+        }
+        marker = nextMarker;
+      } while (true);
+
+      Map<String, Object> result = new LinkedHashMap<>();
+      result.put("prefix", prefix);
+      result.put("fromDate", start.toString());
+      result.put("toDate", end.toString());
+      result.put("matchedCount", matchedCount);
+      result.put("matchedBytes", matchedBytes);
+      result.put("deletedCount", deleteMatches ? matchedCount : 0);
+      result.put("sample", sample);
+      return result;
+    } catch (ApiException exception) {
+      throw exception;
+    } catch (Exception exception) {
+      throw new ApiException(502, deleteMatches
+          ? "OSS 按日期删除失败：" + exception.getMessage()
+          : "OSS 按日期筛选失败：" + exception.getMessage());
     }
   }
 

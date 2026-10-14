@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from
 import { match as matchPinyin } from 'pinyin-pro'
 import ConsolePagination from '../components/console/ConsolePagination.vue'
 import FinancePanel from '../components/console/FinancePanel.vue'
+import OssManagerPanel from '../components/console/OssManagerPanel.vue'
 import ImageViewer from '../components/ImageViewer.vue'
 import { useUserStore } from '../stores/user'
 import { useTheme } from '../composables/useTheme'
@@ -675,6 +676,7 @@ const tabs = computed(() => {
     list.push({ key: 'roles', label: '角色管理', icon: 'ri-shield-user-line' })
     list.push({ key: 'api-keys', label: '模型管理', icon: 'ri-key-2-line' })
     list.push({ key: 'ai-feature-mappings', label: 'AI功能映射', icon: 'ri-node-tree' })
+    list.push({ key: 'oss', label: 'OSS管理', icon: 'ri-hard-drive-3-line' })
     list.push({ key: 'finance', label: '财务统计', icon: 'ri-funds-line' })
   }
   list.push({ key: 'stats', label: '生成统计', icon: 'ri-bar-chart-box-line' })
@@ -3027,6 +3029,12 @@ onUnmounted(() => {
       :refresh-key="financeRefreshKey"
       @error="showToast($event, 'error')"
       @loaded="errorText = ''"
+    />
+
+    <OssManagerPanel
+      v-if="activeTab === 'oss' && isAdmin"
+      @error="showToast($event, 'error')"
+      @success="showToast($event)"
     />
 
     <!-- Stats Tab -->
