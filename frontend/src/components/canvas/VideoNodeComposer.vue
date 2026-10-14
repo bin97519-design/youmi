@@ -23,7 +23,6 @@ const props = defineProps({
   capabilities: { type: Object, default: null },
   canvasImages: { type: Array, default: () => [] },
   editorWidth: { type: Number, default: 560 },
-  editorOffsetX: { type: Number, default: 0 },
   disabled: Boolean,
   generating: Boolean,
   uploading: Boolean,
@@ -76,11 +75,12 @@ const ratio = computed(() =>
     props.draft.references.length,
     props.draft.config.ratio,
     props.draft.config.referenceMode,
+    props.draft.referenceVideos?.length || 0,
   ),
 )
 const summary = computed(
   () =>
-    `${firstLast.value ? '首尾帧' : props.draft.references.length ? '参考生' : '文生'} · ${ratio.value === 'adaptive' ? '自适应' : ratio.value} · ${props.draft.config.resolution.toUpperCase()} · ${props.draft.config.duration}s`,
+    `${firstLast.value ? '首尾帧' : props.draft.references.length || props.draft.referenceVideos?.length ? '参考生' : '文生'} · ${ratio.value === 'adaptive' ? '自适应' : ratio.value} · ${props.draft.config.resolution.toUpperCase()} · ${props.draft.config.duration}s`,
 )
 const modelLabel = computed(
   () =>
@@ -106,6 +106,13 @@ function changeModel(model) {
       resolution: videoResolutionForModel(model),
     },
   })
+}
+function updateReferenceVideoDuration(reference, event) {
+  const duration = event.target.duration
+  if (!Number.isFinite(duration) || duration <= 0 || Math.abs(duration - reference.duration) < 0.001) return
+  update({ referenceVideos: props.draft.referenceVideos.map(video =>
+    video.url === reference.url ? { ...video, duration } : video,
+  ) })
 }
 function addReference(image) {
   if (
@@ -141,7 +148,7 @@ function toggleSettings() {
   <section
     class="video-node-composer"
     :class="{ 'is-compact': editorWidth < 480 }"
-    :style="{ width: `${editorWidth}px`, '--video-node-editor-offset-x': `${editorOffsetX}px` }"
+    :style="{ width: `${editorWidth}px` }"
     aria-label="视频节点编辑器"
     @pointerdown.stop
     @click.stop
@@ -156,7 +163,7 @@ function toggleSettings() {
         :disabled="disabled"
         title="焦点编辑"
         aria-label="焦点编辑"
-        @click="promptInput?.focus()"
+        @click="promptInput?.focus({ preventScroll: true })"
       >
         <i class="ri-cursor-line" aria-hidden="true"></i>
       </button>
@@ -234,6 +241,32 @@ function toggleSettings() {
           <i class="ri-close-line" aria-hidden="true"></i>
         </button>
       </div>
+      <div
+        v-for="(reference, index) in draft.referenceVideos || []"
+        :key="`video-${reference.url}`"
+        class="video-node-reference video-node-reference-video"
+        :title="`参考视频 ${index + 1}：${reference.name}`"
+        :aria-label="`参考视频 ${index + 1}：${reference.name}`"
+      >
+        <video
+          :src="reference.url"
+          :poster="reference.thumbnailUrl || undefined"
+          preload="metadata"
+          muted
+          playsinline
+          @loadedmetadata="updateReferenceVideoDuration(reference, $event)"
+        ></video>
+        <span><i class="ri-video-line" aria-hidden="true"></i> {{ reference.duration ? `${Number(reference.duration.toFixed(1))}s` : index + 1 }}</span>
+        <button
+          type="button"
+          :disabled="disabled"
+          :title="`移除参考视频 ${index + 1}`"
+          :aria-label="`移除参考视频 ${index + 1}`"
+          @click="update({ referenceVideos: draft.referenceVideos.filter((_, at) => at !== index) })"
+        >
+          <i class="ri-close-line" aria-hidden="true"></i>
+        </button>
+      </div>
       <button
         v-if="!firstLast"
         class="video-node-icon video-node-add-reference"
@@ -246,6 +279,14 @@ function toggleSettings() {
       >
         <i class="ri-add-line" aria-hidden="true"></i>
       </button>
+      <div v-for="(reference, index) in draft.referenceTexts || []" :key="`text-${reference.layerId || index}`"
+        class="video-node-reference video-node-reference-text" :title="`${reference.name}\n${reference.text}`" :aria-label="`参考文本 ${index + 1}`">
+        <i class="ri-text" aria-hidden="true"></i>
+        <button type="button" :disabled="disabled" :title="`移除参考文本 ${index + 1}`" :aria-label="`移除视频参考文本 ${index + 1}`"
+          @click="update({ referenceTexts: draft.referenceTexts.filter((_, at) => at !== index) })">
+          <i class="ri-close-line" aria-hidden="true"></i>
+        </button>
+      </div>
       <span v-if="uploading" class="video-node-upload-progress">{{ uploadProgress }}%</span>
       <input ref="referenceInput" type="file" accept="image/*" hidden @change="uploadReference" />
     </div>
@@ -298,6 +339,7 @@ function toggleSettings() {
         :model-value="draft.config"
         :model-options="modelOptions"
         :references="draft.references"
+        :reference-video-count="draft.referenceVideos?.length || 0"
         :capabilities="capabilities"
         :disabled="disabled"
         @update:model-value="update({ config: $event })"
@@ -374,7 +416,7 @@ function toggleSettings() {
         <button
           class="video-node-generate video-node-icon"
           type="button"
-          :disabled="disabled || !draft.prompt.trim() || !!referenceError || price == null"
+          :disabled="disabled || (!draft.prompt.trim() && !draft.referenceTexts?.length) || !!referenceError || price == null"
           :title="generating ? '视频生成中' : disabled ? '正在处理' : '生成视频'"
           aria-label="生成视频"
           @click="emit('generate')"
@@ -398,7 +440,7 @@ function toggleSettings() {
   /* The transformed composer must stack above the node ports (99999). */
   z-index: 100000;
   top: calc(100% + 12px * var(--canvas-inverse-scale, 1));
-  left: calc(50% + var(--video-node-editor-offset-x, 0px));
+  left: 50%;
   transform: translateX(-50%) scale(var(--canvas-inverse-scale, 1));
   transform-origin: top center;
   min-width: 0;
@@ -480,11 +522,28 @@ function toggleSettings() {
   height: 36px;
   flex: 0 0 36px;
 }
-.video-node-reference img {
+.video-node-reference img,
+.video-node-reference video {
   width: 100%;
   height: 100%;
   object-fit: cover;
   border-radius: 4px;
+}
+.video-node-reference-video {
+  width: 52px;
+  flex-basis: 52px;
+  background: var(--canvas-panel, #232428);
+  border-radius: 4px;
+}
+.video-node-reference-text {
+  display: grid;
+  place-items: center;
+  color: var(--canvas-accent, #18bed0);
+  background: var(--canvas-accent-soft, #18bed012);
+  border: 1px solid var(--canvas-border, #404248);
+  border-radius: 4px;
+  box-sizing: border-box;
+  font-size: 20px;
 }
 .video-node-reference span {
   position: absolute;

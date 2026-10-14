@@ -4,15 +4,20 @@ import java.math.BigDecimal;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.LinkedHashMap;
 
 /**
  * 视频生成模块的 DTO 集合。
  */
 public class VideoGenerationDtos {
+
+  public record ReferenceVideo(String url,
+      @JsonProperty("durationSeconds") @JsonAlias("duration") Double durationSeconds) {}
 
   /** 视频创建请求体 */
   public record CreateTaskRequest(
@@ -29,7 +34,22 @@ public class VideoGenerationDtos {
       @JsonProperty("seed") Long seed,
       @JsonProperty("webhook_url") @JsonAlias("webhookUrl") String webhookUrl,
       @JsonProperty("client_task_id") @JsonAlias("clientTaskId") String clientTaskId,
-      @JsonProperty("feature_code") String featureCode) {
+      @JsonProperty("feature_code") String featureCode,
+      @JsonProperty("reference_videos") @JsonAlias("referenceVideos")
+      @JsonInclude(JsonInclude.Include.NON_EMPTY) List<ReferenceVideo> referenceVideos) {
+
+    public CreateTaskRequest {
+      referenceVideos = referenceVideos == null || referenceVideos.isEmpty() ? List.of()
+          : java.util.Collections.unmodifiableList(new ArrayList<>(referenceVideos));
+    }
+
+    public CreateTaskRequest(String prompt, String model, String ratio, Integer durationSeconds,
+        String resolution, List<String> imageUrls, String firstFrameUrl, String lastFrameUrl,
+        String negativePrompt, Boolean generateAudio, Long seed, String webhookUrl, String clientTaskId,
+        String featureCode) {
+      this(prompt, model, ratio, durationSeconds, resolution, imageUrls, firstFrameUrl, lastFrameUrl,
+          negativePrompt, generateAudio, seed, webhookUrl, clientTaskId, featureCode, List.of());
+    }
 
     public CreateTaskRequest(String prompt, String model, String ratio, Integer durationSeconds) {
       this(prompt, model, ratio, durationSeconds, null, List.of(), null, null, null, null, null, null, null, null);
@@ -51,6 +71,16 @@ public class VideoGenerationDtos {
           .map(String::trim)
           .distinct()
           .toList();
+    }
+
+    public List<ReferenceVideo> normalizedReferenceVideos() {
+      if (referenceVideos == null) return List.of();
+      var byUrl = new LinkedHashMap<String, ReferenceVideo>();
+      for (ReferenceVideo video : referenceVideos) {
+        String url = video == null || video.url() == null ? "" : video.url().trim();
+        byUrl.putIfAbsent(url, video == null ? null : new ReferenceVideo(url, video.durationSeconds()));
+      }
+      return new ArrayList<>(byUrl.values());
     }
 
     public String normalizedFirstFrameUrl() {

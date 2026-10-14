@@ -82,6 +82,11 @@ public class VideoTaskController {
       throw new ApiException(400, "该视频模型未映射到主图视频分镜视频生成功能");
     if (request != null && "minimax-h3-max".equals(request.model()))
       throw new ApiException(400, "原视频模型已移除，请重新选择视频模型");
+    if (request != null && !request.normalizedReferenceVideos().isEmpty()
+        && (!AnmiaoVideoClient.supportsVideoReferences(request.model())
+            || !(productVideoCall ? anmiaoVideos.supportsModel(request.model(), featureCode)
+                : anmiaoVideos.supportsModel(request.model()))))
+      throw new ApiException(400, "所选模型或通道不支持参考视频，请更换模型或移除视频连线");
     if (request != null && ChatVideoClient.MODEL.equals(request.model())) {
       VideoGenerationDtos.CreateTaskResponse response = chatVideos.create(userId, request);
       history.created(userId, request, response, startedAt);

@@ -450,6 +450,88 @@ class AnmiaoVideoClientTest {
     assertTrue(assertThrows(ApiException.class, () -> client.price(request(6))).getMessage().contains("尚未配置"));
   }
 
+  @Test void sendsFourNativeVideoReferencesAndOneReferenceImageForSd25() throws Exception {
+    start();
+    AtomicReference<JsonNode> body = new AtomicReference<>();
+    server.createContext("/contents/generations/tasks", exchange -> {
+      body.set(mapper.readTree(exchange.getRequestBody()));
+      respond(exchange, 200, "{\"id\":\"video_refs_123\"}");
+    });
+    var properties = new AnmiaoVideoProperties();
+    properties.setApiKey25("test-key");
+    properties.setMiPerSecond25ByResolution(Map.of("720p", 3));
+    var videos = java.util.stream.IntStream.range(0, 4)
+        .mapToObj(i -> new VideoGenerationDtos.ReferenceVideo("https://assets.example/" + i + ".mp4", 5.0))
+        .toList();
+    var request = referenceVideoRequest(AnmiaoVideoClient.MODEL25, videos, null);
+    var response = client(properties).createTask(request);
+    assertEquals("anmiao-video:25:video_refs_123", response.getTaskId());
+    assertEquals("3:4", body.get().path("ratio").asText());
+    assertEquals("reference", body.get().path("omni_reference_task_type").asText());
+    var content = body.get().path("content");
+    assertEquals(6, content.size());
+    assertEquals("reference_image", content.path(1).path("role").asText());
+    for (int i = 0; i < 4; i++) {
+      assertEquals("video_url", content.path(i + 2).path("type").asText());
+      assertEquals("reference_video", content.path(i + 2).path("role").asText());
+      assertEquals(videos.get(i).url(), content.path(i + 2).path("video_url").path("url").asText());
+      assertTrue(content.path(i + 2).path("image_url").isMissingNode());
+    }
+  }
+
+  @Test void nativeVideosAreValidatedBeforeProviderSubmission() {
+    var properties = new AnmiaoVideoProperties();
+    properties.setApiKey("test-key");
+    properties.setMiPerSecond(3);
+    properties.setMiPerSecond25ByResolution(Map.of("720p", 3));
+    var client = client(properties);
+    var valid = List.of(new VideoGenerationDtos.ReferenceVideo("https://assets.example/a.mp4", 5.0));
+    assertEquals(18, client.price(referenceVideoRequest(AnmiaoVideoClient.MODEL, valid, null)));
+    assertEquals(18, client.price(referenceVideoRequest(AnmiaoVideoClient.MODEL25, valid, null)));
+    var tooMany = java.util.stream.IntStream.range(0, 4)
+        .mapToObj(i -> new VideoGenerationDtos.ReferenceVideo("https://assets.example/" + i + ".mp4", 3.0)).toList();
+    assertTrue(assertThrows(ApiException.class, () -> client.price(
+        referenceVideoRequest(AnmiaoVideoClient.MODEL, tooMany, null))).getMessage().contains("3 个"));
+    var tooLong = List.of(new VideoGenerationDtos.ReferenceVideo("https://assets.example/a.mp4", 16.0),
+        new VideoGenerationDtos.ReferenceVideo("https://assets.example/b.mp4", 15.0));
+    assertTrue(assertThrows(ApiException.class, () -> client.price(
+        referenceVideoRequest(AnmiaoVideoClient.MODEL25, tooLong, null))).getMessage().contains("总时长"));
+    for (Double duration : java.util.Arrays.asList(null, Double.NaN, 1.9, 30.1)) {
+      var invalid = List.of(new VideoGenerationDtos.ReferenceVideo("https://assets.example/a.mp4", duration));
+      assertThrows(ApiException.class, () -> client.price(referenceVideoRequest(AnmiaoVideoClient.MODEL25, invalid, null)));
+    }
+    assertThrows(ApiException.class, () -> client.price(referenceVideoRequest(
+        AnmiaoVideoClient.MODEL25, valid, "https://assets.example/frame.png")));
+    for (String url : List.of("", "blob:temporary", "file:///a.mp4", "data:video/mp4;base64,test")) {
+      assertThrows(ApiException.class, () -> client.price(referenceVideoRequest(AnmiaoVideoClient.MODEL25,
+          List.of(new VideoGenerationDtos.ReferenceVideo(url, 5.0)), null)));
+    }
+    verifyNoInteractions(media);
+  }
+
+  @Test void videoRequestJsonKeepsLegacyFingerprintsAndPersistsNativeReferences() throws Exception {
+    assertFalse(mapper.valueToTree(request(6)).has("reference_videos"));
+    var request = referenceVideoRequest(AnmiaoVideoClient.MODEL25,
+        List.of(new VideoGenerationDtos.ReferenceVideo("https://assets.example/a.mp4", 5.0)), null);
+    String json = mapper.writeValueAsString(request);
+    assertTrue(mapper.readTree(json).has("reference_videos"));
+    assertEquals(request, mapper.readValue(json, VideoGenerationDtos.CreateTaskRequest.class));
+    var duplicate = referenceVideoRequest(AnmiaoVideoClient.MODEL25, List.of(
+        new VideoGenerationDtos.ReferenceVideo("https://assets.example/a.mp4", 5.0),
+        new VideoGenerationDtos.ReferenceVideo(" https://assets.example/a.mp4 ", 5.0)), null);
+    assertEquals(1, duplicate.normalizedReferenceVideos().size());
+    assertFalse(AnmiaoVideoClient.supportsVideoReferences("seedance-2.0-fast-0826-720p"));
+    assertFalse(AnmiaoVideoClient.supportsVideoReferences("minimax-h3"));
+    assertTrue(AnmiaoVideoClient.supportsVideoReferences("seedance-2.5"));
+  }
+
+  private VideoGenerationDtos.CreateTaskRequest referenceVideoRequest(String model,
+      List<VideoGenerationDtos.ReferenceVideo> videos, String firstFrame) {
+    return new VideoGenerationDtos.CreateTaskRequest("商品参考视频", model, "3:4", 6, "720p",
+        List.of("https://assets.example/product.png"), firstFrame, null, null, true,
+        null, null, "reference-client", null, videos);
+  }
+
   private VideoGenerationDtos.CreateTaskRequest request(int duration) {
     return request(duration, "720p");
   }

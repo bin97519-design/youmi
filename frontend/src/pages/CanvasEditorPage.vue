@@ -17,13 +17,30 @@ import ProductVideoWorkspace from '../components/canvas/ProductVideoWorkspace.vu
 import VideoEnhanceDialog from '../components/canvas/VideoEnhanceDialog.vue'
 import AgentVideoSettings from '../components/canvas/AgentVideoSettings.vue'
 import VideoNodeComposer from '../components/canvas/VideoNodeComposer.vue'
+import ImageNodeComposer from '../components/canvas/ImageNodeComposer.vue'
+import CanvasSelectionToolbar from '../components/canvas/CanvasSelectionToolbar.vue'
+import {
+  selectedCanvasLayers,
+  expandCanvasGroupSelection,
+  selectedCanvasGroup,
+  setCanvasSelectionGroup,
+  canvasSelectionLayout,
+  canvasSelectionContent,
+  canvasSelectionExportEntry,
+} from '../utils/canvasSelection'
+import { normalizeImageNodeDraft, imageNodeGenerationOptions, syncImageNodeConnectedReferences } from '../utils/imageNodeDraft'
+import { CANVAS_TEXT_NODE_LAYOUT, emptyMediaNodeDimensions, canvasGenerationDimensions, legacyEmptyTextNodeLayout } from '../utils/canvasEmptyNodeLayout'
+import { selectedConnectionMedia, selectionBounds, missingNodeConnections, incomingImageReferencesByNode, incomingVideoReferencesByNode, incomingTextReferencesByNode } from '../utils/canvasNodeConnections'
+import { canvasReferenceTextPrompt } from '../utils/canvasReferenceTexts'
 import {
   normalizeVideoNodeDraft,
+  normalizeVideoReferences,
   syncVideoNodeGenerationSettings,
   syncVideoNodeConnectedReferences,
   videoNodeReferenceError,
 } from '../utils/videoNodeDraft'
 import AgentMediaResult from '../components/canvas/AgentMediaResult.vue'
+import { hasDecodedVideoFrame, videoPlaybackResultPatch } from '../utils/videoPlayback'
 import {
   ANMIAO_VIDEO_MODEL,
   ANMIAO25_VIDEO_MODEL,
@@ -49,6 +66,7 @@ import {
   videoRatioForRequest,
   videoReferenceLimit,
   videoReferencePayload,
+  videoReferenceVideosError,
   videoResolutionForModel,
   videoResolutionOptions as resolutionOptionsForModel,
   isProviderReportedCostVideoModel,
@@ -412,6 +430,10 @@ function persistConnections() {
 }
 const connecting = reactive({
   active: false,
+  canvasId: '',
+  sourceLayerIds: [],
+  grouped: false,
+  targetLayerId: '',
   pointerId: null,
   fromLayerId: '',
   fromPort: '', // 'left' | 'right'
@@ -426,6 +448,8 @@ const connectionNodeMenu = reactive({
   visible: false,
   canvasId: '',
   sourceLayerId: '',
+  sourceLayerIds: [],
+  grouped: false,
   sourcePort: '',
   x: 0,
   y: 0,
@@ -474,6 +498,20 @@ function deselectConnection() {
 function getPortPosition(layerId, port) {
   const layer = layers.value.find((l) => l.id === layerId)
   if (!layer) return { x: 0, y: 0 }
+  if (!dragState.value && !resizeState.value && !panState.value) {
+    const element = document.querySelector(
+      `[data-layer-id="${CSS.escape(layerId)}"] .uc-port-${port === 'left' ? 'left' : 'right'}`,
+    )
+    const viewport = document.querySelector('.canvas-viewport')
+    if (element && viewport) {
+      const rect = element.getBoundingClientRect()
+      const origin = viewport.getBoundingClientRect()
+      return {
+        x: (rect.left + rect.width / 2 - origin.left) / viewScale.value,
+        y: (rect.top + rect.height / 2 - origin.top) / viewScale.value,
+      }
+    }
+  }
   // 降级：纯计算（画布局部坐标，viewport 容器处理 scale+offset）
   const vs = viewScale.value
   const nodeWidth = layer.width || 200
@@ -503,7 +541,7 @@ function screenToStage(clientX, clientY) {
 }
 
 // 开始连接
-function startConnection(event, layerId, port) {
+function startConnection(event, layerId, port, sourceLayerIds = [layerId]) {
   if (event.button !== 0) return
   event.stopPropagation()
   event.preventDefault()
@@ -512,6 +550,10 @@ function startConnection(event, layerId, port) {
   _justFinishedConnection = false
   const pos = getPortPosition(layerId, port)
   connecting.active = true
+  connecting.canvasId = props.id
+  connecting.sourceLayerIds = [...sourceLayerIds]
+  connecting.grouped = sourceLayerIds.length > 1
+  connecting.targetLayerId = ''
   connecting.pointerId = event.pointerId
   connecting.clientStartX = event.clientX
   connecting.clientStartY = event.clientY
@@ -525,52 +567,122 @@ function startConnection(event, layerId, port) {
   connectionPointerTarget.setPointerCapture?.(event.pointerId)
 }
 
+function startGroupedConnection(event) {
+  if (event.button !== 0) return
+  const sources = groupedConnectionMedia.value.map((layer) => layer.id)
+  if (sources.length < 2) return
+  startConnection(event, sources[0], 'right', sources)
+  const position = screenToStage(event.clientX, event.clientY)
+  connecting.startX = connecting.currentX = position.x
+  connecting.startY = connecting.currentY = position.y
+}
+
+function connectionDropTarget(clientX, clientY) {
+  const element = document.elementFromPoint(clientX, clientY)
+  const port = element?.closest('.uc-connection-port')
+  const node = element?.closest('.canvas-layer')
+  const layer = layers.value.find((item) => item.id === node?.dataset.layerId)
+  if (!layer || connecting.sourceLayerIds.includes(layer.id) || layer.locked) return null
+  if (connecting.grouped) {
+    if (layer.type !== 'video' && layers.value.some(source => connecting.sourceLayerIds.includes(source.id) && source.type === 'video')) return null
+    if (layer.generating || (layer.type !== 'video' && !isEditableImageNode(layer))) return null
+    if (layer.type === 'video' && videoNodeBusy(layer)) return null
+    if (
+      inlineDialogModification.layerId === layer.id &&
+      (inlineDialogUploading.value || inlineDialogModification.submitting)
+    )
+      return null
+    if (
+      element.closest(
+        'button, input, textarea, select, .image-node-composer, .video-node-composer',
+      ) &&
+      !port
+    )
+      return null
+  } else if (!port) return null
+  return {
+    layerId: layer.id,
+    port: connecting.grouped ? 'left' : port.classList.contains('uc-port-left') ? 'left' : 'right',
+  }
+}
+
 // 更新连接线拖拽位置
 function updateConnectionDrag(event) {
-  if (!connecting.active) return
+  if (!connecting.active || (event.pointerId != null && event.pointerId !== connecting.pointerId))
+    return
+  const target = connectionDropTarget(event.clientX, event.clientY)
+  connecting.targetLayerId = target?.layerId || ''
   const pos = screenToStage(event.clientX, event.clientY)
-  connecting.currentX = pos.x
-  connecting.currentY = pos.y
+  const endpoint = target ? getPortPosition(target.layerId, target.port) : pos
+  connecting.currentX = endpoint.x
+  connecting.currentY = endpoint.y
+}
+
+function addNodeConnections(
+  sourceIds,
+  sourcePort,
+  targetId,
+  targetPort,
+  { grouped = false, skipUndo = false } = {},
+) {
+  const validSources = sourceIds.filter((id) => layers.value.some((layer) => layer.id === id))
+  if (!layers.value.some((layer) => layer.id === targetId)) return 0
+  const edges = missingNodeConnections(
+    validSources,
+    sourcePort,
+    targetId,
+    targetPort,
+    connections.value,
+  )
+  const related = grouped ? connections.value.filter(edge => validSources.includes(edge.fromLayerId) &&
+    edge.fromPort === sourcePort && edge.toLayerId === targetId && edge.toPort === targetPort) : []
+  const needsGrouping = related.some(edge => !edge.bundleId) || new Set(related.map(edge => edge.bundleId)).size > 1
+  if (!edges.length && !needsGrouping) return 0
+  if (!skipUndo) pushUndo({ restoreSelection: grouped })
+  const bundleId = grouped ? `bundle-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` : ''
+  for (const edge of related) edge.bundleId = bundleId
+  connections.value.push(
+    ...edges.map((edge) => ({
+      ...edge,
+      id: `conn-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      ...(bundleId ? { bundleId } : {}),
+    })),
+  )
+  persistConnections()
+  debounceSaveLayout()
+  nextTick(() => refreshConnections())
+  return edges.length
 }
 
 // 完成连接（不限制连接数量，允许任意节点间连接）
 // 连接完成后关闭连接模式，下次需要再从端口开始拖
 let _justFinishedConnection = false
 function finishConnection(event, layerId, port) {
-  if (!connecting.active) return
-  if (connecting.fromLayerId === layerId) {
+  if (!connecting.active || connecting.canvasId !== props.id) return
+  if (connecting.sourceLayerIds.includes(layerId)) {
     // 不能连接自己
     return
   }
   // 创建连接
-  connections.value.push({
-    id: `conn-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
-    fromLayerId: connecting.fromLayerId,
-    fromPort: connecting.fromPort,
-    toLayerId: layerId,
-    toPort: port,
+  addNodeConnections(connecting.sourceLayerIds, connecting.fromPort, layerId, port, {
+    grouped: connecting.grouped,
   })
-  persistConnections()
-  debounceSaveLayout()
   // 标记刚完成连接，防止 stage pointerup 立即 cancelConnection
   _justFinishedConnection = true
   // 完成后关闭连接模式
   connecting.active = false
+  connecting.targetLayerId = ''
   releaseConnectionPointer()
 }
 
 function onConnectionPointerEnd(event) {
   if (!connecting.active || event.pointerId !== connecting.pointerId) return
   if (event.type === 'pointercancel') return cancelConnection()
+  if (connecting.canvasId !== props.id) return cancelConnection()
   const target = document.elementFromPoint(event.clientX, event.clientY)
-  const port = target?.closest('.uc-connection-port')
-  const targetLayerId = port?.closest('.canvas-layer')?.dataset.layerId
-  if (targetLayerId && targetLayerId !== connecting.fromLayerId) {
-    finishConnection(
-      event,
-      targetLayerId,
-      port.classList.contains('uc-port-left') ? 'left' : 'right',
-    )
+  const drop = connectionDropTarget(event.clientX, event.clientY)
+  if (drop) {
+    finishConnection(event, drop.layerId, drop.port)
     return
   }
   const isBlank =
@@ -582,23 +694,56 @@ function onConnectionPointerEnd(event) {
     event.clientX - connecting.clientStartX,
     event.clientY - connecting.clientStartY,
   )
-  if (!isBlank || distance < 6) return cancelConnection()
-  const position = screenToStage(event.clientX, event.clientY)
+  const groupClick =
+    connecting.grouped && distance < 6 && target?.closest('.uc-group-connection-port')
+  if ((!isBlank || distance < 6) && !groupClick) return cancelConnection()
+  const position = groupClick
+    ? { x: connecting.startX + 150 / viewScale.value, y: connecting.startY }
+    : screenToStage(event.clientX, event.clientY)
+  openConnectionNodeMenu(position, event.clientX, event.clientY)
+  connecting.active = false
+  connecting.targetLayerId = ''
+  releaseConnectionPointer()
+}
+
+function openConnectionNodeMenu(position, clientX, clientY) {
   connecting.currentX = position.x
   connecting.currentY = position.y
   Object.assign(connectionNodeMenu, {
     visible: true,
     canvasId: props.id,
     sourceLayerId: connecting.fromLayerId,
+    sourceLayerIds: [...connecting.sourceLayerIds],
+    grouped: connecting.grouped,
     sourcePort: connecting.fromPort,
     ...position,
-    left: Math.max(8, Math.min(event.clientX + 8, window.innerWidth - 176)),
-    top: Math.max(8, Math.min(event.clientY + 8, window.innerHeight - 168)),
+    left: Math.max(8, Math.min(clientX + 8, window.innerWidth - 176)),
+    top: Math.max(8, Math.min(clientY + 8, window.innerHeight - 168)),
   })
-  connecting.active = false
-  releaseConnectionPointer()
   nextTick(() =>
     connectionNodeMenuRef.value?.querySelector('button')?.focus({ preventScroll: true }),
+  )
+}
+
+function onGroupedConnectionClick(event) {
+  if (event.detail !== 0 || connecting.active) return
+  const sources = groupedConnectionMedia.value.map((layer) => layer.id)
+  const bounds = groupedConnectionBounds.value
+  if (sources.length < 2 || !bounds) return
+  const rect = event.currentTarget.getBoundingClientRect()
+  Object.assign(connecting, {
+    canvasId: props.id,
+    sourceLayerIds: sources,
+    fromLayerId: sources[0],
+    fromPort: 'right',
+    grouped: true,
+    startX: bounds.right,
+    startY: (bounds.top + bounds.bottom) / 2,
+  })
+  openConnectionNodeMenu(
+    { x: bounds.right + 174 / viewScale.value, y: connecting.startY },
+    rect.right,
+    rect.top,
   )
 }
 
@@ -631,7 +776,7 @@ function onConnectionMenuKeydown(event) {
 }
 
 function addConnectedNode(type) {
-  const context = { ...connectionNodeMenu }
+  const context = { ...connectionNodeMenu, sourceLayerIds: [...connectionNodeMenu.sourceLayerIds] }
   closeConnectionNodeMenu()
   if (
     context.canvasId !== props.id ||
@@ -640,17 +785,16 @@ function addConnectedNode(type) {
     return
   const createNode = { image: addImageNode, video: addVideoNode, text: addTextNode }[type]
   if (!createNode) return
+  if (context.grouped && (type === 'text' || (type === 'image' && context.sourceLayerIds.some(id => layers.value.some(layer => layer.id === id && layer.type === 'video'))))) return
   const layerId = createNode({ connectionDrop: context })
   if (!layerId) return
-  connections.value.push({
-    id: `conn-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-    fromLayerId: context.sourceLayerId,
-    fromPort: context.sourcePort,
-    toLayerId: layerId,
-    toPort: context.sourcePort === 'left' ? 'right' : 'left',
-  })
-  persistConnections()
-  debounceSaveLayout()
+  addNodeConnections(
+    context.sourceLayerIds.length ? context.sourceLayerIds : [context.sourceLayerId],
+    context.sourcePort,
+    layerId,
+    context.sourcePort === 'left' ? 'right' : 'left',
+    { grouped: context.grouped, skipUndo: true },
+  )
   revealCanvasMedia(layerId)
   nextTick(() => refreshConnections())
   void canvas.flushNow(props.id)
@@ -663,6 +807,7 @@ function cancelConnection() {
     return
   }
   connecting.active = false
+  connecting.targetLayerId = ''
   releaseConnectionPointer()
 }
 
@@ -711,11 +856,13 @@ function activateLayerKeyboardSelection() {
   keyboardSelectionTarget.value = 'layer'
 }
 
-function selectSingleLayer(layer) {
+function selectSingleLayer(layer, { individual = false } = {}) {
   activateLayerKeyboardSelection()
   marqueeSelectionIds.value = []
   selectedLayerId.value = layer.id
-  selectedLayerIds.value = [layer.id]
+  selectedLayerIds.value = individual
+    ? [layer.id]
+    : expandCanvasGroupSelection(layers.value, [layer.id], renderedLayerIds.value)
 }
 
 function toggleLayerToolbarMore(layerId) {
@@ -881,6 +1028,8 @@ function addTextNodeAndClose() {
 
 // 删除连接
 function removeConnection(connId) {
+  if (!connections.value.some(connection => connection.id === connId)) return
+  pushUndo()
   connections.value = connections.value.filter((c) => c.id !== connId)
   persistConnections()
   debounceSaveLayout()
@@ -919,6 +1068,12 @@ watch(
 // 连接线路径（每次渲染都从 DOM 实时获取端口位置）
 function getConnectionPaths() {
   const _tick = connectionTick.value // 依赖触发
+  const positions = new Map()
+  function position(id, port) {
+    const key = JSON.stringify([id, port])
+    if (!positions.has(key)) positions.set(key, getPortPosition(id, port))
+    return positions.get(key)
+  }
   return connections.value
     .filter((conn) => {
       // 过滤孤儿连接线，以及收起状态下连接到媒体节点的线。
@@ -927,8 +1082,8 @@ function getConnectionPaths() {
       return fromExists && toExists
     })
     .map((conn) => {
-      const from = getPortPosition(conn.fromLayerId, conn.fromPort)
-      const to = getPortPosition(conn.toLayerId, conn.toPort)
+      const from = position(conn.fromLayerId, conn.fromPort)
+      const to = position(conn.toLayerId, conn.toPort)
       return {
         ...conn,
         path: generateCurvePath(from.x, from.y, to.x, to.y),
@@ -941,14 +1096,19 @@ function getConnectionPaths() {
 }
 
 // 当前拖拽中的连接线路径
-const connectingPath = computed(() => {
-  if (!connecting.active && !connectionNodeMenu.visible) return ''
-  return generateCurvePath(
-    connecting.startX,
-    connecting.startY,
-    connecting.currentX,
-    connecting.currentY,
-  )
+const connectingPaths = computed(() => {
+  if (!connecting.active && !connectionNodeMenu.visible) return []
+  return connecting.sourceLayerIds
+    .filter((id) => layers.value.some((layer) => layer.id === id))
+    .map((id) => {
+      const start = connecting.grouped
+        ? getPortPosition(id, connecting.fromPort)
+        : { x: connecting.startX, y: connecting.startY }
+      return {
+        id,
+        path: generateCurvePath(start.x, start.y, connecting.currentX, connecting.currentY),
+      }
+    })
 })
 const chatHistoryRef = ref(null)
 const chatText = ref('')
@@ -969,98 +1129,14 @@ const inlineDialogModification = reactive({
   resolution: '',
   generationCount: 1,
   references: [],
-  selectOpen: '',
+  referenceTexts: [],
 })
-const inlineDialogReferenceSourceOpen = ref(false)
 const inlineDialogUploading = ref(false)
-const inlineDialogFloating = reactive({
-  left: 0,
-  top: 0,
-  dragging: false,
-  pointerId: null,
-  grabX: 0,
-  grabY: 0,
-  width: 0,
-  height: 0,
-})
-const INLINE_DIALOG_MARGIN = 12
-const INLINE_DIALOG_WIDTH = 460
-
-function placeInlineDialogInViewport() {
-  const width = Math.min(INLINE_DIALOG_WIDTH, window.innerWidth - INLINE_DIALOG_MARGIN * 2)
-  inlineDialogFloating.left = Math.max(
-    INLINE_DIALOG_MARGIN,
-    Math.round((window.innerWidth - width) / 2),
-  )
-  inlineDialogFloating.top = Math.max(
-    INLINE_DIALOG_MARGIN,
-    Math.round((window.innerHeight - Math.min(420, window.innerHeight - 24)) / 2),
-  )
-}
-
-function constrainInlineDialogToViewport(panel) {
-  if (!panel) return
-  inlineDialogFloating.left = Math.max(
-    INLINE_DIALOG_MARGIN,
-    Math.min(
-      window.innerWidth - panel.offsetWidth - INLINE_DIALOG_MARGIN,
-      inlineDialogFloating.left,
-    ),
-  )
-  inlineDialogFloating.top = Math.max(
-    INLINE_DIALOG_MARGIN,
-    Math.min(
-      window.innerHeight - panel.offsetHeight - INLINE_DIALOG_MARGIN,
-      inlineDialogFloating.top,
-    ),
-  )
-}
-
-function startInlineDialogDrag(event) {
-  if (event.button !== 0) return
-  const panel = event.currentTarget.closest('.uc-inline-dialog-edit')
-  if (!panel) return
-  const rect = panel.getBoundingClientRect()
-  inlineDialogFloating.dragging = true
-  inlineDialogFloating.pointerId = event.pointerId
-  inlineDialogFloating.grabX = event.clientX - rect.left
-  inlineDialogFloating.grabY = event.clientY - rect.top
-  inlineDialogFloating.width = panel.offsetWidth
-  inlineDialogFloating.height = panel.offsetHeight
-  inlineDialogModification.selectOpen = ''
-  event.currentTarget.setPointerCapture?.(event.pointerId)
-  window.addEventListener('pointermove', moveInlineDialog)
-  window.addEventListener('pointerup', stopInlineDialogDrag)
-  window.addEventListener('pointercancel', stopInlineDialogDrag)
-  event.preventDefault()
-}
-
-function moveInlineDialog(event) {
-  if (!inlineDialogFloating.dragging || inlineDialogFloating.pointerId !== event.pointerId) return
-  inlineDialogFloating.left = Math.max(
-    INLINE_DIALOG_MARGIN,
-    Math.min(
-      window.innerWidth - inlineDialogFloating.width - INLINE_DIALOG_MARGIN,
-      event.clientX - inlineDialogFloating.grabX,
-    ),
-  )
-  inlineDialogFloating.top = Math.max(
-    INLINE_DIALOG_MARGIN,
-    Math.min(
-      window.innerHeight - inlineDialogFloating.height - INLINE_DIALOG_MARGIN,
-      event.clientY - inlineDialogFloating.grabY,
-    ),
-  )
-}
-
-function stopInlineDialogDrag(event) {
-  if (inlineDialogFloating.pointerId !== event.pointerId) return
-  inlineDialogFloating.dragging = false
-  inlineDialogFloating.pointerId = null
-  window.removeEventListener('pointermove', moveInlineDialog)
-  window.removeEventListener('pointerup', stopInlineDialogDrag)
-  window.removeEventListener('pointercancel', stopInlineDialogDrag)
-}
+let activeImageNodeCanvasId = ''
+let canvasNodeFocusRevision = 0
+let canvasNodeFocusSuspended = false
+const imageNodeErrors = reactive({})
+const imageNodeEditorHeights = reactive({})
 const chatUploading = ref(false)
 const uploadProgress = ref(null) // { fileName, loaded, total, percent } | null
 const canvasFileDragActive = ref(false)
@@ -1190,49 +1266,18 @@ function toggleVideoGenerateAudio() {
   syncSelectedVideoNodeGenerationSettings()
 }
 
-function toggleInlineDialogSelect(name) {
-  if (inlineDialogModification.submitting) return
-  inlineDialogModification.selectOpen = inlineDialogModification.selectOpen === name ? '' : name
-}
-
-function selectInlineDialogOption(name, value) {
-  if (name === 'model') {
-    const current = normalizeChatModelSelection(
-      inlineDialogModification.models,
-      inlineDialogModification.model || chatModel.value,
-    )
-    const next = current.includes(value)
-      ? current.length > 1
-        ? current.filter((model) => model !== value)
-        : current
-      : chatModelOptions.filter((model) => [...current, value].includes(model))
-    inlineDialogModification.models = next
-    inlineDialogModification.model = next[0]
-    return
-  }
-  inlineDialogModification[name] = value
-  inlineDialogModification.selectOpen = ''
-}
 
 function openInlineDialogMaterialPicker() {
   if (!userStore.requireLogin() || !inlineDialogModification.layerId) return
-  inlineDialogModification.selectOpen = ''
-  inlineDialogReferenceSourceOpen.value = false
   materialPickerMode.value = 'inline-dialog'
   myMaterialsOpen.value = true
   toolbarAddOpen.value = false
   historyPanelOpen.value = false
 }
 
-function toggleInlineDialogReferenceSource() {
-  if (inlineDialogUploading.value || inlineDialogModification.submitting) return
-  inlineDialogReferenceSourceOpen.value = !inlineDialogReferenceSourceOpen.value
-  inlineDialogModification.selectOpen = ''
-}
 
 function openInlineDialogLocalUpload() {
   if (!userStore.requireLogin() || !inlineDialogModification.layerId) return
-  inlineDialogReferenceSourceOpen.value = false
   openImageUpload('inline-dialog')
 }
 
@@ -1266,8 +1311,9 @@ async function addLocalImagesToInlineDialog(fileList) {
       inlineDialogModification.references.push(reference)
       try {
         const url = await uploadFile(file)
-        reference.url = url
-        reference.uploading = false
+        inlineDialogModification.references = inlineDialogModification.references.map(item =>
+          item.id === reference.id ? { ...item, url, uploading: false, localUrl: '' } : item,
+        )
         uploadedCount += 1
       } catch (error) {
         inlineDialogModification.references = inlineDialogModification.references.filter(
@@ -1302,120 +1348,128 @@ function openCameraAnglePanel(layer = selectedLayer.value) {
   cameraAnglePanelOpen.value = true
 }
 
-async function openLayerDialogModification(layer) {
-  if (!isRealImageLayer(layer) || !layer.url) {
-    showCopyPasteToast('只有有效图片可以进行对话修改')
+function isEditableImageNode(layer) {
+  return Boolean(layer && !layer.locked && !layer.generating &&
+    (isRealImageLayer(layer) || layer.type === 'image-placeholder'))
+}
+
+function isImageNodeEditorVisible(layer) {
+  return isEditableImageNode(layer) &&
+    selectedLayerId.value === layer.id && selectedLayerIds.value.length <= 1 &&
+    inlineDialogModification.layerId === layer.id
+}
+
+function imageNodeDefaults(layer) {
+  const replay = getLayerGenerationReplay(layer)
+  return {
+    model: chatModelOptions.includes(replay?.model) ? replay.model : chatModel.value,
+    ratio: chatRatioOptions.includes(replay?.ratio) ? replay.ratio : chatRatio.value,
+    resolution: chatResolutionOptions.includes(replay?.resolution) ? replay.resolution : chatResolution.value,
+    count: 1,
+  }
+}
+
+function applyImageNodeDraft(draft) {
+  inlineDialogModification.text = draft.prompt
+  inlineDialogModification.model = draft.config.model
+  inlineDialogModification.models = [...draft.config.models]
+  inlineDialogModification.ratio = draft.config.ratio
+  inlineDialogModification.resolution = draft.config.resolution
+  inlineDialogModification.generationCount = draft.config.count
+  inlineDialogModification.references = draft.references.map(reference => ({ ...reference }))
+  inlineDialogModification.referenceTexts = draft.referenceTexts.map(reference => ({ ...reference }))
+}
+
+function saveActiveImageNodeDraft() {
+  if (activeImageNodeCanvasId !== props.id) return
+  const layer = layers.value.find(item => item.id === inlineDialogModification.layerId)
+  if (!isEditableImageNode(layer)) return
+  const draft = imageNodeDraft.value
+  const size = emptyMediaNodeDimensions(layer, CANVAS_IMAGE_WIDTH)
+  if (
+    JSON.stringify(layer.imageNodeDraft) !== JSON.stringify(draft) ||
+    Object.entries(size).some(([key, value]) => layer[key] !== value)
+  ) {
+    updateLayer(layer.id, { imageNodeDraft: draft, ...size })
+  }
+}
+
+function activateImageNodeEditor(layer) {
+  if (inlineDialogModification.submitting || inlineDialogUploading.value) return
+  if (activeImageNodeCanvasId === props.id && inlineDialogModification.layerId === layer?.id) {
+    const source = inlineDialogModification.references.find(reference => reference.isSource && reference.layerId === layer?.id)
+    if (source && layer.url && source.url !== layer.url) source.url = layer.url
     return
   }
+  saveActiveImageNodeDraft()
+  activeImageNodeCanvasId = props.id
+  inlineDialogModification.layerId = isEditableImageNode(layer) ? layer.id : ''
+  if (!inlineDialogModification.layerId) return
+  const initial = layer.imageNodeDraft || {
+    prompt: '',
+    references: layer.url ? [{
+      id: `inline-source-${layer.id}`, url: layer.url, name: layer.name || '当前图片',
+      layerId: layer.id, isSource: true,
+    }] : [],
+  }
+  const references = initial.references?.map(reference =>
+    reference.isSource && reference.layerId === layer.id && layer.url
+      ? { ...reference, url: layer.url } : reference,
+  ) || []
+  applyImageNodeDraft(normalizeImageNodeDraft({ ...initial, references }, imageNodeDefaults(layer), chatModelOptions))
+}
 
+function updateImageNodeDraft(layer, draft) {
+  if (
+    !isImageNodeEditorVisible(layer) ||
+    inlineDialogModification.submitting ||
+    inlineDialogUploading.value
+  )
+    return
+  const normalized = normalizeImageNodeDraft(draft, imageNodeDefaults(layer), chatModelOptions)
+  const keptIds = new Set([...normalized.references, ...normalized.referenceTexts].map((reference) => reference.layerId))
+  const removedIds = new Set(
+    [...(layer.imageNodeDraft?.connectedLayerIds || []), ...(layer.imageNodeDraft?.connectedTextLayerIds || [])].filter((id) => !keptIds.has(id)),
+  )
+  if (removedIds.size) {
+    connections.value = connections.value.filter(
+      (edge) =>
+        !(
+          (edge.toLayerId === layer.id && removedIds.has(edge.fromLayerId)) ||
+          (edge.fromLayerId === layer.id &&
+            edge.fromPort === 'left' &&
+            removedIds.has(edge.toLayerId))
+        ),
+    )
+    persistConnections()
+  }
+  applyImageNodeDraft(normalized)
+  imageNodeErrors[layer.id] = ''
+  saveActiveImageNodeDraft()
+}
+
+async function openLayerDialogModification(layer) {
+  if (!isEditableImageNode(layer)) return
   selectedLayerId.value = layer.id
   selectedLayerIds.value = [layer.id]
   expandedLayerToolbarId.value = ''
-
-  if (inlineDialogModification.layerId === layer.id) {
-    if (inlineDialogUploading.value) {
-      showCopyPasteToast('参考图正在上传，请稍候')
-      return
-    }
-    inlineDialogModification.layerId = ''
-    inlineDialogModification.text = ''
-    inlineDialogModification.references = []
-    inlineDialogModification.models = []
-    inlineDialogModification.selectOpen = ''
-    return
-  }
-
-  const replay = getLayerGenerationReplay(layer)
-  inlineDialogModification.layerId = layer.id
-  inlineDialogModification.text = ''
-  inlineDialogModification.model = chatModelOptions.includes(replay?.model)
-    ? replay.model
-    : chatModel.value
-  inlineDialogModification.models = [inlineDialogModification.model]
-  inlineDialogModification.ratio = chatRatioOptions.includes(replay?.ratio)
-    ? replay.ratio
-    : chatRatio.value
-  inlineDialogModification.resolution = chatResolutionOptions.includes(replay?.resolution)
-    ? replay.resolution
-    : chatResolution.value
-  inlineDialogModification.generationCount = 1
-  inlineDialogModification.references = [
-    {
-      id: `inline-source-${layer.id}`,
-      url: layer.url,
-      name: layer.name || '当前图片',
-      layerId: layer.id,
-      isSource: true,
-    },
-  ]
-  inlineDialogModification.selectOpen = ''
-  inlineDialogReferenceSourceOpen.value = false
-  placeInlineDialogInViewport()
-
-  await nextTick()
-  const panel = [...document.querySelectorAll('[data-inline-dialog-layer-id]')].find(
-    (element) => element.dataset.inlineDialogLayerId === layer.id,
-  )
-  constrainInlineDialogToViewport(panel)
-  const input = panel?.querySelector('textarea')
-  input?.focus()
-}
-
-function closeInlineLayerDialogModification() {
-  if (inlineDialogModification.submitting || inlineDialogUploading.value) return
-  inlineDialogModification.layerId = ''
-  inlineDialogModification.text = ''
-  inlineDialogModification.references = []
-  inlineDialogModification.models = []
-  inlineDialogModification.selectOpen = ''
-  inlineDialogReferenceSourceOpen.value = false
+  activateImageNodeEditor(layer)
+  const editor = await getCanvasNodeEditor(layer.id, '.image-node-composer')
+  editor?.querySelector('textarea')?.focus({ preventScroll: true })
 }
 
 async function submitInlineLayerDialogModification(layer) {
-  const instruction = inlineDialogModification.text.trim()
-  if (!instruction || inlineDialogModification.submitting || inlineDialogUploading.value) return
-  if (!isRealImageLayer(layer) || !layer.url) {
-    showCopyPasteToast('当前图片已失效，请重新选择')
-    closeInlineLayerDialogModification()
-    return
-  }
-  if (!userStore.requireLogin()) return
-
+  if (!isImageNodeEditorVisible(layer) || inlineDialogModification.submitting || inlineDialogUploading.value) return
+  const draft = imageNodeDraft.value
+  if ((!draft.prompt.trim() && !draft.referenceTexts.length) || !draft.config.models.length || !userStore.requireLogin()) return
+  saveActiveImageNodeDraft()
   inlineDialogModification.submitting = true
+  imageNodeErrors[layer.id] = ''
   try {
-    const references = inlineDialogModification.references.filter((reference) => reference.url)
-    const referenceImageUrls = references.length
-      ? references.map((reference) => reference.url)
-      : [layer.url]
-    const submitted = await sendChat({
-      displayText: instruction,
-      selectedElements: [],
-      referenceImageUrls,
-      referenceLayerIds: references.map((reference) => reference.layerId).filter(Boolean),
-      messageReferenceImages: references.map((reference) => ({
-        url: reference.url,
-        layerId: reference.layerId || '',
-      })),
-      targetLayerId: layer.id,
-      generationCount: inlineDialogModification.generationCount,
-      taskConfig: {
-        model: inlineDialogModification.model || chatModel.value,
-        models: normalizeChatModelSelection(
-          inlineDialogModification.models,
-          inlineDialogModification.model || chatModel.value,
-        ),
-        ratio: inlineDialogModification.ratio || chatRatio.value,
-        resolution: inlineDialogModification.resolution || chatResolution.value,
-      },
-    })
-    if (!submitted?.placeholderIds?.length) return
-
-    inlineDialogModification.layerId = ''
-    inlineDialogModification.text = ''
-    inlineDialogModification.references = []
-    inlineDialogModification.models = []
-    inlineDialogModification.selectOpen = ''
-    showCopyPasteToast('修改任务已提交')
+    const submitted = await sendChat(imageNodeGenerationOptions(layer, draft))
+    if (submitted?.placeholderIds?.length) showCopyPasteToast('图片生成任务已提交')
+  } catch (error) {
+    imageNodeErrors[layer.id] = error.message || '提交失败，请稍后重试'
   } finally {
     inlineDialogModification.submitting = false
   }
@@ -1764,20 +1818,6 @@ const chatModelLabel = computed(() => formatSelectedModelLabel(chatModels.value)
 const chatModelTitle = computed(() =>
   normalizeChatModelSelection(chatModels.value).map(imageModelLabel).join('、'),
 )
-const inlineDialogModelLabel = computed(() =>
-  formatSelectedModelLabel(
-    inlineDialogModification.models.length
-      ? inlineDialogModification.models
-      : inlineDialogModification.model,
-  ),
-)
-const inlineDialogModelTitle = computed(() =>
-  normalizeChatModelSelection(
-    inlineDialogModification.models.length
-      ? inlineDialogModification.models
-      : inlineDialogModification.model,
-  ).map(imageModelLabel).join('、'),
-)
 const chatRatio = ref(initialChatConfig.ratio || '9:16')
 const chatResolution = ref(initialChatConfig.resolution || '2K')
 const videoModelOptions = reactive([])
@@ -1848,12 +1888,17 @@ const videoComposerReferenceMode = computed(() =>
     ? videoNodeDraftFor(selectedEditableVideoNode.value).config.referenceMode
     : videoReferenceModeForRequest(videoModel.value, videoReferenceMode.value),
 )
+const videoComposerReferenceVideoCount = computed(() =>
+  chatMode.value === 'video' && selectedEditableVideoNode.value
+    ? videoNodeDraftFor(selectedEditableVideoNode.value).referenceVideos.length : 0,
+)
 const videoRatioLockedToAdaptive = computed(() =>
   videoRatioForRequest(
     videoModel.value,
     videoComposerReferenceCount.value,
     '16:9',
     videoComposerReferenceMode.value,
+    videoComposerReferenceVideoCount.value,
   ) === 'adaptive',
 )
 const videoRatioMenuOptions = computed(() => {
@@ -1865,6 +1910,7 @@ const videoRatioLabel = computed(() => {
     videoComposerReferenceCount.value,
     videoRatio.value,
     videoComposerReferenceMode.value,
+    videoComposerReferenceVideoCount.value,
   )
   return ratio === 'adaptive' ? '自适应' : ratio
 })
@@ -2374,6 +2420,371 @@ const selectedLayerIndex = computed(() =>
 )
 const viewScale = computed(() => doc.value.payload.view.scale || 1)
 
+const groupedConnectionMedia = computed(() =>
+  selectedConnectionMedia(layers.value, selectedLayerIds.value, renderedLayerIds.value),
+)
+const groupedConnectionIsVideo = computed(() => groupedConnectionMedia.value.length > 0 && groupedConnectionMedia.value.every(layer => layer.type === 'video'))
+const groupedConnectionLabel = computed(() => {
+  const nodes = groupedConnectionMedia.value
+  const kind = groupedConnectionIsVideo.value ? '个视频' : nodes.every(layer => layer.type === 'text') ? '个文本' : nodes.every(layer => !['text', 'video'].includes(layer.type)) ? '张图片' : '个节点'
+  return `连接选中的 ${nodes.length} ${kind}`
+})
+const connectionNodeMenuHasVideos = computed(() =>
+  connectionNodeMenu.sourceLayerIds.some(id => layers.value.some(layer => layer.id === id && layer.type === 'video')),
+)
+const groupedConnectionSourceIds = computed(
+  () => new Set(groupedConnectionMedia.value.map((layer) => layer.id)),
+)
+const groupedConnectionBounds = computed(() => {
+  void connectionTick.value
+  const scale = viewScale.value
+  const viewport = document.querySelector('.canvas-viewport')?.getBoundingClientRect()
+  const rects = groupedConnectionMedia.value.map((layer) => {
+    const node = document.querySelector(`[data-layer-id="${CSS.escape(layer.id)}"]`)
+    if (node && viewport && !dragState.value) {
+      const rect = node.getBoundingClientRect()
+      return {
+        x: (rect.left - viewport.left) / scale,
+        y: (rect.top - viewport.top) / scale,
+        width: rect.width / scale,
+        height: rect.height / scale,
+      }
+    }
+    return { x: layer.x, y: layer.y, width: layer.width, height: layer.height }
+  })
+  return selectionBounds(rects, 10 / scale)
+})
+const groupedConnectionPortStyle = computed(() => {
+  const bounds = groupedConnectionBounds.value
+  if (!bounds) return {}
+  return {
+    left: `${bounds.right + 24 / viewScale.value}px`,
+    top: `${(bounds.top + bounds.bottom) / 2}px`,
+    '--canvas-inverse-scale': 1 / viewScale.value,
+  }
+})
+const groupedConnectionTargets = computed(() => {
+  const sources = groupedConnectionSourceIds.value
+  if (!sources.size) return new Set()
+  const targets = new Map()
+  for (const edge of connections.value) {
+    if (!sources.has(edge.fromLayerId) || sources.has(edge.toLayerId)) continue
+    if (!targets.has(edge.toLayerId)) targets.set(edge.toLayerId, new Set())
+    targets.get(edge.toLayerId).add(edge.fromLayerId)
+  }
+  return new Set(
+    [...targets].filter(([, ids]) => [...sources].every((id) => ids.has(id))).map(([id]) => id),
+  )
+})
+
+const selectionToolbarLayers = computed(() =>
+  selectedCanvasLayers(layers.value, selectedLayerIds.value, renderedLayerIds.value),
+)
+const selectionToolbarGroup = computed(() =>
+  selectedCanvasGroup(layers.value, selectedLayerIds.value, renderedLayerIds.value),
+)
+const selectionToolbarMutable = computed(
+  () =>
+    selectionToolbarLayers.value.length > 1 &&
+    selectionToolbarLayers.value.every((layer) => !layer.locked && !layer.generating),
+)
+const selectionToolbarContent = computed(() => canvasSelectionContent(selectionToolbarLayers.value))
+const selectionToolbarContentCount = computed(() =>
+  Object.values(selectionToolbarContent.value).reduce((sum, items) => sum + items.length, 0),
+)
+const selectionDownloading = ref(false)
+
+function canvasSelectionRects(items) {
+  const viewport = document.querySelector('.canvas-viewport')?.getBoundingClientRect()
+  return items.map((layer) => {
+    const node = document.querySelector(`.canvas-layer[data-layer-id="${CSS.escape(layer.id)}"]`)
+    if (node && viewport && !dragState.value && !resizeState.value && !panState.value) {
+      const rect = node.getBoundingClientRect()
+      const content =
+        layer.type === 'text'
+          ? node.querySelector('.uc-text-node-area')?.getBoundingClientRect()
+          : null
+      return {
+        x: (rect.left - viewport.left) / viewScale.value,
+        y: (rect.top - viewport.top) / viewScale.value,
+        width: (Math.max(rect.right, content?.right || rect.right) - rect.left) / viewScale.value,
+        height:
+          (Math.max(rect.bottom, content?.bottom || rect.bottom) - rect.top) / viewScale.value,
+      }
+    }
+    return { x: layer.x, y: layer.y, width: layer.width, height: layer.height }
+  })
+}
+
+const selectionToolbarBounds = computed(() => {
+  void connectionTick.value
+  if (selectionToolbarLayers.value.length < 2) return null
+  return selectionBounds(
+    canvasSelectionRects(selectionToolbarLayers.value),
+    (selectionToolbarGroup.value ? 16 : 10) / viewScale.value,
+  )
+})
+const selectionToolbarVisible = computed(() =>
+  Boolean(
+    selectionToolbarBounds.value &&
+    !resizeState.value &&
+    !marquee.active &&
+    !connecting.active &&
+    !selectionToolbarPlacement.value.obscured,
+  ),
+)
+const selectionToolbarPlacement = computed(() => {
+  void connectionTick.value
+  void viewportSize.width
+  void viewportSize.height
+  const bounds = selectionToolbarBounds.value
+  const stage = document.querySelector('.stage')?.getBoundingClientRect()
+  void rightPanelVisible.value
+  void panel.x
+  void panel.width
+  let left = 12,
+    right = viewportSize.width - 12
+  const sidebar = rightPanelVisible.value
+    ? document.querySelector('.right-panel')?.getBoundingClientRect()
+    : null
+  if (sidebar) {
+    if (sidebar.left - left > right - sidebar.right) right = Math.max(left, sidebar.left - 12)
+    else left = Math.min(right, sidebar.right + 12)
+  }
+  return {
+    obscured: Boolean(sidebar && right - left < 200),
+    obstacles: [...document.querySelectorAll('.top-tools, .uc-canvas-media-deck')].map((node) =>
+      node.getBoundingClientRect().toJSON(),
+    ),
+    anchor: {
+      x: (bounds?.left || 0) + (bounds?.width || 0) / 2,
+      y: bounds?.top || 0,
+      bottom: bounds?.bottom || 0,
+    },
+    viewport: {
+      left: (stage?.left || 0) + viewOffset.value.x,
+      top: (stage?.top || 0) + viewOffset.value.y,
+      scale: viewScale.value,
+    },
+    available: {
+      left: Math.max(12, left),
+      right: Math.max(left + 48, right),
+      top: (stage?.top || 60) + 12,
+      bottom: (stage?.bottom || window.innerHeight) - 84,
+    },
+  }
+})
+const selectionToolbarFrameStyle = computed(() => {
+  const bounds = selectionToolbarBounds.value
+  return bounds
+    ? {
+        left: `${bounds.left}px`,
+        top: `${bounds.top}px`,
+        width: `${bounds.width}px`,
+        height: `${bounds.height}px`,
+        '--canvas-inverse-scale': 1 / viewScale.value,
+      }
+    : {}
+})
+const canvasGroupFrames = computed(() => {
+  void connectionTick.value
+  const groups = new Map()
+  for (const layer of layers.value) {
+    if (!layer.groupId || !renderedLayerIds.value.has(layer.id)) continue
+    if (!groups.has(layer.groupId)) groups.set(layer.groupId, [])
+    groups.get(layer.groupId).push(layer)
+  }
+  return [...groups]
+    .filter(([, members]) => members.length > 1)
+    .map(([id, members]) => {
+      const bounds = selectionBounds(canvasSelectionRects(members), 16 / viewScale.value)
+      return {
+        id,
+        name: members[0].groupName || '分组',
+        selected: id === selectionToolbarGroup.value?.id,
+        style: {
+          left: `${bounds.left}px`,
+          top: `${bounds.top}px`,
+          width: `${bounds.width}px`,
+          height: `${bounds.height}px`,
+          '--canvas-inverse-scale': 1 / viewScale.value,
+        },
+      }
+    })
+})
+
+function selectCanvasGroup(groupId) {
+  const members = layers.value.filter(
+    (layer) => layer.groupId === groupId && renderedLayerIds.value.has(layer.id),
+  )
+  if (!members.length) return
+  activateLayerKeyboardSelection()
+  marqueeSelectionIds.value = []
+  selectedLayerIds.value = members.map((layer) => layer.id)
+  selectedLayerId.value = members.at(-1).id
+}
+
+function startCanvasGroupDrag(event, groupId = '') {
+  if (dragState.value || event.button !== 0 || spacePanHeld.value || activeTool.value === 'annotate') return
+  const members = groupId
+    ? layers.value.filter(
+        (layer) => layer.groupId === groupId && renderedLayerIds.value.has(layer.id),
+      )
+    : selectionToolbarLayers.value
+  if (members.length < 2) return
+  const ids = members.map((layer) => layer.id)
+  const primary = members.find((layer) => layer.id === selectedLayerId.value) || members[0]
+  if (activeTool.value === 'hand' && !selectedLayerIds.value.includes(primary.id)) return
+  if (!event.shiftKey && !event.ctrlKey && !event.metaKey) {
+    activateLayerKeyboardSelection()
+    marqueeSelectionIds.value = []
+    selectedLayerIds.value = ids
+    selectedLayerId.value = primary.id
+  }
+  startLayerDrag(event, primary, { groupSourceIds: ids, fromGroupFrame: true })
+}
+
+async function arrangeCanvasSelection(mode) {
+  if (!selectionToolbarMutable.value || !userStore.requireLogin()) return
+  const rects = canvasSelectionRects(selectionToolbarLayers.value)
+  const positions = canvasSelectionLayout(
+    selectionToolbarLayers.value.map((layer, index) => ({
+      ...layer,
+      width: Math.ceil(rects[index].width),
+      height: Math.ceil(rects[index].height),
+    })),
+    mode,
+  )
+  if (!positions.size) return
+  pushUndo({ restoreSelection: true })
+  canvas.updateDocument(props.id, (draft) => {
+    for (const layer of draft.payload.layers) {
+      const position = positions.get(layer.id)
+      if (position) Object.assign(layer, position)
+    }
+    return draft
+  })
+  await nextTick()
+  refreshConnections()
+  await canvas.flushNow(props.id)
+}
+
+async function toggleCanvasSelectionGroup() {
+  if (!selectionToolbarMutable.value || !userStore.requireLogin()) return
+  const group = selectionToolbarGroup.value
+  const ids = group
+    ? layers.value.filter((layer) => layer.groupId === group.id).map((layer) => layer.id)
+    : selectionToolbarLayers.value.map((layer) => layer.id)
+  const groupId = group ? '' : `group-${crypto.randomUUID()}`
+  const usedNames = new Set(layers.value.map((layer) => layer.groupName).filter(Boolean))
+  let index = 1
+  while (usedNames.has(`分组 ${index}`)) index += 1
+  pushUndo({ restoreSelection: true })
+  canvas.updateDocument(props.id, (draft) => {
+    setCanvasSelectionGroup(draft.payload.layers, ids, groupId, group ? '' : `分组 ${index}`)
+    return draft
+  })
+  await canvas.flushNow(props.id)
+  showCopyPasteToast(group ? '已取消分组' : '已创建分组')
+}
+
+async function addCanvasSelectionToChat() {
+  if (!userStore.requireLogin()) return
+  const { images, videos, texts } = selectionToolbarContent.value
+  if (!images.length && !videos.length && !texts.length) return
+  if (
+    videos.length > 1 ||
+    (videos.length && chatReferenceVideos.value.some((video) => video.url !== videos[0].url))
+  ) {
+    showCopyPasteToast('对话一次只能添加一个视频，请单独选择或移除已有视频')
+    return
+  }
+  rightPanelVisible.value = true
+  rightTab.value = 'chat'
+  if (videos.length) addVideoToAgent(videos[0])
+  const existingUrls = new Set(chatReferenceImages.value.map((image) => image.url))
+  for (const layer of images) {
+    if (existingUrls.has(layer.url)) continue
+    existingUrls.add(layer.url)
+    const reference = {
+      id: `ref-selection-${crypto.randomUUID()}`,
+      name: layer.name || '参考图片',
+      url: layer.url,
+      layerId: layer.id,
+      uploading: false,
+    }
+    chatReferenceImages.value.push(reference)
+    activeChatReferenceId.value = reference.id
+  }
+  await nextTick()
+  refreshConnections()
+  const currentText = getEditorPrompt()
+  const additions = texts
+    .map((layer) => String(layer.text).trim())
+    .filter((text) => !currentText.includes(text))
+  if (additions.length)
+    replaceChatEditorText([currentText, ...new Set(additions)].filter(Boolean).join('\n\n'))
+  document.querySelector('.chat-editor')?.focus({ preventScroll: true })
+  showCopyPasteToast('已添加到对话')
+}
+
+async function downloadCanvasSelection() {
+  if (
+    selectionDownloading.value ||
+    !selectionToolbarContentCount.value ||
+    !userStore.requireLogin()
+  )
+    return
+  const { images, videos, texts } = selectionToolbarContent.value
+  const ids = new Set([...images, ...videos, ...texts].map((layer) => layer.id))
+  const selected = selectionToolbarLayers.value
+    .filter((layer) => ids.has(layer.id))
+    .map((layer) => ({ ...layer }))
+  const toastId = ++downloadToastId
+  selectionDownloading.value = true
+  try {
+    const files = []
+    const usedNames = new Set()
+    for (let index = 0; index < selected.length; index += 1) {
+      const layer = selected[index]
+      showDownloadToast(`正在准备 ${index + 1}/${selected.length} 项素材…`, toastId, true)
+      let data,
+        contentType = ''
+      if (layer.type !== 'text') {
+        const crossOrigin = layer.url.startsWith('http') && !layer.url.startsWith(location.origin)
+        const response = await fetch(
+          crossOrigin
+            ? apiPath('/api/image-tasks/proxy-download?url=' + encodeURIComponent(layer.url))
+            : layer.url,
+          { headers: crossOrigin ? { ...userStore.authHeaders() } : undefined },
+        )
+        if (!response.ok) throw new Error(`${layer.name || '素材'}下载失败`)
+        const blob = await response.blob()
+        contentType = blob.type
+        data = new Uint8Array(await blob.arrayBuffer())
+      }
+      const entry = canvasSelectionExportEntry(layer, index, data, contentType)
+      files.push({
+        name: uniqueZipFileName(entry.baseName, entry.extension, usedNames),
+        data: entry.data,
+      })
+    }
+    const blobUrl = URL.createObjectURL(createStoredZip(files))
+    const link = document.createElement('a')
+    link.href = blobUrl
+    link.download = `画布素材-${selected.length}项-${Date.now()}.zip`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    window.setTimeout(() => URL.revokeObjectURL(blobUrl), 5000)
+    showDownloadToast(`已打包下载 ${selected.length} 项素材`, toastId)
+  } catch (error) {
+    showDownloadToast(error.message || '素材打包失败，请重试', toastId)
+  } finally {
+    selectionDownloading.value = false
+  }
+}
+
 async function loadCanvasReversePromptCategories() {
   try {
     const data = await readApiResponse(await fetch(apiPath('/api/prompt/categories')))
@@ -2645,18 +3056,6 @@ const toolbarStyle = computed(() => {
 const videoNodeEditorWidth = computed(() =>
   Math.max(240, Math.min(560, Number.parseFloat(toolbarStyle.value.maxWidth) - 78)),
 )
-
-function videoNodeEditorOffsetX(layer) {
-  const viewportCenter = Number.parseFloat(toolbarStyle.value.left)
-  const viewportWidth = Number.parseFloat(toolbarStyle.value.maxWidth)
-  const minCenter = viewportCenter - viewportWidth / 2 + 78 + videoNodeEditorWidth.value / 2
-  const maxCenter = Math.max(
-    minCenter,
-    viewportCenter + viewportWidth / 2 - videoNodeEditorWidth.value / 2,
-  )
-  const center = viewOffset.value.x + (layer.x + layer.width / 2) * viewScale.value
-  return (Math.max(minCenter, Math.min(maxCenter, center)) - center) / viewScale.value
-}
 
 // 缩放滑块
 const ZOOM_MIN = 0.1,
@@ -3039,14 +3438,34 @@ function imageSize(src) {
 function videoSize(src) {
   return new Promise((resolve, reject) => {
     const video = document.createElement('video')
+    const cleanup = () => {
+      clearTimeout(timer)
+      video.onloadedmetadata = null
+      video.onerror = null
+      video.removeAttribute('src')
+      video.load()
+    }
+    const timer = setTimeout(() => {
+      cleanup()
+      reject(new Error('读取视频超时，请检查连接'))
+    }, 30000)
     video.preload = 'metadata'
     video.onloadedmetadata = () => {
-      const w = video.videoWidth || 1920
-      const h = video.videoHeight || 1080
-      URL.revokeObjectURL(video.src)
-      resolve({ width: w, height: h, duration: Number(video.duration) || 0 })
+      if (!hasDecodedVideoFrame(video)) {
+        cleanup()
+        reject(new Error('浏览器无法读取视频画面，需要转换播放格式'))
+        return
+      }
+      const w = video.videoWidth
+      const h = video.videoHeight
+      const duration = Number(video.duration) || 0
+      cleanup()
+      resolve({ width: w, height: h, duration })
     }
-    video.onerror = () => reject(new Error('无法获取视频尺寸'))
+    video.onerror = () => {
+      cleanup()
+      reject(new Error('无法获取视频尺寸'))
+    }
     video.src = src
   })
 }
@@ -4804,16 +5223,18 @@ function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '',
         : base
           ? { w: base.naturalWidth || base.width || 3, h: base.naturalHeight || base.height || 4 }
           : { w: 3, h: 4 }
-  const aspectRatio = aspectSrc.w / aspectSrc.h
   const placementViewport = visibleCanvasWorldRect()
-  const naturalPlaceholderHeight = Math.round(PLACEHOLDER_WIDTH / aspectRatio)
-  const viewportFitScale = Math.min(
+  const nodeGeneration = Boolean(placement.nodeGeneration || placement.reuseLayerId)
+  const size = canvasGenerationDimensions(genMeta.ratio, nodeGeneration ? CANVAS_IMAGE_WIDTH : PLACEHOLDER_WIDTH, {
+    width: aspectSrc.w, height: aspectSrc.h,
+  })
+  const viewportFitScale = nodeGeneration ? 1 : Math.min(
     1,
-    Math.max(0.25, (placementViewport.width - 36) / PLACEHOLDER_WIDTH),
-    Math.max(0.25, (placementViewport.height - 36) / naturalPlaceholderHeight),
+    Math.max(0.25, (placementViewport.width - 36) / size.width),
+    Math.max(0.25, (placementViewport.height - 36) / size.height),
   )
-  const placeholderWidth = Math.round(PLACEHOLDER_WIDTH * viewportFitScale)
-  const placeholderHeight = Math.round(naturalPlaceholderHeight * viewportFitScale)
+  const placeholderWidth = Math.round(size.width * viewportFitScale)
+  const placeholderHeight = Math.round(size.height * viewportFitScale)
   const occupied = layers.value
     .filter((layer) => layer?.visible !== false)
     .map((layer) => ({
@@ -4891,8 +5312,18 @@ function addGeneratingPlaceholderLayer(prompt, genMeta = {}, chatMessageId = '',
       visible: true,
       locked: false,
     }
-    layerId = layer.id
-    draft.payload.layers.push(layer)
+    const reusable = placement.reuseLayerId && draft.payload.layers.find(item =>
+      item.id === placement.reuseLayerId && item.type === 'image-placeholder' &&
+      !item.url && !item.locked && !item.generating,
+    )
+    if (reusable) {
+      const { id, name, x, y, zIndex } = reusable
+      Object.assign(reusable, layer, { id, name, x, y, zIndex })
+      layerId = id
+    } else {
+      layerId = layer.id
+      draft.payload.layers.push(layer)
+    }
     return draft
   })
 
@@ -4933,6 +5364,7 @@ function resolveGenerationSourceLayerIds({
   referenceImages = [],
   referenceImageUrls = [],
   referenceLayerIds = [],
+  referenceTextLayerIds = [],
   selectedElements = [],
   targetLayerId = '',
 } = {}) {
@@ -4944,6 +5376,10 @@ function resolveGenerationSourceLayerIds({
   }
 
   referenceLayerIds.forEach(addLayer)
+  referenceTextLayerIds.forEach(id => {
+    const layer = layers.value.find(item => item.id === id)
+    if (layer?.type === 'text' && String(layer.text || '').trim()) sourceIds.add(id)
+  })
   referenceImages.forEach((reference) => {
     if (reference?.layerId) {
       addLayer(reference.layerId)
@@ -5196,8 +5632,6 @@ function openImageUpload(mode = 'canvas') {
   fileInput.value?.click()
 }
 
-// 添加文字节点（直接在画布上创建可编辑文字图层）
-// 添加文字节点（v4 风格：440×320，透明背景，#f5f5f5 文本区 + 提示词标签）
 function nodeCreationPosition(options, width, height, fallback) {
   const drop = options.connectionDrop
   if (!drop) return fallback
@@ -5224,12 +5658,10 @@ function addTextNode(options = {}) {
       type: 'text',
       text: '',
       color: '#999999',
-      fontSize: 14,
+      ...CANVAS_TEXT_NODE_LAYOUT,
       fontWeight: 400,
       align: 'left',
-      width: 440,
-      height: 320,
-      ...nodeCreationPosition(options, 440, 320, {
+      ...nodeCreationPosition(options, CANVAS_TEXT_NODE_LAYOUT.width, CANVAS_TEXT_NODE_LAYOUT.height, {
         x: base ? base.x + 30 : fallbackX,
         y: base ? base.y + 30 : fallbackY,
       }),
@@ -5250,7 +5682,7 @@ function addTextNode(options = {}) {
 // 添加视频节点（v4 风格：占位态，双击上传视频）
 function addVideoNode(options = {}) {
   if (!userStore.requireLogin()) return
-  pushUndo()
+  pushUndo({ restoreSelection: Boolean(options.connectionDrop?.grouped) })
   let layerId = ''
   canvas.updateDocument(props.id, (draft) => {
     const index = draft.payload.layers.length
@@ -5265,11 +5697,11 @@ function addVideoNode(options = {}) {
       url: '',
       thumbnailUrl: '',
       width: CANVAS_IMAGE_WIDTH,
-      height: Math.round((CANVAS_IMAGE_WIDTH * 9) / 16),
+      height: Math.round((CANVAS_IMAGE_WIDTH * 4) / 3),
       ...nodeCreationPosition(
         options,
         CANVAS_IMAGE_WIDTH,
-        Math.round((CANVAS_IMAGE_WIDTH * 9) / 16),
+        Math.round((CANVAS_IMAGE_WIDTH * 4) / 3),
         {
           x: base ? base.x + 30 : fallbackX,
           y: base ? base.y + 30 : fallbackY,
@@ -5292,7 +5724,11 @@ function addVideoNode(options = {}) {
 // 添加图片节点（v4 风格：占位态，双击上传图片）
 function addImageNode(options = {}) {
   if (!userStore.requireLogin()) return
-  pushUndo()
+  pushUndo({ restoreSelection: Boolean(options.connectionDrop?.grouped) })
+  const nodeDraft = normalizeImageNodeDraft({}, {
+    model: chatModel.value, ratio: chatRatio.value, resolution: chatResolution.value, count: 1,
+  }, chatModelOptions)
+  const size = emptyMediaNodeDimensions({ type: 'image-placeholder' }, CANVAS_IMAGE_WIDTH)
   let layerId = ''
   canvas.updateDocument(props.id, (draft) => {
     const index = draft.payload.layers.length
@@ -5305,9 +5741,9 @@ function addImageNode(options = {}) {
       name: layerName(index),
       type: 'image-placeholder',
       url: '',
-      width: 200,
-      height: 200,
-      ...nodeCreationPosition(options, 200, 200, {
+      ...size,
+      imageNodeDraft: nodeDraft,
+      ...nodeCreationPosition(options, size.width, size.height, {
         x: base ? base.x + 30 : fallbackX,
         y: base ? base.y + 30 : fallbackY,
       }),
@@ -6120,13 +6556,13 @@ function startEditText(layer) {
   editingTextValue.value = layer.text || ''
   nextTick(() => {
     const input = document.querySelector('.uc-text-edit-input')
-    if (input) input.focus()
+    if (input) input.focus({ preventScroll: true })
   })
 }
 
 function finishEditText() {
   if (!editingTextLayerId.value) return
-  updateLayer(editingTextLayerId.value, { text: editingTextValue.value || '双击编辑文字' })
+  updateLayer(editingTextLayerId.value, { text: editingTextValue.value || '' })
   editingTextLayerId.value = null
   editingTextValue.value = ''
 }
@@ -6358,7 +6794,7 @@ async function addFiles(fileList, options = {}) {
     for (const file of files) {
       const localUrl = URL.createObjectURL(file)
       try {
-        const fallback = isVideoFile(file) ? { width: 16, height: 9 } : { width: 1, height: 1 }
+        const fallback = isVideoFile(file) ? { width: 16, height: 9, unverified: true } : { width: 1, height: 1 }
         const size = isVideoFile(file)
           ? await videoSize(localUrl).catch(() => fallback)
           : await imageSize(localUrl)
@@ -6430,7 +6866,7 @@ async function addFiles(fileList, options = {}) {
         // 视频文件：创建视频图层，按真实比例适配
         const size =
           gridNaturalSizes[fileIndex] ||
-          (await videoSize(url).catch(() => ({ width: 16, height: 9 })))
+          (await videoSize(url).catch(() => ({ width: 16, height: 9, unverified: true })))
         const displaySize = gridDisplaySizes[fileIndex] || fitImportedImage(size)
         const layerW = displaySize.width
         const layerH = displaySize.height
@@ -6452,8 +6888,8 @@ async function addFiles(fileList, options = {}) {
             name: layerName(index),
             url,
             thumbnailUrl: '',
-            naturalWidth: size.width,
-            naturalHeight: size.height,
+            naturalWidth: size.unverified ? 0 : size.width,
+            naturalHeight: size.unverified ? 0 : size.height,
             duration: Number(size.duration) || 0,
             width: layerW,
             height: layerH,
@@ -6828,6 +7264,10 @@ function removeLayers(ids) {
   const deleteSet = new Set(ids.filter((id) => existingLayerIds.has(id)))
   if (!deleteSet.size) return
 
+  // Deletion must also cancel explicit focus queued before this mutation.
+  const focusRevision = ++canvasNodeFocusRevision
+  canvasNodeFocusSuspended = true
+
   if (playingVideoLayerId.value && deleteSet.has(playingVideoLayerId.value)) {
     playingVideoLayerId.value = null
   }
@@ -6857,14 +7297,27 @@ function removeLayers(ids) {
     ),
   )
 
-  const nextSelectedLayerId = layers.value.find((layer) => !deleteSet.has(layer.id))?.id || ''
+  const currentSelectedIds = selectedLayerIds.value.length
+    ? selectedLayerIds.value
+    : selectedLayerId.value
+      ? [selectedLayerId.value]
+      : []
+  const nextSelectedIds = currentSelectedIds.filter(
+    (id) => existingLayerIds.has(id) && !deleteSet.has(id),
+  )
+  const nextSelectedLayerId = nextSelectedIds.includes(selectedLayerId.value)
+    ? selectedLayerId.value
+    : nextSelectedIds.at(-1) || ''
   canvas.updateDocument(props.id, (draft) => {
     archiveCanvasAssetDeletion(draft.payload, [...deleteSet])
     return draft
   })
   selectedLayerId.value = nextSelectedLayerId
-  selectedLayerIds.value = nextSelectedLayerId ? [nextSelectedLayerId] : []
+  selectedLayerIds.value = nextSelectedIds
   keyboardSelectionTarget.value = 'layer'
+  void nextTick(() => {
+    if (canvasNodeFocusRevision === focusRevision) canvasNodeFocusSuspended = false
+  })
   void canvas.flushNow?.(props.id)
 }
 
@@ -7034,7 +7487,7 @@ function restoreDraggingLayerForeground(state) {
   }
 }
 
-function startLayerDrag(event, layer) {
+function startLayerDrag(event, layer, { groupSourceIds = null, fromGroupFrame = false } = {}) {
   if (dragState.value) return
   // 按住空格时，图层不响应自身拖拽，让事件冒泡给 stage 临时平移画布。
   if (spacePanHeld.value) return
@@ -7048,7 +7501,7 @@ function startLayerDrag(event, layer) {
 
   // 【Bug修复】占位图优先选中：当点击的图层不是占位图时，检查该位置是否有占位图重叠，
   // 如果有，将选中目标切换为占位图（确保占位图在重叠时始终被优先选中）。
-  if (layer.type !== 'placeholder') {
+  if (!fromGroupFrame && layer.type !== 'placeholder') {
     const overlappingPlaceholder = findOverlappingPlaceholder(event, layer)
     if (overlappingPlaceholder) {
       // 用占位图替换当前 layer 进行后续选中+拖拽逻辑
@@ -7058,11 +7511,12 @@ function startLayerDrag(event, layer) {
 
   // Pointer capture can prevent Chromium from synthesizing a native dblclick.
   // Recognize the second stationary pointer press ourselves as a reliable fallback.
-  if (openLayerFromSecondPointerDown(event, layer)) return
+  if (!fromGroupFrame && openLayerFromSecondPointerDown(event, layer)) return
 
   if (activeTool.value === 'hand' && !selectedLayerIds.value.includes(layer.id)) return
   if (activeTool.value === 'annotate') return
   if (
+    !fromGroupFrame &&
     event.target instanceof Element &&
     event.target.closest(
       '.layer-toolbar, .resize-dot, .uc-connection-port, .uc-node-close, .uc-inline-prompt-result, .right-panel, .top-tools, .bottom-tools, input, textarea, select, [contenteditable="true"], button, a',
@@ -7073,8 +7527,8 @@ function startLayerDrag(event, layer) {
   if (event.shiftKey) {
     if (
       event.button !== 0 ||
-      event.target.closest('.layer-toolbar') ||
-      event.target.closest('.resize-dot')
+      (!fromGroupFrame &&
+        (event.target.closest('.layer-toolbar') || event.target.closest('.resize-dot')))
     )
       return
     activateLayerKeyboardSelection()
@@ -7082,8 +7536,16 @@ function startLayerDrag(event, layer) {
     event.stopPropagation()
     marqueeSelectionIds.value = []
     const nextIds = new Set(selectedLayerIds.value)
-    if (nextIds.has(layer.id)) nextIds.delete(layer.id)
-    else nextIds.add(layer.id)
+    const memberIds =
+      groupSourceIds ||
+      (event.altKey
+        ? [layer.id]
+        : expandCanvasGroupSelection(layers.value, [layer.id], renderedLayerIds.value))
+    const removing = memberIds.every((id) => nextIds.has(id))
+    for (const id of memberIds) {
+      if (removing) nextIds.delete(id)
+      else nextIds.add(id)
+    }
     selectedLayerIds.value = [...nextIds]
     selectedLayerId.value = nextIds.has(layer.id) ? layer.id : selectedLayerIds.value.at(-1) || ''
     return
@@ -7091,30 +7553,50 @@ function startLayerDrag(event, layer) {
   if (event.ctrlKey || event.metaKey) return // Ctrl+拖拽由 stage 的 startMarquee 处理
   if (
     event.button !== 0 ||
-    event.target.closest('.layer-toolbar') ||
-    event.target.closest('.resize-dot')
+    (!fromGroupFrame &&
+      (event.target.closest('.layer-toolbar') || event.target.closest('.resize-dot')))
   )
     return
   activateLayerKeyboardSelection()
-  pushUndo()
+  const groupedIds = event.altKey
+    ? [layer.id]
+    : expandCanvasGroupSelection(layers.value, [layer.id], renderedLayerIds.value)
+  const selectionIds =
+    groupSourceIds ||
+    (!event.altKey && selectedLayerIds.value.includes(layer.id) && selectedLayerIds.value.length > 1
+      ? expandCanvasGroupSelection(layers.value, selectedLayerIds.value, renderedLayerIds.value)
+      : groupedIds)
+  if (layers.value.some((item) => selectionIds.includes(item.id) && item.locked)) {
+    if (fromGroupFrame) {
+      selectedLayerId.value = layer.id
+      selectedLayerIds.value = selectionIds
+    } else {
+      selectSingleLayer(layer, { individual: true })
+    }
+    return
+  }
+  pushUndo({ restoreSelection: selectionIds.length > 1 })
   event.preventDefault()
   event.stopPropagation()
-  if (event.pointerId != null && event.currentTarget.setPointerCapture) {
+  const captureEl = fromGroupFrame
+    ? event.currentTarget.closest('.uc-canvas-group-frame, .uc-selected-image-group')
+    : event.currentTarget
+  if (event.pointerId != null && captureEl?.setPointerCapture) {
     try {
-      event.currentTarget.setPointerCapture(event.pointerId)
+      captureEl.setPointerCapture(event.pointerId)
     } catch {
       // Pointer capture is best-effort; window listeners keep dragging alive.
     }
   }
 
-  const draggingGroup =
-    selectedLayerIds.value.length > 1 && selectedLayerIds.value.includes(layer.id)
+  const draggingGroup = selectionIds.length > 1
   if (!draggingGroup) {
     marqueeSelectionIds.value = []
     selectedLayerId.value = layer.id
     selectedLayerIds.value = [layer.id]
   } else {
     selectedLayerId.value = layer.id
+    selectedLayerIds.value = selectionIds
   }
   const ids = draggingGroup ? [...selectedLayerIds.value] : [layer.id]
 
@@ -7158,8 +7640,11 @@ function startLayerDrag(event, layer) {
 
   dragState.value = {
     pointerId: event.pointerId ?? null,
-    captureEl: event.currentTarget,
+    captureEl,
     primaryLayerId: layer.id,
+    fromGroupFrame,
+    clickSelectLayerId: !fromGroupFrame && draggingGroup ? layer.id : '',
+    moved: false,
     dragZById,
     ids,
     startX: event.clientX,
@@ -7209,6 +7694,8 @@ function moveLayer(event) {
   const dy = (event.clientY - dragState.value.startY) / scale
 
   const ds = dragState.value
+  if (!ds.moved && Math.hypot(event.clientX - ds.startX, event.clientY - ds.startY) <= 6) return
+  ds.moved = true
   enforceDraggingLayerForeground(ds)
   ds._rawDx = dx
   ds._rawDy = dy
@@ -7275,7 +7762,9 @@ function stopLayerDrag(event) {
   canvas.updateDocument(props.id, (draft) => draft)
   const ds = dragState.value
   const pointerTravel = Math.hypot(event.clientX - ds.startX, event.clientY - ds.startY)
-  if ((event.type === 'pointerup' || event.type === 'mouseup') && pointerTravel <= 6) {
+  const clicked =
+    (event.type === 'pointerup' || event.type === 'mouseup') && !ds.moved && pointerTravel <= 6
+  if (clicked && !ds.fromGroupFrame) {
     layerClickMemory.layerId = ds.primaryLayerId || ds.ids[0] || ''
     layerClickMemory.at = Date.now()
     layerClickMemory.x = event.clientX
@@ -7299,6 +7788,10 @@ function stopLayerDrag(event) {
   restoreDraggingLayerForeground(ds)
   dragState.value = null
   snapGuides.value = []
+  if (clicked && ds.clickSelectLayerId) {
+    const clickedLayer = layers.value.find((layer) => layer.id === ds.clickSelectLayerId)
+    if (clickedLayer) selectSingleLayer(clickedLayer, { individual: true })
+  }
   nextTick(() => refreshConnections())
 }
 
@@ -10451,15 +10944,13 @@ const VIDEO_TASK_MAX_POLLS = 900
 const pollingVideoTaskIds = new Set()
 
 function canvasVideoSize(ratio = DEFAULT_VIDEO_RATIO) {
-  const [rawWidth, rawHeight] = String(ratio).split(':').map(Number)
-  const aspect = rawWidth > 0 && rawHeight > 0 ? rawWidth / rawHeight : 3 / 4
-  const width = CANVAS_IMAGE_WIDTH
-  return { width, height: Math.max(180, Math.round(width / aspect)) }
+  return canvasGenerationDimensions(ratio, CANVAS_IMAGE_WIDTH)
 }
 
 async function submitVideoTask({
   prompt,
   imageUrls,
+  referenceVideos = [],
   model,
   ratio,
   resolution,
@@ -10482,7 +10973,7 @@ async function submitVideoTask({
         resolution,
         durationSeconds: duration,
         ...videoAudioPayload(model, generateAudio),
-        ...videoReferencePayload(model, referenceMode, imageUrls),
+        ...videoReferencePayload(model, referenceMode, imageUrls, referenceVideos),
         client_task_id: clientTaskId,
       }),
     }),
@@ -10554,9 +11045,117 @@ function addGeneratingVideoLayer(prompt, config, assistantId, sourceLayerIds, op
   selectedLayerId.value = layerId
   selectedLayerIds.value = [layerId]
   revealCanvasMedia(layerId)
-  if (options.nodeDraft) void focusVideoNodeEditor(layerId)
   return layerId
 }
+
+const imageNodeModelOptions = computed(() =>
+  chatModelOptions.map(value => ({ value, label: imageModelLabel(value) })),
+)
+const imageNodeDraft = computed(() => normalizeImageNodeDraft({
+  prompt: inlineDialogModification.text,
+  config: {
+    model: inlineDialogModification.model, models: inlineDialogModification.models,
+    ratio: inlineDialogModification.ratio, resolution: inlineDialogModification.resolution,
+    count: inlineDialogModification.generationCount,
+  },
+  references: inlineDialogModification.references,
+  referenceTexts: inlineDialogModification.referenceTexts,
+  connectedTextLayerIds: layers.value.find(layer => layer.id === inlineDialogModification.layerId)?.imageNodeDraft?.connectedTextLayerIds || [],
+  connectedLayerIds: layers.value.find(layer => layer.id === inlineDialogModification.layerId)?.imageNodeDraft?.connectedLayerIds || [],
+}, {}, chatModelOptions))
+
+function normalizeEmptyCanvasNodeLayout() {
+  const updates = new Map()
+  for (const layer of layers.value) {
+    const patch = {
+      ...legacyEmptyTextNodeLayout(layer),
+      ...emptyMediaNodeDimensions(layer, CANVAS_IMAGE_WIDTH),
+    }
+    if (Object.entries(patch).some(([key, value]) => JSON.stringify(layer[key]) !== JSON.stringify(value))) {
+      updates.set(layer.id, patch)
+    }
+  }
+  if (!updates.size) return
+  // A layout correction must not mark cached content newer than a pending server response.
+  doc.value.payload.layers = layers.value.map(layer =>
+    updates.has(layer.id) ? { ...layer, ...updates.get(layer.id) } : layer,
+  )
+}
+watch([() => props.id, () => doc.value?.payload?.layers], normalizeEmptyCanvasNodeLayout, { immediate: true })
+
+watch(
+  [() => props.id, () => selectedLayer.value?.id, () => selectedLayer.value?.type,
+    () => selectedLayer.value?.locked, () => selectedLayer.value?.generating, () => selectedLayer.value?.url,
+    () => selectedLayerIds.value.length, () => inlineDialogModification.submitting,
+    () => inlineDialogUploading.value],
+  () => {
+    const layer = selectedLayerIds.value.length <= 1 ? selectedLayer.value : null
+    activateImageNodeEditor(layer)
+  },
+  { immediate: true },
+)
+watch(() => JSON.stringify(imageNodeDraft.value), saveActiveImageNodeDraft)
+
+const imageNodeConnectionImages = computed(() => {
+  const byNode = incomingImageReferencesByNode(layers.value, connections.value, renderedLayerIds.value)
+  const texts = incomingTextReferencesByNode(layers.value, connections.value, renderedLayerIds.value)
+  return layers.value
+    .filter((layer) => isRealImageLayer(layer) || layer.type === 'image-placeholder')
+    .map((layer) => ({ layerId: layer.id, references: byNode.get(layer.id) || [], referenceTexts: texts.get(layer.id) || [] }))
+})
+watch(
+  [() => props.id, () => JSON.stringify(imageNodeConnectionImages.value)],
+  ([canvasId, serialized], previous) => {
+    const previousImages = new Map(
+      (canvasId === previous?.[0] ? JSON.parse(previous[1]) : []).map((entry) => [
+        entry.layerId,
+        JSON.stringify(entry),
+      ]),
+    )
+    const updates = new Map()
+    for (const entry of JSON.parse(serialized)) {
+      if (previousImages.get(entry.layerId) === JSON.stringify(entry)) continue
+      const layer = layers.value.find((item) => item.id === entry.layerId)
+      const current =
+        inlineDialogModification.layerId === layer.id && activeImageNodeCanvasId === canvasId
+          ? imageNodeDraft.value
+          : normalizeImageNodeDraft(
+              layer.imageNodeDraft || {
+                references: layer.url
+                  ? [
+                      {
+                        id: `inline-source-${layer.id}`,
+                        url: layer.url,
+                        layerId: layer.id,
+                        isSource: true,
+                      },
+                    ]
+                  : [],
+              },
+              imageNodeDefaults(layer),
+              chatModelOptions,
+            )
+      const synced = syncImageNodeConnectedReferences(current, entry.references, chatModelOptions, entry.referenceTexts)
+      if (JSON.stringify(current) !== JSON.stringify(synced)) updates.set(layer.id, synced)
+    }
+    if (!updates.size) return
+    canvas.updateDocument(canvasId, (draft) => {
+      draft.payload.layers = draft.payload.layers.map((layer) =>
+        updates.has(layer.id) ? { ...layer, imageNodeDraft: updates.get(layer.id) } : layer,
+      )
+      return draft
+    })
+    const active = updates.get(inlineDialogModification.layerId)
+    if (
+      active &&
+      activeImageNodeCanvasId === canvasId &&
+      !inlineDialogUploading.value &&
+      !inlineDialogModification.submitting
+    )
+      applyImageNodeDraft(active)
+  },
+  { immediate: true },
+)
 
 const videoNodeActivity = reactive({})
 const videoNodeEditorZIndex = computed(
@@ -10651,6 +11250,8 @@ watch(
 )
 
 const videoNodeConnectionImages = computed(() => {
+  const videos = incomingVideoReferencesByNode(layers.value, connections.value, renderedLayerIds.value)
+  const texts = incomingTextReferencesByNode(layers.value, connections.value, renderedLayerIds.value)
   const images = new Map(
     layers.value.filter(isRealImageLayer).map((layer) => [
       layer.id,
@@ -10662,6 +11263,8 @@ const videoNodeConnectionImages = computed(() => {
     .map((layer) => ({
       layerId: layer.id,
       model: videoNodeDraftFor(layer).config.model,
+      referenceVideos: videos.get(layer.id) || [],
+      referenceTexts: texts.get(layer.id) || [],
       references: connections.value
         .filter(
           (connection) =>
@@ -10688,11 +11291,11 @@ watch(
     )
     const updates = new Map()
     for (const entry of JSON.parse(serialized)) {
-      const { layerId, references } = entry
+      const { layerId, references, referenceVideos, referenceTexts } = entry
       if (previousImages.get(layerId) === JSON.stringify(entry)) continue
       const layer = layers.value.find((item) => item.id === layerId)
       const current = videoNodeDraftFor(layer)
-      const synced = syncVideoNodeConnectedReferences(current, references, videoModelOptions)
+      const synced = syncVideoNodeConnectedReferences(current, references, videoModelOptions, referenceVideos, referenceTexts)
       if (JSON.stringify(current) !== JSON.stringify(synced)) updates.set(layerId, synced)
     }
     if (!updates.size) return
@@ -10706,60 +11309,23 @@ watch(
   { immediate: true },
 )
 
-async function focusVideoNodeEditor(layerId) {
+async function getCanvasNodeEditor(layerId, composerSelector) {
+  if (canvasNodeFocusSuspended) return
   const canvasId = props.id
+  const focusRevision = canvasNodeFocusRevision
   await nextTick()
   const layer = layers.value.find((item) => item.id === layerId)
-  if (props.id !== canvasId || !layer || selectedLayerId.value !== layerId) return
-  const editor = document.querySelector(
-    `[data-layer-id="${CSS.escape(layerId)}"] .video-node-composer`,
-  )
-  const oldScale = viewScale.value
-  const stage = document.querySelector('.stage')?.getBoundingClientRect()
   if (
-    rightPanelVisible.value &&
-    stage &&
-    stage.width - panel.width <
-      Math.max(layer.width * oldScale, Math.min(560, stage.width - 110)) + 98
-  ) {
-    rightPanelVisible.value = false
-    await nextTick()
-  }
-  const editorSize = editor?.getBoundingClientRect()
-  const editorWidth = editorSize?.width || videoNodeEditorWidth.value
-  const editorHeight = editorSize?.height || 320
-  const width = Math.max(layer.width, editorWidth / oldScale)
-  const left = layer.x + (layer.width - width) / 2
-  const height = layer.height + 80 + (12 + editorHeight) / oldScale
-  const area = visibleCanvasWorldRect()
-  area.height = Math.max(1, area.height - 96 / oldScale)
-  if (
-    left >= area.x &&
-    left + width <= area.x + area.width &&
-    layer.y - 80 >= area.y &&
-    layer.y - 80 + height <= area.y + area.height
+    props.id !== canvasId ||
+    canvasNodeFocusSuspended ||
+    canvasNodeFocusRevision !== focusRevision ||
+    !layer ||
+    selectedLayerId.value !== layerId
   )
     return
-  const centerX = viewOffset.value.x + (area.x + area.width / 2) * oldScale
-  const centerY = viewOffset.value.y + (area.y + area.height / 2) * oldScale
-  const scale = Math.max(
-    0.05,
-    Math.min(
-      oldScale,
-      (area.width * oldScale - 24) / layer.width,
-      (area.height * oldScale - 36 - editorHeight) / (layer.height + 80),
-    ),
+  return document.querySelector(
+    `[data-layer-id="${CSS.escape(layerId)}"] ${composerSelector}`,
   )
-  canvas.updateDocument(canvasId, (draft) => {
-    draft.payload.view.scale = scale
-    draft.payload.view.offset = {
-      x: Math.round(centerX - (layer.x + layer.width / 2) * scale),
-      y: Math.round(
-        centerY - (layer.y - 80) * scale - ((layer.height + 80) * scale + 12 + editorHeight) / 2,
-      ),
-    }
-    return draft
-  })
 }
 
 function updateVideoNodeDraft(layer, draft) {
@@ -10769,10 +11335,17 @@ function updateVideoNodeDraft(layer, draft) {
 
 function saveVideoNodeDraft(layer, draft) {
   const normalized = normalizeVideoNodeDraft(draft, {}, videoModelOptions)
-  const keptIds = new Set(normalized.references.map((reference) => reference.layerId))
+  const keptIds = new Set([...normalized.references, ...normalized.referenceVideos, ...normalized.referenceTexts].map((reference) => reference.layerId))
   const removedIds = new Set(
-    (layer.videoNodeDraft?.connectedLayerIds || []).filter((id) => !keptIds.has(id)),
+    [...(layer.videoNodeDraft?.connectedLayerIds || []), ...(layer.videoNodeDraft?.connectedVideoLayerIds || []), ...(layer.videoNodeDraft?.connectedTextLayerIds || [])]
+      .filter((id) => !keptIds.has(id)),
   )
+  const keptVideoUrls = new Set(normalized.referenceVideos.map(reference => reference.url))
+  const removedVideoUrls = new Set((layer.videoNodeDraft?.referenceVideos || [])
+    .filter(reference => !keptVideoUrls.has(reference.url)).map(reference => reference.url))
+  for (const source of layers.value) {
+    if (source.type === 'video' && removedVideoUrls.has(source.url)) removedIds.add(source.id)
+  }
   if (removedIds.size) {
     connections.value = connections.value.filter(
       (connection) =>
@@ -10914,17 +11487,34 @@ const videoReversePrompt = useVideoReversePrompt({
 })
 
 async function focusVideoPromptNode(layerId) {
+  if (canvasNodeFocusSuspended) return
   const canvasId = props.id
+  const focusRevision = canvasNodeFocusRevision
   const node = layers.value.find((layer) => layer.id === layerId)
   if (!node) return
   selectSingleLayer(node)
   revealCanvasMedia(node.videoReversePrompt?.sourceLayerId)
   await nextTick()
-  if (props.id !== canvasId) return
+  if (
+    props.id !== canvasId ||
+    canvasNodeFocusSuspended ||
+    canvasNodeFocusRevision !== focusRevision ||
+    selectedLayerId.value !== layerId ||
+    !layers.value.some((layer) => layer.id === layerId)
+  )
+    return
   const stage = document.querySelector('.stage')?.getBoundingClientRect()
   if (rightPanelVisible.value && stage && stage.width - panel.width < node.width + 98) {
     rightPanelVisible.value = false
     await nextTick()
+    if (
+      props.id !== canvasId ||
+      canvasNodeFocusSuspended ||
+      canvasNodeFocusRevision !== focusRevision ||
+      selectedLayerId.value !== layerId ||
+      !layers.value.some((layer) => layer.id === layerId)
+    )
+      return
   }
   const oldScale = viewScale.value
   const area = visibleCanvasWorldRect()
@@ -10984,14 +11574,16 @@ async function generateVideoNode(layer) {
     showCopyPasteToast(error)
     return
   }
-  if (!nodeDraft.prompt.trim()) return
+  if (!nodeDraft.prompt.trim() && !nodeDraft.referenceTexts.length) return
   updateVideoNodeDraft(layer, nodeDraft)
   videoNodeActivity[layer.id] = { submitting: true, error: '' }
   const activity = videoNodeActivity[layer.id]
   try {
     await sendVideoChat({
-      prompt: nodeDraft.prompt,
+      prompt: canvasReferenceTextPrompt(nodeDraft.prompt, nodeDraft.referenceTexts, 2500),
+      referenceTextLayerIds: nodeDraft.referenceTexts.map(reference => reference.layerId).filter(Boolean),
       references: nodeDraft.references,
+      referenceVideos: nodeDraft.referenceVideos,
       config: nodeDraft.config,
       nodeDraft,
       reuseLayerId: layer.url ? '' : layer.id,
@@ -11011,7 +11603,79 @@ async function generateVideoNode(layer) {
   }
 }
 
+const videoPlaybackRepairs = new Set()
+const attemptedVideoPlaybackRepairs = new Set()
+
+async function repairCanvasVideoPlayback(layer, force = false) {
+  const documentId = props.id
+  const sourceUrl = layer.url
+  if (!sourceUrl) return
+  const key = `${documentId}:${layer.id}:${sourceUrl}`
+  if (videoPlaybackRepairs.has(key) || (!force && attemptedVideoPlaybackRepairs.has(key))) return
+  if (layer.originalVideoUrl && sourceUrl !== layer.originalVideoUrl) {
+    updateLayer(layer.id, { videoPlayback: { status: 'failed', error: '播放副本仍无法解码，请下载视频后检查浏览器支持' } })
+    return
+  }
+  attemptedVideoPlaybackRepairs.add(key)
+  videoPlaybackRepairs.add(key)
+  const current = () => _mounted.value && props.id === documentId && layers.value.find(item => item.id === layer.id)?.url === sourceUrl
+  let jobId = !force && layer.videoPlayback?.sourceUrl === sourceUrl ? layer.videoPlayback.id : ''
+  const request = async (path, body) => {
+    const response = await fetch(apiPath(path), {
+      headers: { ...userStore.authHeaders(), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}),
+    })
+    if (response.status === 404) throw new Error('视频兼容服务尚未启动，请重启后端后重试')
+    return readApiResponse(response)
+  }
+  updateLayer(layer.id, { videoPlayback: { sourceUrl, id: jobId, status: 'processing', error: '' } })
+  try {
+    const capabilities = await loadVideoCapabilities()
+    if (!current()) return
+    if (!capabilities?.videoPlayback) throw new Error('视频兼容服务尚未启动，请重启后端后重试')
+    let result = jobId
+      ? await request(`/api/video-playback/${encodeURIComponent(jobId)}`)
+      : await request('/api/video-playback', { sourceUrl })
+    if (!result?.id) throw new Error('播放转换服务没有返回任务编号，原视频已保留')
+    jobId = result.id
+    for (let attempt = 0; attempt < 900; attempt += 1) {
+      if (!current()) return
+      if (result.status === 'completed') {
+        const item = layers.value.find(item => item.id === layer.id)
+        updateLayer(layer.id, videoPlaybackResultPatch(item, result))
+        if (videoViewer.show && videoViewer.url === sourceUrl) videoViewer.url = result.url
+        revealCanvasMedia(layer.id)
+        void canvas.flushNow?.(documentId)
+        return
+      }
+      if (result.status === 'failed') throw new Error(result.error || '视频播放格式转换失败，原视频已保留')
+      updateLayer(layer.id, { videoPlayback: { sourceUrl, id: jobId, status: 'processing', error: '' } })
+      await wait(2000)
+      if (!current()) return
+      result = await request(`/api/video-playback/${encodeURIComponent(jobId)}`)
+    }
+    throw new Error('播放转换仍在处理，请稍后重试同步，原视频已保留')
+  } catch (error) {
+    if (current()) updateLayer(layer.id, { videoPlayback: { sourceUrl, id: jobId, status: 'failed',
+      error: error?.message || '视频播放转换暂时中断，原视频已保留' } })
+  } finally {
+    videoPlaybackRepairs.delete(key)
+  }
+}
+
+function onCanvasVideoError(layer, event) {
+  const code = event.target?.error?.code
+  if (code === 3 || code === 4) void repairCanvasVideoPlayback(layer)
+  else updateLayer(layer.id, { videoPlayback: { status: 'failed', error: '视频加载失败，请检查连接后重试' } })
+}
+
 function syncVideoNodeMediaDimensions(layer, event) {
+  if (!hasDecodedVideoFrame(event.target)) {
+    event.target?.pause()
+    void repairCanvasVideoPlayback(layer)
+    return
+  }
+  if (layer.videoPlayback?.status === 'failed') updateLayer(layer.id, { videoPlayback: null })
   if (layer.productVideoShotId) return syncProductVideoMediaDimensions(layer, event)
   const video = event.target
   if (!video.videoWidth || !video.videoHeight || layer.naturalWidth) return
@@ -11130,7 +11794,6 @@ function resumePendingVideoTasks() {
   for (const layer of layers.value) {
     if (layer.type !== 'video' || !layer.generating || !layer.taskId) continue
     if (pollingVideoTaskIds.has(layer.taskId)) continue
-    if (layer.url) revealCanvasMedia(layer.id)
     void startVideoTaskPoll(layer.taskId, layer.id, layer.assistantId || '').catch((error) => {
       updateLayer(layer.id, {
         generating: false,
@@ -11204,9 +11867,32 @@ async function sendVideoChat(options = {}) {
     showCopyPasteToast('原视频模型已移除，请重新选择视频模型')
     return false
   }
-  const referenceMode =
-    requestedConfig.referenceMode ??
-    videoReferenceModeForRequest(requestedModel, videoReferenceMode.value)
+  const referenceVideos = normalizeVideoReferences(options.referenceVideos)
+  const referenceMode = referenceVideos.length ? 'cankaosheng' :
+    requestedConfig.referenceMode ?? videoReferenceModeForRequest(requestedModel, videoReferenceMode.value)
+  let referenceVideoError = videoReferenceVideosError(requestedModel, referenceMode, referenceVideos)
+  if (referenceVideoError) {
+    showCopyPasteToast(referenceVideoError)
+    return false
+  }
+  const referenceCapabilities = referenceVideos.length ? await loadVideoCapabilities() : null
+  if (referenceVideos.length && !referenceCapabilities?.canvasNativeVideoReferences) {
+    showCopyPasteToast('参考视频接口尚未更新，请重启后端后重试')
+    return false
+  }
+  for (const reference of referenceVideos) {
+    if (reference.duration) continue
+    try {
+      reference.duration = (await videoSize(reference.url)).duration
+    } catch {
+      reference.duration = 0
+    }
+  }
+  referenceVideoError = videoReferenceVideosError(requestedModel, referenceMode, referenceVideos, true)
+  if (referenceVideoError) {
+    showCopyPasteToast(referenceVideoError)
+    return false
+  }
   const maxReferences = videoReferenceLimit(requestedModel, referenceMode)
   if (referenceMap.size > maxReferences) {
     showCopyPasteToast(`所选模式最多支持 ${maxReferences} 张图片，请先移除多余图片`)
@@ -11219,7 +11905,8 @@ async function sendVideoChat(options = {}) {
     return false
   }
   const sourceLayerIds = [
-    ...new Set(references.map((reference) => reference.layerId).filter(Boolean)),
+    ...new Set([...references, ...referenceVideos].map((reference) => reference.layerId).filter(Boolean)),
+    ...(options.referenceTextLayerIds || []),
   ]
   const requestedResolution =
     requestedConfig.resolution ??
@@ -11242,7 +11929,7 @@ async function sendVideoChat(options = {}) {
     return false
   }
   if (isPerSecondVideoModel(requestedModel)) {
-    const capabilities = await loadVideoCapabilities()
+    const capabilities = referenceCapabilities || await loadVideoCapabilities()
     if (
       estimatedVideoMiCost(
         requestedModel,
@@ -11263,6 +11950,7 @@ async function sendVideoChat(options = {}) {
       imageUrls.length,
       videoRatioOptions.includes(requestedConfig.ratio) ? requestedConfig.ratio : videoRatio.value,
       referenceMode,
+      referenceVideos.length,
     ),
     resolution: requestedResolution,
     duration: requestedDuration,
@@ -11278,8 +11966,8 @@ async function sendVideoChat(options = {}) {
   const agentConversationId = String(options.agentConversationId || '').trim()
   const assistantId = `msg-${createdAt}-video`
   const messageReferences = references.map((reference) => ({ ...reference }))
-  const submittedVideoText = references.length
-    ? `已携带 ${references.length} 张参考图提交视频任务，正在排队生成。`
+  const submittedVideoText = references.length || referenceVideos.length
+    ? `已携带 ${[references.length ? `${references.length} 张参考图` : '', referenceVideos.length ? `${referenceVideos.length} 个参考视频` : ''].filter(Boolean).join('、')}提交视频任务，正在排队生成。`
     : '已提交视频任务，正在排队生成。'
   const userMessage = {
     ...(agentConversationId ? { agent: true, agentConversationId } : {}),
@@ -11288,6 +11976,7 @@ async function sendVideoChat(options = {}) {
     text: prompt,
     createdAt,
     referenceImages: messageReferences,
+    referenceVideos: referenceVideos.map(reference => ({ ...reference })),
     sourceLayerIds,
   }
   const assistantMessage = {
@@ -11307,6 +11996,8 @@ async function sendVideoChat(options = {}) {
       prompt,
       ...config,
       referenceImages: messageReferences,
+      referenceVideos: referenceVideos.map(reference => ({ ...reference })),
+      referenceTextLayerIds: [...(options.referenceTextLayerIds || [])],
       sourceLayerIds,
     },
   }
@@ -11321,6 +12012,7 @@ async function sendVideoChat(options = {}) {
     const taskId = await submitVideoTask({
       prompt,
       imageUrls,
+      referenceVideos,
       ...config,
       clientTaskId: assistantId,
     })
@@ -11374,6 +12066,8 @@ function getVideoChatReplay(messageId) {
   return {
     prompt: String(stored.prompt || userMessage.text || '').trim(),
     references,
+    referenceVideos: normalizeVideoReferences(stored.referenceVideos || userMessage.referenceVideos),
+    referenceTextLayerIds: [...(stored.referenceTextLayerIds || [])],
     config: {
       model: stored.model || assistantMessage.model || videoModel.value,
       ratio: stored.ratio || assistantMessage.ratio || videoRatio.value,
@@ -11399,6 +12093,8 @@ async function replayVideoChatGeneration(messageId, { button } = {}) {
     const submitted = await sendVideoChat({
       prompt: replay.prompt,
       references: replay.references,
+      referenceVideos: replay.referenceVideos,
+      referenceTextLayerIds: replay.referenceTextLayerIds,
       config: replay.config,
       hideUserMessage: true,
       preserveComposer: true,
@@ -11518,6 +12214,7 @@ async function sendChat(options = {}) {
     referenceLayerIds: Array.isArray(sendOptions.referenceLayerIds)
       ? sendOptions.referenceLayerIds
       : [],
+    referenceTextLayerIds: Array.isArray(sendOptions.referenceTextLayerIds) ? sendOptions.referenceTextLayerIds : [],
     selectedElements,
     targetLayerId,
   })
@@ -11667,6 +12364,8 @@ async function sendChat(options = {}) {
         batchCount: totalGenerationCount,
         skipUndo: index > 0,
         skipFlush: true,
+        reuseLayerId: index === 0 ? sendOptions.reuseLayerId : '',
+        nodeGeneration: Boolean(sendOptions.nodeGeneration),
       },
     )
     return {
@@ -12116,13 +12815,24 @@ function fitCanvasView() {
   })
 }
 
+function handleCanvasZoomWheel(event) {
+  if (!(event.ctrlKey || event.metaKey)) return
+  event.stopPropagation()
+  wheelZoom(event)
+}
+
 function wheelZoom(event) {
   closeConnectionNodeMenu()
   event.preventDefault()
   // Ctrl/Cmd + 滚轮 → 缩放画布
   if (event.ctrlKey || event.metaKey) {
-    const stage = event.currentTarget.closest?.('.stage') || event.currentTarget
+    const stage =
+      event.currentTarget.closest?.('.stage') ||
+      event.currentTarget.querySelector?.('.stage') ||
+      document.querySelector('.stage')
+    if (!stage) return
     const rect = stage.getBoundingClientRect()
+    if (!event.deltaY) return
     const delta = event.deltaY > 0 ? -0.05 : 0.05
     zoom(delta, {
       x: event.clientX - rect.left,
@@ -12382,9 +13092,12 @@ function stopMarquee(event) {
       )
     })
     .map((node) => node.dataset.layerId)
-  marqueeSelectionIds.value = picked
-  selectedLayerIds.value = picked
-  selectedLayerId.value = picked[picked.length - 1] || ''
+  const selected = event.altKey
+    ? picked
+    : expandCanvasGroupSelection(layers.value, picked, renderedLayerIds.value)
+  marqueeSelectionIds.value = selected
+  selectedLayerIds.value = selected
+  selectedLayerId.value = selected.at(-1) || ''
   marquee.active = false
 }
 
@@ -12534,8 +13247,12 @@ function onGlobalKeydown(event) {
         }
         return draft
       })
-      selectedLayerId.value = layersData[0]?.id || ''
-      selectedLayerIds.value = selectedLayerId.value ? [selectedLayerId.value] : []
+      const restoredSelection = !Array.isArray(snapshot) && snapshot.selection
+      const restoredIds = (restoredSelection?.ids || []).filter(id => layersData.some(layer => layer.id === id))
+      selectedLayerId.value = restoredIds.length
+        ? restoredIds.includes(restoredSelection.primary) ? restoredSelection.primary : restoredIds[0]
+        : layersData[0]?.id || ''
+      selectedLayerIds.value = restoredIds.length ? restoredIds : selectedLayerId.value ? [selectedLayerId.value] : []
       // 恢复连接线数据
       if (!Array.isArray(snapshot) && snapshot.connections) {
         connections.value = snapshot.connections
@@ -12598,7 +13315,7 @@ function resetTemporaryPanShortcut() {
 
 // Undo stack（同时保存图层和元素检测数据，撤销时一起恢复）
 const undoStack = ref([])
-function pushUndo() {
+function pushUndo({ restoreSelection = false } = {}) {
   if (doc.value?.payload?.layers) {
     undoStack.value.push({
       layers: JSON.parse(JSON.stringify(doc.value.payload.layers)),
@@ -12606,6 +13323,7 @@ function pushUndo() {
       detectedElements: JSON.parse(JSON.stringify(layerDetectedElements.value)),
       selectedDetectedElements: [...selectedDetectedElements.value],
       deletedAssetBatches: JSON.parse(JSON.stringify(doc.value.payload.deletedAssetBatches || [])),
+      ...(restoreSelection ? { selection: { ids: [...selectedLayerIds.value], primary: selectedLayerId.value } } : {}),
     })
     if (undoStack.value.length > 50) undoStack.value.shift()
   }
@@ -12664,6 +13382,7 @@ onMounted(() => {
     void loadVideoCapabilities()
   updateViewportSize()
   window.addEventListener('resize', updateViewportSize)
+  window.addEventListener('wheel', handleCanvasZoomWheel, { capture: true, passive: false })
   window.addEventListener('resize', handleCropPickerViewportResize)
   window.addEventListener('keydown', onGlobalKeydown)
   window.addEventListener('keyup', onGlobalKeyup)
@@ -12696,6 +13415,7 @@ onMounted(() => {
   onBeforeUnmount(() => window.clearTimeout(promptLibraryPrefetchTimer))
   // 建立 pill 删除监听 — MutationObserver 比 @input 更可靠
   nextTick(() => setupPillObserver())
+  nextTick(() => refreshConnections())
   // 恢复已缓存的检测元素（清除旧版错误归一化的缓存）
   const cachedElements = doc.value?.payload?.detectedElements
   if (cachedElements) {
@@ -12765,14 +13485,9 @@ onMounted(() => {
   }
   window.addEventListener('keydown', onCtrlDown)
   window.addEventListener('keyup', onCtrlUp)
-  // Ctrl+滚轮缩放已移除，不再需要 capture 监听
   // 连接模式下全局 mousemove 跟踪，确保拖拽线始终跟随鼠标
   const onGlobalMouseMove = (e) => {
-    if (connecting.active) {
-      const pos = screenToStage(e.clientX, e.clientY)
-      connecting.currentX = pos.x
-      connecting.currentY = pos.y
-    }
+    updateConnectionDrag(e)
   }
   window.addEventListener('mousemove', onGlobalMouseMove)
   window.addEventListener('pointerup', onConnectionPointerEnd, true)
@@ -12808,6 +13523,7 @@ onMounted(() => {
     resetConnectionInteraction()
     window.removeEventListener('click', onDocClick)
     window.removeEventListener('resize', updateViewportSize)
+    window.removeEventListener('wheel', handleCanvasZoomWheel, true)
     window.removeEventListener('resize', handleCropPickerViewportResize)
     window.removeEventListener('paste', handleGlobalPaste)
     window.removeEventListener('blur', disarmInternalClipboard)
@@ -13194,6 +13910,8 @@ function makeCopiedLayer(layer, index, maxZ, size, position) {
   copied.copiedAt = Date.now()
   delete copied.selected
   delete copied.dragging
+  delete copied.groupId
+  delete copied.groupName
   return copied
 }
 
@@ -14930,6 +15648,13 @@ async function loadImageForCropUncached(layer) {
             transformOrigin: '0 0',
           }"
         >
+          <div v-for="group in canvasGroupFrames" :key="group.id" class="uc-canvas-group-frame"
+            :class="{ 'is-selected': group.selected, 'is-dragging': dragState?.fromGroupFrame && dragState.ids.some(id => layers.find(layer => layer.id === id)?.groupId === group.id) }"
+            :data-group-id="group.id" :style="group.style" @pointerdown="startCanvasGroupDrag($event, group.id)">
+            <button type="button" :title="`选中${group.name}`" @pointerdown="startCanvasGroupDrag($event, group.id)" @click.stop="selectCanvasGroup(group.id)">
+              <i class="ri-layout-grid-line" aria-hidden="true"></i><span>{{ group.name }}</span>
+            </button>
+          </div>
           <figure
             v-for="layer in renderedLayers"
             :key="layer.id"
@@ -14941,6 +15666,9 @@ async function loadImageForCropUncached(layer) {
                 'is-kept': isCanvasAssetKept(layer),
                 'multi-selected':
                   selectedLayerIds.length > 1 && selectedLayerIds.includes(layer.id),
+                'is-connection-target': connecting.active && connecting.targetLayerId === layer.id,
+                'is-group-reference-target': groupedConnectionTargets.has(layer.id),
+                'is-group-source': groupedConnectionSourceIds.has(layer.id),
                 'is-placeholder': layer.type === 'placeholder',
                 'is-text': layer.type === 'text',
                 'is-video': layer.type === 'video',
@@ -14966,7 +15694,8 @@ async function loadImageForCropUncached(layer) {
                 layer.horizontalSlice
                   ? `${layer.height}px`
                   : undefined,
-              zIndex: isVideoNodeEditorVisible(layer) ? videoNodeEditorZIndex : layer.zIndex,
+              zIndex: isVideoNodeEditorVisible(layer) || isImageNodeEditorVisible(layer)
+                ? videoNodeEditorZIndex : layer.zIndex,
               '--drag-z-index': dragState?.dragZById?.[layer.id],
               '--canvas-inverse-scale': 1 / viewScale,
             }"
@@ -15274,6 +16003,12 @@ async function loadImageForCropUncached(layer) {
                 </div>
                 <div
                   class="uc-text-node-area"
+                  :style="{
+                    fontSize: (layer.fontSize || 14) + 'px',
+                    fontWeight: layer.fontWeight || 400,
+                    color: layer.color || (layer.videoReversePrompt ? 'var(--canvas-text)' : '#999'),
+                    textAlign: layer.align || 'left',
+                  }"
                   @wheel="handleCanvasScrollableWheel"
                   @pointerdown="layer.videoReversePrompt && $event.stopPropagation()"
                 >
@@ -15311,12 +16046,6 @@ async function loadImageForCropUncached(layer) {
                   <span
                     v-else-if="editingTextLayerId !== layer.id"
                     class="uc-text-node-span"
-                    :style="{
-                      fontSize: (layer.fontSize || 14) + 'px',
-                      color:
-                        layer.color || (layer.videoReversePrompt ? 'var(--canvas-text)' : '#999'),
-                      textAlign: layer.align || 'left',
-                    }"
                   >
                     {{ layer.text || '双击开始编辑...' }}
                   </span>
@@ -15399,7 +16128,22 @@ async function loadImageForCropUncached(layer) {
                     <i class="ri-image-line"></i>
                   </div>
                 </div>
-                <div class="uc-text-node-hint" @pointerdown.stop @click.stop.exact>
+                <ImageNodeComposer
+                  v-if="isImageNodeEditorVisible(layer)"
+                  :draft="imageNodeDraft"
+                  :model-options="imageNodeModelOptions"
+                  :ratio-options="chatRatioOptions"
+                  :canvas-images="videoNodeCanvasImages"
+                  :editor-width="videoNodeEditorWidth"
+                  :disabled="inlineDialogModification.submitting || inlineDialogUploading"
+                  :uploading="inlineDialogUploading"
+                  :error="imageNodeErrors[layer.id] || ''"
+                  @update:draft="updateImageNodeDraft(layer, $event)"
+                  @upload-reference="openInlineDialogLocalUpload"
+                  @open-materials="openInlineDialogMaterialPicker"
+                  @generate="submitInlineLayerDialogModification(layer)"
+                />
+                <div v-if="!isImageNodeEditorVisible(layer)" class="uc-text-node-hint" @pointerdown.stop @click.stop.exact>
                   <i class="ri-edit-line"></i>
                   提示词
                 </div>
@@ -15469,6 +16213,7 @@ async function loadImageForCropUncached(layer) {
                       playsinline
                       class="uc-video-node-video"
                       @loadedmetadata="syncVideoNodeMediaDimensions(layer, $event)"
+                      @error="onCanvasVideoError(layer, $event)"
                       @pointerdown.stop
                       @play="playingVideoLayerId = layer.id"
                       @pause="
@@ -15480,7 +16225,18 @@ async function loadImageForCropUncached(layer) {
                           playingVideoLayerId === layer.id ? null : playingVideoLayerId
                       "
                     ></video>
+                    <div v-if="layer.videoPlayback?.status === 'processing'" class="uc-video-playback-state" role="status">
+                      <i class="ri-loader-4-line uc-spin" aria-hidden="true"></i>
+                      <span>正在转换播放格式</span>
+                    </div>
+                    <div v-else-if="layer.videoPlayback?.status === 'failed'" class="uc-video-playback-state" role="alert">
+                      <span>{{ layer.videoPlayback.error }}</span>
+                      <button type="button" title="重试播放转换" aria-label="重试播放转换" @pointerdown.stop @click.stop="repairCanvasVideoPlayback(layer, true)">
+                        <i class="ri-refresh-line" aria-hidden="true"></i>
+                      </button>
+                    </div>
                     <button
+                      v-else
                       class="uc-video-play-btn"
                       @pointerdown.stop
                       @click.stop="playVideoNode(layer)"
@@ -15554,7 +16310,6 @@ async function loadImageForCropUncached(layer) {
                   :capabilities="videoCapabilities"
                   :canvas-images="videoNodeCanvasImages"
                   :editor-width="videoNodeEditorWidth"
-                  :editor-offset-x="videoNodeEditorOffsetX(layer)"
                   :disabled="videoNodeBusy(layer)"
                   :generating="Boolean(layer.generating)"
                   :uploading="Boolean(videoNodeActivity[layer.id]?.uploading)"
@@ -15568,13 +16323,18 @@ async function loadImageForCropUncached(layer) {
             </template>
             <template v-else>
               <!-- 图片节点（含已上传内容）：与占位态保持一致的 UI 结构 -->
-              <div class="uc-image-node">
+              <div class="uc-image-node" :class="{ 'is-editing': isImageNodeEditorVisible(layer) }"
+                :style="{ '--image-node-editor-height': `${imageNodeEditorHeights[layer.id] || 216}px` }">
                 <div class="uc-layer-label">
                   <i class="ri-image-line"></i>
                   {{ layer.name }}
                   <small>{{ formatLayerTime(layer) }}</small>
                 </div>
-                <div class="uc-image-node-inner">
+                <div
+                  class="uc-image-node-inner"
+                  :class="{ 'is-deferred': !isCanvasMediaRevealed(layer) }"
+                  :style="!isCanvasMediaRevealed(layer) ? { height: `${layer.height}px` } : undefined"
+                >
                   <template v-if="isCanvasMediaRevealed(layer)">
                     <img
                       v-if="!brokenImages.has(layer.id)"
@@ -15764,299 +16524,26 @@ async function loadImageForCropUncached(layer) {
                     </div>
                   </div>
                 </div>
-                <div v-else class="uc-text-node-hint" @pointerdown.stop @click.stop.exact>
+                <div v-else-if="!isImageNodeEditorVisible(layer)" class="uc-text-node-hint" @pointerdown.stop @click.stop.exact>
                   <i class="ri-edit-line"></i>
                   提示词
                 </div>
-                <Teleport to="body">
-                  <div
-                    v-if="inlineDialogModification.layerId === layer.id"
-                    class="uc-inline-dialog-edit"
-                    :class="{ 'is-dragging': inlineDialogFloating.dragging }"
-                    :data-inline-dialog-layer-id="layer.id"
-                    :style="{
-                      left: `${inlineDialogFloating.left}px`,
-                      top: `${inlineDialogFloating.top}px`,
-                    }"
-                    @pointerdown.stop
-                    @click.stop
-                    @dblclick.stop
-                    @wheel.stop
-                  >
-                    <div
-                      class="uc-inline-dialog-edit-head"
-                      title="拖动窗口"
-                      @pointerdown.stop="startInlineDialogDrag"
-                    >
-                      <div class="uc-inline-dialog-edit-title">
-                        <i class="ri-image-edit-line" aria-hidden="true"></i>
-                        <span>
-                          <strong>图片生成/修改</strong>
-                          <small>基于参考素材</small>
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        title="关闭"
-                        aria-label="关闭对话修改"
-                        :disabled="inlineDialogModification.submitting || inlineDialogUploading"
-                        @pointerdown.stop
-                        @click.stop="closeInlineLayerDialogModification"
-                      >
-                        <i class="ri-close-line" aria-hidden="true"></i>
-                      </button>
-                    </div>
-                    <section class="uc-inline-dialog-references">
-                      <header>
-                        <span>
-                          <i class="ri-gallery-line" aria-hidden="true"></i>
-                          参考素材
-                          <b>{{ inlineDialogModification.references.length }} 图</b>
-                        </span>
-                        <button
-                          type="button"
-                          :disabled="inlineDialogUploading || inlineDialogModification.submitting"
-                          :aria-expanded="inlineDialogReferenceSourceOpen"
-                          aria-haspopup="menu"
-                          @click.stop="toggleInlineDialogReferenceSource"
-                        >
-                          <i class="ri-add-line" aria-hidden="true"></i>
-                          {{ inlineDialogUploading ? '上传中' : '添加素材' }}
-                        </button>
-                        <div
-                          v-if="inlineDialogReferenceSourceOpen"
-                          class="uc-inline-dialog-source-menu"
-                          role="menu"
-                          @click.stop
-                        >
-                          <button
-                            type="button"
-                            role="menuitem"
-                            @click="openInlineDialogLocalUpload"
-                          >
-                            <i class="ri-upload-2-line" aria-hidden="true"></i>
-                            <span>本地上传</span>
-                          </button>
-                          <button
-                            type="button"
-                            role="menuitem"
-                            @click="openInlineDialogMaterialPicker"
-                          >
-                            <i class="ri-folder-image-line" aria-hidden="true"></i>
-                            <span>我的素材</span>
-                          </button>
-                        </div>
-                      </header>
-                      <div class="uc-inline-dialog-reference-list">
-                        <div
-                          v-for="(reference, referenceIndex) in inlineDialogModification.references"
-                          :key="reference.id"
-                          class="uc-inline-dialog-reference"
-                          :class="{ 'is-uploading': reference.uploading }"
-                        >
-                          <img
-                            :src="reference.url"
-                            :alt="reference.name || `参考素材 ${referenceIndex + 1}`"
-                            loading="lazy"
-                            decoding="async"
-                          />
-                          <i
-                            v-if="reference.uploading"
-                            class="ri-loader-4-line uc-spin uc-inline-dialog-reference-loading"
-                            aria-label="上传中"
-                          ></i>
-                          <button
-                            v-if="!reference.isSource"
-                            type="button"
-                            title="移除参考素材"
-                            :aria-label="`移除${reference.name || '参考素材'}`"
-                            @click.stop="removeInlineDialogReference(reference.id)"
-                          >
-                            <i class="ri-close-line" aria-hidden="true"></i>
-                          </button>
-                          <small>{{ referenceIndex + 1 }}</small>
-                        </div>
-                      </div>
-                    </section>
-                    <div class="uc-inline-dialog-edit-body">
-                      <textarea
-                        v-model="inlineDialogModification.text"
-                        rows="4"
-                        maxlength="2000"
-                        placeholder="描述要生成或修改的画面，例如：保留产品不变，替换为明亮的客厅场景"
-                        aria-label="图片修改要求"
-                        :disabled="inlineDialogModification.submitting"
-                        @keydown.enter.exact.prevent="submitInlineLayerDialogModification(layer)"
-                        @keydown.esc.prevent="closeInlineLayerDialogModification"
-                      ></textarea>
-                    </div>
-                    <footer class="uc-inline-dialog-footer">
-                      <div class="uc-inline-dialog-options" @click.stop>
-                        <div
-                          class="uc-custom-select uc-inline-dialog-option-model"
-                          :class="{ open: inlineDialogModification.selectOpen === 'model' }"
-                        >
-                          <button
-                            type="button"
-                            class="uc-custom-select-trigger"
-                            :title="`模型：${inlineDialogModelTitle}`"
-                            :aria-label="`模型 ${inlineDialogModelTitle}`"
-                            :disabled="inlineDialogModification.submitting"
-                            @click.stop="toggleInlineDialogSelect('model')"
-                          >
-                            {{ inlineDialogModelLabel }}
-                            <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
-                          </button>
-                          <div
-                            v-if="inlineDialogModification.selectOpen === 'model'"
-                            class="uc-custom-select-menu"
-                            role="listbox"
-                            aria-multiselectable="true"
-                          >
-                            <button
-                              v-for="option in chatModelOptions"
-                              :key="option"
-                              type="button"
-                              class="uc-custom-select-item uc-model-option"
-                              :class="{ active: inlineDialogModification.models.includes(option) }"
-                              role="option"
-                              :aria-selected="inlineDialogModification.models.includes(option)"
-                              @click.stop="selectInlineDialogOption('model', option)"
-                            >
-                              <span class="uc-model-option-check" aria-hidden="true">
-                                <i
-                                  v-if="inlineDialogModification.models.includes(option)"
-                                  class="ri-check-line"
-                                ></i>
-                              </span>
-                              <span>{{ imageModelLabel(option) }}</span>
-                            </button>
-                          </div>
-                        </div>
-                        <div
-                          class="uc-custom-select"
-                          :class="{ open: inlineDialogModification.selectOpen === 'ratio' }"
-                        >
-                          <button
-                            type="button"
-                            class="uc-custom-select-trigger"
-                            :title="`比例：${inlineDialogModification.ratio}`"
-                            :aria-label="`比例 ${inlineDialogModification.ratio}`"
-                            :disabled="inlineDialogModification.submitting"
-                            @click.stop="toggleInlineDialogSelect('ratio')"
-                          >
-                            {{ inlineDialogModification.ratio }}
-                            <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
-                          </button>
-                          <div
-                            v-if="inlineDialogModification.selectOpen === 'ratio'"
-                            class="uc-custom-select-menu"
-                          >
-                            <button
-                              v-for="option in chatRatioOptions"
-                              :key="option"
-                              type="button"
-                              class="uc-custom-select-item"
-                              :class="{ active: inlineDialogModification.ratio === option }"
-                              @click.stop="selectInlineDialogOption('ratio', option)"
-                            >
-                              {{ option }}
-                            </button>
-                          </div>
-                        </div>
-                        <div
-                          class="uc-custom-select"
-                          :class="{ open: inlineDialogModification.selectOpen === 'resolution' }"
-                        >
-                          <button
-                            type="button"
-                            class="uc-custom-select-trigger"
-                            :title="`分辨率：${inlineDialogModification.resolution}`"
-                            :aria-label="`分辨率 ${inlineDialogModification.resolution}`"
-                            :disabled="inlineDialogModification.submitting"
-                            @click.stop="toggleInlineDialogSelect('resolution')"
-                          >
-                            {{ inlineDialogModification.resolution }}
-                            <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
-                          </button>
-                          <div
-                            v-if="inlineDialogModification.selectOpen === 'resolution'"
-                            class="uc-custom-select-menu"
-                          >
-                            <button
-                              v-for="option in chatResolutionOptions"
-                              :key="option"
-                              type="button"
-                              class="uc-custom-select-item"
-                              :class="{ active: inlineDialogModification.resolution === option }"
-                              @click.stop="selectInlineDialogOption('resolution', option)"
-                            >
-                              {{ option }}
-                            </button>
-                          </div>
-                        </div>
-                        <div
-                          class="uc-custom-select"
-                          :class="{
-                            open: inlineDialogModification.selectOpen === 'generationCount',
-                          }"
-                        >
-                          <button
-                            type="button"
-                            class="uc-custom-select-trigger"
-                            :title="`数量：${inlineDialogModification.generationCount} 张`"
-                            :aria-label="`数量 ${inlineDialogModification.generationCount} 张`"
-                            :disabled="inlineDialogModification.submitting"
-                            @click.stop="toggleInlineDialogSelect('generationCount')"
-                          >
-                            {{ inlineDialogModification.generationCount }} 张
-                            <i class="ri-arrow-down-s-line" aria-hidden="true"></i>
-                          </button>
-                          <div
-                            v-if="inlineDialogModification.selectOpen === 'generationCount'"
-                            class="uc-custom-select-menu"
-                          >
-                            <button
-                              v-for="option in CHAT_GENERATION_COUNT_MAX"
-                              :key="option"
-                              type="button"
-                              class="uc-custom-select-item"
-                              :class="{
-                                active: inlineDialogModification.generationCount === option,
-                              }"
-                              @click.stop="selectInlineDialogOption('generationCount', option)"
-                            >
-                              {{ option }} 张
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        class="uc-inline-dialog-send"
-                        :disabled="
-                          !inlineDialogModification.text.trim() ||
-                          inlineDialogModification.submitting ||
-                          inlineDialogUploading
-                        "
-                        :title="inlineDialogModification.submitting ? '正在提交' : '发送修改要求'"
-                        :aria-label="
-                          inlineDialogModification.submitting ? '正在提交' : '发送修改要求'
-                        "
-                        @click.stop="submitInlineLayerDialogModification(layer)"
-                      >
-                        <i
-                          :class="
-                            inlineDialogModification.submitting
-                              ? 'ri-loader-4-line uc-spin'
-                              : 'ri-arrow-up-line'
-                          "
-                          aria-hidden="true"
-                        ></i>
-                      </button>
-                    </footer>
-                  </div>
-                </Teleport>
+                <ImageNodeComposer
+                  v-if="isImageNodeEditorVisible(layer)"
+                  :draft="imageNodeDraft"
+                  :model-options="imageNodeModelOptions"
+                  :ratio-options="chatRatioOptions"
+                  :canvas-images="videoNodeCanvasImages"
+                  :editor-width="videoNodeEditorWidth"
+                  :disabled="inlineDialogModification.submitting || inlineDialogUploading"
+                  :uploading="inlineDialogUploading"
+                  :error="imageNodeErrors[layer.id] || ''"
+                  @resize="imageNodeEditorHeights[layer.id] = $event"
+                  @update:draft="updateImageNodeDraft(layer, $event)"
+                  @upload-reference="openInlineDialogLocalUpload"
+                  @open-materials="openInlineDialogMaterialPicker"
+                  @generate="submitInlineLayerDialogModification(layer)"
+                />
                 <button
                   class="uc-node-close"
                   type="button"
@@ -16119,7 +16606,8 @@ async function loadImageForCropUncached(layer) {
           <!-- 连接线 SVG 层（z-index:5 低于节点的10，连接线显示在节点下方） -->
           <svg class="connections-layer">
             <!-- 已建立的连接线 -->
-            <g v-for="conn in getConnectionPaths()" :key="conn.id" class="connection-group">
+            <g v-for="conn in getConnectionPaths()" :key="conn.id" class="connection-group"
+              :class="{ 'is-bundled': Boolean(conn.bundleId) }">
               <!-- 透明宽点击区域（方便选中） -->
               <path
                 :d="conn.path"
@@ -16150,11 +16638,31 @@ async function loadImageForCropUncached(layer) {
             </g>
             <!-- 正在拖拽的连接线 -->
             <path
-              v-if="connecting.active || connectionNodeMenu.visible"
-              :d="connectingPath"
+              v-for="preview in connectingPaths"
+              :key="preview.id"
+              :d="preview.path"
               class="connection-line connecting"
+              :class="{ 'is-bundled-preview': connecting.grouped, 'is-valid-target': Boolean(connecting.targetLayerId) }"
             />
           </svg>
+          <div v-if="selectionToolbarBounds && !selectionToolbarGroup && !resizeState && !marquee.active"
+            class="uc-selected-image-group" :class="{ 'is-dragging': dragState?.fromGroupFrame }"
+            :style="selectionToolbarFrameStyle" @pointerdown="startCanvasGroupDrag($event)" />
+          <button v-if="groupedConnectionBounds && !dragState && !resizeState && !marquee.active"
+            class="uc-group-connection-port" type="button" :style="groupedConnectionPortStyle"
+            :aria-label="groupedConnectionLabel"
+            :title="groupedConnectionLabel"
+            @pointerdown.stop="startGroupedConnection" @click.stop="onGroupedConnectionClick"
+            @dblclick.stop>
+            <i class="ri-add-line" aria-hidden="true"></i>
+          </button>
+          <CanvasSelectionToolbar v-if="selectionToolbarVisible" :count="selectionToolbarLayers.length"
+            :anchor="selectionToolbarPlacement.anchor" :viewport="selectionToolbarPlacement.viewport"
+            :available="selectionToolbarPlacement.available" :obstacles="selectionToolbarPlacement.obstacles"
+            :group-name="selectionToolbarGroup?.name || ''" :mutable="selectionToolbarMutable"
+            :can-add-to-chat="selectionToolbarContentCount > 0" :can-download="selectionToolbarContentCount > 0"
+            :downloading="selectionDownloading" @arrange="arrangeCanvasSelection"
+            @group="toggleCanvasSelectionGroup" @chat="addCanvasSelectionToChat" @download="downloadCanvasSelection" />
           <!-- 连接线删除按钮：viewport-local 坐标，跟随画布缩放 -->
           <div
             v-if="selectedConnection.id"
@@ -17155,7 +17663,7 @@ async function loadImageForCropUncached(layer) {
                 />
               </div>
               <div
-                v-if="chatMode !== 'video'"
+                v-if="chatMode === 'image'"
                 class="uc-chat-generate-options"
                 @click.stop="closeChatSelect"
               >
@@ -17272,7 +17780,7 @@ async function loadImageForCropUncached(layer) {
                 </label>
               </div>
               <div
-                v-else
+                v-else-if="chatMode === 'video'"
                 class="uc-chat-generate-options uc-video-generate-options"
                 @click.stop="closeChatSelect"
               >
@@ -17789,7 +18297,7 @@ async function loadImageForCropUncached(layer) {
       @keydown="onConnectionMenuKeydown"
     >
       <span class="uc-toolbar-add-group-label">添加节点</span>
-      <button type="button" role="menuitem" @click="addConnectedNode('image')">
+      <button type="button" role="menuitem" :disabled="connectionNodeMenu.grouped && connectionNodeMenuHasVideos" :title="connectionNodeMenu.grouped && connectionNodeMenuHasVideos ? '含视频的选择请连接到视频节点' : ''" @click="addConnectedNode('image')">
         <i class="ri-image-line" aria-hidden="true"></i>
         <span>图片</span>
       </button>
@@ -17797,7 +18305,7 @@ async function loadImageForCropUncached(layer) {
         <i class="ri-video-line" aria-hidden="true"></i>
         <span>视频</span>
       </button>
-      <button type="button" role="menuitem" @click="addConnectedNode('text')">
+      <button v-if="!connectionNodeMenu.grouped" type="button" role="menuitem" @click="addConnectedNode('text')">
         <i class="ri-text" aria-hidden="true"></i>
         <span>文本</span>
       </button>

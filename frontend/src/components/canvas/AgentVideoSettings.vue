@@ -25,6 +25,7 @@ const props = defineProps({
   modelValue: { type: Object, required: true },
   modelOptions: { type: Array, default: () => VIDEO_MODELS },
   references: { type: Array, default: () => [] },
+  referenceVideoCount: { type: Number, default: 0 },
   capabilities: { type: Object, default: null },
   disabled: Boolean,
   allowSeedanceFrames: Boolean,
@@ -53,7 +54,7 @@ const durationOptions = computed(() => {
 const modeOptions = computed(() => props.modelValue.model === HAILUO_H3_VIDEO_MODEL
   ? [{ value: 'shouweizhen', label: '首尾帧' }]
   : [
-  { value: videoFrameModeValue(props.modelValue.model), label: '首尾帧' },
+  { value: videoFrameModeValue(props.modelValue.model), label: '首尾帧', disabled: props.referenceVideoCount > 0 },
   { value: 'cankaosheng', label: '参考生' },
 ])
 const ratio = computed(() =>
@@ -62,6 +63,7 @@ const ratio = computed(() =>
     props.references.length,
     props.modelValue.ratio,
     props.modelValue.referenceMode,
+    props.referenceVideoCount,
   ),
 )
 const ratioLocked = computed(
@@ -71,6 +73,7 @@ const ratioLocked = computed(
       props.references.length,
       '16:9',
       props.modelValue.referenceMode,
+      props.referenceVideoCount,
     ) === 'adaptive',
 )
 const providerReportedCost = computed(() => isProviderReportedCostVideoModel(props.modelValue.model, props.modelOptions))

@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.Function;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -48,22 +49,8 @@ public class AdminVideoStatsService {
     LocalDate from = parseDate(dateFrom);
     LocalDate to = parseDate(dateTo);
     if (from != null && to != null && from.isAfter(to)) throw new ApiException(400, "日期范围无效");
-    Map<Long, Account> accounts = accounts(scopeUserId);
-    Map<String, Ledger> ledgers = new LinkedHashMap<>();
-    for (Ledger ledger : ledgers(scopeUserId)) ledgers.put(key(ledger.userId(), ledger.taskId()), ledger);
-    Map<String, VideoTaskHistory.Snapshot> snapshots = new LinkedHashMap<>();
-    for (var snapshot : history.list(scopeUserId)) snapshots.put(key(snapshot.userId(), snapshot.taskId()), snapshot);
-    List<Entry> entries = new ArrayList<>();
-    for (var pair : ledgers.entrySet()) {
-      Ledger ledger = pair.getValue();
-      var snapshot = snapshots.remove(pair.getKey());
-      String type = ledger.taskId().startsWith("video-enhance:") ? "VIDEO_ENHANCE" : "VIDEO";
-      if (taskType.equals(type)) entries.add(entry(ledger, snapshot, accounts.get(ledger.userId()), type));
-    }
-    for (var snapshot : snapshots.values()) {
-      if (taskType.equals(snapshot.taskType())) entries.add(entry(null, snapshot, accounts.get(snapshot.userId()), taskType));
-    }
-    entries.sort(Comparator.comparingLong(Entry::createdAt).reversed());
+    List<Entry> entries = entries(scopeUserId).stream()
+        .filter(e -> taskType.equals(e.task().taskType())).toList();
     LocalDate today = LocalDate.now(ZONE);
     long completed = entries.stream().filter(e -> "completed".equals(e.task().status())).count();
     long failed = entries.stream().filter(e -> "failed".equals(e.task().status())).count();
@@ -94,6 +81,54 @@ public class AdminVideoStatsService {
         trends(recent, e -> e.task().model(), e -> e.task().model()),
         trends(recent, Entry::shopKey, Entry::shopName),
         trends(recent, Entry::userKey, e -> e.task().userName()));
+  }
+
+  public List<TaskRow> taskRows(Long scopeUserId, String taskType, String dateFrom, String dateTo,
+      String status, String model) {
+    if (taskType != null && !List.of("VIDEO", "VIDEO_ENHANCE").contains(taskType)) {
+      throw new ApiException(400, "任务类型无效");
+    }
+    LocalDate from = parseDate(dateFrom);
+    LocalDate to = parseDate(dateTo);
+    if (from != null && to != null && from.isAfter(to)) throw new ApiException(400, "日期范围无效");
+    return entries(scopeUserId).stream()
+        .filter(e -> taskType == null || taskType.equals(e.task().taskType()))
+        .filter(e -> from == null || !day(e.createdAt()).isBefore(from))
+        .filter(e -> to == null || !day(e.createdAt()).isAfter(to))
+        .map(Entry::task)
+        .filter(t -> status == null || status.isBlank() || statusKey(status).equals(statusKey(t.status())))
+        .filter(t -> model == null || model.isBlank() || model.equals(t.model()))
+        .toList();
+  }
+
+  private List<Entry> entries(Long scopeUserId) {
+    Map<Long, Account> accounts = accounts(scopeUserId);
+    Map<String, Ledger> ledgers = new LinkedHashMap<>();
+    for (Ledger ledger : ledgers(scopeUserId)) ledgers.put(key(ledger.userId(), ledger.taskId()), ledger);
+    Map<String, VideoTaskHistory.Snapshot> snapshots = new LinkedHashMap<>();
+    for (var snapshot : history.list(scopeUserId)) snapshots.put(key(snapshot.userId(), snapshot.taskId()), snapshot);
+    List<Entry> entries = new ArrayList<>();
+    for (var pair : ledgers.entrySet()) {
+      Ledger ledger = pair.getValue();
+      var snapshot = snapshots.remove(pair.getKey());
+      String type = ledger.taskId().startsWith("video-enhance:") ? "VIDEO_ENHANCE" : "VIDEO";
+      entries.add(entry(ledger, snapshot, accounts.get(ledger.userId()), type));
+    }
+    for (var snapshot : snapshots.values()) {
+      entries.add(entry(null, snapshot, accounts.get(snapshot.userId()), snapshot.taskType()));
+    }
+    entries.sort(Comparator.comparingLong(Entry::createdAt).reversed());
+    return entries;
+  }
+
+  private static String statusKey(String value) {
+    return switch (value == null ? "" : value.trim().toUpperCase(Locale.ROOT)) {
+      case "COMPLETED", "SUCCEEDED", "SUCCESS", "DONE" -> "COMPLETED";
+      case "FAILED", "ERROR", "CANCELLED", "CANCELED" -> "FAILED";
+      case "PENDING", "WAITING", "QUEUED", "SUBMITTED" -> "PENDING";
+      case "PROCESSING", "RUNNING", "GENERATING", "IN_PROGRESS", "PERSISTING", "RESERVING", "SUBMITTING" -> "PROCESSING";
+      default -> value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
+    };
   }
 
   private List<Ledger> ledgers(Long scope) {

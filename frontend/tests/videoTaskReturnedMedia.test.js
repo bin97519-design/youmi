@@ -100,7 +100,7 @@ test('100 percent without an address does not become a completed canvas video', 
   assert.equal(poll.layer.status, 'processing')
 })
 
-test('restored returned media is revealed while its original billing task keeps polling', () => {
+test('restored video tasks keep polling without revealing cached media over the collapsed canvas', () => {
   const revealed = [], polling = []
   const context = vm.createContext({
     layers: { value: [
@@ -115,8 +115,18 @@ test('restored returned media is revealed while its original billing task keeps 
   })
   vm.runInContext(functionSource(editor, editorAst, 'resumePendingVideoTasks'), context)
   context.resumePendingVideoTasks()
-  assert.deepEqual(revealed, ['returned'])
+  assert.deepEqual(revealed, [])
   assert.deepEqual(polling, [['original', 'returned'], ['pending', 'waiting']])
+})
+
+test('polling a restored video keeps its media hidden through billing confirmation and completion', async () => {
+  const poll = canvasPoll([pendingCost, pendingCost, { ...pendingCost, status: 'completed' }])
+  poll.layer.url = url
+  assert.equal(await poll.run(), true)
+  assert.equal(poll.layer.url, url)
+  assert.equal(poll.layer.generating, false)
+  assert.deepEqual(poll.revealed, [])
+  assert.deepEqual(poll.delays, [30000, 30000, 30000])
 })
 
 test('actual storyboard poll publishes returned media once and preserves edits during billing confirmation', async () => {

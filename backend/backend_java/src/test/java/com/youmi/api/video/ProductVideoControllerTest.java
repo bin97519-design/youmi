@@ -137,6 +137,7 @@ class ProductVideoControllerTest {
         .andExpect(jsonPath("$.data.wholeVideoShotCount").value(true))
         .andExpect(jsonPath("$.data.wholeVideoOptionalContinuity").value(true))
         .andExpect(jsonPath("$.data.imageEvidenceRoles").value(true))
+        .andExpect(jsonPath("$.data.videoPlayback").value(true))
         .andExpect(jsonPath("$.data.synchronizedAudio").value(true))
         .andExpect(jsonPath("$.data.referenceVideoReverse").value(true))
         .andExpect(jsonPath("$.data.referenceVideoHighlights").value(true))

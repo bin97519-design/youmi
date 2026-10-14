@@ -359,7 +359,7 @@ public class AdminService {
         case "COMPLETED" -> where.append(" AND LOWER(t.status) IN ('completed', 'succeeded', 'success', 'done')");
         case "FAILED" -> where.append(" AND LOWER(t.status) IN ('failed', 'error', 'cancelled', 'canceled')");
         case "PENDING" -> where.append(" AND LOWER(t.status) IN ('pending', 'waiting', 'queued', 'submitted')");
-        case "PROCESSING" -> where.append(" AND LOWER(t.status) IN ('processing', 'running', 'generating', 'in_progress', 'persisting')");
+        case "PROCESSING" -> where.append(" AND LOWER(t.status) IN ('processing', 'running', 'generating', 'in_progress', 'persisting', 'reserving', 'submitting')");
         default -> { }
       }
     }
@@ -385,7 +385,7 @@ public class AdminService {
                t.image_urls, t.result_urls, t.persist_status
         FROM ym_image_task t
         LEFT JOIN ym_sys_user u ON u.id = t.user_id
-        """ + where + " ORDER BY t.created_at DESC LIMIT ? OFFSET ?";
+        """ + where + " ORDER BY t.created_at DESC, t.id DESC LIMIT ? OFFSET ?";
     List<AdminDtos.ImageTaskRow> tasks = jdbcTemplate.query(sql,
         (rs, rowNum) -> mapImageTask(rs), pageArgs.toArray());
     return new AdminDtos.ImageTaskPage(tasks, total == null ? -1 : total, safePage, safePageSize);

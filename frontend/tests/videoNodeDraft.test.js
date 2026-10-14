@@ -11,7 +11,7 @@ import {
   ANMIAO25_VIDEO_MODEL,
   MINIMAX_VIDEO_MODEL,
 } from '../src/utils/productVideo.js'
-import { SEEDANCE_FIRST_LAST_MODE, videoReferencePayload } from '../src/utils/chatVideoSettings.js'
+import { SEEDANCE_FIRST_LAST_MODE, videoReferencePayload, videoRatioForRequest } from '../src/utils/chatVideoSettings.js'
 
 test('new video nodes default to 3:4 without replacing saved or inherited ratios', () => {
   assert.equal(normalizeVideoNodeDraft().config.ratio, '3:4')
@@ -285,4 +285,67 @@ test('Seedance node drafts retain the audio switch while H3 keeps native audio',
       .generateAudio,
     true,
   )
+})
+
+const connectedVideos = ['v1', 'v2', 'v3', 'v4'].map(layerId => ({
+  layerId, url: `https://assets.example/${layerId}.mp4`, name: layerId,
+  thumbnailUrl: '', duration: 5,
+}))
+
+test('video graph references are separate, persisted and force native reference mode', () => {
+  const original = normalizeVideoNodeDraft({ prompt: 'script', config: { model: ANMIAO25_VIDEO_MODEL } })
+  const draft = syncVideoNodeConnectedReferences(original, connectedImages.slice(0, 1), undefined, connectedVideos)
+  assert.deepEqual(draft.referenceVideos, connectedVideos)
+  assert.deepEqual(draft.references, connectedImages.slice(0, 1))
+  assert.equal(draft.config.referenceMode, 'cankaosheng')
+  assert.deepEqual(draft.connectedVideoLayerIds, ['v1', 'v2', 'v3', 'v4'])
+  assert.deepEqual(normalizeVideoNodeDraft(JSON.parse(JSON.stringify(draft))), draft)
+  assert.deepEqual(syncVideoNodeConnectedReferences(draft, connectedImages.slice(0, 1), undefined, connectedVideos), draft)
+  assert.equal(videoNodeReferenceError(draft), '')
+  assert.equal(videoRatioForRequest(ANMIAO25_VIDEO_MODEL, 1, '3:4', 'cankaosheng', 4), '3:4')
+  assert.deepEqual(videoReferencePayload(draft.config.model, draft.config.referenceMode, ['/a.png'], draft.referenceVideos), {
+    image_urls: ['/a.png'],
+    reference_videos: connectedVideos.map(video => ({ url: video.url, durationSeconds: 5 })),
+  })
+  assert.deepEqual(original.referenceVideos, [])
+})
+
+test('video references refresh, disconnect and preserve manual references and measured metadata', () => {
+  const manual = { ...connectedVideos[3], layerId: '' }
+  let draft = syncVideoNodeConnectedReferences(
+    normalizeVideoNodeDraft({ config: { model: ANMIAO25_VIDEO_MODEL }, referenceVideos: [manual] }),
+    [], undefined, connectedVideos.slice(0, 2),
+  )
+  draft = syncVideoNodeConnectedReferences(draft, [], undefined, [{ ...connectedVideos[0], duration: 0 }])
+  assert.deepEqual(draft.referenceVideos, [manual, connectedVideos[0]])
+  draft = syncVideoNodeConnectedReferences(draft, [], undefined, [{ ...connectedVideos[0], url: 'https://assets.example/new.mp4', duration: 0 }])
+  assert.equal(draft.referenceVideos[1].duration, 0)
+  draft = syncVideoNodeConnectedReferences(draft, [], undefined, [])
+  assert.deepEqual(draft.referenceVideos, [manual])
+  assert.deepEqual(draft.connectedVideoLayerIds, [])
+})
+
+test('model switches retain connected videos but block unsupported models and limits', () => {
+  const draft = syncVideoNodeConnectedReferences(
+    normalizeVideoNodeDraft({ config: { model: ANMIAO25_VIDEO_MODEL } }), [], undefined, connectedVideos,
+  )
+  const h3 = syncVideoNodeGenerationSettings(draft, { model: MINIMAX_VIDEO_MODEL })
+  assert.deepEqual(h3.referenceVideos, connectedVideos)
+  assert.match(videoNodeReferenceError(h3), /不支持参考视频/)
+  const sd20 = syncVideoNodeGenerationSettings(draft, { model: ANMIAO_VIDEO_MODEL })
+  assert.match(videoNodeReferenceError(sd20), /3 个/)
+  const long = { ...draft, referenceVideos: connectedVideos.map(video => ({ ...video, duration: 8 })) }
+  assert.match(videoNodeReferenceError(long), /总时长不能超过 30/)
+  assert.throws(() => videoReferencePayload(long.config.model, 'cankaosheng', [], long.referenceVideos), /总时长/)
+  assert.throws(() => videoReferencePayload(draft.config.model, SEEDANCE_FIRST_LAST_MODE, [], draft.referenceVideos), /混用/)
+  assert.throws(() => videoReferencePayload(draft.config.model, 'cankaosheng', [], [{ ...connectedVideos[0], duration: 0 }]), /无法读取/)
+})
+
+test('configured seedance-2.5 alias retains its duration, resolution and video references', () => {
+  const model = 'seedance-2.5'
+  const draft = normalizeVideoNodeDraft({ config: { model, duration: 5, resolution: '720p' }, referenceVideos: connectedVideos })
+  assert.equal(draft.config.model, model)
+  assert.equal(draft.config.duration, 5)
+  assert.equal(draft.config.resolution, '720p')
+  assert.equal(videoNodeReferenceError(draft), '')
 })

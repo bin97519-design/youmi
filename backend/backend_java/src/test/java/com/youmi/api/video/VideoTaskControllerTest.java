@@ -21,6 +21,35 @@ class VideoTaskControllerTest {
   final VideoTaskHistory history = mock(VideoTaskHistory.class);
   final VideoTaskController controller = new VideoTaskController(legacy, billing, auth, chat, anmiao, minimax, history);
 
+  @Test void unsupportedVideoReferencesCannotReachBillingOrLegacyRoutes() {
+    when(auth.requireUserId("token")).thenReturn(7L);
+    for (String model : java.util.List.of("seedance-2.0-fast-0826-720p", "minimax-h3", ChatVideoClient.MODEL, "bound-other-model")) {
+      var request = new VideoGenerationDtos.CreateTaskRequest("test", model, "3:4", 6, "720p",
+          java.util.List.of(), null, null, null, true, null, null, null, null,
+          java.util.List.of(new VideoGenerationDtos.ReferenceVideo("https://assets.example/a.mp4", 5.0)));
+      assertEquals(400, assertThrows(ApiException.class, () -> controller.create("token", request)).getCode());
+    }
+    verifyNoInteractions(billing, legacy, chat, minimax, anmiao);
+  }
+
+  @Test void supportedReferenceVideosReachNativeTransportAndHistoryWithoutBeingDropped() throws Exception {
+    when(auth.requireUserId("token")).thenReturn(7L);
+    var request = new VideoGenerationDtos.CreateTaskRequest("test", "seedance-2.5", "3:4", 6, "720p",
+        java.util.List.of(), null, null, null, true, null, null, "native-ref-client", null,
+        java.util.List.of(new VideoGenerationDtos.ReferenceVideo("https://assets.example/a.mp4", 5.0)));
+    when(anmiao.supportsModel(request.model())).thenReturn(true);
+    when(anmiao.price(request)).thenReturn(18);
+    var response = new VideoGenerationDtos.CreateTaskResponse();
+    response.setTaskId("anmiao-video:key:1:native-ref-task");
+    when(anmiao.createTask(request)).thenReturn(response);
+    when(billing.checkAndDeduct(7L, MiBizType.VIDEO, 18))
+        .thenReturn(new MiValueDtos.DeductResult(5L, 0, 0, 18, MiBizType.VIDEO));
+    controller.create("token", request);
+    verify(anmiao).createTask(request);
+    verify(history).created(eq(7L), eq(request), eq(response), anyLong());
+    verifyNoInteractions(legacy, chat, minimax);
+  }
+
   @Test void removedModelCannotFallThroughToLegacyTransportOrBilling() {
     when(auth.requireUserId("token")).thenReturn(7L);
     var request = new VideoGenerationDtos.CreateTaskRequest("test", "minimax-h3-max", "16:9", 5);

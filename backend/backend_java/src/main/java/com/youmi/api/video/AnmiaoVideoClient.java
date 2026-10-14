@@ -135,6 +135,10 @@ public class AnmiaoVideoClient {
     }
     String lastFrame = request.lastFrameUrl() == null ? "" : request.lastFrameUrl().trim();
     if (!lastFrame.isBlank()) content.add(image("last_frame", lastFrame));
+    for (var video : request.normalizedReferenceVideos()) {
+      content.add(Map.of("type", "video_url", "role", "reference_video",
+          "video_url", Map.of("url", video.url())));
+    }
     String endpoint = credential == null
         ? properties.normalizedBaseUrl() + "/contents/generations/tasks"
         : credential.generationEndpoint();
@@ -151,6 +155,8 @@ public class AnmiaoVideoClient {
       body.put("ratio", request.ratio());
       body.put("duration", request.durationSeconds());
       body.put("generate_audio", request.generateAudio() == null || request.generateAudio());
+      if (isModel25(request.model()) && !request.normalizedReferenceVideos().isEmpty())
+        body.put("omni_reference_task_type", "reference");
       root = sendUrl(apiKey, "POST", endpoint, body);
       id = providerTaskId(root);
       if (!id.matches("[A-Za-z0-9_-]+")) throw new ApiException(502, "按秒视频接口未返回有效任务编号");
@@ -262,11 +268,13 @@ public class AnmiaoVideoClient {
           : "按秒视频画质仅支持 480p、720p、1080p 或 4k");
     String first = request.normalizedFirstFrameUrl();
     String last = request.lastFrameUrl() == null ? "" : request.lastFrameUrl().trim();
+    validateReferenceVideos(request);
     List<String> references = referenceImages(request);
     int maxReferences = model25 ? 30 : 9;
     if (references.size() > maxReferences)
       throw new ApiException(400, "按秒视频最多支持 " + maxReferences + " 张参考图");
-    if (model25 && references.isEmpty() && !first.isBlank() && !"adaptive".equals(request.ratio()))
+    if (model25 && request.normalizedReferenceVideos().isEmpty()
+        && references.isEmpty() && !first.isBlank() && !"adaptive".equals(request.ratio()))
       throw new ApiException(400, "SD 2.5 首帧任务的比例只能选择自适应");
     if (!references.isEmpty() && !last.isBlank())
       throw new ApiException(400, "多张参考图不能与尾帧模式混用");
@@ -281,7 +289,42 @@ public class AnmiaoVideoClient {
   private List<String> referenceImages(VideoGenerationDtos.CreateTaskRequest request) {
     if (request.firstFrameUrl() != null && !request.firstFrameUrl().isBlank()) return List.of();
     List<String> urls = request.normalizedImageUrls();
-    return urls.size() > 1 ? urls : List.of();
+    return urls.size() > 1 || !request.normalizedReferenceVideos().isEmpty() ? urls : List.of();
+  }
+
+  public static boolean supportsVideoReferences(String model) {
+    if (model == null) return false;
+    String value = model.toLowerCase(Locale.ROOT);
+    return MODEL.equals(model) || MODEL20_FAST.equals(model) || MODEL25.equals(model)
+        || value.equals("seedance-2.0") || value.contains("seedance-2.0-guanfang-anmiao")
+        || value.contains("seedance-2.5")
+        || value.replaceAll("[^a-z0-9]+", "-").contains("doubao-seedance-2-0-fast");
+  }
+
+  private void validateReferenceVideos(VideoGenerationDtos.CreateTaskRequest request) {
+    List<VideoGenerationDtos.ReferenceVideo> videos = request.normalizedReferenceVideos();
+    if (videos.isEmpty()) return;
+    if (!supportsVideoReferences(request.model()))
+      throw new ApiException(400, "所选模型不支持参考视频，请更换模型或移除视频连线");
+    if ((request.firstFrameUrl() != null && !request.firstFrameUrl().isBlank())
+        || (request.lastFrameUrl() != null && !request.lastFrameUrl().isBlank()))
+      throw new ApiException(400, "参考视频不能与首尾帧模式混用");
+    int maxCount = isModel25(request.model()) ? 10 : 3;
+    int maxSeconds = isModel25(request.model()) ? 30 : 15;
+    if (videos.size() > maxCount)
+      throw new ApiException(400, "所选模型最多支持 " + maxCount + " 个参考视频");
+    double total = 0;
+    for (var video : videos) {
+      if (video == null || video.url() == null || video.url().isBlank())
+        throw new ApiException(400, "参考视频地址不能为空");
+      requirePublicUrl(video.url());
+      Double seconds = video.durationSeconds();
+      if (seconds == null || !Double.isFinite(seconds) || seconds < 2 || seconds > maxSeconds)
+        throw new ApiException(400, "参考视频时长需为 2 至 " + maxSeconds + " 秒");
+      total += seconds;
+    }
+    if (total > maxSeconds + 0.000001)
+      throw new ApiException(400, "参考视频总时长不能超过 " + maxSeconds + " 秒");
   }
 
   private Map<String, Object> image(String role, String url) {
@@ -298,7 +341,7 @@ public class AnmiaoVideoClient {
       URI uri = URI.create(value);
       if (Set.of("https", "http").contains(uri.getScheme()) && uri.getHost() != null) return;
     } catch (Exception ignored) { }
-    throw new ApiException(400, "参考图片必须是公网 HTTP(S) 地址");
+    throw new ApiException(400, "参考素材必须是公网 HTTP(S) 地址");
   }
 
   private JsonNode send(String apiKey, String method, String path, Object body) throws Exception {

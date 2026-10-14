@@ -349,31 +349,18 @@ const filteredRoles = computed(() => {
   )
 })
 
-const filteredTasks = computed(() => {
-  if (statsKind.value === 'image') return taskRows.value
-  let list = taskRows.value
-  if (taskStatusFilter.value) list = list.filter((task) => taskStatusKey(task.status) === taskStatusFilter.value)
-  if (taskModelFilter.value) list = list.filter((task) => (task.requestedModel || task.model) === taskModelFilter.value)
-  if (taskUserFilter.value) list = list.filter((task) => String(task.userId) === taskUserFilter.value)
-  return list
-})
-
-/* Image tasks use server pagination; video and combined tasks retain the recent-task list. */
 const taskCurrentPage = ref(1)
 const taskPageSize = ref(10)
 const taskReloading = ref(false)
+let taskReloadSequence = 0
 
-const pagedTasks = computed(() => {
-  if (statsKind.value === 'image') return filteredTasks.value
-  const start = (taskCurrentPage.value - 1) * taskPageSize.value
-  return filteredTasks.value.slice(start, start + taskPageSize.value)
-})
-const taskTotal = computed(() => statsKind.value === 'image' ? taskRowsTotal.value : filteredTasks.value.length)
+const pagedTasks = computed(() => taskRows.value)
+const taskTotal = computed(() => taskRowsTotal.value)
 const taskTotalPages = computed(() => Math.max(1, Math.ceil(taskTotal.value / taskPageSize.value)))
 /* 筛选条件变化只重置页码，保留筛选值 */
 watch([taskStatusFilter, taskModelFilter, taskUserFilter], () => {
   taskCurrentPage.value = 1
-  if (stats.value && statsKind.value === 'image') reloadTaskPage(1)
+  if (stats.value || taskReloading.value || loading.value) reloadTaskPage(1)
 })
 
 /* ── 日期范围筛选（最近生图任务） ── */
@@ -565,8 +552,8 @@ function syncTaskToday() {
 }
 
 // 拼接日期筛选 query 参数（dateFrom / dateTo）
-function buildImageTaskQuery(page = taskCurrentPage.value, includeTotal = true) {
-  const params = new URLSearchParams()
+function buildTaskQuery(page = taskCurrentPage.value) {
+  const params = new URLSearchParams({ kind: statsKind.value })
   if (taskDateFrom.value) params.set('dateFrom', taskDateFrom.value)
   if (taskDateTo.value) params.set('dateTo', taskDateTo.value)
   if (taskStatusFilter.value) params.set('status', taskStatusFilter.value)
@@ -574,36 +561,22 @@ function buildImageTaskQuery(page = taskCurrentPage.value, includeTotal = true) 
   if (taskUserFilter.value) params.set('userId', taskUserFilter.value)
   params.set('page', String(page))
   params.set('pageSize', String(taskPageSize.value))
-  params.set('includeTotal', String(includeTotal))
   const qs = params.toString()
   return qs ? `?${qs}` : ''
 }
 
-async function fetchImageTaskPage(page, includeTotal = true) {
+async function fetchTaskPage(page) {
   const sequence = ++statsRequestSequence
-  const taskPage = await api('/api/admin/image-tasks' + buildImageTaskQuery(page, includeTotal))
-  if (sequence !== statsRequestSequence || statsKind.value !== 'image') return
+  const kind = statsKind.value
+  const taskPage = await api('/api/admin/tasks' + buildTaskQuery(page))
+  if (sequence !== statsRequestSequence || statsKind.value !== kind) return
   taskRows.value = normalizeConsoleTaskStats({ tasks: taskPage?.tasks }).tasks
-  if (Number(taskPage?.total) >= 0) taskRowsTotal.value = Number(taskPage.total)
+  taskRowsTotal.value = Number(taskPage?.total) || 0
+  if (page > taskTotalPages.value) {
+    taskCurrentPage.value = taskTotalPages.value
+    await fetchTaskPage(taskCurrentPage.value)
+  }
   errorText.value = ''
-}
-
-async function fetchCombinedImageStats(dateFrom, dateTo) {
-  const params = new URLSearchParams({ page: '1', pageSize: '100', includeTotal: 'true' })
-  if (dateFrom) params.set('dateFrom', dateFrom)
-  if (dateTo) params.set('dateTo', dateTo)
-  const [imageStats, firstPage] = await Promise.all([
-    api(consoleTaskStatsUrl('image', dateFrom, dateTo)),
-    api(`/api/admin/image-tasks?${params}`),
-  ])
-  const pageCount = Math.min(5, Math.ceil((Number(firstPage?.total) || 0) / 100))
-  const remainingPages = await Promise.all(Array.from({ length: Math.max(0, pageCount - 1) }, (_, index) => {
-    const query = new URLSearchParams(params)
-    query.set('page', String(index + 2))
-    query.set('includeTotal', 'false')
-    return api(`/api/admin/image-tasks?${query}`)
-  }))
-  return { ...imageStats, tasks: [firstPage, ...remainingPages].flatMap((page) => page?.tasks || []) }
 }
 
 async function fetchTaskStats(page = taskCurrentPage.value) {
@@ -611,27 +584,22 @@ async function fetchTaskStats(page = taskCurrentPage.value) {
   const kind = statsKind.value
   const dateFrom = taskDateFrom.value
   const dateTo = taskDateTo.value
-  let result, imageTaskPage
-  if (kind === 'all') {
-    result = mergeConsoleTaskStats(...await Promise.all([
-      fetchCombinedImageStats(dateFrom, dateTo),
-      api(consoleTaskStatsUrl('video', dateFrom, dateTo)),
-      api(consoleTaskStatsUrl('enhance', dateFrom, dateTo)),
-    ]))
-  } else if (kind === 'image') {
-    [result, imageTaskPage] = await Promise.all([
-      api(consoleTaskStatsUrl(kind, dateFrom, dateTo)),
-      api('/api/admin/image-tasks' + buildImageTaskQuery(page)),
-    ])
-  } else {
-    result = await api(consoleTaskStatsUrl(kind, dateFrom, dateTo))
-  }
+  const overview =
+    kind === 'all'
+      ? Promise.all(
+          ['image', 'video', 'enhance'].map((category) =>
+            api(consoleTaskStatsUrl(category, dateFrom, dateTo)),
+          ),
+        ).then((results) => mergeConsoleTaskStats(...results))
+      : api(consoleTaskStatsUrl(kind, dateFrom, dateTo))
+  const [result, taskPage] = await Promise.all([
+    overview,
+    api('/api/admin/tasks' + buildTaskQuery(page)),
+  ])
   if (sequence === statsRequestSequence && kind === statsKind.value) {
     stats.value = normalizeConsoleTaskStats(result)
-    taskRows.value = kind === 'image'
-      ? normalizeConsoleTaskStats({ tasks: imageTaskPage?.tasks }).tasks
-      : stats.value.tasks
-    taskRowsTotal.value = Number(imageTaskPage?.total) || 0
+    taskRows.value = normalizeConsoleTaskStats({ tasks: taskPage?.tasks }).tasks
+    taskRowsTotal.value = Number(taskPage?.total) || 0
     errorText.value = ''
   }
 }
@@ -658,23 +626,24 @@ watch([taskDateFrom, taskDateTo], () => {
 })
 
 async function reloadTaskPage(p) {
+  const sequence = ++taskReloadSequence
   const target = Math.min(Math.max(1, p), taskTotalPages.value)
   taskReloading.value = true
   taskCurrentPage.value = target
   try {
-    if (statsKind.value === 'image' && stats.value) await fetchImageTaskPage(target)
+    if (stats.value) await fetchTaskPage(target)
     else await fetchTaskStats(target)
   } catch (e) {
-    errorText.value = e.message || '任务统计加载失败'
+    if (sequence === taskReloadSequence) errorText.value = e.message || '任务统计加载失败'
   } finally {
-    taskReloading.value = false
+    if (sequence === taskReloadSequence) taskReloading.value = false
   }
 }
 
 function changeTaskPageSize(size) {
   taskPageSize.value = size
   taskCurrentPage.value = 1
-  if (stats.value) reloadTaskPage(1)
+  if (stats.value || taskReloading.value || loading.value) reloadTaskPage(1)
 }
 
 const taskModelOptions = computed(() => {
@@ -1448,7 +1417,7 @@ async function refreshTaskStatsSilently({ force = false } = {}) {
     return
   }
   try {
-    if (statsKind.value === 'image') await fetchImageTaskPage(taskCurrentPage.value, false)
+    if (stats.value && statsKind.value === 'image') await fetchTaskPage(taskCurrentPage.value)
     else await fetchTaskStats()
   } catch {
     // 保留当前数据，下一轮再同步任务状态与永久链接。

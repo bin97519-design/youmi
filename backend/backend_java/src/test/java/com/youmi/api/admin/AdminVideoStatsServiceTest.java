@@ -154,6 +154,20 @@ class AdminVideoStatsServiceTest {
     assertEquals(1, service.stats(1L, "VIDEO_ENHANCE", null, null).tasks().size());
   }
 
+  @Test void taskListFiltersBeforePaginationAndHasNoRecentFiveHundredLimit() throws Exception {
+    for (int id = 1; id <= 501; id++) charge(id, 1, "thq-video:" + id, "SUCCESS", 10);
+    enhance(1, "older-failure", "failed");
+    charge(502, 1, "video-enhance:older-failure", "ROLLBACK", 10);
+    assertEquals(502, service.taskRows(1L, null, today, today, "", "").size());
+    var filtered = service.taskRows(1L, null, today, today, "FAILED", "video-enhance");
+    assertEquals(1, filtered.size());
+    assertEquals("video-enhance:older-failure", filtered.get(0).taskId());
+    assertTrue(service.taskRows(2L, null, today, today, "", "").isEmpty());
+    assertTrue(service.taskRows(1L, "VIDEO", today, today, "FAILED", "").isEmpty());
+    assertTrue(service.taskRows(1L, null, "2000-01-01", "2000-01-02", "", "").isEmpty());
+    assertThrows(ApiException.class, () -> service.taskRows(1L, "BAD", null, null, "", ""));
+  }
+
   @Test void historicalChatTasksKeepTheirResultsWithoutExposingProviderRawResponse() throws Exception {
     Path file = temp.resolve("chat/1/chat.json");
     Files.createDirectories(file.getParent());

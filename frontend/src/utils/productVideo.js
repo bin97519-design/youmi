@@ -93,7 +93,7 @@ export const isAnmiao25VideoModel = (model) =>
   model === ANMIAO25_VIDEO_MODEL ||
   String(model || '')
     .toLowerCase()
-    .includes('seedance-2.5-guanfang-anmiao')
+    .includes('seedance-2.5')
 export const isPerSecondVideoModel = (model) =>
   [ANMIAO_VIDEO_MODEL, ANMIAO25_VIDEO_MODEL, MINIMAX_VIDEO_MODEL, HAILUO_H3_VIDEO_MODEL].includes(
     model,

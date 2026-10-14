@@ -34,7 +34,7 @@ class AdminImageTaskPageTest {
         mock(ImageGenerationProperties.class));
 
     AdminDtos.ImageTaskPage page = service.imageTaskPage(
-        null, "2026-10-01", "2026-10-10", "", "", null, 0, 500, false);
+        null, "2026-10-01", "2026-10-10", "PROCESSING", "", null, 0, 500, false);
 
     assertEquals(1, page.page());
     assertEquals(100, page.pageSize());
@@ -47,5 +47,7 @@ class AdminImageTaskPageTest {
     assertEquals(true, sql.getValue().contains("t.created_at >= ?"));
     assertEquals(true, sql.getValue().contains("t.created_at < DATE_ADD(?, INTERVAL 1 DAY)"));
     assertEquals(true, sql.getValue().contains("LIMIT ? OFFSET ?"));
+    assertEquals(true, sql.getValue().contains("ORDER BY t.created_at DESC, t.id DESC"));
+    assertEquals(true, sql.getValue().contains("'reserving', 'submitting'"));
   }
 }
