@@ -31,6 +31,7 @@ const props = defineProps({
 })
 const emit = defineEmits(['update:draft', 'generate', 'upload-reference'])
 const settingsOpen = ref(false)
+const expanded = ref(false)
 const referencesOpen = ref(false)
 const referenceInput = ref(null)
 const promptInput = ref(null)
@@ -146,8 +147,8 @@ function toggleSettings() {
 
 <template>
   <section
-    class="video-node-composer"
-    :class="{ 'is-compact': editorWidth < 480 }"
+    class="video-node-composer canvas-node-composer"
+    :class="{ 'is-compact': editorWidth < 480, 'is-expanded': expanded }"
     :style="{ width: `${editorWidth}px` }"
     aria-label="视频节点编辑器"
     @pointerdown.stop
@@ -323,6 +324,10 @@ function toggleSettings() {
         <span v-if="!canvasImages.length" class="video-node-empty">暂无画布图片</span>
       </div>
     </div>
+    <button class="video-node-icon canvas-node-expand video-node-expand" type="button" :title="expanded ? '收起输入框' : '展开输入框'"
+      :aria-label="expanded ? '收起视频输入框' : '展开视频输入框'" :aria-pressed="expanded" @click="expanded = !expanded">
+      <i :class="expanded ? 'ri-fullscreen-exit-line' : 'ri-fullscreen-line'" aria-hidden="true"></i>
+    </button>
     <textarea
       ref="promptInput"
       :value="draft.prompt"

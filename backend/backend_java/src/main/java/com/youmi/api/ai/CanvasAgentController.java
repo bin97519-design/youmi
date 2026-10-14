@@ -118,6 +118,27 @@ public class CanvasAgentController {
     }
   }
 
+  @PostMapping("/text")
+  public ApiResponse<CanvasAgentDtos.TextNodeResponse> text(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @RequestBody CanvasAgentDtos.TextNodeRequest request) throws Exception {
+    Long userId = adminAuthService.requireUserId(authorization);
+    long startedAt = System.currentTimeMillis();
+    String conversationId = "text-node-" + (request == null ? "" : request.layerId());
+    String input = request == null ? "" : Objects.toString(request.instruction(), "") + Objects.toString(request.text(), "");
+    try {
+      var response = canvasAgentService.writeTextNode(request);
+      recordUsage(userId, request == null ? "" : request.canvasId(), conversationId, "TEXT",
+          response.provider(), response.model(), "SUCCESS", startedAt, length(input), length(response.text()),
+          request == null || request.imageUrls() == null ? 0 : request.imageUrls().size(), "");
+      return ApiResponse.ok(response);
+    } catch (Exception error) {
+      recordFailure(userId, request == null ? "" : request.canvasId(), conversationId, "TEXT",
+          request == null ? null : request.agentModel(), startedAt, input, error);
+      throw error;
+    }
+  }
+
   @PostMapping("/enhance-prompt")
   public ApiResponse<CanvasAgentDtos.EnhancePromptResponse> enhancePrompt(
       @RequestHeader(value = "Authorization", required = false) String authorization,

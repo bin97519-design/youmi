@@ -18,6 +18,9 @@ import VideoEnhanceDialog from '../components/canvas/VideoEnhanceDialog.vue'
 import AgentVideoSettings from '../components/canvas/AgentVideoSettings.vue'
 import VideoNodeComposer from '../components/canvas/VideoNodeComposer.vue'
 import ImageNodeComposer from '../components/canvas/ImageNodeComposer.vue'
+import TextNodeComposer from '../components/canvas/TextNodeComposer.vue'
+import CanvasNodeEmptyState from '../components/canvas/CanvasNodeEmptyState.vue'
+import { normalizeTextNodeDraft, syncTextNodeReferences, textNodeRequest, textNodeResultPatch } from '../utils/textNodeDraft'
 import CanvasSelectionToolbar from '../components/canvas/CanvasSelectionToolbar.vue'
 import {
   selectedCanvasLayers,
@@ -5657,7 +5660,7 @@ function addTextNode(options = {}) {
       name: layerName(index),
       type: 'text',
       text: '',
-      color: '#999999',
+      color: '',
       ...CANVAS_TEXT_NODE_LAYOUT,
       fontWeight: 400,
       align: 'left',
@@ -6550,7 +6553,7 @@ function onLayerDblClick(event, layer) {
 }
 
 function startEditText(layer) {
-  if (layer.videoReversePrompt?.status === 'pending') return
+  if (!isEditableTextNode(layer)) return
   pushUndo()
   editingTextLayerId.value = layer.id
   editingTextValue.value = layer.text || ''
@@ -7263,6 +7266,8 @@ function removeLayers(ids) {
   const existingLayerIds = new Set(layers.value.map((layer) => layer.id))
   const deleteSet = new Set(ids.filter((id) => existingLayerIds.has(id)))
   if (!deleteSet.size) return
+
+  for (const id of deleteSet) cancelTextNodeRequest(id)
 
   // Deletion must also cancel explicit focus queued before this mutation.
   const focusRevision = ++canvasNodeFocusRevision
@@ -11158,6 +11163,209 @@ watch(
 )
 
 const videoNodeActivity = reactive({})
+const textNodeActivity = reactive({})
+const textNodeRequests = new Map()
+const textNodeConnectionReferences = computed(() => ({
+  images: incomingImageReferencesByNode(layers.value, connections.value, renderedLayerIds.value),
+  texts: incomingTextReferencesByNode(layers.value, connections.value, renderedLayerIds.value),
+  videos: incomingVideoReferencesByNode(layers.value, connections.value, renderedLayerIds.value),
+}))
+
+function isEditableTextNode(layer) {
+  return Boolean(layer?.type === 'text' && !layer.locked && !layer.generating && layer.videoReversePrompt?.status !== 'pending')
+}
+
+function isTextNodeEditorVisible(layer) {
+  return isEditableTextNode(layer) && selectedLayerId.value === layer.id && selectedLayerIds.value.length <= 1
+}
+
+function textNodeReferenceError(layer) {
+  return textNodeConnectionReferences.value.videos.get(layer.id)?.length
+    ? '文本编辑支持图片和文本参考，请先移除视频连线' : ''
+}
+
+async function openTextVideoPreset(layer) {
+  const source = layers.value.find(item => item.id === layer.id)
+  if (!source || source.locked || source.generating || !userStore.requireLogin()) return
+  if (source.type === 'text' ? !isEditableTextNode(source) || textNodeActivity[source.id]?.submitting
+    : source.type !== 'video' || source.url || source.taskId || videoNodeBusy(source)) return
+  const canvasId = props.id
+  const peerType = source.type === 'text' ? 'video' : 'text'
+  let peer = layers.value.find(item => item.id === source.textVideoPeerId && item.type === peerType &&
+    (!item.groupId || item.groupId === source.groupId))
+  if (!peer && source.groupId) peer = layers.value.find(item => item.type === peerType &&
+    item.groupId === source.groupId && connections.value.some(edge => edge.fromPort === 'right' &&
+      edge.toPort === 'left' && (source.type === 'text'
+        ? edge.fromLayerId === source.id && edge.toLayerId === item.id
+        : edge.fromLayerId === item.id && edge.toLayerId === source.id)))
+  if (peer?.locked || peer?.generating) return
+  const groupId = source.groupId || `group-${crypto.randomUUID()}`
+  const usedNames = new Set(layers.value.map(item => item.groupName).filter(Boolean))
+  let groupName = source.groupName || '文生视频', index = 2
+  if (!source.groupId) while (usedNames.has(groupName)) groupName = `文生视频 ${index++}`
+  const newPeer = !peer
+  if (newPeer) {
+    const width = CANVAS_IMAGE_WIDTH, height = Math.round(width * 4 / 3), gap = 80
+    const direction = source.type === 'text' ? 1 : -1
+    let x = source.type === 'text' ? source.x + source.width + gap : source.x - width - gap
+    const y = source.y
+    const occupied = layers.value.filter(item => item.id !== source.id && item.visible !== false)
+    while (occupied.some(item => x < item.x + item.width + gap && x + width + gap > item.x &&
+      y < item.y + item.height + gap && y + height + gap > item.y)) x += direction * (width + gap)
+    peer = {
+      id: `layer-${crypto.randomUUID()}`, name: layerName(layers.value.length), type: peerType,
+      x, y, width, height, visible: true, locked: false,
+      zIndex: Math.max(0, ...layers.value.map(item => item.zIndex || 0)) + 1,
+      ...(peerType === 'text' ? {
+        text: '', color: '', fontSize: CANVAS_TEXT_NODE_LAYOUT.fontSize, fontWeight: 400, align: 'left',
+      } : { url: '', thumbnailUrl: '', videoNodeDraft: normalizeVideoNodeDraft({}, chatVideoGenerationSettings.value, videoModelOptions) }),
+    }
+  }
+  const text = source.type === 'text' ? source : peer
+  const video = source.type === 'video' ? source : peer
+  const edges = missingNodeConnections([text.id], 'right', video.id, 'left', connections.value)
+  if (newPeer || edges.length || source.groupId !== groupId || peer.groupId !== groupId) {
+    pushUndo({ restoreSelection: true })
+    const nextConnections = [...connections.value, ...edges.map(edge => ({ ...edge, id: `conn-${crypto.randomUUID()}` }))]
+    canvas.updateDocument(canvasId, draft => {
+      if (newPeer) draft.payload.layers.push(peer)
+      for (const item of draft.payload.layers) {
+        if (item.id !== source.id && item.id !== peer.id) continue
+        Object.assign(item, { groupId, groupName, textVideoPeerId: item.id === source.id ? peer.id : source.id })
+      }
+      draft.payload.connections = nextConnections
+      return draft
+    })
+    connections.value = nextConnections
+  }
+  activeTool.value = 'select'
+  selectCanvasGroup(groupId)
+  await nextTick()
+  if (props.id !== canvasId) return
+  refreshConnections()
+  await canvas.flushNow(canvasId)
+}
+
+async function handleEmptyNodeAction(layer, action) {
+  if (layer.locked || layer.generating) return
+  if ((layer.type === 'text' && action === 'video') || (layer.type === 'video' && action === 'generate')) {
+    return openTextVideoPreset(layer)
+  }
+  selectedLayerId.value = layer.id
+  selectedLayerIds.value = [layer.id]
+  if (action === 'upload') return uploadNodeMedia(layer)
+  if (action === 'write') return startEditText(layer)
+  if (layer.type === 'image-placeholder') activateImageNodeEditor(layer)
+  const selector = layer.type === 'text' ? '.text-node-composer' : layer.type === 'video' ? '.video-node-composer' : '.image-node-composer'
+  const editor = await getCanvasNodeEditor(layer.id, selector)
+  if (!editor) return
+  if (action === 'reference') {
+    const label = layer.type === 'text' ? '添加文本参考素材' : layer.type === 'video' ? '添加视频参考图' : '添加图片参考图'
+    const button = editor.querySelector(`button[aria-label="${label}"]`) ||
+      (layer.type === 'video' ? editor.querySelector('button[aria-label="选择首帧"]') : null)
+    button?.click()
+  } else editor.querySelector('textarea')?.focus({ preventScroll: true })
+}
+
+function textNodeDraftFor(layer) {
+  return syncTextNodeReferences(
+    normalizeTextNodeDraft(layer.textNodeDraft, agentModel.value),
+    textNodeConnectionReferences.value.images.get(layer.id) || [],
+    textNodeConnectionReferences.value.texts.get(layer.id) || [],
+    layers.value,
+  )
+}
+
+function textNodeCanvasReferences(layer) {
+  return layers.value.filter(item => item.id !== layer.id && !item.generating).flatMap(item => {
+    if (item.type === 'text' && item.text?.trim()) return [{ kind: 'text', layerId: item.id, name: item.name, text: item.text }]
+    if (isRealImageLayer(item)) return [{ kind: 'image', layerId: item.id, name: item.name, url: item.url, thumbnailUrl: item.thumbnailUrl }]
+    return []
+  })
+}
+
+function updateTextNodeDraft(layer, value) {
+  if (!isEditableTextNode(layer) || textNodeActivity[layer.id]?.submitting) return
+  const current = textNodeDraftFor(layer)
+  const draft = normalizeTextNodeDraft(value, agentModel.value)
+  const kept = new Set(draft.references.map(item => item.layerId))
+  const removed = new Set(current.connectedLayerIds.filter(id => !kept.has(id)))
+  if (removed.size) {
+    connections.value = connections.value.filter(edge => !(
+      (edge.toLayerId === layer.id && removed.has(edge.fromLayerId)) ||
+      (edge.fromLayerId === layer.id && edge.fromPort === 'left' && removed.has(edge.toLayerId))
+    ))
+    persistConnections()
+  }
+  draft.connectedLayerIds = current.connectedLayerIds.filter(id => kept.has(id))
+  updateLayer(layer.id, { textNodeDraft: draft })
+  textNodeActivity[layer.id] = { ...textNodeActivity[layer.id], error: '' }
+}
+
+function cancelTextNodeRequest(layerId) {
+  textNodeRequests.get(layerId)?.abort()
+  textNodeRequests.delete(layerId)
+  if (textNodeActivity[layerId]) textNodeActivity[layerId].submitting = false
+}
+
+async function submitTextNode(layer) {
+  if (!isEditableTextNode(layer) || textNodeActivity[layer.id]?.submitting || !userStore.requireLogin()) return
+  const draft = textNodeDraftFor(layer)
+  if (draft.pendingResult) return
+  if (textNodeReferenceError(layer)) {
+    textNodeActivity[layer.id] = { error: textNodeReferenceError(layer) }
+    return
+  }
+  if (!agentModelRecords.value.some(item => item.value === draft.model && item.configured !== false)) {
+    textNodeActivity[layer.id] = { error: '所选模型当前不可用，请重新选择' }
+    return
+  }
+  if (editingTextLayerId.value === layer.id) finishEditText()
+  const canvasId = props.id
+  const controller = new AbortController()
+  let submitted
+  try {
+    submitted = textNodeRequest(canvasId, layers.value.find(item => item.id === layer.id), draft)
+    updateLayer(layer.id, { textNodeDraft: draft })
+    textNodeRequests.set(layer.id, controller)
+    textNodeActivity[layer.id] = { submitting: true, error: '' }
+    const response = await readApiResponse(await fetch(apiPath('/api/ai/canvas-agent/text'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...userStore.authHeaders() },
+      body: JSON.stringify(submitted), signal: controller.signal,
+    }))
+    if (controller.signal.aborted || canvasId !== props.id || textNodeRequests.get(layer.id) !== controller) return
+    const target = layers.value.find(item => item.id === layer.id && item.type === 'text')
+    if (!target) return
+    const patch = textNodeResultPatch(target, submitted, response, editingTextLayerId.value === layer.id)
+    pushUndo()
+    updateLayer(layer.id, patch)
+  } catch (error) {
+    if (!controller.signal.aborted && canvasId === props.id && layers.value.some(item => item.id === layer.id))
+      textNodeActivity[layer.id] = { submitting: false, error: error.message || '文本生成失败，原文已保留' }
+  } finally {
+    if (textNodeRequests.get(layer.id) === controller) {
+      textNodeRequests.delete(layer.id)
+      if (textNodeActivity[layer.id]) textNodeActivity[layer.id].submitting = false
+    }
+  }
+}
+
+function resolveTextNodeResult(layer, apply) {
+  if (!isEditableTextNode(layer) || textNodeActivity[layer.id]?.submitting) return
+  const draft = textNodeDraftFor(layer)
+  if (!draft.pendingResult) return
+  if (editingTextLayerId.value === layer.id) finishEditText()
+  pushUndo()
+  updateLayer(layer.id, {
+    ...(apply ? { text: draft.pendingResult } : {}),
+    textNodeDraft: { ...draft, pendingResult: '', ...(apply ? { prompt: '' } : {}) },
+  })
+}
+
+watch(() => props.id, () => {
+  for (const id of textNodeRequests.keys()) cancelTextNodeRequest(id)
+})
+
 const videoNodeEditorZIndex = computed(
   () => Math.max(0, ...layers.value.map((layer) => layer.zIndex || 0)) + 1,
 )
@@ -13550,6 +13758,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   _mounted.value = false
+  for (const id of textNodeRequests.keys()) cancelTextNodeRequest(id)
   for (const [conversationId, timer] of agentConversationSyncTimers.entries()) {
     window.clearTimeout(timer)
     void syncAgentConversationNow(conversationId)
@@ -15694,7 +15903,7 @@ async function loadImageForCropUncached(layer) {
                 layer.horizontalSlice
                   ? `${layer.height}px`
                   : undefined,
-              zIndex: isVideoNodeEditorVisible(layer) || isImageNodeEditorVisible(layer)
+              zIndex: isVideoNodeEditorVisible(layer) || isImageNodeEditorVisible(layer) || isTextNodeEditorVisible(layer)
                 ? videoNodeEditorZIndex : layer.zIndex,
               '--drag-z-index': dragState?.dragZById?.[layer.id],
               '--canvas-inverse-scale': 1 / viewScale,
@@ -16006,7 +16215,7 @@ async function loadImageForCropUncached(layer) {
                   :style="{
                     fontSize: (layer.fontSize || 14) + 'px',
                     fontWeight: layer.fontWeight || 400,
-                    color: layer.color || (layer.videoReversePrompt ? 'var(--canvas-text)' : '#999'),
+                    color: layer.color || 'var(--canvas-text)',
                     textAlign: layer.align || 'left',
                   }"
                   @wheel="handleCanvasScrollableWheel"
@@ -16043,12 +16252,13 @@ async function loadImageForCropUncached(layer) {
                       重试
                     </button>
                   </div>
-                  <span
+                  <div
                     v-else-if="editingTextLayerId !== layer.id"
                     class="uc-text-node-span"
                   >
-                    {{ layer.text || '双击开始编辑...' }}
-                  </span>
+                    <CanvasNodeEmptyState v-if="!layer.text" kind="text" :disabled="layer.locked" @action="handleEmptyNodeAction(layer, $event)" />
+                    <template v-else>{{ layer.text }}</template>
+                  </div>
                   <textarea
                     v-else
                     ref="textEditRef"
@@ -16084,10 +16294,27 @@ async function loadImageForCropUncached(layer) {
                     复制
                   </button>
                 </div>
-                <div v-else class="uc-text-node-hint" @pointerdown.stop @click.stop.exact>
+                <div v-else-if="!isTextNodeEditorVisible(layer)" class="uc-text-node-hint" @pointerdown.stop @click.stop.exact>
                   <i class="ri-edit-line"></i>
                   提示词
                 </div>
+                <TextNodeComposer
+                  v-if="isTextNodeEditorVisible(layer)"
+                  :draft="textNodeDraftFor(layer)"
+                  :text="layer.text || ''"
+                  :model-options="agentModelOptions"
+                  :canvas-references="textNodeCanvasReferences(layer)"
+                  :editor-width="videoNodeEditorWidth"
+                  :busy="!!textNodeActivity[layer.id]?.submitting"
+                  :error="textNodeActivity[layer.id]?.error || ''"
+                  :reference-error="textNodeReferenceError(layer)"
+                  @update:draft="updateTextNodeDraft(layer, $event)"
+                  @generate="submitTextNode(layer)"
+                  @video="openTextVideoPreset(layer)"
+                  @cancel="cancelTextNodeRequest(layer.id)"
+                  @apply-result="resolveTextNodeResult(layer, true)"
+                  @discard-result="resolveTextNodeResult(layer, false)"
+                />
                 <button
                   class="uc-node-close"
                   type="button"
@@ -16124,9 +16351,7 @@ async function loadImageForCropUncached(layer) {
                   <small>{{ formatLayerTime(layer) }}</small>
                 </div>
                 <div class="uc-image-placeholder-inner">
-                  <div class="uc-placeholder-icon">
-                    <i class="ri-image-line"></i>
-                  </div>
+                  <CanvasNodeEmptyState kind="image" :disabled="layer.locked" @action="handleEmptyNodeAction(layer, $event)" />
                 </div>
                 <ImageNodeComposer
                   v-if="isImageNodeEditorVisible(layer)"
@@ -16273,9 +16498,7 @@ async function loadImageForCropUncached(layer) {
                   </div>
                   <template v-else>
                     <div class="uc-image-placeholder-inner uc-video-node-placeholder">
-                      <div class="uc-placeholder-icon">
-                        <i class="ri-video-line"></i>
-                      </div>
+                      <CanvasNodeEmptyState kind="video" :disabled="layer.locked" @action="handleEmptyNodeAction(layer, $event)" />
                     </div>
                   </template>
                 </template>
@@ -18312,35 +18535,30 @@ async function loadImageForCropUncached(layer) {
     </div>
     <div v-if="toolbarAddOpen" class="uc-toolbar-add-menu" :style="addMenuPosition" @click.stop>
       <div class="uc-toolbar-add-group">
-        <span class="uc-toolbar-add-group-label">添加文件</span>
-        <button @click="addFileAndClose">
-          <i class="ri-upload-2-line" aria-hidden="true"></i>
-          <span class="uc-toolbar-add-text">本地上传</span>
-          <span class="uc-toolbar-add-shortcut">拖拽</span>
-        </button>
-        <button @click="toolbarAddOpen = false">
-          <i class="ri-history-line" aria-hidden="true"></i>
-          <span class="uc-toolbar-add-text">历史生成导入</span>
-          <span class="uc-toolbar-add-shortcut">H</span>
-        </button>
-      </div>
-      <div class="uc-toolbar-add-divider"></div>
-      <div class="uc-toolbar-add-group">
         <span class="uc-toolbar-add-group-label">添加节点</span>
+        <button @click="addTextNodeAndClose">
+          <i class="ri-text" aria-hidden="true"></i>
+          <span class="uc-toolbar-add-text">文本</span>
+        </button>
         <button @click="addImageNodeAndClose">
           <i class="ri-image-line" aria-hidden="true"></i>
           <span class="uc-toolbar-add-text">图片</span>
-          <span class="uc-toolbar-add-shortcut">I</span>
         </button>
         <button @click="addVideoNodeAndClose">
           <i class="ri-video-line" aria-hidden="true"></i>
           <span class="uc-toolbar-add-text">视频</span>
-          <span class="uc-toolbar-add-shortcut">V</span>
         </button>
-        <button @click="addTextNodeAndClose">
-          <i class="ri-text" aria-hidden="true"></i>
-          <span class="uc-toolbar-add-text">文本</span>
-          <span class="uc-toolbar-add-shortcut">T</span>
+      </div>
+      <div class="uc-toolbar-add-divider"></div>
+      <div class="uc-toolbar-add-group">
+        <span class="uc-toolbar-add-group-label">添加素材</span>
+        <button @click="addFileAndClose">
+          <i class="ri-upload-2-line" aria-hidden="true"></i>
+          <span class="uc-toolbar-add-text">本地上传</span>
+        </button>
+        <button @click="toolbarAddOpen = false; historyPanelOpen = true">
+          <i class="ri-history-line" aria-hidden="true"></i>
+          <span class="uc-toolbar-add-text">生成历史</span>
         </button>
       </div>
     </div>

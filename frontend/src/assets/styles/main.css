@@ -11571,6 +11571,39 @@ body {
   font-size: 12px;
 }
 
+.uc-text-node-area:has(.canvas-node-empty-state),
+.uc-image-placeholder-inner:has(.canvas-node-empty-state) {
+  background: var(--canvas-panel);
+  border: 1px solid var(--canvas-border-strong);
+  border-radius: 8px;
+}
+section.canvas-node-composer:is(.image-node-composer, .video-node-composer, .text-node-composer) {
+  min-height: 200px;
+  padding: 16px;
+  border-radius: 8px;
+  border-color: var(--canvas-border-strong);
+  background: var(--canvas-panel);
+  box-shadow: var(--canvas-panel-shadow);
+}
+section.canvas-node-composer:is(.image-node-composer, .video-node-composer, .text-node-composer) textarea {
+  min-height: 96px;
+  padding-right: 12px;
+  margin-top: 12px;
+  line-height: 1.65;
+}
+section.canvas-node-composer:is(.image-node-composer, .video-node-composer, .text-node-composer).is-expanded textarea {
+  min-height: 220px;
+}
+section.canvas-node-composer.text-node-composer textarea {
+  padding-right: 32px;
+  margin-top: 0;
+}
+.canvas-node-expand { margin-left: auto; color: var(--canvas-text-muted); }
+.stage:has(.canvas-node-composer) { isolation: auto; }
+.stage:has(.canvas-node-composer) .canvas-viewport { z-index: 2; }
+.editor-body:has(.canvas-node-composer) .canvas-minimap { z-index: 1; }
+.canvas-node-composer > .video-node-expand { position: absolute; top: 16px; right: 16px; }
+.video-node-composer.canvas-node-composer .video-node-reference-row { padding-right: 38px; }
 .uc-text-node.is-video-reverse .uc-text-node-area {
   box-sizing: border-box;
   padding: 16px;
@@ -11659,9 +11692,9 @@ body {
 
 
 /* Keep native input focus from scrolling the transformed canvas. */
-html:has(.image-node-composer, .video-node-composer, .uc-group-connection-port, .canvas-selection-toolbar),
-body:has(.image-node-composer, .video-node-composer, .uc-group-connection-port, .canvas-selection-toolbar),
-.editor-body:has(.image-node-composer, .video-node-composer, .uc-group-connection-port, .canvas-selection-toolbar) {
+html:has(.image-node-composer, .video-node-composer, .text-node-composer, .uc-group-connection-port, .canvas-selection-toolbar),
+body:has(.image-node-composer, .video-node-composer, .text-node-composer, .uc-group-connection-port, .canvas-selection-toolbar),
+.editor-body:has(.image-node-composer, .video-node-composer, .text-node-composer, .uc-group-connection-port, .canvas-selection-toolbar) {
   overflow: clip;
 }
 
@@ -12050,7 +12083,7 @@ body:has(.image-node-composer, .video-node-composer, .uc-group-connection-port, 
   width: 100%;
   flex: 1;
   background: rgba(10, 12, 20, 0.92);
-  border-radius: 12px;
+  border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -15838,7 +15871,7 @@ body:has(.image-node-composer, .video-node-composer, .uc-group-connection-port, 
   -webkit-backdrop-filter: blur(24px) saturate(180%);
   backdrop-filter: blur(24px) saturate(180%);
   border: 1px solid var(--canvas-border-strong);
-  border-radius: 12px;
+  border-radius: 8px;
   box-shadow: var(--canvas-panel-shadow);
   display: flex;
   flex-direction: column;
@@ -15851,7 +15884,7 @@ body:has(.image-node-composer, .video-node-composer, .uc-group-connection-port, 
   content: '';
   position: absolute;
   inset: -1px;
-  border-radius: 13px;
+  border-radius: 8px;
   padding: 1px;
   background: var(--canvas-accent);
   -webkit-mask:

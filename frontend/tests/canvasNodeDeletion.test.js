@@ -45,6 +45,8 @@ function deletionContext(ids = ['b'], primary = 'b') {
       },
     },
     userStore: { requireLogin: () => true },
+    textNodeActivity: {},
+    textNodeRequests: new Map(),
     selectedLayerIds: { value: [...ids] },
     selectedLayerId: { value: primary },
     playingVideoLayerId: { value: 'c' },
@@ -68,6 +70,7 @@ function deletionContext(ids = ['b'], primary = 'b') {
       flushNow: (id) => saves.push(id),
     },
   })
+  load(context, 'cancelTextNodeRequest')
   load(context, 'removeLayers')
   return {
     context,

@@ -31,6 +31,7 @@ onMounted(() => {
 onBeforeUnmount(() => resizeObserver?.disconnect())
 const promptInput = ref(null)
 const open = ref('')
+const expanded = ref(false)
 const totalCount = computed(() => props.draft.config.models.length * props.draft.config.count)
 const referenceError = computed(() => canvasReferenceTextError(props.draft.prompt, props.draft.referenceTexts, 10000))
 const modelLabel = computed(() => {
@@ -81,8 +82,8 @@ function addReference(image) {
 <template>
   <section
     ref="root"
-    class="image-node-composer"
-    :class="{ 'is-compact': editorWidth < 480 }"
+    class="image-node-composer canvas-node-composer"
+    :class="{ 'is-compact': editorWidth < 480, 'is-expanded': expanded }"
     :style="{ width: `${editorWidth}px` }"
     aria-label="图片节点编辑器"
     @pointerdown.stop
@@ -142,6 +143,10 @@ function addReference(image) {
         <i class="ri-add-line" aria-hidden="true"></i>
       </button>
       <span v-if="uploading" class="image-node-muted" role="status">上传中</span>
+      <button class="image-node-icon canvas-node-expand" type="button" :title="expanded ? '收起输入框' : '展开输入框'"
+        :aria-label="expanded ? '收起图片输入框' : '展开图片输入框'" :aria-pressed="expanded" @click="expanded = !expanded">
+        <i :class="expanded ? 'ri-fullscreen-exit-line' : 'ri-fullscreen-line'" aria-hidden="true"></i>
+      </button>
     </div>
     <div v-if="open === 'references'" class="image-node-popover image-node-reference-picker">
       <header>

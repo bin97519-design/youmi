@@ -72,6 +72,13 @@ public final class CanvasAgentDtos {
       String model,
       String prompt) {}
 
+  public record TextReference(String name, String text) {}
+
+  public record TextNodeRequest(String canvasId, String layerId, String instruction, String text,
+      String agentModel, List<String> imageUrls, List<TextReference> referenceTexts) {}
+
+  public record TextNodeResponse(String provider, String model, String text) {}
+
   public record ChatRequest(
       String canvasId,
       String instruction,
