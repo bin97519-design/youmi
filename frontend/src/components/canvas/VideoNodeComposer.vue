@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import AgentVideoSettings from './AgentVideoSettings.vue'
 import ThemedSelect from '../common/ThemedSelect.vue'
 import { VIDEO_MODELS } from '../../utils/productVideo.js'
@@ -31,12 +31,16 @@ const props = defineProps({
 })
 const emit = defineEmits(['update:draft', 'generate', 'upload-reference'])
 const settingsOpen = ref(false)
+const root = ref(null)
+let settingsTrigger
 const expanded = ref(false)
 const referencesOpen = ref(false)
 const referenceInput = ref(null)
 const promptInput = ref(null)
 const referenceTargetIndex = ref(null)
-const providerReportedCost = computed(() => isProviderReportedCostVideoModel(props.draft.config.model, props.modelOptions))
+const providerReportedCost = computed(() =>
+  isProviderReportedCostVideoModel(props.draft.config.model, props.modelOptions),
+)
 const price = computed(() =>
   estimatedVideoMiCost(
     props.draft.config.model,
@@ -88,11 +92,20 @@ const modelLabel = computed(
     props.modelOptions.find((model) => model.value === props.draft.config.model)?.label ||
     props.draft.config.model,
 )
-const priceLabel = computed(() => price.value == null ? '费用待配置' : providerReportedCost.value ? '生成成功后按实际用量结算' : `预计 ${formatMiValue(price.value)} 米值`)
+const priceLabel = computed(() =>
+  price.value == null
+    ? '费用待配置'
+    : providerReportedCost.value
+      ? '生成成功后按实际用量结算'
+      : `预计 ${formatMiValue(price.value)} 米值`,
+)
 
 function update(patch) {
   if (!props.disabled)
-    emit('update:draft', normalizeVideoNodeDraft({ ...props.draft, ...patch }, {}, props.modelOptions))
+    emit(
+      'update:draft',
+      normalizeVideoNodeDraft({ ...props.draft, ...patch }, {}, props.modelOptions),
+    )
 }
 function changeModel(model) {
   const referenceMode =
@@ -110,10 +123,17 @@ function changeModel(model) {
 }
 function updateReferenceVideoDuration(reference, event) {
   const duration = event.target.duration
-  if (!Number.isFinite(duration) || duration <= 0 || Math.abs(duration - reference.duration) < 0.001) return
-  update({ referenceVideos: props.draft.referenceVideos.map(video =>
-    video.url === reference.url ? { ...video, duration } : video,
-  ) })
+  if (
+    !Number.isFinite(duration) ||
+    duration <= 0 ||
+    Math.abs(duration - reference.duration) < 0.001
+  )
+    return
+  update({
+    referenceVideos: props.draft.referenceVideos.map((video) =>
+      video.url === reference.url ? { ...video, duration } : video,
+    ),
+  })
 }
 function addReference(image) {
   if (
@@ -139,14 +159,26 @@ function toggleReferences(index = null) {
   referenceTargetIndex.value = index
   settingsOpen.value = false
 }
-function toggleSettings() {
+function toggleSettings(event) {
+  settingsTrigger = event?.currentTarget || settingsTrigger
   settingsOpen.value = !settingsOpen.value
   referencesOpen.value = false
 }
+function closeSettings() {
+  settingsOpen.value = false
+  settingsTrigger?.focus({ preventScroll: true })
+}
+function closeSettingsOutside(event) {
+  if (!root.value?.contains(event.target) && !event.target.closest('.themed-select-options'))
+    settingsOpen.value = false
+}
+onMounted(() => document.addEventListener('pointerdown', closeSettingsOutside, true))
+onBeforeUnmount(() => document.removeEventListener('pointerdown', closeSettingsOutside, true))
 </script>
 
 <template>
   <section
+    ref="root"
     class="video-node-composer canvas-node-composer"
     :class="{ 'is-compact': editorWidth < 480, 'is-expanded': expanded }"
     :style="{ width: `${editorWidth}px` }"
@@ -155,6 +187,7 @@ function toggleSettings() {
     @click.stop
     @dblclick.stop
     @keydown.stop
+    @keydown.esc.prevent="settingsOpen ? closeSettings() : (referencesOpen = false)"
     @wheel.stop
   >
     <div class="video-node-reference-row">
@@ -257,13 +290,18 @@ function toggleSettings() {
           playsinline
           @loadedmetadata="updateReferenceVideoDuration(reference, $event)"
         ></video>
-        <span><i class="ri-video-line" aria-hidden="true"></i> {{ reference.duration ? `${Number(reference.duration.toFixed(1))}s` : index + 1 }}</span>
+        <span>
+          <i class="ri-video-line" aria-hidden="true"></i>
+          {{ reference.duration ? `${Number(reference.duration.toFixed(1))}s` : index + 1 }}
+        </span>
         <button
           type="button"
           :disabled="disabled"
           :title="`移除参考视频 ${index + 1}`"
           :aria-label="`移除参考视频 ${index + 1}`"
-          @click="update({ referenceVideos: draft.referenceVideos.filter((_, at) => at !== index) })"
+          @click="
+            update({ referenceVideos: draft.referenceVideos.filter((_, at) => at !== index) })
+          "
         >
           <i class="ri-close-line" aria-hidden="true"></i>
         </button>
@@ -280,11 +318,21 @@ function toggleSettings() {
       >
         <i class="ri-add-line" aria-hidden="true"></i>
       </button>
-      <div v-for="(reference, index) in draft.referenceTexts || []" :key="`text-${reference.layerId || index}`"
-        class="video-node-reference video-node-reference-text" :title="`${reference.name}\n${reference.text}`" :aria-label="`参考文本 ${index + 1}`">
+      <div
+        v-for="(reference, index) in draft.referenceTexts || []"
+        :key="`text-${reference.layerId || index}`"
+        class="video-node-reference video-node-reference-text"
+        :title="`${reference.name}\n${reference.text}`"
+        :aria-label="`参考文本 ${index + 1}`"
+      >
         <i class="ri-text" aria-hidden="true"></i>
-        <button type="button" :disabled="disabled" :title="`移除参考文本 ${index + 1}`" :aria-label="`移除视频参考文本 ${index + 1}`"
-          @click="update({ referenceTexts: draft.referenceTexts.filter((_, at) => at !== index) })">
+        <button
+          type="button"
+          :disabled="disabled"
+          :title="`移除参考文本 ${index + 1}`"
+          :aria-label="`移除视频参考文本 ${index + 1}`"
+          @click="update({ referenceTexts: draft.referenceTexts.filter((_, at) => at !== index) })"
+        >
           <i class="ri-close-line" aria-hidden="true"></i>
         </button>
       </div>
@@ -324,9 +372,18 @@ function toggleSettings() {
         <span v-if="!canvasImages.length" class="video-node-empty">暂无画布图片</span>
       </div>
     </div>
-    <button class="video-node-icon canvas-node-expand video-node-expand" type="button" :title="expanded ? '收起输入框' : '展开输入框'"
-      :aria-label="expanded ? '收起视频输入框' : '展开视频输入框'" :aria-pressed="expanded" @click="expanded = !expanded">
-      <i :class="expanded ? 'ri-fullscreen-exit-line' : 'ri-fullscreen-line'" aria-hidden="true"></i>
+    <button
+      class="video-node-icon canvas-node-expand video-node-expand"
+      type="button"
+      :title="expanded ? '收起输入框' : '展开输入框'"
+      :aria-label="expanded ? '收起视频输入框' : '展开视频输入框'"
+      :aria-pressed="expanded"
+      @click="expanded = !expanded"
+    >
+      <i
+        :class="expanded ? 'ri-fullscreen-exit-line' : 'ri-fullscreen-line'"
+        aria-hidden="true"
+      ></i>
     </button>
     <textarea
       ref="promptInput"
@@ -338,20 +395,35 @@ function toggleSettings() {
       placeholder="描述视频画面、动作和镜头运动"
       @input="update({ prompt: $event.target.value })"
     ></textarea>
-    <div v-if="settingsOpen" class="video-node-settings">
-      <AgentVideoSettings
-        allow-seedance-frames
-        :model-value="draft.config"
-        :model-options="modelOptions"
-        :references="draft.references"
-        :reference-video-count="draft.referenceVideos?.length || 0"
-        :capabilities="capabilities"
-        :disabled="disabled"
-        @update:model-value="update({ config: $event })"
-        @remove-reference="
-          update({ references: draft.references.filter((_, index) => index !== $event) })
-        "
-      />
+    <div v-if="settingsOpen" class="video-node-settings" role="region" aria-label="视频设置面板">
+      <header class="video-node-settings-head">
+        <span>视频设置</span>
+        <button
+          type="button"
+          class="video-node-icon"
+          title="关闭视频设置"
+          aria-label="关闭视频设置"
+          @click="closeSettings"
+        >
+          <i class="ri-close-line" aria-hidden="true"></i>
+        </button>
+      </header>
+      <div class="video-node-settings-body">
+        <AgentVideoSettings
+          compact
+          allow-seedance-frames
+          :model-value="draft.config"
+          :model-options="modelOptions"
+          :references="draft.references"
+          :reference-video-count="draft.referenceVideos?.length || 0"
+          :capabilities="capabilities"
+          :disabled="disabled"
+          @update:model-value="update({ config: $event })"
+          @remove-reference="
+            update({ references: draft.references.filter((_, index) => index !== $event) })
+          "
+        />
+      </div>
     </div>
     <footer class="video-node-toolbar">
       <div class="video-node-toolbar-options">
@@ -416,12 +488,19 @@ function toggleSettings() {
       <div class="video-node-toolbar-actions">
         <output class="video-node-cost" :title="priceLabel" :aria-label="priceLabel">
           <i class="ri-copper-coin-line" aria-hidden="true"></i>
-          <span>{{ price == null ? '待配置' : providerReportedCost ? '用量' : formatMiValue(price) }}</span>
+          <span>
+            {{ price == null ? '待配置' : providerReportedCost ? '用量' : formatMiValue(price) }}
+          </span>
         </output>
         <button
           class="video-node-generate video-node-icon"
           type="button"
-          :disabled="disabled || (!draft.prompt.trim() && !draft.referenceTexts?.length) || !!referenceError || price == null"
+          :disabled="
+            disabled ||
+            (!draft.prompt.trim() && !draft.referenceTexts?.length) ||
+            !!referenceError ||
+            price == null
+          "
           :title="generating ? '视频生成中' : disabled ? '正在处理' : '生成视频'"
           aria-label="生成视频"
           @click="emit('generate')"
@@ -746,17 +825,44 @@ function toggleSettings() {
 .video-node-settings {
   position: absolute;
   bottom: 54px;
-  left: 8px;
-  right: 8px;
+  right: 12px;
+  width: min(400px, calc(100% - 24px));
   z-index: 2;
-  max-height: 300px;
+  background: var(--canvas-panel);
+  border: 1px solid var(--canvas-border-strong);
+  border-radius: 8px;
+  box-shadow: var(--canvas-panel-shadow);
+  overflow: hidden;
+}
+.video-node-settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 40px;
+  padding: 0 12px 0 16px;
+  border-bottom: 1px solid var(--canvas-border);
+  color: var(--canvas-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.video-node-settings-head > .video-node-icon {
+  width: 24px;
+  height: 24px;
+  flex-basis: 24px;
+  font-size: 16px !important;
+  color: var(--canvas-text-muted);
+}
+.video-node-settings-body {
+  max-height: min(344px, calc(100vh - 176px));
   overflow: auto;
-  background: var(--canvas-surface, #232428);
-  border: 1px solid var(--canvas-border, #404248);
-  border-radius: 6px;
+  overscroll-behavior: contain;
 }
 .is-compact .video-node-settings {
   bottom: 88px;
+}
+.is-compact .video-node-settings-body {
+  max-height: min(280px, calc(100vh - 176px));
 }
 .video-node-reference-picker {
   margin: 8px 0;

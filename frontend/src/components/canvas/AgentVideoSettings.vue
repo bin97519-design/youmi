@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { formatMiValue } from '../../utils/miValue'
 import ThemedSelect from '../common/ThemedSelect.vue'
+import CanvasRatioPicker from './CanvasRatioPicker.vue'
 import {
   MINIMAX_VIDEO_MODEL,
   HAILUO_H3_VIDEO_MODEL,
@@ -29,6 +30,7 @@ const props = defineProps({
   capabilities: { type: Object, default: null },
   disabled: Boolean,
   allowSeedanceFrames: Boolean,
+  compact: Boolean,
 })
 const emit = defineEmits(['update:modelValue', 'remove-reference'])
 const durations = computed(() => videoDurationOptions(props.modelValue.model))
@@ -51,12 +53,23 @@ const durationOptions = computed(() => {
   }
   return options
 })
-const modeOptions = computed(() => props.modelValue.model === HAILUO_H3_VIDEO_MODEL
-  ? [{ value: 'shouweizhen', label: '首尾帧' }]
-  : [
-  { value: videoFrameModeValue(props.modelValue.model), label: '首尾帧', disabled: props.referenceVideoCount > 0 },
-  { value: 'cankaosheng', label: '参考生' },
-])
+const modeOptions = computed(() =>
+  props.modelValue.model === HAILUO_H3_VIDEO_MODEL
+    ? [{ value: 'shouweizhen', label: '首尾帧' }]
+    : [
+        {
+          value: videoFrameModeValue(props.modelValue.model),
+          label: '首尾帧',
+          disabled: props.referenceVideoCount > 0,
+        },
+        { value: 'cankaosheng', label: '参考生' },
+      ],
+)
+const modeVisible = computed(
+  () =>
+    [MINIMAX_VIDEO_MODEL, HAILUO_H3_VIDEO_MODEL].includes(props.modelValue.model) ||
+    (props.allowSeedanceFrames && supportsVideoFrameMode(props.modelValue.model)),
+)
 const ratio = computed(() =>
   videoRatioForRequest(
     props.modelValue.model,
@@ -76,7 +89,9 @@ const ratioLocked = computed(
       props.referenceVideoCount,
     ) === 'adaptive',
 )
-const providerReportedCost = computed(() => isProviderReportedCostVideoModel(props.modelValue.model, props.modelOptions))
+const providerReportedCost = computed(() =>
+  isProviderReportedCostVideoModel(props.modelValue.model, props.modelOptions),
+)
 const price = computed(() =>
   estimatedVideoMiCost(
     props.modelValue.model,
@@ -105,98 +120,196 @@ function change(key, value) {
 </script>
 
 <template>
-  <fieldset class="agent-video-settings" :disabled="disabled" aria-label="视频方案参数">
-    <div class="agent-video-model agent-video-field">
-      <span>视频模型</span>
-      <ThemedSelect
-        floating
-        aria-label="视频模型"
-        :model-value="modelValue.model"
-        :options="modelOptions"
-        :disabled="disabled"
-        @update:model-value="change('model', $event)"
-      />
-    </div>
-    <div class="agent-video-field">
-      <span>比例</span>
-      <ThemedSelect
-        floating
-        aria-label="比例"
-        :model-value="ratio"
-        :options="ratioOptions"
-        :disabled="disabled || ratioLocked"
-        @update:model-value="change('ratio', $event)"
-      />
-    </div>
-    <div class="agent-video-field">
-      <span>清晰度</span>
-      <ThemedSelect
-        floating
-        aria-label="清晰度"
-        :model-value="modelValue.resolution"
-        :options="resolutionOptions"
-        :disabled="disabled"
-        @update:model-value="change('resolution', $event)"
-      />
-    </div>
-    <div class="agent-video-field">
-      <span>时长</span>
-      <ThemedSelect
-        floating
-        aria-label="时长"
-        :model-value="modelValue.duration"
-        :options="durationOptions"
-        :disabled="disabled"
-        @update:model-value="change('duration', Number($event))"
-      />
-    </div>
-    <div
-      v-if="
-        [MINIMAX_VIDEO_MODEL, HAILUO_H3_VIDEO_MODEL].includes(modelValue.model) ||
-        (allowSeedanceFrames && supportsVideoFrameMode(modelValue.model))
-      "
-      class="agent-video-field"
-    >
-      <span>模式</span>
-      <ThemedSelect
-        floating
-        aria-label="模式"
-        :model-value="modelValue.referenceMode"
-        :options="modeOptions"
-        :disabled="disabled"
-        @update:model-value="change('referenceMode', $event)"
-      />
-    </div>
-    <label v-if="supportsVideoAudioToggle(modelValue.model)" class="agent-video-audio">
-      <input
-        type="checkbox"
-        :checked="modelValue.generateAudio"
-        @change="change('generateAudio', $event.target.checked)"
-      />
-      <span>生成声音</span>
-    </label>
-    <span v-else class="agent-video-audio" title="当前接口不支持关闭声音">原生有声</span>
-    <div v-if="references.length" class="agent-video-references" aria-label="视频参考图">
-      <div
-        v-for="(reference, index) in references"
-        :key="reference.url"
-        class="agent-video-reference"
-      >
-        <img :src="reference.url" :alt="`参考图 ${index + 1}`" />
+  <fieldset
+    class="agent-video-settings"
+    :class="{ 'is-compact': compact }"
+    :disabled="disabled"
+    aria-label="视频方案参数"
+  >
+    <template v-if="compact">
+      <section class="node-video-setting node-video-ratios">
+        <h4>比例</h4>
+        <CanvasRatioPicker
+          :model-value="ratio"
+          :options="ratioOptions"
+          label="视频比例"
+          :disabled="disabled || ratioLocked"
+          disabled-title="比例由参考素材决定"
+          @update:model-value="change('ratio', $event)"
+        />
+      </section>
+      <section class="node-video-setting">
+        <h4>清晰度</h4>
+        <div class="node-video-segments" role="group" aria-label="视频清晰度">
+          <button
+            v-for="option in resolutionOptions"
+            :key="option.value"
+            type="button"
+            :class="{ active: modelValue.resolution === option.value }"
+            :aria-label="`视频清晰度 ${option.label}`"
+            :aria-pressed="modelValue.resolution === option.value"
+            :disabled="disabled"
+            @click="change('resolution', option.value)"
+          >
+            {{ option.label }}
+          </button>
+        </div>
+      </section>
+      <section class="node-video-setting node-video-duration">
+        <h4>时长</h4>
+        <ThemedSelect
+          floating
+          aria-label="时长"
+          :model-value="modelValue.duration"
+          :options="durationOptions"
+          :disabled="disabled"
+          @update:model-value="change('duration', Number($event))"
+        />
+      </section>
+      <section v-if="modeVisible" class="node-video-setting node-video-mode">
+        <h4>模式</h4>
+        <div class="node-video-segments" role="group" aria-label="视频生成模式">
+          <button
+            v-for="option in modeOptions"
+            :key="option.value"
+            type="button"
+            :class="{ active: modelValue.referenceMode === option.value }"
+            :aria-label="`视频模式 ${option.label}`"
+            :aria-pressed="modelValue.referenceMode === option.value"
+            :disabled="disabled || option.disabled"
+            :title="option.disabled ? '已连接参考视频，请使用参考生模式' : option.label"
+            @click="change('referenceMode', option.value)"
+          >
+            {{ option.label }}
+          </button>
+        </div>
+      </section>
+      <div class="node-video-audio-row">
+        <span>
+          <i class="ri-volume-up-line" aria-hidden="true"></i>
+          {{ supportsVideoAudioToggle(modelValue.model) ? '生成声音' : '原生有声' }}
+        </span>
         <button
           type="button"
-          :disabled="disabled"
-          :title="`移除参考图 ${index + 1}`"
-          :aria-label="`移除参考图 ${index + 1}`"
-          @click="emit('remove-reference', index)"
+          class="node-video-switch"
+          role="switch"
+          aria-label="生成声音"
+          :aria-checked="
+            !supportsVideoAudioToggle(modelValue.model) || modelValue.generateAudio !== false
+          "
+          :disabled="disabled || !supportsVideoAudioToggle(modelValue.model)"
+          :title="
+            supportsVideoAudioToggle(modelValue.model) ? '生成声音' : '当前接口不支持关闭声音'
+          "
+          @click="change('generateAudio', modelValue.generateAudio === false)"
         >
-          <i class="ri-close-line" aria-hidden="true"></i>
+          <b></b>
         </button>
       </div>
-    </div>
-    <output class="agent-video-price">
-      {{ price == null ? '费用待配置' : providerReportedCost ? '生成成功后按实际用量结算' : `预计 ${formatMiValue(price)} 米值 / 条` }}
-    </output>
+      <output class="agent-video-price node-video-price">
+        <i class="ri-copper-coin-line" aria-hidden="true"></i>
+        {{
+          price == null
+            ? '费用待配置'
+            : providerReportedCost
+              ? '按实际用量结算'
+              : `预计 ${formatMiValue(price)} 米值 / 条`
+        }}
+      </output>
+    </template>
+    <template v-else>
+      <div class="agent-video-model agent-video-field">
+        <span>视频模型</span>
+        <ThemedSelect
+          floating
+          aria-label="视频模型"
+          :model-value="modelValue.model"
+          :options="modelOptions"
+          :disabled="disabled"
+          @update:model-value="change('model', $event)"
+        />
+      </div>
+      <div class="agent-video-field">
+        <span>比例</span>
+        <ThemedSelect
+          floating
+          aria-label="比例"
+          :model-value="ratio"
+          :options="ratioOptions"
+          :disabled="disabled || ratioLocked"
+          @update:model-value="change('ratio', $event)"
+        />
+      </div>
+      <div class="agent-video-field">
+        <span>清晰度</span>
+        <ThemedSelect
+          floating
+          aria-label="清晰度"
+          :model-value="modelValue.resolution"
+          :options="resolutionOptions"
+          :disabled="disabled"
+          @update:model-value="change('resolution', $event)"
+        />
+      </div>
+      <div class="agent-video-field">
+        <span>时长</span>
+        <ThemedSelect
+          floating
+          aria-label="时长"
+          :model-value="modelValue.duration"
+          :options="durationOptions"
+          :disabled="disabled"
+          @update:model-value="change('duration', Number($event))"
+        />
+      </div>
+      <div v-if="modeVisible" class="agent-video-field">
+        <span>模式</span>
+        <ThemedSelect
+          floating
+          aria-label="模式"
+          :model-value="modelValue.referenceMode"
+          :options="modeOptions"
+          :disabled="disabled"
+          @update:model-value="change('referenceMode', $event)"
+        />
+      </div>
+      <label v-if="supportsVideoAudioToggle(modelValue.model)" class="agent-video-audio">
+        <input
+          type="checkbox"
+          :checked="modelValue.generateAudio"
+          @change="change('generateAudio', $event.target.checked)"
+        />
+        <span>生成声音</span>
+      </label>
+      <span v-else class="agent-video-audio" title="当前接口不支持关闭声音">原生有声</span>
+      <div v-if="references.length" class="agent-video-references" aria-label="视频参考图">
+        <div
+          v-for="(reference, index) in references"
+          :key="reference.url"
+          class="agent-video-reference"
+        >
+          <img :src="reference.url" :alt="`参考图 ${index + 1}`" />
+          <button
+            type="button"
+            :disabled="disabled"
+            :title="`移除参考图 ${index + 1}`"
+            :aria-label="`移除参考图 ${index + 1}`"
+            @click="emit('remove-reference', index)"
+          >
+            <i class="ri-close-line" aria-hidden="true"></i>
+          </button>
+        </div>
+      </div>
+      <output class="agent-video-price">
+        {{
+          price == null
+            ? '费用待配置'
+            : providerReportedCost
+              ? '生成成功后按实际用量结算'
+              : `预计 ${formatMiValue(price)} 米值 / 条`
+        }}
+      </output>
+    </template>
   </fieldset>
 </template>
 
@@ -273,5 +386,122 @@ function change(key, value) {
 .agent-video-settings :disabled {
   opacity: 0.65;
   cursor: default;
+}
+.agent-video-settings.is-compact {
+  grid-template-columns: minmax(0, 1fr) 104px;
+  gap: 16px 12px;
+  padding: 14px 16px;
+  border: 0;
+  color: var(--canvas-text);
+}
+.node-video-setting {
+  min-width: 0;
+}
+.node-video-setting h4 {
+  margin: 0 0 8px;
+  color: var(--canvas-text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+}
+.node-video-ratios,
+.node-video-mode,
+.node-video-audio-row {
+  grid-column: 1 / -1;
+}
+.node-video-segments {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+}
+.node-video-segments button {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 34px;
+  padding: 0 5px;
+  border: 1px solid var(--canvas-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--canvas-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.node-video-segments button.active {
+  border-color: var(--canvas-accent);
+  background: var(--canvas-accent-soft);
+  color: var(--canvas-accent);
+}
+.node-video-segments button:hover:not(:disabled) {
+  border-color: var(--canvas-accent-border);
+  color: var(--canvas-accent);
+}
+.node-video-duration :deep(.themed-select-trigger) {
+  height: 34px;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 12px;
+}
+.node-video-audio-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.node-video-audio-row > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+}
+.node-video-audio-row > span i {
+  color: var(--canvas-text-muted);
+  font-size: 16px;
+}
+.node-video-switch {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 34px;
+  width: 34px;
+  height: 20px;
+  padding: 3px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--canvas-border-strong);
+  cursor: pointer;
+}
+.node-video-switch b {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--canvas-panel);
+  transition: transform 0.15s ease;
+}
+.node-video-switch[aria-checked='true'] {
+  background: var(--canvas-accent);
+}
+.node-video-switch[aria-checked='true'] b {
+  transform: translateX(14px);
+  background: #fff;
+}
+.node-video-price {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: -4px;
+  color: var(--canvas-text-subtle);
+  font-size: 11px;
+  line-height: 16px;
+}
+.node-video-price i {
+  font-size: 13px;
+}
+.is-compact button:focus-visible {
+  outline: 2px solid var(--canvas-accent);
+  outline-offset: 2px;
+}
+@media (max-width: 360px) {
+  .agent-video-settings.is-compact {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 </style>

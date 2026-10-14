@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
-import ThemedSelect from '../common/ThemedSelect.vue'
+import CanvasRatioPicker from './CanvasRatioPicker.vue'
 import { canvasReferenceTextError } from '../../utils/canvasReferenceTexts.js'
 
 const props = defineProps({
@@ -27,13 +27,20 @@ onMounted(() => {
     emit('resize', entry.borderBoxSize?.[0]?.blockSize || entry.target.offsetHeight),
   )
   resizeObserver.observe(root.value)
+  document.addEventListener('pointerdown', closeSettingsOutside, true)
 })
-onBeforeUnmount(() => resizeObserver?.disconnect())
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  document.removeEventListener('pointerdown', closeSettingsOutside, true)
+})
 const promptInput = ref(null)
 const open = ref('')
 const expanded = ref(false)
+let settingsTrigger
 const totalCount = computed(() => props.draft.config.models.length * props.draft.config.count)
-const referenceError = computed(() => canvasReferenceTextError(props.draft.prompt, props.draft.referenceTexts, 10000))
+const referenceError = computed(() =>
+  canvasReferenceTextError(props.draft.prompt, props.draft.referenceTexts, 10000),
+)
 const modelLabel = computed(() => {
   const first =
     props.modelOptions.find((option) => option.value === props.draft.config.model)?.label ||
@@ -55,8 +62,29 @@ function update(patch) {
 function config(patch) {
   update({ config: { ...props.draft.config, ...patch } })
 }
-function toggle(name) {
+function toggle(name, event) {
+  if (name === 'settings') settingsTrigger = event?.currentTarget || settingsTrigger
   open.value = open.value === name ? '' : name
+}
+function closeSettings() {
+  open.value = ''
+  settingsTrigger?.focus({ preventScroll: true })
+}
+function closeSettingsOutside(event) {
+  if (open.value === 'settings' && !root.value?.contains(event.target)) open.value = ''
+}
+function changeCount(delta) {
+  config({ count: Math.max(1, Math.min(4, props.draft.config.count + delta)) })
+}
+function updateCount(event) {
+  const value = Number(event.target.value)
+  if (!event.target.value.trim() || !Number.isFinite(value)) {
+    event.target.value = props.draft.config.count
+    return
+  }
+  const count = Math.max(1, Math.min(4, Math.round(value)))
+  config({ count })
+  event.target.value = count
 }
 function openReferenceSource(event) {
   open.value = ''
@@ -91,7 +119,7 @@ function addReference(image) {
     @dblclick.stop
     @wheel.stop
     @keydown.stop
-    @keydown.esc="open = ''"
+    @keydown.esc="open === 'settings' ? closeSettings() : (open = '')"
   >
     <div class="image-node-reference-row">
       <button
@@ -123,11 +151,21 @@ function addReference(image) {
           <i class="ri-close-line" aria-hidden="true"></i>
         </button>
       </div>
-      <div v-for="(reference, index) in draft.referenceTexts || []" :key="`text-${reference.layerId || index}`"
-        class="image-node-reference image-node-reference-text" :title="`${reference.name}\n${reference.text}`" :aria-label="`参考文本 ${index + 1}`">
+      <div
+        v-for="(reference, index) in draft.referenceTexts || []"
+        :key="`text-${reference.layerId || index}`"
+        class="image-node-reference image-node-reference-text"
+        :title="`${reference.name}\n${reference.text}`"
+        :aria-label="`参考文本 ${index + 1}`"
+      >
         <i class="ri-text" aria-hidden="true"></i>
-        <button type="button" :disabled="disabled" :title="`移除参考文本 ${index + 1}`" :aria-label="`移除图片参考文本 ${index + 1}`"
-          @click="update({ referenceTexts: draft.referenceTexts.filter((_, at) => at !== index) })">
+        <button
+          type="button"
+          :disabled="disabled"
+          :title="`移除参考文本 ${index + 1}`"
+          :aria-label="`移除图片参考文本 ${index + 1}`"
+          @click="update({ referenceTexts: draft.referenceTexts.filter((_, at) => at !== index) })"
+        >
           <i class="ri-close-line" aria-hidden="true"></i>
         </button>
       </div>
@@ -143,9 +181,18 @@ function addReference(image) {
         <i class="ri-add-line" aria-hidden="true"></i>
       </button>
       <span v-if="uploading" class="image-node-muted" role="status">上传中</span>
-      <button class="image-node-icon canvas-node-expand" type="button" :title="expanded ? '收起输入框' : '展开输入框'"
-        :aria-label="expanded ? '收起图片输入框' : '展开图片输入框'" :aria-pressed="expanded" @click="expanded = !expanded">
-        <i :class="expanded ? 'ri-fullscreen-exit-line' : 'ri-fullscreen-line'" aria-hidden="true"></i>
+      <button
+        class="image-node-icon canvas-node-expand"
+        type="button"
+        :title="expanded ? '收起输入框' : '展开输入框'"
+        :aria-label="expanded ? '收起图片输入框' : '展开图片输入框'"
+        :aria-pressed="expanded"
+        @click="expanded = !expanded"
+      >
+        <i
+          :class="expanded ? 'ri-fullscreen-exit-line' : 'ri-fullscreen-line'"
+          aria-hidden="true"
+        ></i>
       </button>
     </div>
     <div v-if="open === 'references'" class="image-node-popover image-node-reference-picker">
@@ -211,41 +258,94 @@ function addReference(image) {
         <span>{{ option.label }}</span>
       </button>
     </div>
-    <div v-if="open === 'settings'" class="image-node-popover image-node-settings">
-      <label>
-        比例
-        <ThemedSelect
-          floating
-          :menu-min-width="120"
-          :model-value="draft.config.ratio"
-          :options="ratios"
-          :disabled="disabled"
-          aria-label="图片节点比例"
-          @update:model-value="config({ ratio: $event })"
-        />
-      </label>
-      <label>
-        分辨率
-        <ThemedSelect
-          floating
-          :model-value="draft.config.resolution"
-          :options="['1K', '2K', '4K'].map((value) => ({ value, label: value }))"
-          :disabled="disabled"
-          aria-label="图片节点分辨率"
-          @update:model-value="config({ resolution: $event })"
-        />
-      </label>
-      <label>
-        数量
-        <ThemedSelect
-          floating
-          :model-value="draft.config.count"
-          :options="[1, 2, 3, 4].map((value) => ({ value, label: `${value}张` }))"
-          :disabled="disabled"
-          aria-label="图片节点数量"
-          @update:model-value="config({ count: $event })"
-        />
-      </label>
+    <div
+      v-if="open === 'settings'"
+      class="image-node-settings"
+      role="region"
+      aria-label="图片设置面板"
+    >
+      <header class="image-node-settings-head">
+        <span>图片设置</span>
+        <button
+          type="button"
+          class="image-node-icon"
+          title="关闭图片设置"
+          aria-label="关闭图片设置"
+          @click="closeSettings"
+        >
+          <i class="ri-close-line" aria-hidden="true"></i>
+        </button>
+      </header>
+      <div class="image-node-settings-body">
+        <section class="image-node-setting image-node-ratios">
+          <h4>比例</h4>
+          <CanvasRatioPicker
+            :model-value="draft.config.ratio"
+            :options="ratios"
+            :columns="6"
+            label="图片比例"
+            :disabled="disabled"
+            @update:model-value="config({ ratio: $event })"
+          />
+        </section>
+        <section class="image-node-setting">
+          <h4>分辨率</h4>
+          <div class="image-node-segments" role="group" aria-label="图片分辨率">
+            <button
+              v-for="value in ['1K', '2K', '4K']"
+              :key="value"
+              type="button"
+              :class="{ active: draft.config.resolution === value }"
+              :aria-label="`图片分辨率 ${value}`"
+              :aria-pressed="draft.config.resolution === value"
+              :disabled="disabled"
+              @click="config({ resolution: value })"
+            >
+              {{ value }}
+            </button>
+          </div>
+        </section>
+        <section class="image-node-setting">
+          <h4>{{ draft.config.models.length > 1 ? '每模型数量' : '数量' }}</h4>
+          <div class="image-node-count">
+            <button
+              type="button"
+              title="减少数量"
+              aria-label="减少图片数量"
+              :disabled="disabled || draft.config.count <= 1"
+              @click="changeCount(-1)"
+            >
+              <i class="ri-subtract-line" aria-hidden="true"></i>
+            </button>
+            <input
+              type="number"
+              min="1"
+              max="4"
+              step="1"
+              aria-label="图片节点数量"
+              :value="draft.config.count"
+              :disabled="disabled"
+              @change="updateCount"
+            />
+            <button
+              type="button"
+              title="增加数量"
+              aria-label="增加图片数量"
+              :disabled="disabled || draft.config.count >= 4"
+              @click="changeCount(1)"
+            >
+              <i class="ri-add-line" aria-hidden="true"></i>
+            </button>
+          </div>
+        </section>
+        <div class="image-node-settings-meta">
+          <span>
+            <i class="ri-copper-coin-line" aria-hidden="true"></i>
+            按实际用量结算
+          </span>
+          <output aria-label="图片生成总数">共 {{ totalCount }} 张</output>
+        </div>
+      </div>
     </div>
     <footer class="image-node-toolbar">
       <div class="image-node-toolbar-options">
@@ -269,7 +369,8 @@ function addReference(image) {
           :disabled="disabled"
           :title="summary"
           aria-label="图片节点参数"
-          @click="toggle('settings')"
+          :aria-expanded="open === 'settings'"
+          @click="toggle('settings', $event)"
         >
           <span class="image-node-summary-parts">
             <span
@@ -288,7 +389,7 @@ function addReference(image) {
           title="图片设置"
           aria-label="图片设置"
           :aria-expanded="open === 'settings'"
-          @click="toggle('settings')"
+          @click="toggle('settings', $event)"
         >
           <i class="ri-equalizer-line" aria-hidden="true"></i>
         </button>
@@ -301,7 +402,12 @@ function addReference(image) {
         <button
           class="image-node-icon image-node-generate"
           type="button"
-          :disabled="disabled || (!draft.prompt.trim() && !draft.referenceTexts?.length) || !!referenceError || !draft.config.models.length"
+          :disabled="
+            disabled ||
+            (!draft.prompt.trim() && !draft.referenceTexts?.length) ||
+            !!referenceError ||
+            !draft.config.models.length
+          "
           :title="disabled ? '正在处理' : '生成图片'"
           aria-label="生成图片"
           @click="emit('generate')"
@@ -313,7 +419,9 @@ function addReference(image) {
         </button>
       </div>
     </footer>
-    <p v-if="referenceError || error" class="image-node-error" role="alert">{{ referenceError || error }}</p>
+    <p v-if="referenceError || error" class="image-node-error" role="alert">
+      {{ referenceError || error }}
+    </p>
   </section>
 </template>
 
@@ -589,19 +697,151 @@ function addReference(image) {
   background: var(--canvas-accent-soft);
 }
 .image-node-settings {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  position: absolute;
+  bottom: 54px;
+  right: 12px;
+  width: min(400px, calc(100% - 24px));
+  z-index: 2;
+  overflow: hidden;
+  background: var(--canvas-panel);
+  border: 1px solid var(--canvas-border-strong);
+  border-radius: 8px;
+  box-shadow: var(--canvas-panel-shadow);
 }
-.image-node-settings label {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-  font-size: 12px;
+.image-node-settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 40px;
+  padding: 0 12px 0 16px;
+  border-bottom: 1px solid var(--canvas-border);
+  font-size: 13px;
+  font-weight: 600;
+}
+.image-node-settings-head > .image-node-icon {
+  width: 24px;
+  height: 24px;
+  flex-basis: 24px;
+  font-size: 16px !important;
   color: var(--canvas-text-muted);
 }
-.image-node-settings :deep(.themed-select-trigger) {
+.image-node-settings-body {
+  display: grid;
+  box-sizing: border-box;
+  grid-template-columns: minmax(0, 1fr) 112px;
+  gap: 16px 12px;
+  padding: 14px 16px;
+  max-height: min(344px, calc(100vh - 176px));
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.image-node-setting {
   min-width: 0;
+}
+.image-node-setting h4 {
+  margin: 0 0 8px;
+  color: var(--canvas-text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+}
+.image-node-ratios,
+.image-node-settings-meta {
+  grid-column: 1 / -1;
+}
+.image-node-segments {
+  display: flex;
+  gap: 4px;
+}
+.image-node-segments button {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 34px;
+  padding: 0 5px;
+  border: 1px solid var(--canvas-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--canvas-text-muted);
+  font-size: 12px;
+}
+.image-node-segments button.active {
+  border-color: var(--canvas-accent);
+  background: var(--canvas-accent-soft);
+  color: var(--canvas-accent);
+}
+.image-node-segments button:hover:not(:disabled) {
+  border-color: var(--canvas-accent-border);
+  color: var(--canvas-accent);
+}
+.image-node-count {
+  display: flex;
+  align-items: center;
+  height: 34px;
+  box-sizing: border-box;
+  border: 1px solid var(--canvas-border);
+  border-radius: 6px;
+}
+.image-node-count button {
+  display: grid;
+  place-items: center;
+  flex: 0 0 28px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--canvas-text-muted);
+  font-size: 15px;
+}
+.image-node-count button:hover:not(:disabled) {
+  color: var(--canvas-accent);
+}
+.image-node-count input {
+  min-width: 0;
+  width: 100%;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  outline-offset: 0;
+  background: transparent;
+  color: var(--canvas-text);
+  text-align: center;
+  font-size: 12px;
+  appearance: textfield;
+}
+.image-node-count input::-webkit-inner-spin-button,
+.image-node-count input::-webkit-outer-spin-button {
+  appearance: none;
+  margin: 0;
+}
+.image-node-settings-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  color: var(--canvas-text-subtle);
+  font-size: 11px;
+  line-height: 16px;
+}
+.image-node-settings-meta > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.image-node-settings-meta i {
+  font-size: 13px;
+}
+.is-compact .image-node-settings {
+  bottom: 88px;
+}
+.is-compact .image-node-settings-body {
+  max-height: min(280px, calc(100vh - 176px));
+}
+@media (max-width: 360px) {
+  .image-node-settings-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 .image-node-error {
   margin: 8px 0 0;

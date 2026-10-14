@@ -1668,10 +1668,20 @@ const agentModelRecords = ref([
   { value: 'default', label: '默认 Agent', configured: null },
   { value: 'gem-3.8-flash', label: 'GEM 3.8 flash', configured: false },
 ])
+function agentModelDisplayLabel(option) {
+  const names = String(option.label || option.value || '')
+    .split('·')
+    .map((name) => name.trim())
+  const label =
+    names.length === 2 && names[0].toLowerCase() === names[1].toLowerCase()
+      ? names[0]
+      : names.join(' · ')
+  return option.configured === false ? `${label} · 未配置密钥` : label
+}
 const agentModelOptions = computed(() =>
   agentModelRecords.value.map((option) => ({
     ...option,
-    label: option.configured === false ? `${option.label} · 未配置密钥` : option.label,
+    label: agentModelDisplayLabel(option),
   })),
 )
 const agentModelUnavailable = computed(
