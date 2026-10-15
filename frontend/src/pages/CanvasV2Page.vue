@@ -139,6 +139,7 @@ import {
   normalizePromptLibraryTags,
 } from '../utils/promptLibrary'
 import { createStoredZip } from '../utils/storedZip'
+import { createId } from '../utils/id'
 import {
   MAX_IMAGE_UPLOAD_BYTES,
   uploadFileDirect,
@@ -164,7 +165,7 @@ async function deleteV2Project() {
   const next = v2Documents.value.find(item => item.id !== id)
   v2DeletingProject.value = true
   try {
-    await router.replace(`/canvas-v2/${next?.id || `v2-${crypto.randomUUID()}`}`)
+    await router.replace(`/canvas-v2/${next?.id || `v2-${createId()}`}`)
     await canvas.removeDocumentAsync(id)
     v2DeleteProjectOpen.value = false
   } catch (error) {
@@ -190,7 +191,7 @@ watch(v2DocumentId, id => {
 function createV2Document() {
   v2ProjectMenuOpen.value = false
   v2ProjectsOpen.value = false
-  router.push(`/canvas-v2/v2-${crypto.randomUUID()}`)
+  router.push(`/canvas-v2/v2-${createId()}`)
 }
 function renameV2(event) {
   const title = event.target.value.trim()
@@ -2764,7 +2765,7 @@ async function toggleCanvasSelectionGroup() {
   const ids = group
     ? layers.value.filter((layer) => layer.groupId === group.id).map((layer) => layer.id)
     : selectionToolbarLayers.value.map((layer) => layer.id)
-  const groupId = group ? '' : `group-${crypto.randomUUID()}`
+  const groupId = group ? '' : `group-${createId()}`
   const usedNames = new Set(layers.value.map((layer) => layer.groupName).filter(Boolean))
   let index = 1
   while (usedNames.has(`Group ${index}`)) index += 1
@@ -2796,7 +2797,7 @@ async function addCanvasSelectionToChat() {
     if (existingUrls.has(layer.url)) continue
     existingUrls.add(layer.url)
     const reference = {
-      id: `ref-selection-${crypto.randomUUID()}`,
+      id: `ref-selection-${createId()}`,
       name: layer.name || '参考图片',
       url: layer.url,
       layerId: layer.id,
@@ -3833,8 +3834,7 @@ function buildStyleCloneRepairPrompt(basePrompt, review) {
 }
 
 function createGenerationClientTaskId() {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID()
-  return 'c-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10)
+  return createId()
 }
 
 async function submitImageTask({
@@ -11282,7 +11282,7 @@ async function openTextVideoPreset(layer) {
         ? edge.fromLayerId === source.id && edge.toLayerId === item.id
         : edge.fromLayerId === item.id && edge.toLayerId === source.id)))
   if (peer?.locked || peer?.generating) return
-  const groupId = source.groupId || `group-${crypto.randomUUID()}`
+  const groupId = source.groupId || `group-${createId()}`
   const usedNames = new Set(layers.value.map(item => item.groupName).filter(Boolean))
   let groupName = source.groupName || '文生视频', index = 2
   if (!source.groupId) while (usedNames.has(groupName)) groupName = `文生视频 ${index++}`
@@ -11296,7 +11296,7 @@ async function openTextVideoPreset(layer) {
     while (occupied.some(item => x < item.x + item.width + gap && x + width + gap > item.x &&
       y < item.y + item.height + gap && y + height + gap > item.y)) x += direction * (width + gap)
     peer = {
-      id: `layer-${crypto.randomUUID()}`, name: layerName(layers.value.length), type: peerType,
+      id: `layer-${createId()}`, name: layerName(layers.value.length), type: peerType,
       x, y, width, height, visible: true, locked: false,
       zIndex: Math.max(0, ...layers.value.map(item => item.zIndex || 0)) + 1,
       ...(peerType === 'text' ? {
@@ -11309,7 +11309,7 @@ async function openTextVideoPreset(layer) {
   const edges = missingNodeConnections([text.id], 'right', video.id, 'left', connections.value)
   if (newPeer || edges.length || source.groupId !== groupId || peer.groupId !== groupId) {
     pushUndo({ restoreSelection: true })
-    const nextConnections = [...connections.value, ...edges.map(edge => ({ ...edge, id: `conn-${crypto.randomUUID()}` }))]
+    const nextConnections = [...connections.value, ...edges.map(edge => ({ ...edge, id: `conn-${createId()}` }))]
     canvas.updateDocument(canvasId, draft => {
       if (newPeer) draft.payload.layers.push(peer)
       for (const item of draft.payload.layers) {
