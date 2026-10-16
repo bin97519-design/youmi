@@ -439,6 +439,8 @@ function onKeydown(event) {
   const insideFloatingPanel = event.target?.closest?.('[data-canvas-shortcuts-ignore]')
   if (insideFloatingPanel) {
     if (event.key === 'Escape') {
+      const directorPopupOpen = event.target?.closest?.('[data-director-popup-open="true"]')
+      if (directorPopupOpen) return
       event.preventDefault()
       closeDirector()
     }

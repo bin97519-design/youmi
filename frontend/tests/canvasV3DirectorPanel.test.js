@@ -9,6 +9,10 @@ const componentUrl = new URL(
 const shellUrl = new URL('../src/features/canvas-v3/components/CanvasV3Shell.vue', import.meta.url)
 const orbUrl = new URL('../src/features/canvas-v3/components/AgentOrb.vue', import.meta.url)
 const canvasCssUrl = new URL('../src/features/canvas-v3/canvas-v3.css', import.meta.url)
+const scriptSetupUrl = new URL(
+  '../src/features/canvas-v3/components/ScriptSetupDialog.vue',
+  import.meta.url,
+)
 
 test('the shell uses the independent Director panel and hides its launcher while open', async () => {
   const shellSource = await readFile(shellUrl, 'utf8')
@@ -168,4 +172,146 @@ test('docking reserves workspace width without close resetting the saved mode or
   assert.doesNotMatch(closeDirectorBody, /localStorage|directorDock|isDocked|dockWidth/)
   assert.match(closeDirectorBody, /activePanel\.value\s*=\s*''/)
   assert.match(closeDirectorBody, /agentOrb\.value\?\.focus\(\)/)
+})
+
+test('the Director creation-mode trigger exposes the complete accessible menu hierarchy', async () => {
+  const source = await readFile(componentUrl, 'utf8')
+  const buttonTags = [...source.matchAll(/<button\b[\s\S]*?<\/button>/g)].map((match) => match[0])
+  const modeTrigger = buttonTags.find((tag) => tag.includes('aria-label="选择创作模式"')) || ''
+
+  assert.ok(modeTrigger, 'missing creation-mode trigger')
+  assert.match(modeTrigger, /ref="modeTrigger"/)
+  assert.match(modeTrigger, /aria-haspopup="menu"/)
+  assert.match(modeTrigger, /:aria-expanded="modeMenuOpen"/)
+  assert.match(modeTrigger, /aria-controls="cv3-director-mode-menu"/)
+  assert.match(modeTrigger, /@click\.stop="toggleModeMenu"/)
+  assert.match(modeTrigger, /activeMode\.triggerLabel/)
+
+  assert.match(source, /id="cv3-director-mode-menu"[\s\S]{0,240}role="menu"/)
+  assert.match(
+    source,
+    /role="menuitemradio"[\s\S]{0,180}:aria-checked="activeModeId === item\.modeId"/,
+  )
+  assert.match(
+    source,
+    /:data-mode-id="item\.modeId"[\s\S]{0,100}@click="selectMode\(item\.modeId\)"/,
+  )
+  assert.match(source, /role="menuitem"[\s\S]{0,160}aria-haspopup="menu"/)
+  assert.match(source, /class="cv3-director-script-submenu"[\s\S]{0,120}role="menu"/)
+  assert.match(source, /role="menuitemradio"[\s\S]{0,180}:aria-checked="activeModeId === modeId"/)
+})
+
+test('switching Director modes updates context without replacing or clearing the composer', async () => {
+  const source = await readFile(componentUrl, 'utf8')
+  const selectModeBody = source.match(/function selectMode\(modeId[\s\S]*?\n\}/)?.[0] || ''
+
+  assert.match(
+    source,
+    /import \{[\s\S]*?DIRECTOR_MODE_MENU[\s\S]*?getDirectorMode[\s\S]*?\} from ['"]\.\.\/config\/directorModes\.js['"]/,
+  )
+  assert.match(selectModeBody, /activeModeId\.value\s*=\s*getDirectorMode\(modeId\)\.id/)
+  assert.match(selectModeBody, /closeInlinePopups\(\{ restoreFocus: true \}\)/)
+  assert.match(
+    selectModeBody,
+    /activeModeId\.value === ['"]script_original['"][\s\S]*?scriptSetupOpen\.value = true/,
+  )
+  assert.match(selectModeBody, /composerInput\.value\?\.focus/)
+  assert.doesNotMatch(selectModeBody, /prompt\.value\s*=/)
+  assert.doesNotMatch(selectModeBody, /sentMessages\.value\s*=/)
+  assert.match(source, /ref="composerInput"[\s\S]{0,160}v-model="prompt"/)
+  assert.match(source, /:placeholder="activeMode\.placeholder"/)
+})
+
+test('Director mode popups dismiss before the shell closes the Director panel', async () => {
+  const [panelSource, shellSource] = await Promise.all([
+    readFile(componentUrl, 'utf8'),
+    readFile(shellUrl, 'utf8'),
+  ])
+  const escapeBody = panelSource.match(/function handlePanelEscape\(event\)[\s\S]*?\n\}/)?.[0] || ''
+
+  assert.match(
+    panelSource,
+    /:data-director-popup-open="hasInlinePopup \|\| scriptSetupOpen \? 'true' : undefined"/,
+  )
+  assert.match(panelSource, /@keydown\.esc="handlePanelEscape"/)
+  assert.match(escapeBody, /if \(!hasInlinePopup\.value\) return/)
+  assert.match(escapeBody, /event\.preventDefault\(\)/)
+  assert.match(escapeBody, /event\.stopPropagation\(\)/)
+  assert.match(escapeBody, /closeInlinePopups/)
+  assert.match(
+    shellSource,
+    /event\.target\?\.closest\?\.\(['"]\[data-director-popup-open="true"\]['"]\)[\s\S]{0,80}if \(directorPopupOpen\) return/,
+  )
+
+  assert.match(
+    panelSource,
+    /document\.addEventListener\(['"]pointerdown['"], handleDocumentPointerDown, true\)/,
+  )
+  assert.match(
+    panelSource,
+    /document\.removeEventListener\(['"]pointerdown['"], handleDocumentPointerDown, true\)/,
+  )
+  assert.match(panelSource, /modeTrigger\.value, modeMenu\.value/)
+})
+
+test('script, adaptation and directing modes expose their captured functional controls', async () => {
+  const [panelSource, scriptSetupSource] = await Promise.all([
+    readFile(componentUrl, 'utf8'),
+    readFile(scriptSetupUrl, 'utf8'),
+  ])
+
+  assert.match(panelSource, /activeModeId === ['"]script_original['"]/)
+  assert.match(panelSource, /v-for="preset in DIRECTOR_HOT_PRESETS"/)
+  assert.ok(panelSource.includes('从爆款题材开始'))
+  assert.match(
+    panelSource,
+    /<ScriptSetupDialog[\s\S]*?:open="scriptSetupOpen"[\s\S]*?@confirm="confirmScriptSetup"/,
+  )
+  assert.match(scriptSetupSource, /role="dialog"/)
+  assert.match(scriptSetupSource, /aria-modal="true"/)
+  assert.match(scriptSetupSource, /v-for="field in DIRECTOR_SCRIPT_FIELDS"/)
+  assert.match(scriptSetupSource, /DIRECTOR_SCRIPT_EPISODES\.(?:min|max|step)/)
+
+  assert.match(panelSource, /activeModeId === ['"]script_adaptation['"]/)
+  assert.ok(panelSource.includes('上传故事，快速改编为可拍剧本'))
+  assert.match(panelSource, /accept="\.pdf,\.txt,\.md,\.doc,\.docx"/)
+  assert.match(
+    panelSource,
+    /class="cv3-director-adaptation-popover"[\s\S]{0,160}role="dialog"[\s\S]{0,80}aria-label="改编设定"/,
+  )
+  assert.match(panelSource, /v-for="direction in DIRECTOR_ADAPTATION_DIRECTIONS"/)
+  assert.match(panelSource, /:min="DIRECTOR_ADAPTATION_EPISODES\.min"/)
+  assert.match(panelSource, /:max="DIRECTOR_ADAPTATION_EPISODES\.max"/)
+  assert.match(panelSource, /@click="resetAdaptationSettings"/)
+
+  assert.match(panelSource, /activeModeId === ['"]directing['"]/)
+  assert.match(panelSource, /v-for="role in DIRECTOR_ROLES"/)
+  assert.match(panelSource, /role="radiogroup" aria-label="导演角色"/)
+  assert.match(
+    panelSource,
+    /role="radio"[\s\S]{0,100}:aria-checked="role\.id === activeDirectorRoleId"/,
+  )
+  assert.ok(panelSource.includes('创建新的导演角色'))
+  assert.ok(panelSource.includes('导入已有的导演角色'))
+  assert.ok(panelSource.includes('优化镜头语言'))
+  assert.ok(panelSource.includes('一句话生成分镜'))
+})
+
+test('Director mode transitions are anchored and honor reduced-motion preferences', async () => {
+  const source = await readFile(componentUrl, 'utf8')
+  const reducedMotion = source.slice(source.indexOf('@media (prefers-reduced-motion: reduce)'))
+
+  assert.match(source, /\.cv3-director-mode-menu\s*\{[\s\S]*?bottom:/)
+  assert.match(
+    source,
+    /\.cv3-director-popover-enter-active,[\s\S]*?transform-origin:\s*bottom left/,
+  )
+  assert.match(
+    source,
+    /\.cv3-director-popover-enter-from,[\s\S]*?opacity:\s*0[\s\S]*?translateY\(5px\) scale\(0\.98\)/,
+  )
+  assert.match(reducedMotion, /\.cv3-director-script-home/)
+  assert.match(reducedMotion, /\.cv3-director-directing/)
+  assert.match(reducedMotion, /\.cv3-director-popover-enter-active/)
+  assert.match(reducedMotion, /\.cv3-director-popover-leave-active[\s\S]*?transition:\s*none/)
 })
