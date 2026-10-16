@@ -38,6 +38,12 @@ gettoken-override.yml
 **/application-dev.yml
 **/application-prod.yml
 
+# Canvas V3's `config` directory contains checked-in frontend source modules,
+# not runtime secrets. Keep the general secret-config rule above, but allow
+# these JavaScript modules so clean clones can build the editor.
+!frontend/src/features/canvas-v3/config/
+!frontend/src/features/canvas-v3/config/*.js
+
 # 运行时数据
 logs/
 uploads/
