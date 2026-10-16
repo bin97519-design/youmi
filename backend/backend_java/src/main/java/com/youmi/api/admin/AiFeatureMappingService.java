@@ -19,6 +19,7 @@ public class AiFeatureMappingService {
       "product-video-video", ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION,
       "product-video-planning", ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
       "canvas-layering", ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
+      "canvas-face-detection", ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
       "canvas-agent", ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
       "canvas-video", ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION,
       "video-enhancement", ModelApiKeyService.MODEL_TYPE_VIDEO_ENHANCEMENT);
@@ -53,6 +54,9 @@ public class AiFeatureMappingService {
         mapping("canvas-layering", "画布图片智能分层", ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
             "system_default", "此功能没有模型下拉框，使用此处指定的默认识图推理模型。",
             preferredVisionRoute(keys), "指定模型不可用或调用失败时回退到讯飞视觉，再回退 DashScope。", keys),
+        mapping("canvas-face-detection", "画布面部识别", ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
+            "system_default", "使用此处指定的默认识图推理模型；未指定时按已启用模型的优先级降序、ID升序选取。",
+            preferredVisionRoute(keys), "无可用模型或调用失败时提示重试或手动框选，不回退到旧 Agent Key。", keys),
         mapping("canvas-agent", "画布 Agent 模型", ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
             "dropdown", "按此处勾选的模型提供 Agent 选项，并按模型标识关联对应配置。",
             "default 选项使用全局 Agent 配置；自定义模型使用对应识图推理模型配置。",
@@ -70,7 +74,8 @@ public class AiFeatureMappingService {
     String type = FEATURE_TYPES.get(featureCode);
     if (type == null) throw new ApiException(404, "AI 功能映射不存在");
     List<ModelApiKeyDtos.Row> keys = modelApiKeys.list();
-    if ("canvas-layering".equals(featureCode) || "video-enhancement".equals(featureCode)) {
+    if ("canvas-layering".equals(featureCode) || "canvas-face-detection".equals(featureCode)
+        || "video-enhancement".equals(featureCode)) {
       Long id = request == null ? null : request.defaultApiKeyId();
       if (id == null) throw new ApiException(400, "请选择一个默认模型");
       if (id != null && keys.stream().noneMatch(key -> key.id().equals(id)

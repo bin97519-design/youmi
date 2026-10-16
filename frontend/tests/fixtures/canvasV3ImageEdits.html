@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>人像、情绪与720全景 · 隔离测试</title>
+    <style>
+      body {
+        margin: 0;
+      }
+      .cv3-app-shell:has(.cv3-node-popup.is-shortcuts) .cv3-image-edit-fixture-controls {
+        visibility: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="cv3-app-shell"><div id="app"></div></main>
+    <script type="module" src="./canvasV3ImageEdits.js"></script>
+  </body>
+</html>

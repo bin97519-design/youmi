@@ -2,6 +2,9 @@ package com.youmi.api.image;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -47,6 +50,12 @@ class ImageGenerationClientWaveSpeedTest {
       properties.setWaveSpeedBaseUrl(
           "http://127.0.0.1:" + server.getAddress().getPort() + "/api/v3");
       ImageGenerationClient client = new ImageGenerationClient(objectMapper, properties);
+      ModelApiKeyService keyService = mock(ModelApiKeyService.class);
+      when(keyService.isFeatureMappingConfigured("canvas-image")).thenReturn(true);
+      when(keyService.resolve(eq("wavespeed-ai/qwen-image/edit-multiple-angles"),
+          eq(ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION), eq("canvas-image")))
+          .thenReturn(java.util.Optional.empty());
+      client.setModelApiKeyService(keyService);
 
       ImageGenerationDtos.CreateTaskRequest request = new ImageGenerationDtos.CreateTaskRequest(
           "保持主体一致",
@@ -68,7 +77,8 @@ class ImageGenerationClientWaveSpeedTest {
           315,
           30,
           2,
-          42);
+          42,
+          "canvas-image");
 
       ImageGenerationDtos.CreateTaskResponse created = client.createTask(request);
       assertEquals("wavespeed", created.provider());

@@ -1149,8 +1149,11 @@ public class ImageGenerationClient {
       if ("product-video-image".equals(featureCode)) {
         throw new ApiException(400, "该生图模型未映射到主图视频分镜生图功能");
       }
+      boolean dedicatedWaveSpeedModel = properties.isWaveSpeedMultiAngleModel(
+          properties.resolveModel(normalized));
       if (modelApiKeyService.isFeatureMappingConfigured(featureCode)
-          && ("product-video-image".equals(featureCode) || !isLegacyImageProviderModel(normalized))) {
+          && ("product-video-image".equals(featureCode)
+              || !isLegacyImageProviderModel(normalized) && !dedicatedWaveSpeedModel)) {
         throw new ApiException(400, "该生图模型未映射到已启用的模型密钥");
       }
     }

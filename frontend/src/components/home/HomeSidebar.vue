@@ -46,7 +46,7 @@ const displayUser = computed(
 const menuItems = [
   { key: 'home', label: '首页', icon: 'home', route: '/' },
   { key: 'canvas', label: '万能画布', icon: 'canvas', route: '/canvas', dot: true },
-  { key: 'canvas-v2', label: '新版画布', icon: 'canvas-v2', route: '/canvas-v2' },
+  { key: 'canvas-v2', label: '新版画布', icon: 'canvas-v2', route: '/canvas-v3' },
   { key: 'selection-pool', label: '选品库', icon: 'selection-pool', route: '/selection-pool' },
   {
     key: 'designer',
@@ -277,10 +277,7 @@ async function openCliDownload() {
               <path class="yellow-fill" d="M18.2 3.3v3.2M16.6 4.9h3.2" />
             </svg>
 
-            <i
-              v-else-if="item.icon === 'canvas-v2'"
-              class="ri-node-tree yh-icon-canvas-v2"
-            ></i>
+            <i v-else-if="item.icon === 'canvas-v2'" class="ri-node-tree yh-icon-canvas-v2"></i>
 
             <img
               v-else-if="item.icon === 'selection-pool'"

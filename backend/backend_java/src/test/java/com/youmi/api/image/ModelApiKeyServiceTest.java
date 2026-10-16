@@ -214,6 +214,30 @@ class ModelApiKeyServiceTest {
   }
 
   @Test
+  void faceDetectionUsesEnabledVisionPriorityUntilAnExplicitDefaultIsSaved() {
+    service.create(new ModelApiKeyDtos.SaveRequest(
+        "非视觉模型", "image-only", ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION,
+        "test", "https://image.example.test", null, null, "fixture-image", true, 1000), 1L);
+    var preferred = service.create(new ModelApiKeyDtos.SaveRequest(
+        "后台默认视觉", "vision-priority", ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
+        "test", "https://vision.example.test", "/chat", "/models", "fixture-vision", true, 100), 1L);
+    var selected = service.create(new ModelApiKeyDtos.SaveRequest(
+        "指定面部视觉", "vision-selected", ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
+        "test", "https://vision.example.test", "/chat", "/models", "fixture-selected", true, 10), 1L);
+    assertEquals(preferred.id(), service.preferredEnabledModel(
+        ModelApiKeyService.MODEL_TYPE_VISION_REASONING, "canvas-face-detection").orElseThrow().id());
+    var mappings = new AiFeatureMappingService(service, new AiFeatureMappingRepository(jdbcTemplate));
+    var face = mappings.list().stream().filter(row -> row.featureCode().equals("canvas-face-detection")).findFirst().orElseThrow();
+    assertEquals("system_default", face.selectionMode());
+    mappings.save("canvas-face-detection", new com.youmi.api.admin.AiFeatureMappingDtos.SaveRequest(null, selected.id()));
+    assertEquals(selected.id(), service.preferredEnabledModel(
+        ModelApiKeyService.MODEL_TYPE_VISION_REASONING, "canvas-face-detection").orElseThrow().id());
+    service.disable(selected.id());
+    assertTrue(service.preferredEnabledModel(ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
+        "canvas-face-detection").isEmpty());
+  }
+
+  @Test
   void productVideoModelsAndRoutingRequireAnExplicitFeatureMapping() {
     ModelApiKeyDtos.Row image = service.create(new ModelApiKeyDtos.SaveRequest(
         "未映射图片线路", "unmapped-image", ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION,
