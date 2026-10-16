@@ -231,7 +231,7 @@ onBeforeUnmount(() => {
     </svg>
   </button>
 
-  <Teleport to=".cv3-app-shell">
+  <Teleport to="body">
     <Transition name="cv3-director-model-popover">
       <section
         v-if="open"

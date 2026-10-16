@@ -167,6 +167,7 @@ export function createImageTaskClient({
 } = {}) {
   async function request(url, options = {}) {
     let response
+    const mutation = String(options.method || 'GET').toUpperCase() !== 'GET'
     try {
       response = await fetcher(path(url), {
         ...options,
@@ -175,7 +176,7 @@ export function createImageTaskClient({
       })
     } catch (cause) {
       const error = new Error('生成服务连接中断，请继续查询原任务')
-      error.deliveryUnknown = true
+      error.deliveryUnknown = mutation
       error.cause = cause
       throw error
     }
@@ -184,7 +185,19 @@ export function createImageTaskClient({
       const error = new Error(payload?.message || `图片接口暂不可用（${response.status}）`)
       error.status =
         response.status >= 400 ? response.status : Number(payload?.code) || response.status
-      error.deliveryUnknown = response.status >= 500
+      const retrySafe =
+        payload?.retry_safe === true ||
+        payload?.data?.retry_safe === true ||
+        String(payload?.phase || payload?.data?.phase || '').toLowerCase() === 'pre_dispatch'
+      const ambiguousSuccessfulMutation =
+        mutation && response.ok && (!payload || (payload.code != null && payload.code !== 0))
+      error.deliveryUnknown =
+        mutation &&
+        !retrySafe &&
+        (ambiguousSuccessfulMutation ||
+          response.status === 409 ||
+          response.status === 408 ||
+          response.status >= 500)
       throw error
     }
     return payload.data ?? payload

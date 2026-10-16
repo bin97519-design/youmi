@@ -149,7 +149,7 @@ test('Director model picker matches the captured cube trigger and 370 by 384 por
   assert.equal(source.split(cubePath).length - 1, 2)
   assert.match(source, /const MENU_WIDTH = 370/)
   assert.match(source, /const MENU_MAX_HEIGHT = 384/)
-  assert.match(source, /<Teleport to="\.cv3-app-shell">/)
+  assert.match(source, /<Teleport to="body">/)
   assert.match(source, /id="cv3-director-model-dialog"/)
   assert.match(source, /role="dialog"/)
   assert.match(source, /aria-modal="false"/)

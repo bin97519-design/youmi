@@ -4,6 +4,14 @@ import { CANVAS_V3_SCHEMA_VERSION, nodeSpec } from '../config/nodeSpecs'
 import { NODE_CONTROLS, nodeSize } from '../config/nodeControls'
 
 const HISTORY_LIMIT = 60
+const PROTECTED_IMAGE_TASK_STATES = new Set([
+  'preparing',
+  'submitting',
+  'queued',
+  'running',
+  'paused',
+  'uncertain',
+])
 
 function clone(value) {
   return JSON.parse(JSON.stringify(toRaw(value)))
@@ -15,6 +23,17 @@ function uid(prefix) {
 
 function graphSnapshot(nodes, edges) {
   return clone({ nodes, edges })
+}
+
+function isProtectedImageTaskNode(node) {
+  if (node?.data?.kind !== 'image') return false
+  const generation = node.data.generation
+  return (
+    PROTECTED_IMAGE_TASK_STATES.has(node.data.runState) ||
+    Boolean(generation?.persistPending) ||
+    Boolean(generation?.queryPending) ||
+    Boolean(generation?.unresolvedTaskIds?.length)
+  )
 }
 
 function makeNode(kind, index, position) {
@@ -100,6 +119,20 @@ export const useCanvasV3GraphStore = defineStore('canvas-v3-graph', () => {
   )
   const canUndo = computed(() => undoStack.value.length > 0)
   const canRedo = computed(() => redoStack.value.length > 0)
+
+  function protectedImageTaskNodes(candidates = nodes.value) {
+    return candidates.filter(isProtectedImageTaskNode)
+  }
+
+  function markProtectedActionBlocked(candidates, action) {
+    if (!candidates.length) return
+    for (const node of candidates)
+      node.data = {
+        ...node.data,
+        statusText: `图片任务仍在生成、持久化或等待确认，暂不能${action}。`,
+        updatedAt: Date.now(),
+      }
+  }
 
   function hydrate(payload) {
     projectId.value = payload.projectId
@@ -398,22 +431,40 @@ export const useCanvasV3GraphStore = defineStore('canvas-v3-graph', () => {
   }
 
   function removeSelected() {
-    const nodeIds = new Set(selectedNodes.value.map((node) => node.id))
+    const blockedNodes = protectedImageTaskNodes(selectedNodes.value)
+    const blockedNodeIds = new Set(blockedNodes.map((node) => node.id))
+    const nodeIds = new Set(
+      selectedNodes.value.filter((node) => !blockedNodeIds.has(node.id)).map((node) => node.id),
+    )
     const edgeIds = new Set(selectedEdges.value.map((edge) => edge.id))
-    if (!nodeIds.size && !edgeIds.size) return
+    if (!nodeIds.size && !edgeIds.size) {
+      markProtectedActionBlocked(blockedNodes, '删除')
+      if (blockedNodes.length) markChanged()
+      return false
+    }
     remember()
     nodes.value = nodes.value.filter((node) => !nodeIds.has(node.id))
     edges.value = edges.value.filter(
       (edge) => !edgeIds.has(edge.id) && !nodeIds.has(edge.source) && !nodeIds.has(edge.target),
     )
+    markProtectedActionBlocked(blockedNodes, '删除')
     markChanged()
+    return true
   }
 
   function duplicateSelected() {
     if (!selectedNodes.value.length) return
+    const blockedNodes = protectedImageTaskNodes(selectedNodes.value)
+    const blockedNodeIds = new Set(blockedNodes.map((node) => node.id))
+    const duplicableNodes = selectedNodes.value.filter((node) => !blockedNodeIds.has(node.id))
+    if (!duplicableNodes.length) {
+      markProtectedActionBlocked(blockedNodes, '复制')
+      markChanged()
+      return false
+    }
     remember()
     const idMap = new Map()
-    const copies = selectedNodes.value.map((node) => {
+    const copies = duplicableNodes.map((node) => {
       const nextId = uid('node')
       idMap.set(node.id, nextId)
       return {
@@ -424,6 +475,7 @@ export const useCanvasV3GraphStore = defineStore('canvas-v3-graph', () => {
         data: { ...clone(node.data), title: `${node.data.title} 副本`, createdAt: Date.now() },
       }
     })
+    markProtectedActionBlocked(blockedNodes, '复制')
     nodes.value.forEach((node) => {
       node.selected = false
     })
@@ -438,6 +490,7 @@ export const useCanvasV3GraphStore = defineStore('canvas-v3-graph', () => {
     nodes.value.push(...copies)
     edges.value.push(...copiedEdges)
     markChanged()
+    return true
   }
 
   function autoLayout() {
@@ -454,28 +507,49 @@ export const useCanvasV3GraphStore = defineStore('canvas-v3-graph', () => {
 
   function clearGraph() {
     if (!nodes.value.length && !edges.value.length) return
+    const blockedNodes = protectedImageTaskNodes()
+    if (blockedNodes.length) {
+      markProtectedActionBlocked(blockedNodes, '清空画布')
+      markChanged()
+      return false
+    }
     remember()
     nodes.value = []
     edges.value = []
     markChanged()
+    return true
   }
 
   function undo() {
+    const blockedNodes = protectedImageTaskNodes()
+    if (blockedNodes.length) {
+      markProtectedActionBlocked(blockedNodes, '撤销')
+      markChanged()
+      return false
+    }
     const snapshot = undoStack.value.pop()
     if (!snapshot) return
     redoStack.value.push(graphSnapshot(nodes.value, edges.value))
     nodes.value = clone(snapshot.nodes)
     edges.value = clone(snapshot.edges)
     markChanged()
+    return true
   }
 
   function redo() {
+    const blockedNodes = protectedImageTaskNodes()
+    if (blockedNodes.length) {
+      markProtectedActionBlocked(blockedNodes, '重做')
+      markChanged()
+      return false
+    }
     const snapshot = redoStack.value.pop()
     if (!snapshot) return
     undoStack.value.push(graphSnapshot(nodes.value, edges.value))
     nodes.value = clone(snapshot.nodes)
     edges.value = clone(snapshot.edges)
     markChanged()
+    return true
   }
 
   function setViewport(nextViewport) {

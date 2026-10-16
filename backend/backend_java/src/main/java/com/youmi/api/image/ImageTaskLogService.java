@@ -9,6 +9,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -101,6 +102,103 @@ public class ImageTaskLogService {
     return rows.isEmpty() ? null : rows.get(0);
   }
 
+  /**
+   * Returns the request-level idempotency claim even when the provider task has not been persisted
+   * yet. This lets recovery callers distinguish an active submission from an indeterminate
+   * delivery instead of treating both as a missing task and issuing another paid POST.
+   */
+  public ClientTaskClaim findClientTaskClaim(Long userId, String clientTaskId) {
+    if (userId == null || clientTaskId == null || clientTaskId.isBlank()) return null;
+    List<ClientTaskClaim> rows = jdbcTemplate.query(
+        "SELECT status, task_id, billing_log_id, error_message "
+            + "FROM ym_image_task_request_claim WHERE user_id = ? AND client_task_id = ? LIMIT 1",
+        (rs, i) -> new ClientTaskClaim(
+            rs.getString("status"),
+            rs.getString("task_id"),
+            rs.getObject("billing_log_id", Long.class),
+            rs.getString("error_message")),
+        userId, clientTaskId.trim());
+    return rows.isEmpty() ? null : rows.get(0);
+  }
+
+  /**
+   * Atomically reserves a client idempotency key before billing or invoking an image provider.
+   * A plain INSERT is intentional: the primary key is the concurrency gate and a duplicate means
+   * another request already owns this generation attempt.
+   */
+  public boolean tryClaimClientTask(Long userId, String clientTaskId) {
+    if (userId == null || clientTaskId == null || clientTaskId.isBlank()) return true;
+    try {
+      jdbcTemplate.update(
+          "INSERT INTO ym_image_task_request_claim (user_id, client_task_id, status) "
+              + "VALUES (?, ?, 'CLAIMED')",
+          userId, clientTaskId.trim());
+      return true;
+    } catch (DuplicateKeyException duplicate) {
+      return false;
+    }
+  }
+
+  /** Marks a successfully persisted provider task as the result owned by the claimed key. */
+  public void completeClientTaskClaim(Long userId, String clientTaskId, String taskId) {
+    if (userId == null || clientTaskId == null || clientTaskId.isBlank()) return;
+    jdbcTemplate.update(
+        "UPDATE ym_image_task_request_claim SET status = 'SUBMITTED', task_id = ? "
+            + "WHERE user_id = ? AND client_task_id = ?",
+        taskId, userId, clientTaskId.trim());
+  }
+
+  /** Freezes the claim before the first provider call; this state is never auto-reclaimed. */
+  public void markClientTaskSubmitting(Long userId, String clientTaskId, Long billingLogId) {
+    if (userId == null || clientTaskId == null || clientTaskId.isBlank()) return;
+    int updated = jdbcTemplate.update(
+        "UPDATE ym_image_task_request_claim "
+            + "SET status = 'SUBMITTING', billing_log_id = ? "
+            + "WHERE user_id = ? AND client_task_id = ? AND status = 'CLAIMED'",
+        billingLogId, userId, clientTaskId.trim());
+    if (updated != 1) {
+      throw new IllegalStateException("Image task idempotency claim is no longer available");
+    }
+  }
+
+  /** Records an indeterminate provider delivery. Retrying the same key must not call again. */
+  public void markClientTaskUnknown(Long userId, String clientTaskId, String errorMessage) {
+    if (userId == null || clientTaskId == null || clientTaskId.isBlank()) return;
+    jdbcTemplate.update(
+        "UPDATE ym_image_task_request_claim "
+            + "SET status = 'UNKNOWN', error_message = ? "
+            + "WHERE user_id = ? AND client_task_id = ? AND status IN ('SUBMITTING', 'SUBMITTED')",
+        errorMessage, userId, clientTaskId.trim());
+  }
+
+  /**
+   * Releases only an unsubmitted claim. Once a provider accepted the request the claim is kept,
+   * even if a later bookkeeping step fails, so a retry cannot create and charge for a second image.
+   */
+  public void releaseClientTaskClaim(Long userId, String clientTaskId) {
+    if (userId == null || clientTaskId == null || clientTaskId.isBlank()) return;
+    jdbcTemplate.update(
+        "DELETE FROM ym_image_task_request_claim "
+            + "WHERE user_id = ? AND client_task_id = ? AND status = 'CLAIMED'",
+        userId, clientTaskId.trim());
+  }
+
+  /**
+   * Releases a claim that had entered {@code SUBMITTING} but was definitively rejected before the
+   * provider could accept a generation. The billing id guard prevents a stale request from
+   * releasing a newer owner of the same client key.
+   */
+  public void releaseRejectedClientTaskClaim(
+      Long userId, String clientTaskId, Long billingLogId) {
+    if (userId == null || clientTaskId == null || clientTaskId.isBlank()
+        || billingLogId == null) return;
+    jdbcTemplate.update(
+        "DELETE FROM ym_image_task_request_claim "
+            + "WHERE user_id = ? AND client_task_id = ? "
+            + "AND status = 'SUBMITTING' AND billing_log_id = ?",
+        userId, clientTaskId.trim(), billingLogId);
+  }
+
   public boolean isOwnedByUser(Long userId, String taskId) {
     if (userId == null || taskId == null || taskId.isBlank()) return false;
     Integer count = jdbcTemplate.queryForObject(
@@ -133,6 +231,10 @@ public class ImageTaskLogService {
   }
 
   public record TodayImageCounts(long globalImages, long personalImages) {}
+
+  /** Request-level state used by create recovery before an image task row exists. */
+  public record ClientTaskClaim(
+      String status, String taskId, Long billingLogId, String errorMessage) {}
 
   /** 已落库生图任务的轻量快照，用于幂等早返回时构造响应。 */
   public static class ExistingTask {

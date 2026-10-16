@@ -11,8 +11,10 @@ import {
 } from '../config/directorModes.js'
 import { serializeDirectorModelChip } from '../config/directorModelCatalog.js'
 import { serializeDirectorSkillChip } from '../config/directorSkillCatalog.js'
+import { imageMiCost } from '../../../utils/imageMiPricing.js'
 import AgentOrb from './AgentOrb.vue'
 import CanvasIcon from './CanvasIcon.vue'
+import DirectorGenerationModePicker from './DirectorGenerationModePicker.vue'
 import DirectorModelPicker from './DirectorModelPicker.vue'
 import DirectorSkillPicker from './DirectorSkillPicker.vue'
 import ScriptSetupDialog from './ScriptSetupDialog.vue'
@@ -20,9 +22,21 @@ import ScriptSetupDialog from './ScriptSetupDialog.vue'
 const props = defineProps({
   docked: { type: Boolean, default: false },
   dockWidth: { type: Number, default: 340 },
+  sessionId: { type: String, default: '' },
+  agentRuns: { type: Array, default: () => [] },
 })
-const emit = defineEmits(['close', 'update:docked', 'update:dock-width', 'dock-width-commit'])
+const emit = defineEmits([
+  'close',
+  'update:docked',
+  'update:dock-width',
+  'dock-width-commit',
+  'generation-mode-change',
+  'submit',
+  'confirm-generation',
+  'retry-agent',
+])
 const STORAGE_KEY = 'libtv:chatAgentDrawer:floatRect'
+const GENERATION_MODE_KEY = 'libtv:director:generationMode'
 const DEFAULT_RECT = { right: 16, bottom: 16, width: 400, height: 640 }
 const MIN_WIDTH = 320
 const MIN_HEIGHT = 400
@@ -47,6 +61,10 @@ const activeModeId = ref('omni')
 const modeMenuOpen = ref(false)
 const modelMenuOpen = ref(false)
 const skillMenuOpen = ref(false)
+const generationModeMenuOpen = ref(false)
+const directorDryRun = ref(true)
+const previousGenerationDryRun = ref(true)
+const pendingDryRunIntent = ref(undefined)
 const scriptSubmenuOpen = ref(false)
 const scriptSetupOpen = ref(false)
 const scriptSetup = ref(null)
@@ -71,11 +89,30 @@ const activeDirectorRole = computed(
   () => DIRECTOR_ROLES.find((role) => role.id === activeDirectorRoleId.value) || DIRECTOR_ROLES[0],
 )
 const scriptModeActive = computed(() => activeModeId.value.startsWith('script_'))
+const conversationItems = computed(() => {
+  const items = []
+  const runsByMessageId = new Map(
+    props.agentRuns.filter((run) => run.clientMessageId).map((run) => [run.clientMessageId, run]),
+  )
+  const renderedRuns = new Set()
+  for (const [index, message] of sentMessages.value.entries()) {
+    items.push({ type: 'user', key: message?.id || `user-${index}`, message })
+    const run = message?.id ? runsByMessageId.get(message.id) : null
+    if (run) {
+      items.push({ type: 'agent', key: run.id, run })
+      renderedRuns.add(run.id)
+    }
+  }
+  for (const run of props.agentRuns)
+    if (!renderedRuns.has(run.id)) items.push({ type: 'agent', key: run.id, run })
+  return items
+})
 const hasInlinePopup = computed(
   () =>
     modeMenuOpen.value ||
     modelMenuOpen.value ||
     skillMenuOpen.value ||
+    generationModeMenuOpen.value ||
     adaptationSettingsOpen.value ||
     directorCustomMenuOpen.value,
 )
@@ -92,6 +129,20 @@ const scriptSetupSummary = computed(() => {
     DIRECTOR_GENRES.find((item) => item.id === scriptSetup.value.mainGenre)?.label || '自动题材'
   return `剧本设定：${genre} · ${scriptSetup.value.episodes || 20}集`
 })
+
+function directorDraftOutputSummary(draft) {
+  const dimensions =
+    Number(draft?.width) > 0 && Number(draft?.height) > 0
+      ? `${Math.round(Number(draft.width))} × ${Math.round(Number(draft.height))}`
+      : ''
+  return [draft?.resolution, dimensions || draft?.ratio].filter(Boolean).join(' · ')
+}
+
+function directorDraftCostSummary(draft) {
+  if (draft?.generationType !== 'image') return '费用以任务提交结果为准'
+  const estimate = imageMiCost(draft.model, draft.resolution, draft.count)
+  return estimate > 0 ? `预计 ${estimate} 米值` : '费用以任务提交结果为准'
+}
 
 const panelStyle = computed(() =>
   props.docked
@@ -332,8 +383,40 @@ function closeInlinePopups({ restoreFocus = false } = {}) {
   closeModeMenu({ restoreFocus })
   modelMenuOpen.value = false
   skillMenuOpen.value = false
+  generationModeMenuOpen.value = false
   adaptationSettingsOpen.value = false
   directorCustomMenuOpen.value = false
+}
+
+function restoreGenerationMode() {
+  try {
+    const stored = localStorage.getItem(GENERATION_MODE_KEY)
+    directorDryRun.value = stored !== 'auto'
+  } catch {
+    directorDryRun.value = true
+  }
+  previousGenerationDryRun.value = directorDryRun.value
+  pendingDryRunIntent.value = undefined
+}
+
+function handleGenerationModeChange(dryRun) {
+  const previousDryRun = previousGenerationDryRun.value
+  directorDryRun.value = Boolean(dryRun)
+  previousGenerationDryRun.value = directorDryRun.value
+  pendingDryRunIntent.value = directorDryRun.value
+  try {
+    localStorage.setItem(GENERATION_MODE_KEY, directorDryRun.value ? 'manual' : 'auto')
+  } catch {
+    // User-default persistence is optional; the live composer state remains authoritative.
+  }
+  if (previousDryRun !== directorDryRun.value) {
+    emit('generation-mode-change', {
+      dryRun: directorDryRun.value,
+      mode: directorDryRun.value ? 'manual' : 'auto',
+      fromMode: previousDryRun ? 'manual' : 'auto',
+      entrySource: 'canvas_chat_input',
+    })
+  }
 }
 
 function toggleModeMenu() {
@@ -645,7 +728,10 @@ function submitPrompt() {
       return { marker: `{{ skill:${skill.id} }}`, structuredPart }
     })
     .filter(Boolean)
-  sentMessages.value.push({
+  const dryRunIntent = pendingDryRunIntent.value ?? directorDryRun.value
+  const message = {
+    id: `director-message-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`,
+    content,
     display: [
       ...selectedModels.value.map((model) => model.label),
       ...selectedSkills.value.map((skill) => skill.name || skill.label),
@@ -664,12 +750,23 @@ function submitPrompt() {
       ...serializedModels.map((model) => model.structuredPart),
       ...serializedSkills.map((skill) => skill.structuredPart),
     ],
-  })
+    dryRunIntent,
+    context: {
+      sessionId: props.sessionId,
+      metadata: {
+        dryRun: dryRunIntent,
+        generationMode: dryRunIntent ? 'manual' : 'auto',
+      },
+    },
+  }
+  sentMessages.value.push(message)
+  emit('submit', message)
   prompt.value = ''
   selectedModels.value = []
   selectedSkills.value = []
   activeModelChipId.value = ''
   activeSkillChipId.value = ''
+  pendingDryRunIntent.value = undefined
 }
 
 function handleViewportResize() {
@@ -679,6 +776,7 @@ function handleViewportResize() {
 
 onMounted(async () => {
   restoreRect()
+  restoreGenerationMode()
   window.addEventListener('resize', handleViewportResize)
   document.addEventListener('pointerdown', handleDocumentPointerDown, true)
   await nextTick()
@@ -697,12 +795,23 @@ watch(
 )
 
 watch(modelMenuOpen, (open) => {
-  if (open) skillMenuOpen.value = false
+  if (!open) return
+  skillMenuOpen.value = false
+  generationModeMenuOpen.value = false
+  closeModeMenu()
 })
 
 watch(skillMenuOpen, (open) => {
   if (!open) return
   modelMenuOpen.value = false
+  generationModeMenuOpen.value = false
+  closeModeMenu()
+})
+
+watch(generationModeMenuOpen, (open) => {
+  if (!open) return
+  modelMenuOpen.value = false
+  skillMenuOpen.value = false
   closeModeMenu()
 })
 </script>
@@ -978,9 +1087,78 @@ watch(skillMenuOpen, (open) => {
           </div>
         </div>
         <div v-else class="cv3-director-chat">
-          <p v-for="(message, index) in sentMessages" :key="index">
-            {{ typeof message === 'string' ? message : message.display }}
-          </p>
+          <template v-for="item in conversationItems" :key="item.key">
+            <p v-if="item.type === 'user'" class="cv3-director-user-message">
+              {{ typeof item.message === 'string' ? item.message : item.message.display }}
+            </p>
+            <article
+              v-else
+              class="cv3-director-agent-run"
+              :class="`is-${item.run.phase}`"
+              :aria-busy="['planning', 'submitting'].includes(item.run.phase)"
+            >
+              <div
+                v-if="item.run.phase === 'planning'"
+                class="cv3-director-agent-status"
+                role="status"
+              >
+                <span class="cv3-director-agent-spinner" aria-hidden="true" />
+                TV Director 正在理解画布并准备草稿…
+              </div>
+              <div v-else-if="item.run.reply" class="cv3-director-agent-reply">
+                {{ item.run.reply }}
+              </div>
+
+              <div v-if="item.run.draft" class="cv3-director-agent-draft">
+                <header>
+                  <span>
+                    {{ item.run.draft.generationType === 'video' ? '视频草稿' : '图片草稿' }}
+                  </span>
+                  <small>{{ item.run.dryRun ? '生成前询问' : '自动生成' }}</small>
+                </header>
+                <p>{{ item.run.draft.prompt }}</p>
+                <div class="cv3-director-draft-summary" aria-label="生成参数与费用摘要">
+                  <span :title="`模型：${item.run.draft.modelLabel || item.run.draft.model}`">
+                    {{ item.run.draft.modelLabel || item.run.draft.model || '未选择模型' }}
+                  </span>
+                  <span>{{ item.run.draft.count }} 张</span>
+                  <span>{{ directorDraftOutputSummary(item.run.draft) }}</span>
+                  <span>{{ directorDraftCostSummary(item.run.draft) }}</span>
+                </div>
+                <footer>
+                  <span v-if="item.run.draft.generationType === 'video'">
+                    视频草稿已保留，当前画布暂不自动提交视频任务
+                  </span>
+                  <span v-else-if="item.run.phase === 'submitting'">正在安全提交图片任务…</span>
+                  <span v-else-if="item.run.phase === 'submitted'">任务已提交到画布节点</span>
+                  <button
+                    v-else-if="item.run.phase === 'ready' && (item.run.dryRun || item.run.error)"
+                    type="button"
+                    @click="emit('confirm-generation', item.run.id)"
+                  >
+                    {{
+                      item.run.submissionState === 'uncertain'
+                        ? '继续查询'
+                        : item.run.error
+                          ? '重试生成'
+                          : '确认生成'
+                    }}
+                  </button>
+                </footer>
+              </div>
+
+              <div v-if="item.run.error" class="cv3-director-agent-error" role="alert">
+                <span>{{ item.run.error }}</span>
+                <button
+                  v-if="item.run.phase === 'failed'"
+                  type="button"
+                  @click="emit('retry-agent', item.run.id)"
+                >
+                  重试
+                </button>
+              </div>
+            </article>
+          </template>
         </div>
       </div>
 
@@ -1148,14 +1326,12 @@ watch(skillMenuOpen, (open) => {
               <span>Doubao Seed Evolving</span>
               <CanvasIcon name="chevron" :size="10" />
             </button>
-            <button
-              v-if="activeModeId !== 'directing'"
-              type="button"
-              title="手动生成"
-              aria-label="手动生成"
-            >
-              <CanvasIcon name="move" :size="17" />
-            </button>
+            <DirectorGenerationModePicker
+              v-if="activeMode.controls.includes('send')"
+              v-model:open="generationModeMenuOpen"
+              v-model="directorDryRun"
+              @change="handleGenerationModeChange"
+            />
             <span class="cv3-director-spacer" />
             <button
               class="cv3-director-send"
@@ -1923,7 +2099,7 @@ watch(skillMenuOpen, (open) => {
   animation: cv3-director-fade-in 200ms ease-out both;
 }
 
-.cv3-director-chat p {
+.cv3-director-user-message {
   max-width: 85%;
   align-self: flex-end;
   margin: 0;
@@ -1933,6 +2109,130 @@ watch(skillMenuOpen, (open) => {
   color: #eee;
   font-size: 14px;
   line-height: 20px;
+}
+
+.cv3-director-agent-run {
+  display: flex;
+  width: min(94%, 420px);
+  align-self: flex-start;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px 14px 14px 4px;
+  background: rgba(255, 255, 255, 0.035);
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 13px;
+  line-height: 19px;
+}
+
+.cv3-director-agent-status,
+.cv3-director-agent-error,
+.cv3-director-agent-draft footer {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.cv3-director-agent-spinner {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 13px;
+  border: 1.5px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #60dff4;
+  border-radius: 50%;
+  animation: cv3-director-agent-spin 700ms linear infinite;
+}
+
+.cv3-director-agent-reply {
+  white-space: pre-wrap;
+}
+
+.cv3-director-agent-draft {
+  padding: 9px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.cv3-director-agent-draft header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.cv3-director-agent-draft header small,
+.cv3-director-agent-draft footer,
+.cv3-director-agent-error {
+  color: rgba(255, 255, 255, 0.46);
+  font-size: 11px;
+}
+
+.cv3-director-agent-draft p {
+  margin: 7px 0 9px;
+  color: rgba(255, 255, 255, 0.78);
+  white-space: pre-wrap;
+}
+
+.cv3-director-draft-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 0 0 9px;
+}
+
+.cv3-director-draft-summary span {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 3px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.045);
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 11px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cv3-director-agent-draft footer {
+  min-height: 26px;
+  justify-content: flex-end;
+}
+
+.cv3-director-agent-draft footer span {
+  margin-right: auto;
+}
+
+.cv3-director-agent-draft button,
+.cv3-director-agent-error button {
+  min-height: 26px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.cv3-director-agent-draft button:hover,
+.cv3-director-agent-draft button:focus-visible,
+.cv3-director-agent-error button:hover,
+.cv3-director-agent-error button:focus-visible {
+  background: rgba(255, 255, 255, 0.18);
+  outline: none;
+}
+
+.cv3-director-agent-error {
+  justify-content: space-between;
+  color: #e7ac64;
+}
+
+@keyframes cv3-director-agent-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .cv3-director-composer {
@@ -2480,7 +2780,8 @@ watch(skillMenuOpen, (open) => {
   .cv3-director-chat,
   .cv3-director-script-home,
   .cv3-director-directing,
-  .cv3-director-skill-question {
+  .cv3-director-skill-question,
+  .cv3-director-agent-spinner {
     animation: none;
   }
 

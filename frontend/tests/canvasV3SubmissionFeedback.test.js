@@ -111,6 +111,45 @@ test('25-panel preset enters busy state synchronously, before delayed model conf
   assert.match(h.node.data.statusText, /已提交，排队中/)
 })
 
+test('persists a caller-provided client task key before the first generation POST', async (t) => {
+  const h = await harness(t)
+  const events = []
+  h.tasks.attach(h.graph.projectId, {
+    beforeImageSubmit: async ({ nodeId, clientTaskId }) => {
+      events.push('persist')
+      assert.equal(h.posts().length, 0)
+      assert.equal(nodeId, h.node.id)
+      assert.equal(clientTaskId, 'director-stable-client-key')
+      assert.equal(h.node.data.generation.clientTaskId, clientTaskId)
+      return true
+    },
+  })
+  const run = h.tasks.runImage(h.node.id, null, {
+    clientTaskId: 'director-stable-client-key',
+    onSubmitStart: () => events.push('submit'),
+  })
+  h.finishModels()
+  await flush()
+
+  assert.deepEqual(events, ['persist', 'submit'])
+  assert.equal(h.posts().length, 1)
+  assert.equal(JSON.parse(h.posts()[0].body).client_task_id, 'director-stable-client-key')
+  h.finishCreate()
+  await run
+})
+
+test('does not POST when the client task key cannot be durably saved', async (t) => {
+  const h = await harness(t)
+  h.tasks.attach(h.graph.projectId, { beforeImageSubmit: async () => false })
+  const run = h.tasks.runImage(h.node.id, null, { clientTaskId: 'not-persisted' })
+  h.finishModels()
+  await run
+
+  assert.equal(h.posts().length, 0)
+  assert.equal(h.node.data.runState, 'failed')
+  assert.match(h.node.data.error, /尚未提交生成任务/)
+})
+
 test('reference upload has real progress feedback; cancelling preparation cannot submit or unlock a newer click', async (t) => {
   const h = await harness(t)
   const source = h.graph.addNode('image')

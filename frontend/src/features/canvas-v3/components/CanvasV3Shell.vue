@@ -7,8 +7,15 @@ import { MiniMap } from '@vue-flow/minimap'
 import { useRoute, useRouter } from 'vue-router'
 import { useCanvasV3GraphStore } from '../stores/graph'
 import { useCanvasV3UiStore } from '../stores/ui'
+import { useUserStore } from '../../../stores/user'
+import { apiPath } from '../../../utils/apiBase'
+import { canCreateAgentDraft } from '../../../utils/agentDraft'
 import { useCanvasV3Persistence } from '../sync/useCanvasV3Persistence'
 import { nodeSize } from '../config/nodeControls'
+import {
+  resolveConfiguredImageTaskModel,
+  resolveDirectorImageTaskModel,
+} from '../config/directorModelCatalog'
 import CanvasV3Topbar from './CanvasV3Topbar.vue'
 import NodeLibraryPanel from './NodeLibraryPanel.vue'
 import GeneratorNode from './GeneratorNode.vue'
@@ -35,13 +42,17 @@ const route = useRoute()
 const graph = useCanvasV3GraphStore()
 const ui = useCanvasV3UiStore()
 const tasks = useCanvasV3TaskStore()
+const user = useUserStore()
 const { nodes, edges, title, viewport } = storeToRefs(graph)
 const { activePanel, minimapVisible, snapToGrid, tool, mode } = storeToRefs(ui)
-const { saveStatus } = useCanvasV3Persistence(props.projectId, graph)
+const { saveStatus, saveNow } = useCanvasV3Persistence(props.projectId, graph)
 const canvasWrap = ref(null)
 const agentOrb = ref(null)
 const DIRECTOR_MODE_KEY = 'libtv:chatAgentDrawer:mode'
 const DIRECTOR_WIDTH_KEY = 'libtv:chatAgentDrawer:width'
+const directorAgentRuns = ref([])
+const directorPlanningRequests = new Map()
+const directorGenerationSubmissions = new Set()
 
 function defaultDirectorDockWidth() {
   return window.innerWidth > 1520 ? 400 : 340
@@ -406,6 +417,499 @@ async function focusGenerated(node) {
     { duration: matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 180 },
   )
 }
+
+function directorRequestId(prefix) {
+  return `${prefix}-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`
+}
+
+function directorRun(runId) {
+  return directorAgentRuns.value.find((run) => run.id === runId)
+}
+
+function updateDirectorRun(runId, patch) {
+  const index = directorAgentRuns.value.findIndex((run) => run.id === runId)
+  if (index < 0) return null
+  const next = { ...directorAgentRuns.value[index], ...patch }
+  directorAgentRuns.value.splice(index, 1, next)
+  return next
+}
+
+function directorLayerContext(node) {
+  const width = Number(node.data.pixelSize?.width)
+  const height = Number(node.data.pixelSize?.height)
+  return {
+    id: node.id,
+    name: node.data.title || node.data.kind || '未命名节点',
+    type: node.data.kind || 'reference',
+    url: node.data.assetUrl || '',
+    width: Number.isFinite(width) && width > 0 ? width : null,
+    height: Number.isFinite(height) && height > 0 ? height : null,
+    x: Number(node.position?.x) || 0,
+    y: Number(node.position?.y) || 0,
+  }
+}
+
+function directorHistory(excludedRunId) {
+  return directorAgentRuns.value
+    .filter((run) => run.id !== excludedRunId && run.instruction && run.reply)
+    .flatMap((run) => [
+      { role: 'user', content: run.instruction },
+      { role: 'assistant', content: run.reply },
+    ])
+    .slice(-20)
+}
+
+function normalizeDirectorPrompts(response) {
+  const candidates =
+    Array.isArray(response?.draftPrompts) && response.draftPrompts.length
+      ? response.draftPrompts
+      : [response?.draftPrompt]
+  return [...new Set(candidates.map((value) => String(value || '').trim()).filter(Boolean))].slice(
+    0,
+    10,
+  )
+}
+
+function directorInstruction(message) {
+  const skillContext = (message.parts || [])
+    .filter((part) => part?.type === 'skill')
+    .map((part) =>
+      part.prompt
+        ? `使用 Skill「${part.name || part.id}」：\n${part.prompt}`
+        : `使用 Skill「${part.name || part.id}」`,
+    )
+  return [String(message.content || message.display || '').trim(), ...skillContext]
+    .filter(Boolean)
+    .join('\n\n')
+}
+
+function directorCount(value) {
+  return Math.max(1, Math.min(4, Number.parseInt(value, 10) || 1))
+}
+
+function positiveDirectorDimension(value) {
+  const number = Number(value)
+  return Number.isFinite(number) && number > 0 ? Math.round(number) : null
+}
+
+function createDirectorGenerationIntent(message) {
+  const selectedNodes = [...graph.selectedNodes]
+  const referenceNodes = selectedNodes.filter(
+    (node) => node.data.kind === 'image' && node.data.assetUrl,
+  )
+  const requestedModels = (message.parts || [])
+    .filter((part) => part?.type === 'model')
+    .map((part) =>
+      Object.freeze({
+        id: String(part.id || '').trim(),
+        name: String(part.name || '').trim(),
+        modality: part.modality === 'video' ? 'video' : 'image',
+      }),
+    )
+  const generationType = requestedModels[0]?.modality || 'image'
+  const primaryGenerationNode =
+    selectedNodes.find((node) => node.data.kind === generationType) || null
+  const params = primaryGenerationNode?.data.params || {}
+  return Object.freeze({
+    generationType,
+    requestedModels: Object.freeze(requestedModels),
+    selectedLayerIds: Object.freeze(selectedNodes.map((node) => node.id)),
+    referenceLayerIds: Object.freeze(referenceNodes.map((node) => node.id)),
+    referenceAssets: Object.freeze(
+      referenceNodes.map((node) => Object.freeze({ id: node.id, url: node.data.assetUrl })),
+    ),
+    nodeModel: String(primaryGenerationNode?.data.model || '').trim(),
+    ratio: String(params.ratio || '16:9'),
+    resolution: String(params.resolution || (generationType === 'video' ? '720P' : '2K')),
+    // Director image generations are deliberately single-output. This keeps the approval
+    // summary and the paid request one-to-one even when the selected node was configured
+    // for a larger batch.
+    count: generationType === 'image' ? 1 : directorCount(params.count),
+    quality: String(params.quality || '标准画质'),
+    background: String(params.background || '自动'),
+    width: positiveDirectorDimension(params.width),
+    height: positiveDirectorDimension(params.height),
+  })
+}
+
+function resolveDirectorModels(intent) {
+  const requestedKeys = new Set(
+    intent.requestedModels.map((model) => `${model.modality}:${model.id || model.name}`),
+  )
+  if (requestedKeys.size > 1)
+    throw new Error('一次生成只能选择一个模型，请移除混合或多余的模型后重新发送')
+  if (intent.generationType !== 'image') return []
+  const requested = intent.requestedModels.filter((model) => model.modality === 'image')
+  if (!requested.length && !intent.nodeModel) return []
+  const nodeModelIsConfigured = tasks.imageModels.some(
+    (option) =>
+      String(option.value || '')
+        .trim()
+        .toLocaleLowerCase() === intent.nodeModel.toLocaleLowerCase(),
+  )
+  const matched = requested.length
+    ? requested.map((model) => resolveDirectorImageTaskModel(model.id, tasks.imageModels))
+    : [
+        nodeModelIsConfigured
+          ? resolveConfiguredImageTaskModel(intent.nodeModel, tasks.imageModels)
+          : resolveDirectorImageTaskModel(intent.nodeModel, tasks.imageModels),
+      ]
+  return [
+    ...new Map(matched.map((option) => [option.value, Object.freeze({ ...option })])).values(),
+  ]
+}
+
+async function readDirectorApiResponse(response) {
+  const result = await response.json().catch(() => null)
+  if (!response.ok || !result || result.code !== 0) {
+    const error = new Error(result?.message || `接口请求失败：${response.status}`)
+    error.status = response.status
+    throw error
+  }
+  return result.data
+}
+
+async function planDirectorMessage(runId) {
+  const run = directorRun(runId)
+  if (!run || directorPlanningRequests.has(runId)) return
+  if (!user.requireLogin()) {
+    updateDirectorRun(runId, { phase: 'failed', error: '请先登录有米账号后使用 TV Director' })
+    return
+  }
+
+  const controller = new AbortController()
+  directorPlanningRequests.set(runId, controller)
+  updateDirectorRun(runId, { phase: 'planning', error: '', reply: '', draft: null })
+  try {
+    await tasks.loadModels()
+    if (controller.signal.aborted) return
+    const intent = run.generationIntent
+    const resolvedModels = resolveDirectorModels(intent)
+    const models =
+      intent.generationType === 'image'
+        ? resolvedModels.map((option) => option.value)
+        : intent.requestedModels.map((model) => model.id).filter(Boolean)
+    const primaryModel = resolvedModels[0] || intent.requestedModels[0] || null
+    const response = await readDirectorApiResponse(
+      await fetch(apiPath('/api/ai/canvas-agent/chat'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...user.authHeaders(),
+        },
+        signal: controller.signal,
+        body: JSON.stringify({
+          canvasId: props.projectId,
+          instruction: run.instruction,
+          history: directorHistory(runId),
+          layers: nodes.value.map(directorLayerContext),
+          selectedLayerIds: [...intent.selectedLayerIds],
+          referenceLayerIds: [...intent.referenceLayerIds],
+          model: models[0] || '',
+          models,
+          ratio: intent.ratio,
+          resolution: intent.resolution,
+          count: intent.count,
+          conversationId: `canvas-v3:${props.projectId}`,
+        }),
+      }),
+    )
+    if (controller.signal.aborted) return
+    const prompts = normalizeDirectorPrompts(response)
+    const draftRequested = canCreateAgentDraft(response, prompts)
+    const responseGenerationType = ['image', 'video'].includes(response?.generationType)
+      ? response.generationType
+      : ''
+    const paidConfigurationError = !draftRequested
+      ? ''
+      : !responseGenerationType
+        ? 'Agent 未明确生成类型，本次不会自动提交付费任务'
+        : responseGenerationType !== intent.generationType
+          ? `Agent 建议生成${responseGenerationType === 'video' ? '视频' : '图片'}，与发送时选择的${intent.generationType === 'video' ? '视频' : '图片'}模式不一致；请确认模型后重新发送`
+          : intent.generationType === 'image' && !models.length
+            ? '请选择已配置的图片模型后重新发送，Agent 不会替你选择付费模型'
+            : ''
+    const draft =
+      draftRequested && !paidConfigurationError
+        ? {
+            prompt: prompts[0],
+            prompts,
+            generationType: intent.generationType,
+            referenceLayerIds: [...intent.referenceLayerIds],
+            referenceAssets: intent.referenceAssets.map((reference) => ({ ...reference })),
+            models,
+            model: models[0] || '',
+            modelLabel: primaryModel?.label || primaryModel?.name || models[0] || '',
+            ratio: intent.ratio,
+            resolution: intent.resolution,
+            count: intent.count,
+            quality: intent.quality,
+            background: intent.background,
+            width: intent.width,
+            height: intent.height,
+          }
+        : null
+    const nextRun = updateDirectorRun(runId, {
+      phase: draft ? 'ready' : 'complete',
+      reply: String(response?.reply || 'TV Director 已完成分析。'),
+      draft,
+      error: paidConfigurationError,
+    })
+    // The per-message dry-run intent is frozen when the user sends. Later mode changes never
+    // affect this branch, and video drafts deliberately remain available without auto submission.
+    if (draft?.generationType === 'image' && nextRun?.dryRun === false)
+      await submitDirectorDraft(runId)
+  } catch (error) {
+    if (error?.name !== 'AbortError')
+      updateDirectorRun(runId, {
+        phase: 'failed',
+        error: error?.message || 'TV Director 暂时无法回复，请稍后重试',
+      })
+  } finally {
+    if (directorPlanningRequests.get(runId) === controller) directorPlanningRequests.delete(runId)
+  }
+}
+
+function handleDirectorSubmit(message) {
+  const instruction = directorInstruction(message)
+  if (!instruction) return
+  const generationIntent = createDirectorGenerationIntent(message)
+  const run = {
+    id: directorRequestId('director'),
+    clientTaskId: directorRequestId('director-image'),
+    clientMessageId: message.id || '',
+    instruction,
+    display: message.display || instruction,
+    message,
+    generationIntent,
+    // Freeze approval policy at send time. Picker changes are inert until another message is sent.
+    dryRun: message.dryRunIntent !== false,
+    phase: 'planning',
+    reply: '',
+    draft: null,
+    nodeId: '',
+    submissionStarted: false,
+    error: '',
+  }
+  directorAgentRuns.value.push(run)
+  void planDirectorMessage(run.id)
+}
+
+function directorDraftPosition(referenceNode) {
+  if (referenceNode)
+    return {
+      x: referenceNode.position.x + nodeSize(referenceNode.data.kind).width + 176,
+      y: referenceNode.position.y,
+    }
+  const rect = canvasWrap.value?.getBoundingClientRect()
+  if (!rect) return { x: 180, y: 140 }
+  const center = screenToFlowCoordinate({
+    x: rect.left + rect.width / 2,
+    y: rect.top + rect.height / 2,
+  })
+  const size = nodeSize('image')
+  return { x: center.x - size.width / 2, y: center.y - size.height / 2 }
+}
+
+async function submitDirectorDraft(runId) {
+  const run = directorRun(runId)
+  const draft = run?.draft
+  if (!run || !draft || draft.generationType !== 'image') return
+  if (directorGenerationSubmissions.has(runId) || ['submitting', 'submitted'].includes(run.phase))
+    return
+  if (!user.requireLogin()) {
+    updateDirectorRun(runId, { phase: 'ready', error: '请先登录有米账号后确认生成' })
+    return
+  }
+
+  directorGenerationSubmissions.add(runId)
+  updateDirectorRun(runId, { phase: 'submitting', error: '' })
+  try {
+    // Once fetch is about to start, every retry is a read-only recovery of the same stable
+    // client_task_id. If rendering/history temporarily lost the node, rebuild only a local
+    // recovery holder and resolve the original key; never fall through to another POST.
+    if (run.submissionStarted || run.submissionState === 'uncertain') {
+      if (!run.clientTaskId) throw new Error('原任务标识缺失，已阻止重复提交')
+      let resumed = run.nodeId ? nodes.value.find((node) => node.id === run.nodeId) : null
+      if (resumed?.data.generation?.clientTaskId !== run.clientTaskId) resumed = null
+      if (!resumed) {
+        resumed = graph.addNode('image', directorDraftPosition(null))
+        if (!resumed) throw new Error('无法重建原任务查询节点')
+        const params = {
+          ratio: draft.ratio,
+          resolution: draft.resolution,
+          count: `${draft.count}张`,
+          quality: draft.quality,
+          background: draft.background,
+        }
+        graph.updateNodeData(resumed.id, {
+          title: 'TV Director 任务恢复',
+          prompt: draft.prompt,
+          model: draft.model,
+          params,
+          runState: 'uncertain',
+          error: '',
+          statusText: '正在查询原生成任务，不会重新提交或重复扣费。',
+          generation: {
+            clientTaskId: run.clientTaskId,
+            taskIds: [],
+            prompt: draft.prompt,
+            model: draft.model,
+            params,
+            startedAt: run.submissionStartedAt || Date.now(),
+          },
+        })
+        updateDirectorRun(runId, { nodeId: resumed.id, submissionState: 'uncertain' })
+        await nextTick()
+        if (!(await saveNow())) throw new Error('无法安全保存原任务标识，请检查网络后继续查询')
+      }
+      await tasks.resume(resumed.id)
+      resumed = nodes.value.find((node) => node.id === resumed.id)
+      if (!resumed) throw new Error('原任务查询节点暂不可用，请稍后继续查询')
+      if (resumed.data.runState === 'uncertain') {
+        updateDirectorRun(runId, {
+          phase: 'ready',
+          error: resumed.data.statusText || '原任务结果尚未确认，请稍后继续查询',
+          submissionState: 'uncertain',
+        })
+        return
+      }
+      if (resumed.data.runState === 'failed')
+        throw new Error(resumed.data.error || '原任务查询失败，请稍后重试')
+      if (!['queued', 'running', 'paused', 'succeeded'].includes(resumed.data.runState))
+        throw new Error(resumed.data.statusText || '原任务尚未恢复，请稍后继续查询')
+      updateDirectorRun(runId, {
+        phase: 'submitted',
+        error: '',
+        submissionState: resumed.data.runState,
+      })
+      return
+    }
+
+    await tasks.loadModels()
+    const configuredModels = new Set(tasks.imageModels.map((option) => option.value))
+    const model = [draft.model, ...(draft.models || [])].find((value) =>
+      configuredModels.has(value),
+    )
+    if (!model) throw new Error(tasks.modelError || '当前项目尚未配置可用的图片生成模型')
+
+    const expectedReferences = draft.referenceAssets || []
+    const referenceNodes = expectedReferences.map((reference) => {
+      const node = nodes.value.find((candidate) => candidate.id === reference.id)
+      if (!node?.data.assetUrl) throw new Error('部分参考节点已移除，请恢复参考节点后重试')
+      if (node.data.assetUrl !== reference.url)
+        throw new Error('参考图片在发送后已发生变化，请确认新图片并重新发送')
+      return node
+    })
+
+    let target = run.nodeId ? nodes.value.find((node) => node.id === run.nodeId) : null
+    if (!target) {
+      const source = referenceNodes.find((node) => node.data.kind === 'image')
+      target = source
+        ? graph.createImageVariation(source.id, {
+            title: 'TV Director 生成',
+            prompt: draft.prompt,
+            params: {
+              ratio: draft.ratio,
+              resolution: draft.resolution,
+              count: `${draft.count}张`,
+              quality: draft.quality,
+              background: draft.background,
+            },
+          })
+        : graph.addNode('image', directorDraftPosition(referenceNodes[0]))
+      if (!target) throw new Error('无法创建图片生成节点')
+      updateDirectorRun(runId, { nodeId: target.id })
+    }
+
+    graph.updateNodeData(target.id, {
+      title: /^图片节点(?:\s|$)/.test(target.data.title || '')
+        ? 'TV Director 生成'
+        : target.data.title,
+      prompt: draft.prompt,
+      model,
+      params: {
+        ...target.data.params,
+        ratio: draft.ratio,
+        resolution: draft.resolution,
+        count: `${draft.count}张`,
+        quality: draft.quality,
+        background: draft.background,
+      },
+      error: '',
+      statusText: '',
+    })
+    for (const reference of referenceNodes)
+      graph.connect({
+        source: reference.id,
+        target: target.id,
+        sourceHandle: 'output',
+        targetHandle: 'input',
+      })
+
+    await nextTick()
+    await focusStoryboard(target)
+    await tasks.runImage(target.id, focusGenerated, {
+      clientTaskId: run.clientTaskId,
+      onSubmitStart: ({ clientTaskId }) => {
+        if (clientTaskId !== run.clientTaskId) return
+        updateDirectorRun(runId, {
+          nodeId: target.id,
+          submissionStarted: true,
+          submissionStartedAt: Date.now(),
+        })
+      },
+    })
+    const submitted = nodes.value.find((node) => node.id === target.id)
+    if (!submitted || submitted.data.runState === 'failed')
+      throw new Error(submitted?.data.error || '图片任务提交失败，请重试')
+    if (submitted.data.runState === 'uncertain') {
+      updateDirectorRun(runId, {
+        phase: 'ready',
+        nodeId: submitted.id,
+        error: submitted.data.statusText || '提交结果待确认，请继续查询原任务',
+        submissionState: 'uncertain',
+      })
+      return
+    }
+    if (!['queued', 'running', 'paused', 'succeeded'].includes(submitted.data.runState))
+      throw new Error(
+        submitted.data.error || submitted.data.statusText || '图片任务尚未成功提交，请重试',
+      )
+    updateDirectorRun(runId, {
+      phase: 'submitted',
+      nodeId: submitted.id,
+      error: '',
+      submissionState: submitted.data.runState,
+    })
+  } catch (error) {
+    updateDirectorRun(runId, {
+      phase: 'ready',
+      error: error?.message || '图片任务提交失败，请重试',
+    })
+  } finally {
+    directorGenerationSubmissions.delete(runId)
+  }
+}
+
+function confirmDirectorGeneration(runId) {
+  const run = directorRun(runId)
+  if (
+    !run ||
+    run.phase !== 'ready' ||
+    run.draft?.generationType !== 'image' ||
+    (!run.dryRun && !run.error)
+  )
+    return
+  void submitDirectorDraft(runId)
+}
+
+function retryDirectorAgent(runId) {
+  const run = directorRun(runId)
+  if (!run || directorPlanningRequests.has(runId)) return
+  void planDirectorMessage(runId)
+}
+
 function addFromStoryboard() {
   mode.value = 'workflow'
   toggleNodeLibrary()
@@ -498,7 +1002,7 @@ onNodesInitialized(() => {
 onMounted(async () => {
   activePanel.value = ''
   mode.value = 'workflow'
-  tasks.attach(props.projectId)
+  tasks.attach(props.projectId, { beforeImageSubmit: saveNow })
   window.addEventListener('keydown', onKeydown, true)
   window.addEventListener('keyup', onKeyup, true)
   window.addEventListener('blur', resetSpace)
@@ -515,6 +1019,9 @@ onMounted(async () => {
   }
 })
 onBeforeUnmount(() => {
+  for (const controller of directorPlanningRequests.values()) controller.abort()
+  directorPlanningRequests.clear()
+  directorGenerationSubmissions.clear()
   tasks.detach(props.projectId)
   window.removeEventListener('keydown', onKeydown, true)
   window.removeEventListener('keyup', onKeyup, true)
@@ -683,9 +1190,14 @@ onBeforeUnmount(() => {
         v-if="activePanel === 'assistant'"
         :docked="directorDocked"
         :dock-width="directorDockWidth"
+        :session-id="projectId"
+        :agent-runs="directorAgentRuns"
         @update:docked="setDirectorDocked"
         @update:dock-width="setDirectorDockWidth"
         @dock-width-commit="commitDirectorDockWidth"
+        @submit="handleDirectorSubmit"
+        @confirm-generation="confirmDirectorGeneration"
+        @retry-agent="retryDirectorAgent"
         @close="closeDirector"
       />
       <section v-if="mode === 'storyboard'" class="cv3-storyboard">

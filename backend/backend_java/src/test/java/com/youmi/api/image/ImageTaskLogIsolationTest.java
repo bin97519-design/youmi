@@ -3,6 +3,7 @@ package com.youmi.api.image;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -24,6 +25,7 @@ class ImageTaskLogIsolationTest {
         "jdbc:h2:mem:imageTaskIsolation;MODE=MySQL;DB_CLOSE_DELAY=-1", "sa", "");
     jdbcTemplate = new JdbcTemplate(dataSource);
     jdbcTemplate.execute("DROP TABLE IF EXISTS ym_image_task");
+    jdbcTemplate.execute("DROP TABLE IF EXISTS ym_image_task_request_claim");
     jdbcTemplate.execute("""
         CREATE TABLE ym_image_task (
           id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -39,7 +41,57 @@ class ImageTaskLogIsolationTest {
           completed_at TIMESTAMP NULL
         )
         """);
+    jdbcTemplate.execute("""
+        CREATE TABLE ym_image_task_request_claim (
+          user_id BIGINT NOT NULL,
+          client_task_id VARCHAR(128) NOT NULL,
+          status VARCHAR(16) NOT NULL DEFAULT 'CLAIMED',
+          task_id VARCHAR(128),
+          billing_log_id BIGINT,
+          error_message VARCHAR(512),
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (user_id, client_task_id)
+        )
+        """);
     service = new ImageTaskLogService(jdbcTemplate, new ObjectMapper());
+  }
+
+  @Test
+  void clientTaskClaimIsAtomicAndCannotBeReleasedAfterProviderSubmissionStarts() {
+    assertTrue(service.tryClaimClientTask(101L, "same-request"));
+    assertFalse(service.tryClaimClientTask(101L, "same-request"));
+    assertTrue(service.tryClaimClientTask(202L, "same-request"));
+
+    service.markClientTaskSubmitting(101L, "same-request", 77L);
+    ImageTaskLogService.ClientTaskClaim submitting =
+        service.findClientTaskClaim(101L, "same-request");
+    assertNotNull(submitting);
+    assertEquals("SUBMITTING", submitting.status());
+    assertEquals(77L, submitting.billingLogId());
+    assertNull(service.findClientTaskClaim(303L, "same-request"));
+
+    service.releaseClientTaskClaim(101L, "same-request");
+    assertFalse(service.tryClaimClientTask(101L, "same-request"));
+    assertEquals("SUBMITTING", jdbcTemplate.queryForObject(
+        "SELECT status FROM ym_image_task_request_claim WHERE user_id = 101",
+        String.class));
+
+    service.markClientTaskUnknown(101L, "same-request", "delivery unknown");
+    assertEquals("UNKNOWN", jdbcTemplate.queryForObject(
+        "SELECT status FROM ym_image_task_request_claim WHERE user_id = 101",
+        String.class));
+
+    assertTrue(service.tryClaimClientTask(101L, "safe-to-release"));
+    service.releaseClientTaskClaim(101L, "safe-to-release");
+    assertTrue(service.tryClaimClientTask(101L, "safe-to-release"));
+
+    assertTrue(service.tryClaimClientTask(101L, "definitive-rejection"));
+    service.markClientTaskSubmitting(101L, "definitive-rejection", 88L);
+    service.releaseRejectedClientTaskClaim(101L, "definitive-rejection", 999L);
+    assertFalse(service.tryClaimClientTask(101L, "definitive-rejection"));
+    service.releaseRejectedClientTaskClaim(101L, "definitive-rejection", 88L);
+    assertTrue(service.tryClaimClientTask(101L, "definitive-rejection"));
   }
 
   @Test

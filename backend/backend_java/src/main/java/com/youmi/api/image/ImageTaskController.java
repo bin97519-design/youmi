@@ -13,8 +13,8 @@ import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
-import java.util.Optional;
 import java.util.Map;
+import java.util.Optional;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -27,7 +27,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -104,6 +103,14 @@ public class ImageTaskController {
       @RequestBody ImageGenerationDtos.CreateTaskRequest request) throws Exception {
     // 闸门要求登录态
     Long userId = adminAuthService.requireUserId(authorization);
+    if (request == null) {
+      throw new ApiException(400, "生图请求不能为空");
+    }
+    // ym_image_task currently owns one provider task per client idempotency key. Until child-task
+    // persistence is redesigned, accepting n > 1 could leave paid provider tasks unowned.
+    if (request.requestedCount() > 1) {
+      throw new ApiException(400, "当前暂仅支持每次生成 1 张图片");
+    }
     Timestamp requestStartedAt = new Timestamp(System.currentTimeMillis());
     // 客户端幂等：同一张生图前端带 client_task_id，刷新重提时直接返回已有任务，
     // 跳过米值扣减与外部生图调用，杜绝重复生图+重复扣费。
@@ -132,64 +139,109 @@ public class ImageTaskController {
         throw new ApiException(400, unsupportedRequest.getMessage());
       }
     }
-    MiValueDtos.DeductResult deduct =
-        miValueService.checkAndDeduct(userId, MiBizType.IMAGE, quote.reservedPrice());
+    String clientTaskId = request.clientTaskId() == null ? null : request.clientTaskId().trim();
+    boolean claimedClientTask = false;
+    if (clientTaskId != null && !clientTaskId.isBlank()) {
+      claimedClientTask = imageTaskLogService.tryClaimClientTask(userId, clientTaskId);
+      if (!claimedClientTask) {
+        // The winner may have completed between the initial lookup and the atomic claim.
+        ImageTaskLogService.ExistingTask existing =
+            imageTaskLogService.findExistingByClientTaskId(userId, clientTaskId);
+        if (existing != null) {
+          return ApiResponse.ok(imageTaskLogService.buildResponseFromEntity(existing));
+        }
+        throw new ApiException(409, "该图片任务正在提交，请稍后按原任务查询，系统不会重复扣费");
+      }
+    }
+
+    MiValueDtos.DeductResult deduct;
     try {
+      deduct = miValueService.checkAndDeduct(userId, MiBizType.IMAGE, quote.reservedPrice());
+    } catch (Exception e) {
+      if (claimedClientTask) imageTaskLogService.releaseClientTaskClaim(userId, clientTaskId);
+      throw e;
+    }
+
+    boolean providerCallStarted = false;
+    try {
+      if (claimedClientTask) {
+        imageTaskLogService.markClientTaskSubmitting(userId, clientTaskId, deduct.logId());
+      }
+      // Freeze the key before entering the provider client. Transport/5xx failures from this point
+      // are indeterminate; explicit validation/rejection errors are handled separately below.
+      providerCallStarted = true;
       ImageGenerationDtos.CreateTaskResponse response = imageGenerationClient.createTask(request, userId);
       if (response == null) {
-        throw new IllegalStateException("Image provider returned an empty response");
+        throw new IllegalStateException("Image provider returned no response");
       }
-      // 关联外部任务 id 到流水，供异步失败回滚
-      if (response.tasks() != null && !response.tasks().isEmpty()
-          && response.tasks().get(0).taskId() != null) {
-        miValueService.linkTask(deduct.logId(), response.tasks().get(0).taskId());
+      String taskId = response.tasks() == null || response.tasks().isEmpty()
+              || response.tasks().get(0) == null
+          ? null
+          : response.tasks().get(0).taskId();
+      if (claimedClientTask && (taskId == null || taskId.isBlank())) {
+        throw new IllegalStateException("Image provider returned no task id");
       }
       // Prefer an actual provider cost when the create response already includes it.
       // Most async providers only return cost during polling, which is handled below.
       Optional<ImageTaskLogService.ProviderCost> providerCost =
           imageTaskLogService.extractProviderCost(response.raw());
-      String taskId = response.tasks() == null || response.tasks().isEmpty()
-          ? null : response.tasks().get(0).taskId();
-      java.math.BigDecimal settledPrice;
+      java.math.BigDecimal settledPrice = providerCost.isPresent()
+          ? providerCost.get().miCost()
+          : pricingService.settlementPrice(quote, response.provider());
+
+      // Persist the provider task and close the request-level claim before settlement. Once the
+      // provider accepted the request, retries must always resolve to this task, even when later
+      // billing bookkeeping fails.
+      response.setConsumedMi(settledPrice);
+      imageTaskLogService.recordCreated(userId, request, response, requestStartedAt);
+      if (claimedClientTask) {
+        imageTaskLogService.completeClientTaskClaim(userId, clientTaskId, taskId);
+      }
+      if (taskId != null && !taskId.isBlank()) {
+        miValueService.linkTask(deduct.logId(), taskId);
+      }
+
       int afterBalance;
       if (providerCost.isPresent() && taskId != null && !taskId.isBlank()) {
-        settledPrice = providerCost.get().miCost();
         miValueService.settleActualByTaskId(taskId, settledPrice);
         afterBalance = miValueService.getBalance(userId);
       } else {
         // External call succeeded; without a reported cost, retain the configured estimate.
-        settledPrice = pricingService.settlementPrice(quote, response.provider());
         miValueService.settle(deduct.logId(), settledPrice);
         afterBalance = 0;
       }
       // 回填本次消耗与最新余额
-      response.setConsumedMi(settledPrice);
       response.setBalance(afterBalance);
-      imageTaskLogService.recordCreated(userId, request, response, requestStartedAt);
       return ApiResponse.ok(response);
-    } catch (DuplicateKeyException dke) {
-      miValueService.rollback(userId, deduct.logId());
-      // 并发竞态：另一个同 client_task_id 的请求先 INSERT 成功了（TOCTOU 被 UNIQUE INDEX 拦截）
-      // 查回那条已有记录并返回，不再报错、不重复扣费。
-      // DuplicateKey 只可能在 recordCreated 时抛出，说明扣费+外部调用已完成；
-      // 真正的保障是前端的 chatGenerating 守卫 + DB UNIQUE INDEX 从本源杜绝双扣费。
-      ImageTaskLogService.ExistingTask existing =
-          imageTaskLogService.findExistingByClientTaskId(userId, request.clientTaskId());
-      if (existing != null) {
-        return ApiResponse.ok(imageTaskLogService.buildResponseFromEntity(existing));
-      }
-      // 极端情况：查不到就往上抛，让外层 catch 处理
-      throw dke;
     } catch (Exception e) {
-      // 外部失败 → 幂等回滚米值并记流水 ROLLBACK
-      miValueService.rollback(userId, deduct.logId());
+      boolean definitivelyRejected = isDefinitiveProviderRejection(e);
+      if (providerCallStarted && claimedClientTask && !definitivelyRejected) {
+        // The provider may already own the request. Keep the billing reservation and the same
+        // client key for reconciliation; an automatic refund + retry could create a free duplicate.
+        imageTaskLogService.markClientTaskUnknown(userId, clientTaskId, e.getMessage());
+      } else {
+        miValueService.rollback(userId, deduct.logId());
+        if (claimedClientTask) {
+          if (providerCallStarted && definitivelyRejected) {
+            imageTaskLogService.releaseRejectedClientTaskClaim(
+                userId, clientTaskId, deduct.logId());
+          } else {
+            imageTaskLogService.releaseClientTaskClaim(userId, clientTaskId);
+          }
+        }
+      }
       // 服务端日志：记录完整的调用上下文与堆栈，方便定位根因
       System.err.println("[ImageTask] createTask FAILED for user=" + userId
           + " model=" + request.model()
           + " error=" + e.getClass().getSimpleName() + ": " + e.getMessage());
       e.printStackTrace();
       // 前端展示信息：保留异常链信息帮助用户反馈定位
-      String errorMsg = "生成服务异常，失败任务不计入米值消耗";
+      if (definitivelyRejected && e instanceof ApiException apiError) {
+        throw apiError;
+      }
+      String errorMsg = providerCallStarted && claimedClientTask
+          ? "生成请求已发出但结果待确认，米值暂时保留；请查询原任务，勿重复提交"
+          : "生成服务异常，失败任务不计入米值消耗";
       if (e.getMessage() != null) {
         errorMsg += ": " + e.getMessage();
       }
@@ -205,10 +257,36 @@ public class ImageTaskController {
     Long userId = adminAuthService.requireUserId(authorization);
     ImageTaskLogService.ExistingTask existing =
         imageTaskLogService.findExistingByClientTaskId(userId, clientTaskId);
-    Map<String, Object> body = new java.util.HashMap<>();
+    ImageTaskLogService.ClientTaskClaim claim =
+        imageTaskLogService.findClientTaskClaim(userId, clientTaskId);
+    String claimStatus = claim == null ? null : claim.status();
+    boolean inFlight = "CLAIMED".equalsIgnoreCase(claimStatus)
+        || "SUBMITTING".equalsIgnoreCase(claimStatus);
+    boolean deliveryUnknown = "UNKNOWN".equalsIgnoreCase(claimStatus);
+    Map<String, Object> body = new java.util.LinkedHashMap<>();
     body.put("exists", existing != null);
-    body.put("task_id", existing == null ? null : existing.taskId);
+    body.put("task_id", existing != null ? existing.taskId : claim == null ? null : claim.taskId());
+    body.put("claim_status", claimStatus);
+    body.put("billing_log_id", claim == null ? null : claim.billingLogId());
+    body.put("error_message", claim == null ? null : claim.errorMessage());
+    body.put("in_flight", inFlight);
+    body.put("delivery_unknown", deliveryUnknown);
+    // A retry is only safe when neither a persisted task nor a request-level claim owns the key.
+    body.put("retry_safe", existing == null && claim == null);
     return ApiResponse.ok(body);
+  }
+
+  /**
+   * Failures with an explicit local/provider rejection are safe to refund and release. Transport,
+   * 5xx and malformed-success failures remain indeterminate because the provider may have accepted
+   * the request before the response was lost.
+   */
+  private boolean isDefinitiveProviderRejection(Exception error) {
+    if (error instanceof ApiException apiError) {
+      int code = apiError.getCode();
+      return code == 400 || code == 413;
+    }
+    return false;
   }
 
   @GetMapping("/{taskId}")

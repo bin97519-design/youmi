@@ -34,6 +34,7 @@ export const useCanvasV3TaskStore = defineStore('canvas-v3-tasks', () => {
   const submissions = new Map()
   let modelRequest
   let project = ''
+  let beforeImageSubmit = null
   let timer
   let polling = false
   const find = (id) => graph.nodes.find((node) => node.id === id)
@@ -267,7 +268,7 @@ export const useCanvasV3TaskStore = defineStore('canvas-v3-tasks', () => {
     )
     schedule()
   }
-  function runImage(nodeId, onTarget) {
+  function runImage(nodeId, onTarget, options = {}) {
     const source = find(nodeId)
     if (!source || source.data.kind !== 'image') return
     if (!user.requireLogin()) {
@@ -277,11 +278,11 @@ export const useCanvasV3TaskStore = defineStore('canvas-v3-tasks', () => {
     const recovered = preserveLegacyImageTask(graph, nodeId)
     const target = recovered.id !== nodeId ? recovered : imageGenerationTarget(graph, nodeId)
     if (!target) return
-    const pending = runImageTarget(target.id)
+    const pending = runImageTarget(target.id, options)
     if (target.id !== nodeId) onTarget?.(target)
     return pending
   }
-  async function runImageTarget(nodeId) {
+  async function runImageTarget(nodeId, options = {}) {
     const node = find(nodeId)
     if (
       !node ||
@@ -313,7 +314,7 @@ export const useCanvasV3TaskStore = defineStore('canvas-v3-tasks', () => {
       Boolean(find(nodeId))
     try {
       const references = imageReferences(node, graph.nodes, graph.edges, { strict: true })
-      const clientTaskId = crypto.randomUUID()
+      const clientTaskId = options.clientTaskId || crypto.randomUUID()
       const request = imageTaskRequest(node, references, clientTaskId)
       const params = { ...node.data.params }
       // Feedback and duplicate-submit protection precede ALL asynchronous work.
@@ -379,6 +380,15 @@ export const useCanvasV3TaskStore = defineStore('canvas-v3-tasks', () => {
         scope,
       )
       try {
+        await nextTick()
+        if (!isCurrent()) return
+        if (beforeImageSubmit) {
+          const persisted = await beforeImageSubmit({ nodeId, clientTaskId })
+          if (persisted === false)
+            throw new Error('无法安全保存任务标识，请检查网络后重试；本次尚未提交生成任务')
+        }
+        if (!isCurrent()) return
+        options.onSubmitStart?.({ nodeId, clientTaskId })
         const response = await client.create(request)
         if (!isCurrent()) return
         const taskIds = (response.tasks || [])
@@ -450,8 +460,10 @@ export const useCanvasV3TaskStore = defineStore('canvas-v3-tasks', () => {
     })
     schedule()
   }
-  function attach(projectId) {
+  function attach(projectId, options = {}) {
     project = projectId
+    beforeImageSubmit =
+      typeof options.beforeImageSubmit === 'function' ? options.beforeImageSubmit : null
     for (const node of [...graph.nodes]) preserveLegacyImageTask(graph, node.id)
     for (const node of graph.nodes)
       if (node.data.runState === 'preparing')
@@ -473,6 +485,7 @@ export const useCanvasV3TaskStore = defineStore('canvas-v3-tasks', () => {
           submissions.delete(nodeId)
         }
       project = ''
+      beforeImageSubmit = null
       clearTimeout(timer)
     }
   }

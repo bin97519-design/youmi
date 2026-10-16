@@ -224,7 +224,7 @@ test('Skill trigger preserves the captured icon and opens the 450 by 400 portal 
   assert.ok(source.includes(rowPath))
   assert.match(source, /const MENU_WIDTH = 450/)
   assert.match(source, /const MENU_HEIGHT = 400/)
-  assert.match(source, /<Teleport to="\.cv3-app-shell">/)
+  assert.match(source, /<Teleport to="body">/)
   assert.match(source, /id="cv3-director-skill-dialog"/)
   assert.match(source, /role="dialog"/)
   assert.match(source, /aria-modal="false"/)

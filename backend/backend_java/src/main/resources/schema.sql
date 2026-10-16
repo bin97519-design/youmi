@@ -69,6 +69,21 @@ CREATE TABLE IF NOT EXISTS ym_image_task (
   INDEX idx_ym_image_task_model (model)
 );
 
+-- Request-level idempotency gate. The row is claimed before billing/provider I/O so two
+-- concurrent POSTs with the same user/client key cannot both create a paid task.
+CREATE TABLE IF NOT EXISTS ym_image_task_request_claim (
+  user_id BIGINT NOT NULL,
+  client_task_id VARCHAR(128) NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'CLAIMED',
+  task_id VARCHAR(128) NULL,
+  billing_log_id BIGINT NULL,
+  error_message VARCHAR(512) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, client_task_id),
+  INDEX idx_image_task_request_claim_task (task_id)
+);
+
 CREATE TABLE IF NOT EXISTS ym_model_api_key (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   name VARCHAR(128) NOT NULL,

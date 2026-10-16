@@ -86,7 +86,7 @@ test('Director creation modes preserve the captured order, hierarchy and compose
         menuLevel: 0,
         menuGroup: null,
         menuPath: ['导演执导'],
-        controls: ['attachment', 'mode', 'scriptModel', 'send'],
+        controls: ['attachment', 'mode', 'scriptModel', 'manual', 'send'],
         auxiliaryControls: ['directorRole'],
       },
     },

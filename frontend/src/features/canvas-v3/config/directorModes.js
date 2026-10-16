@@ -43,7 +43,7 @@ export const DIRECTOR_MODES = Object.freeze({
     menuLevel: 0,
     menuGroup: null,
     menuPath: Object.freeze(['导演执导']),
-    controls: Object.freeze(['attachment', 'mode', 'scriptModel', 'send']),
+    controls: Object.freeze(['attachment', 'mode', 'scriptModel', 'manual', 'send']),
     auxiliaryControls: Object.freeze(['directorRole']),
   }),
 })

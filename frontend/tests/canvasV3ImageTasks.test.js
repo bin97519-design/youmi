@@ -101,6 +101,46 @@ test('distinguishes a rejected submission from an unknown provider outcome', asy
   )
 })
 
+test('a malformed success or timeout response to create remains uncertain', async () => {
+  for (const response of [
+    { ok: true, status: 200, json: async () => null },
+    {
+      ok: true,
+      status: 200,
+      json: async () => ({ code: 50301, message: 'provider outcome unavailable' }),
+    },
+    { ok: false, status: 408, json: async () => ({ message: 'request timeout' }) },
+    {
+      ok: false,
+      status: 409,
+      json: async () => ({ code: 409, message: '该图片任务正在提交' }),
+    },
+  ]) {
+    const client = createImageTaskClient({ fetcher: async () => response })
+    await assert.rejects(client.create({}), (error) => error.deliveryUnknown === true)
+  }
+
+  const queryClient = createImageTaskClient({ fetcher: async () => Promise.reject(new Error()) })
+  await assert.rejects(queryClient.get('task'), (error) => error.deliveryUnknown === false)
+})
+
+test('an explicit pre-dispatch rejection is the only safe nonzero 2xx create response', async () => {
+  for (const payload of [
+    { code: 42201, message: 'validation failed', retry_safe: true },
+    { code: 42202, message: 'validation failed', phase: 'pre_dispatch' },
+    { code: 42203, message: 'validation failed', data: { retry_safe: true } },
+    { code: 42204, message: 'validation failed', data: { phase: 'PRE_DISPATCH' } },
+  ]) {
+    const client = createImageTaskClient({
+      fetcher: async () => ({ ok: true, status: 200, json: async () => payload }),
+    })
+    await assert.rejects(
+      client.create({}),
+      (error) => error.deliveryUnknown === false && error.status === payload.code,
+    )
+  }
+})
+
 test('maps configured display aliases to the same provider routes as the existing canvas', () => {
   const options = imageModelOptions([
     { value: 'banana-pro', label: '香蕉 Pro' },

@@ -185,6 +185,47 @@ const DIRECTOR_MODEL_BY_KEY = Object.freeze(
   Object.fromEntries(DIRECTOR_MODEL_CATALOG.map((model) => [model.key, model])),
 )
 
+// A Director catalogue entry is presentation metadata, while an image-task option is an
+// executable backend route. Keep the bridge explicit so a label coincidence or catalogue
+// reordering can never select a paid model silently.
+export const DIRECTOR_IMAGE_TASK_MODEL_ALIASES = Object.freeze({
+  'lib-image-2.5-s': freezeList([
+    'gpt-image2.5-sunburst-api',
+    'gpt-image-2.5-sunburst',
+    'GPT-image2.5高质',
+  ]),
+  'lib-image-2.5-f': freezeList([
+    'GPT-image2.5',
+    'tt-image-2.5',
+    'gpt-image-2.5',
+    'GPT-image2.5快速',
+  ]),
+  'lib-image-2': freezeList(['gpt-image-2', 'GPT Image 2']),
+  'nebula-ultra': freezeList(['banana-pro-api', 'banana-pro', '香蕉 Pro']),
+  'nebula-2-flash': freezeList(['banana2', 'gemini-3.1-flash-image-preview', '香蕉 2']),
+  'doubao-seedream-5-0-pro': freezeList(['doubao-seedream-5-0-pro', 'Seedream 5.0 Pro']),
+  'mj-v8.2': freezeList(['mj-v8.2', 'Style Image V8.2']),
+  'mj-v8.1': freezeList(['mj-v8.1', 'Style Image V8.1']),
+  'mj-v7': freezeList(['mj-v7', 'Style Image V7']),
+})
+
+function normalizeTaskModelAlias(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLocaleLowerCase()
+}
+
+function uniqueTaskOptions(options) {
+  return [
+    ...new Map(
+      (Array.isArray(options) ? options : [])
+        .filter((option) => option?.value)
+        .map((option) => [String(option.value), option]),
+    ).values(),
+  ]
+}
+
 function getModelKey(modelOrKey) {
   if (typeof modelOrKey === 'string') return modelOrKey
   if (!modelOrKey || typeof modelOrKey !== 'object') return ''
@@ -201,6 +242,43 @@ export function getDirectorModelSection(tab = DEFAULT_DIRECTOR_MODEL_TAB) {
 
 export function getDirectorModelByKey(modelOrKey) {
   return DIRECTOR_MODEL_BY_KEY[getModelKey(modelOrKey)] || null
+}
+
+export function resolveDirectorImageTaskModel(modelOrKey, options = []) {
+  const requested = normalizeTaskModelAlias(getModelKey(modelOrKey))
+  const model =
+    getDirectorModelByKey(modelOrKey) ||
+    DIRECTOR_MODEL_CATALOG.find((entry) => normalizeTaskModelAlias(entry.label) === requested) ||
+    null
+  if (!model || model.modality !== 'image')
+    throw new Error('所选 Director 模型不是可提交的图片模型')
+
+  const aliases = new Set(
+    [model.id, model.key, model.label, ...(DIRECTOR_IMAGE_TASK_MODEL_ALIASES[model.key] || [])]
+      .map(normalizeTaskModelAlias)
+      .filter(Boolean),
+  )
+  // Only the executable option value is authoritative. A display label may be edited in
+  // model management and must never redirect a paid request to a different backend model.
+  const matches = uniqueTaskOptions(options).filter((option) =>
+    aliases.has(normalizeTaskModelAlias(option.value)),
+  )
+  if (!matches.length)
+    throw new Error(`模型「${model.label}」尚未映射到模型管理的 canvas-image 选项`)
+  if (matches.length > 1)
+    throw new Error(`模型「${model.label}」匹配到多个 canvas-image 选项，请修正模型别名配置`)
+  return { ...matches[0], directorModelId: model.key, directorModelLabel: model.label }
+}
+
+export function resolveConfiguredImageTaskModel(value, options = []) {
+  const requested = normalizeTaskModelAlias(value)
+  const matches = uniqueTaskOptions(options).filter(
+    (option) => normalizeTaskModelAlias(option.value) === requested,
+  )
+  if (!requested || !matches.length)
+    throw new Error('请在 TV Director 中选择已配置的图片模型后再发送')
+  if (matches.length > 1) throw new Error('当前图片模型配置重复，请先修正模型管理配置')
+  return { ...matches[0], directorModelId: '', directorModelLabel: matches[0].label }
 }
 
 export function createDirectorModelMarker(modelOrKey) {

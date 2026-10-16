@@ -4,12 +4,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -59,7 +61,7 @@ class ImageGenerationClientFailoverTest {
   }
 
   @Test
-  void apimartNetworkFailure_goesDirectlyToProxyWithoutAlternateDomain() throws Exception {
+  void apimartCreateNetworkFailure_doesNotRetryOrSwitchProvider() throws Exception {
     ImageGenerationProperties props = new ImageGenerationProperties();
     props.setApimartDirectApiKey("test-apimart-key");
     props.setApimartDirectBaseUrl("https://apib.ai");
@@ -85,12 +87,14 @@ class ImageGenerationClientFailoverTest {
     ImageGenerationDtos.CreateTaskRequest request = new ImageGenerationDtos.CreateTaskRequest(
         "a product", "gpt-image-2", "1:1", "1:1", "2K",
         null, null, null, null, null, null, null, null, null, null, null);
-    ImageGenerationDtos.CreateTaskResponse response = client.createTask(request);
+    assertThrows(com.youmi.api.common.ApiException.class, () -> client.createTask(request));
 
-    assertEquals("proxy", response.provider());
+    verify(mockHttpClient, times(1)).send(
+        argThat(req -> req.uri().toString().contains("apib.ai")
+            && "POST".equalsIgnoreCase(req.method())), any());
     verify(mockHttpClient, never()).send(
         argThat(req -> req.uri().toString().contains("aiuxu.com")), any());
-    verify(mockHttpClient, atLeastOnce()).send(
+    verify(mockHttpClient, never()).send(
         argThat(req -> req.uri().toString().contains("47.90.226.52")), any());
   }
 
@@ -358,42 +362,60 @@ class ImageGenerationClientFailoverTest {
         argThat(req -> req.uri().toString().contains("47.90.226.52")), any());
   }
 
-  // ============ 新增回归：apimart 主通道（PROVIDER_APIMART）兜底直奔 Proxy，不再经 GetToken ============
-  //
-  // 本次修复把 apimart 兜底链里的 GetToken 一跳删掉：
-  //   - 创建期（createApimartTask 抛异常）：line 127-138 改为 isProxyConfigured() 时直奔 createProxyTask。
-  //   - 轮询期（determineBackupProvider）：case PROVIDER_APIMART -> isProxyConfigured() ? PROXY : null。
-  //
-  // 注：本 property 模型中 apimart 主通道与 proxy 中转站共用 baseUrl/generationPath，
-  //     故「proxy 已配置」(generationPath 含 /api/images/jobs) 时主通道地址即 47.90.226.52。
-  //     为走到 createApimartTask（PROVIDER_APIMART）分支，模型必须是「非 proxy/gettoken/agnes」的 apimart 主通道模型；
-  //     gpt-image-2 等会被 isProxyModel 提前拦截、直接走 proxy，无法命中本路径（已在代码注释中说明）。
+  // ============ 创建阶段安全回归：上游失败后不自动切换 provider ============
 
-  /** apimart 主通道创建失败（500）→ 直奔 Proxy 中转站；核心断言：GetToken 完全未被调用 */
+  /** apimart 主通道创建返回 500 后不自动创建第二个 provider 任务。 */
   @Test
-  void apimartCreateFailure_fallsBackDirectlyToProxy() throws Exception {
+  void apimartCreateFailure_doesNotFallBackToProxy() throws Exception {
     ImageGenerationClient client = newApimartClient();
 
-    // 第 1 次 send（apimart 主通道创建）返回 500 → 触发兜底；第 2 次 send（proxy 创建）返回 job_id。
     when(mockHttpClient.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
-        .thenAnswer(inv -> mockResponse(500, "{\"error\":\"apimart internal error\"}"))
-        .thenAnswer(inv -> mockResponse(200, "{\"job_id\":\"px\"}"));
+        .thenAnswer(inv -> mockResponse(500, "{\"error\":\"apimart internal error\"}"));
 
     ImageGenerationDtos.CreateTaskRequest req = new ImageGenerationDtos.CreateTaskRequest(
         "a cat", "stable-diffusion-3", "1:1", "1:1", "2K",
         null, null, null, null, null, null, null, null, null, null, null);
 
-    ImageGenerationDtos.CreateTaskResponse resp = client.createTask(req);
+    assertThrows(com.youmi.api.common.ApiException.class, () -> client.createTask(req));
 
-    assertNotNull(resp, "apimart 创建失败后不应抛异常，应返回 proxy 兜底响应");
-    assertEquals("proxy", resp.provider(), "apimart 创建失败应直接切换到 Proxy");
-    assertEquals("proxy:px", resp.tasks().get(0).taskId(), "兜底任务应落在 Proxy");
-
-    // 核心断言：命中 proxy（47.90.226.52）且 GetToken（nb.gettoken.cn）完全没被调用
+    verify(mockHttpClient, times(1)).send(
+        argThat(r -> r.uri().toString().contains("api.apimart.test")
+            && "POST".equalsIgnoreCase(r.method())), any());
     verify(mockHttpClient, never()).send(
         argThat(r -> r.uri().toString().contains("gettoken")), any());
-    verify(mockHttpClient, atLeastOnce()).send(
+    verify(mockHttpClient, never()).send(
         argThat(r -> r.uri().toString().contains("47.90.226.52")), any());
+  }
+
+  @Test
+  void apimartPollTransportFailure_stillRetriesReadOnce() throws Exception {
+    ImageGenerationClient client = newApimartClient();
+    AtomicInteger getAttempts = new AtomicInteger();
+
+    when(mockHttpClient.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
+        .thenAnswer(inv -> {
+          HttpRequest request = inv.getArgument(0);
+          if ("POST".equalsIgnoreCase(request.method())) {
+            return mockResponse(200, "{\"task_id\":\"read-retry\"}");
+          }
+          if (getAttempts.incrementAndGet() == 1) {
+            throw new IOException("header parser received no bytes");
+          }
+          return mockResponse(200,
+              "{\"status\":\"completed\",\"progress\":100,\"image_urls\":[\"https://cdn.example.com/final.png\"]}");
+        });
+
+    ImageGenerationDtos.CreateTaskRequest req = new ImageGenerationDtos.CreateTaskRequest(
+        "a cat", "stable-diffusion-3", "1:1", "1:1", "2K",
+        null, null, null, null, null, null, null, null, null, null, null);
+    client.createTask(req);
+
+    ImageGenerationDtos.TaskStatusResponse response = client.getTask("read-retry");
+
+    assertNotNull(response);
+    verify(mockHttpClient, times(2)).send(
+        argThat(r -> "GET".equalsIgnoreCase(r.method())
+            && r.uri().toString().contains("/v1/tasks/read-retry")), any());
   }
 
   /**

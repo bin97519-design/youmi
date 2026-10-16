@@ -254,42 +254,25 @@ public class ImageGenerationClient {
       return createAgnesTask(request);
     }
 
-    // banana2 / bananapro（gemini-3 系列）走 GetToken，失败后优先降级到 LK888。
+    // banana2 / bananapro（gemini-3 系列）走 GetToken。
+    // 创建请求一旦进入上游网络调用，超时/断线并不能证明上游未接单；
+    // 此时不能自动切换 provider，否则同一次用户操作可能生成并计费两次。
     if (properties.isGetTokenConfigured() && properties.isGetTokenModel(resolvedModel)) {
-      try {
-        return createGetTokenTask(request);
-      } catch (Exception getTokenError) {
-        if (properties.isLk888Configured()) {
-          try {
-            return createLk888Task(request);
-          } catch (Exception lk888Error) {
-            lk888Error.addSuppressed(getTokenError);
-            if (!isProxyConfigured()) throw lk888Error;
-          }
-        }
-        if (isProxyConfigured()) {
-          return createProxyTask(request);
-        }
-        throw getTokenError;
-      }
+      return createGetTokenTask(request);
     }
     if (properties.isLk888Configured() && properties.isGetTokenModel(resolvedModel)) {
       return createLk888Task(request);
     }
 
-    // gpt-image-2：APIMart（apib.ai）失败后直接兜底 Proxy。
+    // gpt-image-2：APIMart（apib.ai）已配置时严格使用该 provider。
+    // 只有它未配置时才在发请求前选择 Proxy。
     if (properties.isProxyModel(resolvedModel)) {
       boolean apimartConfigured = properties.isApimartDirectConfigured();
       boolean proxyConfigured = isProxyConfigured();
       System.out.println("[image-route] model=" + resolvedModel + " apimartDirect=" + apimartConfigured + " proxy=" + proxyConfigured
           + " apimartBaseUrl=" + properties.normalizedApimartDirectBaseUrl() + " apimartApiKey=" + (properties.getApimartDirectApiKey() != null ? properties.getApimartDirectApiKey().substring(0, Math.min(10, properties.getApimartDirectApiKey().length())) + "..." : "null"));
       if (apimartConfigured) {
-        try {
-          return createApimartDirectTask(request);
-        } catch (Exception apimartError) {
-          System.out.println("[image] APIMart-direct failed, trying fallback chain: " + apimartError.getMessage());
-          return createFallbackTask(request, apimartError);
-        }
+        return createApimartDirectTask(request);
       } else {
         if (proxyConfigured) {
           System.out.println("[image-route] APIMart-direct not configured, using Proxy directly");
@@ -299,11 +282,7 @@ public class ImageGenerationClient {
     }
 
     if (properties.isConfigured()) {
-      try {
-        return createApimartTask(request);
-      } catch (Exception exception) {
-        return createFallbackTask(request, exception);
-      }
+      return createApimartTask(request);
     }
     if (properties.isGetTokenConfigured()) {
       return createGetTokenTask(request);
@@ -361,37 +340,6 @@ public class ImageGenerationClient {
         1,
         List.of(new ImageGenerationDtos.TaskRef(taskId, status)),
         root);
-  }
-
-  private ImageGenerationDtos.CreateTaskResponse createFallbackTask(
-      ImageGenerationDtos.CreateTaskRequest request, Exception primaryError) throws Exception {
-    String resolvedModel = properties.resolveModel(request.model());
-    if (properties.isLk888Configured() && properties.isLk888FallbackModel(resolvedModel)) {
-      try {
-        System.out.println("[image] trying LK888 Banana fallback");
-        return createLk888Task(request);
-      } catch (Exception lk888Error) {
-        if (primaryError != null) {
-          lk888Error.addSuppressed(primaryError);
-        }
-        primaryError = lk888Error;
-      }
-    }
-    if (isProxyConfigured()) {
-      try {
-        System.out.println("[image] trying Proxy fallback");
-        return createProxyTask(request);
-      } catch (Exception proxyError) {
-        if (primaryError != null) {
-          proxyError.addSuppressed(primaryError);
-        }
-        throw proxyError;
-      }
-    }
-    if (primaryError != null) {
-      throw primaryError;
-    }
-    throw new ApiException(502, "No image fallback provider configured");
   }
 
   private ImageGenerationDtos.CreateTaskResponse createApimartTask(ImageGenerationDtos.CreateTaskRequest request)
@@ -524,7 +472,7 @@ public class ImageGenerationClient {
    * APIMart 直连 GPT-Image-2 标准通道（主通道）
    * 端点：POST https://apib.ai/v1/images/generations
    * 异步：返回 task_id，轮询 GET /v1/tasks/{task_id}
-   * 模型名：gpt-image-2。APIMart 失败后由本系统切换到 Proxy。
+   * 模型名：gpt-image-2。创建请求失败后不自动切换 provider。
    */
   private ImageGenerationDtos.CreateTaskResponse createApimartDirectTask(ImageGenerationDtos.CreateTaskRequest request)
       throws Exception {
@@ -2055,7 +2003,7 @@ public class ImageGenerationClient {
     }
   }
 
-  /** APIMart 直连 POST：只请求 apib.ai；任何失败均交给上层切换到 Proxy。 */
+  /** APIMart 直连 POST：只请求 apib.ai；失败原样上抛，不自动重发或切换 provider。 */
   private ApimartDirectSendResult sendApimartDirectPost(String endpoint, Map<String, Object> body) throws Exception {
     String primaryBase = properties.normalizedApimartDirectBaseUrl();
     HttpRequest request = HttpRequest.newBuilder()
@@ -2163,9 +2111,12 @@ public class ImageGenerationClient {
 
   private JsonNode send(HttpRequest request, String providerLabel) throws Exception {
     // 外部中转站 keep-alive 行为不规范，服务端关闭空闲连接后 HttpClient 可能复用已关闭的连接
-    // 首次失败后重试一次（重建连接），常见于 "header parser received no bytes" 错误
+    // 读请求首次失败后可重试一次（重建连接）。创建任务的 POST 绝不自动重试：
+    // 响应丢失不代表上游未接单，重发可能产生重复任务和重复计费。
+    boolean retryTransportFailure = "GET".equalsIgnoreCase(request.method());
+    int maxAttempts = retryTransportFailure ? 2 : 1;
     Exception lastError = null;
-    for (int attempt = 0; attempt < 2; attempt++) {
+    for (int attempt = 0; attempt < maxAttempts; attempt++) {
       long started = System.nanoTime();
       try {
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
@@ -2195,7 +2146,7 @@ public class ImageGenerationClient {
         return root;
       } catch (java.net.http.HttpTimeoutException e) {
         recordImageCall(providerLabel, request.method(), false, null, started, e);
-        if (attempt == 0) { lastError = e; continue; }
+        if (retryTransportFailure && attempt == 0) { lastError = e; continue; }
         throw new ApiException(504, providerLabel + " request timed out: " + e.getMessage(), e);
       } catch (javax.net.ssl.SSLException e) {
         recordImageCall(providerLabel, request.method(), false, null, started, e);
@@ -2204,7 +2155,7 @@ public class ImageGenerationClient {
         recordImageCall(providerLabel, request.method(), false, null, started, e);
         String msg = e.getMessage();
         if (msg != null && msg.contains("header parser received no bytes")) {
-          if (attempt == 0) { lastError = e; continue; }
+          if (retryTransportFailure && attempt == 0) { lastError = e; continue; }
           throw new ApiException(502, providerLabel + " received empty response (server may be rate-limiting or temporarily unavailable). Try again in a moment.", e);
         }
         throw new ApiException(502, providerLabel + " IO error: " + msg, e);

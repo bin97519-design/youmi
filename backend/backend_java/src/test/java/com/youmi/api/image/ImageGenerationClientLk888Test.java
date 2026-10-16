@@ -1,7 +1,7 @@
 package com.youmi.api.image;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -17,6 +17,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
@@ -25,15 +26,17 @@ class ImageGenerationClientLk888Test {
   private final ObjectMapper objectMapper = new ObjectMapper();
 
   @Test
-  void getTokenCreateFailureFallsBackToLk888Banana2() throws Exception {
-    AtomicReference<String> lk888Body = new AtomicReference<>("");
+  void getTokenCreateFailureDoesNotFallBackToLk888() throws Exception {
+    AtomicInteger getTokenCalls = new AtomicInteger();
+    AtomicInteger lk888Calls = new AtomicInteger();
     HttpServer server = server(exchange -> {
       if (exchange.getRequestURI().getPath().startsWith("/gettoken/")) {
+        getTokenCalls.incrementAndGet();
         send(exchange, 500, "{\"error\":\"gettoken unavailable\"}");
         return;
       }
       if (exchange.getRequestURI().getPath().equals("/v1/media/generate")) {
-        lk888Body.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+        lk888Calls.incrementAndGet();
         send(exchange, 200, "{\"task_id\":\"lk-create\",\"state\":\"pending\"}");
         return;
       }
@@ -48,21 +51,11 @@ class ImageGenerationClientLk888Test {
           .thenReturn(Optional.empty());
       when(keyService.isFeatureMappingConfigured("canvas-image")).thenReturn(true);
       client.setModelApiKeyService(keyService);
-      ImageGenerationDtos.CreateTaskResponse response = client.createTask(
-          requestWithCanvasFeature("banana2", "9:16", "2K", "https://example.com/reference.png"));
+      assertThrows(com.youmi.api.common.ApiException.class, () -> client.createTask(
+          requestWithCanvasFeature("banana2", "9:16", "2K", "https://example.com/reference.png")));
 
-      assertEquals("lk888", response.provider());
-      assertEquals("gemini-3.1-flash-image-preview", response.model());
-      assertEquals("lk888:lk-create", response.tasks().get(0).taskId());
-
-      JsonNode body = objectMapper.readTree(lk888Body.get());
-      assertEquals("gemini-3.1-flash-image-preview", body.path("model").asText());
-      assertEquals("9:16", body.path("params").path("aspectRatio").asText());
-      assertEquals("2K", body.path("params").path("imageSize").asText());
-      assertEquals("minimal", body.path("params").path("thinkingLevel").asText());
-      assertEquals(
-          "https://example.com/reference.png",
-          body.path("params").path("images").get(0).asText());
+      assertEquals(1, getTokenCalls.get());
+      assertEquals(0, lk888Calls.get(), "ambiguous primary failure must not create a backup task");
     } finally {
       server.stop(0);
     }
@@ -141,16 +134,18 @@ class ImageGenerationClientLk888Test {
   }
 
   @Test
-  void apimartGptFailureDowngradesToLk888Banana2() throws Exception {
-    AtomicReference<String> lk888Body = new AtomicReference<>("");
+  void apimartGptFailureDoesNotDowngradeToLk888() throws Exception {
+    AtomicInteger apimartCalls = new AtomicInteger();
+    AtomicInteger lk888Calls = new AtomicInteger();
     HttpServer server = server(exchange -> {
       String path = exchange.getRequestURI().getPath();
       if (path.equals("/apimart/v1/images/generations")) {
+        apimartCalls.incrementAndGet();
         send(exchange, 500, "{\"error\":\"apimart unavailable\"}");
         return;
       }
       if (path.equals("/v1/media/generate")) {
-        lk888Body.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+        lk888Calls.incrementAndGet();
         send(exchange, 200, "{\"task_id\":\"lk-gpt-fallback\",\"state\":\"pending\"}");
         return;
       }
@@ -165,15 +160,11 @@ class ImageGenerationClientLk888Test {
           .thenReturn(Optional.empty());
       when(keyService.isFeatureMappingConfigured("canvas-image")).thenReturn(true);
       client.setModelApiKeyService(keyService);
-      ImageGenerationDtos.CreateTaskResponse response =
-          client.createTask(requestWithCanvasFeature("gpt-image-2", "3:4", "4K", null));
+      assertThrows(com.youmi.api.common.ApiException.class, () ->
+          client.createTask(requestWithCanvasFeature("gpt-image-2", "3:4", "4K", null)));
 
-      assertEquals("lk888", response.provider());
-      assertEquals("gemini-3.1-flash-image-preview", response.model());
-      JsonNode body = objectMapper.readTree(lk888Body.get());
-      assertEquals("3:4", body.path("params").path("aspectRatio").asText());
-      assertEquals("4K", body.path("params").path("imageSize").asText());
-      assertFalse(body.path("params").path("thinkingLevel").asText().isBlank());
+      assertEquals(1, apimartCalls.get());
+      assertEquals(0, lk888Calls.get(), "ambiguous primary failure must not create a backup task");
     } finally {
       server.stop(0);
     }
