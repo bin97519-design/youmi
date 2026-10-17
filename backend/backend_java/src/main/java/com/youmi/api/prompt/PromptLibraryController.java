@@ -102,7 +102,7 @@ public class PromptLibraryController {
   }
 
   private ValidatedPrompt validate(PromptLibraryDtos.SaveRequest request) {
-    String content = clean(request == null ? "" : request.content(), 12000);
+    String content = request == null || request.content() == null ? "" : request.content().trim();
     if (content.isBlank()) throw new ApiException(400, "提示词内容不能为空");
     String title = clean(request == null ? "" : request.title(), 128);
     if (title.isBlank()) {

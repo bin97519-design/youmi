@@ -41,6 +41,17 @@ public class CanvasAgentRepository {
       String canvasId,
       String title,
       List<Map<String, Object>> messages) {
+    if (messages != null && messages.stream().anyMatch(message -> Boolean.TRUE.equals(message.get("failed"))
+        && (message.get("videoUrl") == null || message.get("videoUrl").toString().isBlank()))) {
+      var saved = findConversations(userId, canvasId).stream()
+          .filter(conversation -> conversationId.equals(conversation.id())).findFirst();
+      if (saved.isPresent()) {
+        var incoming = objectMapper.valueToTree(messages);
+        com.youmi.api.common.VideoResultPreservation.preserve(incoming,
+            objectMapper.valueToTree(saved.get().messages()), true);
+        messages = objectMapper.convertValue(incoming, MESSAGE_LIST_TYPE);
+      }
+    }
     String sql = """
         INSERT INTO ym_agent_conversation
           (conversation_id, user_id, canvas_id, title, messages_json)

@@ -88,6 +88,7 @@ import { MAX_REFERENCE_VIDEO_BYTES } from '../utils/referenceVideo'
 import {
   agentVideoDraftError,
   canCreateAgentDraft,
+  canDisplayAgentVideoDraft,
   totalAgentGenerationCount,
 } from '../utils/agentDraft'
 import { agentVideoContext, describeAgentVideoContext } from '../utils/agentVideoContext'
@@ -8200,6 +8201,21 @@ function pickBestElement(candidates) {
 }
 
 // 将消息文本中的 [元素名] 替换为结构化元素标签
+const expandedChatPrompts = reactive({})
+async function copyChatPrompt(message) {
+  const text = String(message?.text || '')
+  if (!text) return
+  try {
+    await writeTextToClipboard(text)
+    showCopyPasteToast('完整内容已复制')
+  } catch {
+    showCopyPasteToast('复制失败，请手动选择文字复制')
+  }
+}
+function isLongChatPrompt(text) {
+  const value = String(text || '')
+  return value.length > 300 || value.split('\n').length > 6
+}
 function renderMessageContent(message) {
   let html = escHtml(message.text || '').replace(/\n/g, '<br>')
   // 参考图缩略图（使用缓存，防签名 URL 过期裂图）
@@ -10750,9 +10766,10 @@ async function runCanvasAgent() {
       .map((id) => context.referenceLookup.get(id))
       .filter((reference) => reference?.url)
     const canGenerate = canCreateAgentDraft(response, draftPrompts)
+    const hasVideoDraft = canDisplayAgentVideoDraft(response, draftPrompts)
     const promptOnly = Boolean(referenceVideo)
     const isVideo = promptOnly || response?.generationType === 'video'
-    if (canGenerate && isVideo && !promptOnly) void loadVideoCapabilities()
+    if ((canGenerate || hasVideoDraft) && isVideo && !promptOnly) void loadVideoCapabilities()
     const draftModels = normalizeChatModelSelection(
       Array.isArray(response?.imageModels) && response.imageModels.length
         ? response.imageModels
@@ -10769,7 +10786,7 @@ async function runCanvasAgent() {
       generating: false,
       failed: false,
       agentModel: response?.model,
-      agentDraft: canGenerate || (promptOnly && draftPrompts.length)
+      agentDraft: canGenerate || hasVideoDraft || (promptOnly && draftPrompts.length)
         ? {
             promptOnly,
             generationType: isVideo ? 'video' : 'image',
@@ -11904,6 +11921,7 @@ function syncVideoNodeMediaDimensions(layer, event) {
 
 async function pollVideoTaskUntilDone(taskId, layerId, assistantId = '') {
   let resultAvailable = Boolean(layers.value.find(layer => layer.id === layerId)?.url)
+  let consecutiveQueryErrors = 0
   for (let index = 0; index < VIDEO_TASK_MAX_POLLS || resultAvailable; index += 1) {
     await wait(resultAvailable ? VIDEO_BILLING_POLL_INTERVAL : VIDEO_TASK_POLL_INTERVAL)
     if (!_mounted.value) return false
@@ -11912,9 +11930,16 @@ async function pollVideoTaskUntilDone(taskId, layerId, assistantId = '') {
     let task
     try {
       task = await fetchVideoTask(taskId)
+      consecutiveQueryErrors = 0
     } catch (error) {
-      if (!resultAvailable) throw error
-      updateLayer(layerId, { statusText: '视频已生成，状态核对暂时中断，将自动重试' })
+      consecutiveQueryErrors += 1
+      if (!resultAvailable && consecutiveQueryErrors > 5) throw error
+      const retryText = resultAvailable
+        ? '视频已生成，状态核对暂时中断，将自动重试'
+        : `任务已提交，状态查询暂时中断，正在重试（${consecutiveQueryErrors}/5），请勿重复生成`
+      updateLayer(layerId, { statusText: retryText })
+      if (assistantId) updateChatMessage(assistantId, { text: retryText, generating: true })
+      await wait(Math.min(30000, consecutiveQueryErrors * 3000))
       continue
     }
     const status = taskState(task?.status)
@@ -17470,7 +17495,25 @@ async function loadImageForCropUncached(layer) {
               ]"
             >
               <div class="uc-chat-msg-wrap">
-                <div class="uc-chat-msg-bubble" v-html="renderMessageContent(message)"></div>
+                <div
+                  class="uc-chat-msg-bubble"
+                  :class="{ 'uc-prompt-collapsed': isLongChatPrompt(message.text) && !expandedChatPrompts[message.id] }"
+                  v-html="renderMessageContent(message)"
+                ></div>
+                <div v-if="isLongChatPrompt(message.text)" class="uc-prompt-fold-actions">
+                <button
+                  type="button"
+                  class="uc-prompt-fold-toggle"
+                  :aria-expanded="!!expandedChatPrompts[message.id]"
+                  @click.stop="expandedChatPrompts[message.id] = !expandedChatPrompts[message.id]"
+                >
+                  {{ expandedChatPrompts[message.id] ? '收起' : '展开全文' }}
+                  <i :class="expandedChatPrompts[message.id] ? 'ri-arrow-up-s-line' : 'ri-arrow-down-s-line'" aria-hidden="true"></i>
+                </button>
+                <button type="button" class="uc-prompt-fold-toggle" title="复制完整内容" aria-label="复制完整内容" @click.stop="copyChatPrompt(message)">
+                  <i class="ri-file-copy-line" aria-hidden="true"></i> 复制
+                </button>
+                </div>
                 <div v-if="message.referenceVideos?.length" class="uc-agent-video-attachments">
                   <figure v-for="video in message.referenceVideos" :key="video.url">
                     <video :src="video.url" controls playsinline preload="metadata" />
@@ -17570,7 +17613,7 @@ async function loadImageForCropUncached(layer) {
                       <i class="ri-arrow-right-s-line" aria-hidden="true"></i>
                     </button>
                   </nav>
-                  <div class="uc-agent-draft-prompt" tabindex="0" aria-label="当前提示词内容">
+                  <div class="uc-agent-draft-prompt" :class="{ 'uc-prompt-collapsed': isLongChatPrompt(agentDraftActiveItem(message.agentDraft)?.prompt) && !expandedChatPrompts['draft-' + message.id + '-' + agentDraftActiveIndex(message.agentDraft)] }" tabindex="0" aria-label="当前提示词内容">
                     <div
                       v-for="(paragraph, paragraphIndex) in agentDraftPromptParagraphs(
                         agentDraftActiveItem(message.agentDraft)?.prompt,
@@ -17581,6 +17624,16 @@ async function loadImageForCropUncached(layer) {
                       {{ paragraph }}
                     </div>
                   </div>
+                  <button
+                    v-if="isLongChatPrompt(agentDraftActiveItem(message.agentDraft)?.prompt)"
+                    type="button"
+                    class="uc-prompt-fold-toggle"
+                    :aria-expanded="!!expandedChatPrompts['draft-' + message.id + '-' + agentDraftActiveIndex(message.agentDraft)]"
+                    @click.stop="expandedChatPrompts['draft-' + message.id + '-' + agentDraftActiveIndex(message.agentDraft)] = !expandedChatPrompts['draft-' + message.id + '-' + agentDraftActiveIndex(message.agentDraft)]"
+                  >
+                    {{ expandedChatPrompts['draft-' + message.id + '-' + agentDraftActiveIndex(message.agentDraft)] ? '收起' : '展开全文' }}
+                    <i :class="expandedChatPrompts['draft-' + message.id + '-' + agentDraftActiveIndex(message.agentDraft)] ? 'ri-arrow-up-s-line' : 'ri-arrow-down-s-line'" aria-hidden="true"></i>
+                  </button>
                   <AgentVideoSettings
                     v-if="message.agentDraft.generationType === 'video' && !message.agentDraft.promptOnly"
                     :model-options="videoModelOptions"
@@ -19100,7 +19153,7 @@ async function loadImageForCropUncached(layer) {
         </div>
         <label>
           <span>提示词内容</span>
-          <textarea v-model="promptLibraryEditor.content" rows="10" maxlength="12000"></textarea>
+          <textarea v-model="promptLibraryEditor.content" rows="10"></textarea>
         </label>
         <footer>
           <button type="button" @click="promptLibraryEditor.visible = false">取消</button>
@@ -19864,5 +19917,31 @@ async function loadImageForCropUncached(layer) {
 .broken-icon {
   color: #64748b;
   font-size: 18px;
+}
+.uc-chat-msg-bubble.uc-prompt-collapsed,
+.uc-agent-draft-prompt.uc-prompt-collapsed {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+  max-height: 8em;
+  overflow: hidden;
+}
+.uc-prompt-fold-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 5px 0;
+  padding: 3px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--canvas-accent, #20bfd3);
+  font-size: 12px;
+  cursor: pointer;
+}
+.uc-prompt-fold-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
 }
 </style>

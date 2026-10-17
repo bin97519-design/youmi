@@ -684,6 +684,32 @@ function dropOutputShot(event, shot) {
 const canvasImages = computed(() =>
   props.layers.filter((layer) => layer.url && (!layer.type || layer.type === 'image')),
 )
+const canvasVideos = computed(() =>
+  props.layers.filter((layer) => layer.type === 'video' && layer.url),
+)
+const canvasVideoPickerOpen = ref(false)
+async function chooseCanvasReferenceVideo(layer) {
+  if (referencePreparing.value) return
+  const context = captureTask()
+  canvasVideoPickerOpen.value = false
+  referencePreparing.value = true
+  error.value = ''
+  try {
+    const response = await fetch(layer.url)
+    if (!response.ok) throw new Error('画布视频读取失败，请重试')
+    const blob = await response.blob()
+    if (blob.size > 150 * 1024 * 1024) throw new Error('请选择 150MB 以内的视频')
+    if (!isCurrent(context)) return
+    const file = new File([blob], layer.name || '画布视频.mp4', {
+      type: blob.type.startsWith('video/') ? blob.type : 'video/mp4',
+    })
+    await prepareReferenceVideo(file, context, layer.url)
+  } catch (e) {
+    if (isCurrent(context)) error.value = e.message
+  } finally {
+    referencePreparing.value = false
+  }
+}
 const canvasReferenceImage = computed(() => {
   const target = continuityCanvasTarget.value
   if (!target) return null
@@ -726,6 +752,7 @@ watch(
   () => props.open,
   async (value) => {
     if (!value) {
+      canvasVideoPickerOpen.value = false
       connectionController?.abort()
       picker.value = ''
       enhanceSource.value = null
@@ -1133,13 +1160,16 @@ async function uploadReferenceVideo(event) {
     return
   }
   const context = captureTask()
+  await prepareReferenceVideo(file, context)
+}
+async function prepareReferenceVideo(file, context, existingUrl = '') {
   referencePreparing.value = true
   error.value = ''
   notice.value = ''
   try {
     const inspection = await inspectReferenceVideoFile(file, 8)
     if (!isCurrent(context)) return
-    const url = await uploadFileDirect(file, { dir: 'product-video/reference-videos' })
+    const url = existingUrl || await uploadFileDirect(file, { dir: 'product-video/reference-videos' })
     const frameUrls = []
     for (let start = 0; start < inspection.frames.length; start += 4) {
       frameUrls.push(
@@ -2004,6 +2034,14 @@ function onKeydown(event) {
                 >
                   <i aria-hidden="true" class="ri-scissors-cut-line"></i>
                   精华 30 秒
+                </button>
+              </div>
+              <div class="pv-actions">
+                <button :disabled="referencePreparing" @click="referenceVideoInput.click()">
+                  <i class="ri-upload-2-line" aria-hidden="true"></i> 本地上传
+                </button>
+                <button :disabled="referencePreparing" @click="canvasVideoPickerOpen = true">
+                  <i class="ri-film-line" aria-hidden="true"></i> 画布视频
                 </button>
               </div>
               <button
@@ -3448,6 +3486,24 @@ function onKeydown(event) {
           <button @click="emit('close')">返回画布</button>
         </footer>
 
+        <div v-if="canvasVideoPickerOpen" class="pv-sub-overlay">
+          <section class="pv-picker" role="dialog" aria-label="选择画布视频">
+            <div class="pv-section-head">
+              <h3>画布视频</h3>
+              <button class="pv-icon" title="关闭" aria-label="关闭视频选择" @click="canvasVideoPickerOpen = false">
+                <i class="ri-close-line" aria-hidden="true"></i>
+              </button>
+            </div>
+            <p>选择一个视频作为反推参考，支持 2 分钟以内、150MB 以内的视频。</p>
+            <div class="pv-picker-grid pv-scroll">
+              <button v-for="layer in canvasVideos" :key="layer.id" :disabled="referencePreparing" @click="chooseCanvasReferenceVideo(layer)">
+                <video :src="layer.url" :poster="layer.thumbnailUrl || undefined" preload="metadata" muted playsinline style="width: 100%; height: 140px; object-fit: contain; pointer-events: none"></video>
+                <span>{{ layer.name || '画布视频' }}</span>
+              </button>
+              <p v-if="!canvasVideos.length">画布中暂无可用视频，请先添加视频到画布。</p>
+            </div>
+          </section>
+        </div>
         <div v-if="picker" class="pv-sub-overlay">
           <section class="pv-picker" role="dialog" aria-label="选择素材或商品">
             <div class="pv-section-head">

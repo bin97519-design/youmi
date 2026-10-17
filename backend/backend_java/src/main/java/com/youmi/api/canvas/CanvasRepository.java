@@ -41,6 +41,18 @@ public class CanvasRepository {
   }
 
   public void save(CanvasDocument doc) {
+    CanvasPayload payload = doc.payload();
+    if (payload != null && payload.layers != null && payload.layers.stream().anyMatch(
+        layer -> "video".equals(layer.type) && "failed".equals(layer.status)
+            && (layer.url == null || layer.url.isBlank()))) {
+      var saved = findByDocIdAndUserId(doc.docId(), doc.userId());
+      if (saved.isPresent()) {
+        var incoming = objectMapper.valueToTree(payload);
+        var previous = objectMapper.valueToTree(saved.get().payload());
+        com.youmi.api.common.VideoResultPreservation.preserve(incoming.path("layers"), previous.path("layers"), false);
+        payload = objectMapper.convertValue(incoming, CanvasPayload.class);
+      }
+    }
     String sql = """
         INSERT INTO ym_canvas_document (doc_id, user_id, title, payload_json, thumbnail_url, is_reverse_prompt)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -50,7 +62,7 @@ public class CanvasRepository {
           thumbnail_url = VALUES(thumbnail_url),
           is_reverse_prompt = VALUES(is_reverse_prompt)
         """;
-    jdbcTemplate.update(sql, doc.docId(), doc.userId(), doc.title(), toJson(doc.payload()),
+    jdbcTemplate.update(sql, doc.docId(), doc.userId(), doc.title(), toJson(payload),
         doc.thumbnailUrl(), doc.isReversePrompt() ? 1 : 0);
   }
 

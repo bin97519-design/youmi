@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   agentVideoDraftError,
   canCreateAgentDraft,
+  canDisplayAgentVideoDraft,
   totalAgentGenerationCount,
 } from '../src/utils/agentDraft.js'
 
@@ -19,6 +20,16 @@ test('only exposes Agent generation after the backend marks the draft ready', ()
     canCreateAgentDraft({ readyToGenerate: true, generationType: 'execute' }, ['script']),
     false,
   )
+})
+
+test('keeps the video settings card visible for a complete script awaiting parameter changes', () => {
+  const response = { generationType: 'video', readyToGenerate: false, durationSeconds: 21 }
+  assert.equal(canDisplayAgentVideoDraft(response, ['完整21秒分镜及口播']), true)
+  assert.equal(canCreateAgentDraft(response, ['完整21秒分镜及口播']), false)
+  assert.equal(canDisplayAgentVideoDraft(response, ['长脚本'.repeat(1000)]), true)
+  assert.equal(canDisplayAgentVideoDraft(response, []), false)
+  assert.equal(canDisplayAgentVideoDraft(response, ['  ']), false)
+  assert.equal(canDisplayAgentVideoDraft({ generationType: 'image' }, ['图片草稿']), false)
 })
 
 test('video drafts validate model, script, duration, references and configured pricing before confirmation', () => {

@@ -18,6 +18,36 @@ import org.junit.jupiter.api.Test;
 
 class CanvasAgentServiceTest {
   @Test
+  void retainsFullScriptRulesAndDetailedVideoDraftAcrossProductInformationFollowup() throws Exception {
+    AgentChatClient client = mock(AgentChatClient.class);
+    when(client.isConfigured()).thenReturn(true);
+    String rules = "脚本规则".repeat(5000) + "完整规则结尾";
+    String script = "根据以下分镜描述生成：图1【地台床】【产品展示】真实短视频，不生成任何字幕\n分镜设计：\n"
+        + "分镜1：具体生活事件、产品细节及连续动作。".repeat(500)
+        + "\n口播设计：\n口播1（对应分镜1，时间：0秒-6秒）：贴地好清理。";
+    String response = new ObjectMapper().writeValueAsString(java.util.Map.of(
+        "reply", "脚本已整理", "generationType", "video", "durationSeconds", 15,
+        "draftPrompts", List.of(script), "readyToGenerate", true));
+    when(client.completeCanvasAgent(anyList(), anyDouble())).thenReturn(
+        new AiChatDtos.CompletionResult("test", "test", response));
+    var service = new CanvasAgentService(new ObjectMapper(), client);
+    var history = List.of(new CanvasAgentDtos.ChatMessage("user", rules));
+    String instruction = "产品详细资料".repeat(1000) + "可定制已确认";
+    var result = service.chat(new CanvasAgentDtos.ChatRequest("canvas-1", instruction,
+        history, List.of(), List.of(), List.of(), "banana2", "3:4", "2K", 1));
+    var messages = org.mockito.ArgumentCaptor.forClass(List.class);
+    verify(client).completeCanvasAgent(messages.capture(), anyDouble());
+    String sent = messages.getValue().toString();
+    assertTrue(sent.contains(rules));
+    assertTrue(sent.contains(instruction));
+    assertTrue(sent.contains("口播设计"));
+    assertTrue(sent.contains("每秒3至4字"));
+    assertEquals(script, result.draftPrompts().get(0));
+    // Planning may exceed the provider's submission limit without silently losing text.
+    assertFalse(result.readyToGenerate());
+  }
+
+  @Test
   void acceptsTrailingCommasInMultiPromptResponse() throws Exception {
     AgentChatClient agentChatClient = mock(AgentChatClient.class);
     when(agentChatClient.isConfigured()).thenReturn(true);

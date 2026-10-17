@@ -16,6 +16,11 @@ export function canCreateAgentDraft(response, prompts) {
   )
 }
 
+export function canDisplayAgentVideoDraft(response, prompts) {
+  return response?.generationType === 'video' && Array.isArray(prompts) &&
+    prompts.some((prompt) => typeof prompt === 'string' && prompt.trim())
+}
+
 export function totalAgentGenerationCount(models, count) {
   const uniqueModels = new Set((Array.isArray(models) ? models : [models]).filter(Boolean))
   const perModelCount = Math.max(1, Math.min(4, Number(count) || 1))

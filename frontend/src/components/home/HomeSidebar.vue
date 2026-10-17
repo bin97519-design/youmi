@@ -4,7 +4,18 @@ import { useRoute, useRouter } from 'vue-router'
 import VersionHistoryDialog from '../common/VersionHistoryDialog.vue'
 import { useVersionHistory } from '../../composables/useVersionHistory'
 import { downloadLatestCliInstaller } from '../../utils/cliDownload'
-import productMoverIcon from '../../assets/icons/product-mover.png'
+const navigationIcons = {
+  home: 'ri-home-5-line',
+  canvas: 'ri-artboard-2-line',
+  'canvas-v2': 'ri-node-tree',
+  'selection-pool': 'ri-shopping-bag-3-line',
+  designer: 'ri-magic-line',
+  product: 'ri-image-line',
+  model: 'ri-user-3-line',
+  retouch: 'ri-edit-2-line',
+  video: 'ri-film-line',
+  ops: 'ri-compass-3-line',
+}
 
 const {
   currentAppVersion,
@@ -261,73 +272,7 @@ async function openCliDownload() {
           @click="openItem(item)"
         >
           <span class="yh-nav-icon" aria-hidden="true">
-            <svg v-if="item.icon === 'home'" class="yh-icon yh-icon-home" viewBox="0 0 24 24">
-              <path class="white" d="M4.8 11.1 12 5.2l7.2 5.9" />
-              <path class="orange" d="M7.2 10.2 12 6.3l4.8 3.9" />
-              <path class="white" d="M7.2 10.4v8.1h3.1v-5h3.4v5h3.1v-8.1" />
-            </svg>
-
-            <svg
-              v-else-if="item.icon === 'canvas'"
-              class="yh-icon yh-icon-canvas"
-              viewBox="0 0 24 24"
-            >
-              <rect class="purple-fill" x="6.2" y="7.3" width="11.5" height="11.5" rx="2" />
-              <rect class="purple" x="3.8" y="4.9" width="11.5" height="11.5" rx="2" />
-              <path class="yellow-fill" d="M18.2 3.3v3.2M16.6 4.9h3.2" />
-            </svg>
-
-            <i v-else-if="item.icon === 'canvas-v2'" class="ri-node-tree yh-icon-canvas-v2"></i>
-
-            <img
-              v-else-if="item.icon === 'selection-pool'"
-              class="yh-icon yh-icon-product-mover"
-              :src="productMoverIcon"
-              alt=""
-            />
-
-            <svg v-else-if="item.icon === 'designer'" class="yh-icon" viewBox="0 0 24 24">
-              <path class="white" d="m5.1 16.7 2.2 2.2 11.6-11.6-2.2-2.2L5.1 16.7Z" />
-              <path class="cyan" d="m13.8 5.8 4.4 4.4" />
-              <path class="white" d="m4.6 19.4 2.7-.5-2.2-2.2-.5 2.7Z" />
-              <path
-                class="white"
-                d="M5.6 6.2 7 3.8l1.4 2.4 2.5 1.4L8.4 9 7 11.5 5.6 9 3.1 7.6l2.5-1.4Z"
-              />
-            </svg>
-
-            <svg v-else-if="item.icon === 'product'" class="yh-icon" viewBox="0 0 24 24">
-              <path class="white" d="M5.5 6.5h13v12h-13z" />
-              <path
-                class="cyan"
-                d="M8 4.1v4.8M16 4.1v4.8M8.2 13.8l2.4-2.5 2.4 2.4 1.6-1.5 2.7 3.1"
-              />
-              <circle class="cyan-fill" cx="15.7" cy="10.2" r="1.1" />
-            </svg>
-
-            <svg v-else-if="item.icon === 'model'" class="yh-icon" viewBox="0 0 24 24">
-              <circle class="white" cx="12" cy="7" r="3" />
-              <path class="white" d="M6.5 20c.7-3.5 2.5-5.3 5.5-5.3s4.8 1.8 5.5 5.3" />
-            </svg>
-
-            <svg v-else-if="item.icon === 'retouch'" class="yh-icon" viewBox="0 0 24 24">
-              <path class="white" d="M5 18.8h14" />
-              <path class="white" d="m5.6 15.4 8.9-8.9 3 3-8.9 8.9H5.6v-3Z" />
-            </svg>
-
-            <svg v-else-if="item.icon === 'video'" class="yh-icon" viewBox="0 0 24 24">
-              <circle class="white" cx="12" cy="12" r="7.4" />
-              <circle class="cyan" cx="9" cy="9" r="1.5" />
-              <circle class="cyan" cx="15" cy="9" r="1.5" />
-              <circle class="cyan" cx="9" cy="15" r="1.5" />
-              <circle class="cyan" cx="15" cy="15" r="1.5" />
-            </svg>
-
-            <svg v-else-if="item.icon === 'ops'" class="yh-icon" viewBox="0 0 24 24">
-              <circle class="white" cx="12" cy="12" r="7.3" />
-              <path class="cyan" d="M12 12 16.6 8M12 12l-2.1 4.7" />
-              <circle class="orange-fill" cx="16.6" cy="8" r="1.2" />
-            </svg>
+            <i :class="[navigationIcons[item.icon], 'yh-navigation-icon']"></i>
           </span>
           <span v-if="expanded" class="yh-nav-label">{{ item.label }}</span>
           <span
@@ -367,11 +312,7 @@ async function openCliDownload() {
         @click="openHistory"
       >
         <span class="yh-nav-icon" aria-hidden="true">
-          <svg class="yh-icon" viewBox="0 0 24 24">
-            <path class="white" d="M5.8 7.6H3.7V3.9" />
-            <path class="white" d="M4.5 7.2A8 8 0 1 1 4.1 16" />
-            <path class="cyan" d="M12 7.6V12l3 2.1" />
-          </svg>
+          <i class="ri-history-line yh-navigation-icon"></i>
         </span>
         <span v-if="expanded" class="yh-nav-label">历史生成</span>
       </button>
@@ -382,12 +323,7 @@ async function openCliDownload() {
         @click="openConsole"
       >
         <span class="yh-nav-icon" aria-hidden="true">
-          <svg class="yh-icon" viewBox="0 0 24 24">
-            <rect class="white" x="4.2" y="5.2" width="15.6" height="11.1" rx="2.2" />
-            <path class="cyan" d="m7.3 9.4 2.2 2.1-2.2 2.1" />
-            <path class="cyan" d="M11.2 13.6h5.1" />
-            <path class="white" d="M9.2 19.2h5.6M12 16.5v2.7" />
-          </svg>
+          <i class="ri-terminal-window-line yh-navigation-icon"></i>
         </span>
         <span v-if="expanded" class="yh-nav-label">控制台</span>
       </button>
@@ -428,7 +364,7 @@ async function openCliDownload() {
       <template v-else-if="expanded">
         <section class="yh-user-card">
           <div class="yh-user-top">
-            <span class="yh-avatar">♙</span>
+            <span class="yh-avatar"><i class="ri-user-3-line" aria-hidden="true"></i></span>
             <span>
               <strong>{{ displayUser.name }}</strong>
               <small>ID: {{ displayUser.id }}</small>
@@ -467,7 +403,7 @@ async function openCliDownload() {
             aria-hidden="true"
           ></i>
         </button>
-        <button class="yh-bottom-icon yh-avatar-mini" type="button">♙</button>
+        <button class="yh-bottom-icon yh-avatar-mini" type="button" aria-label="用户"><i class="ri-user-3-line" aria-hidden="true"></i></button>
       </template>
     </div>
   </aside>
@@ -479,17 +415,17 @@ async function openCliDownload() {
 </template>
 
 <style scoped>
-.yh-icon-canvas-v2 {
-  display: grid;
-  place-items: center;
+.yh-navigation-icon,
+.yh-bottom-icon > i {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 24px;
   height: 24px;
   flex: 0 0 24px;
-  border: 1px solid #386269;
-  border-radius: 5px;
-  background: #193137;
-  color: #83e3eb;
-  font-size: 18px;
+  font-size: 22px;
   line-height: 1;
+  color: inherit;
+  filter: none;
 }
 </style>

@@ -57,7 +57,9 @@ public class AnmiaoVideoClient {
     this.mapper = mapper;
     this.modelApiKeys = modelApiKeys;
     this.aiCallLogService = aiCallLogService;
-    this.http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build();
+    this.http = HttpClient.newBuilder()
+        .version(HttpClient.Version.HTTP_1_1)
+        .connectTimeout(Duration.ofSeconds(15)).build();
   }
 
   public AnmiaoVideoClient(AnmiaoVideoProperties properties, VideoGenerationClient media,

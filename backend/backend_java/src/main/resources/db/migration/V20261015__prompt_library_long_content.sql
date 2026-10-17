@@ -1,0 +1,1 @@
+ALTER TABLE ym_prompt_library MODIFY COLUMN content LONGTEXT NOT NULL;
