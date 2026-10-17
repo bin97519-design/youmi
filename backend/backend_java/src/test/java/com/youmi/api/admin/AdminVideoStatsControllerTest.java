@@ -15,18 +15,18 @@ class AdminVideoStatsControllerTest {
 
   @Test void ordinaryUserCannotRequestAnotherUsersData() {
     when(auth.requireLogin("token")).thenReturn(user);
-    controller.videoStats("token", "VIDEO_ENHANCE", "2026-10-01", "2026-10-10");
+    controller.videoStats("token", "VIDEO_ENHANCE", "2026-10-01", "2026-10-10", null);
     verify(stats).stats(7L, "VIDEO_ENHANCE", "2026-10-01", "2026-10-10");
   }
   @Test void adminCanViewAllUsers() {
     when(auth.requireLogin("token")).thenReturn(user);
     when(auth.isAdmin(user)).thenReturn(true);
-    controller.videoStats("token", "VIDEO", null, null);
+    controller.videoStats("token", "VIDEO", null, null, null);
     verify(stats).stats(null, "VIDEO", null, null);
   }
   @Test void loginIsRequiredBeforeReadingAnyHistory() {
     when(auth.requireLogin(null)).thenThrow(new ApiException(401, "login required"));
-    assertThrows(ApiException.class, () -> controller.videoStats(null, "VIDEO", null, null));
+    assertThrows(ApiException.class, () -> controller.videoStats(null, "VIDEO", null, null, null));
     verifyNoInteractions(stats);
   }
 }

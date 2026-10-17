@@ -2,6 +2,7 @@ package com.youmi.api.admin;
 
 import com.youmi.api.auth.UserAccount;
 import com.youmi.api.common.ApiResponse;
+import com.youmi.api.common.ApiException;
 import com.youmi.api.ai.AiCallLogDtos;
 import com.youmi.api.ai.AiCallLogService;
 import com.youmi.api.admin.AiFeatureMappingDtos;
@@ -165,8 +166,16 @@ public class AdminController {
   public ApiResponse<AdminDtos.ImageStatsResponse> imageStats(
       @RequestHeader(value = "Authorization", required = false) String authorization,
       @RequestParam(required = false) String dateFrom,
-      @RequestParam(required = false) String dateTo) {
+      @RequestParam(required = false) String dateTo,
+      @RequestParam(required = false) String scope) {
     UserAccount user = adminAuthService.requireLogin(authorization);
+    if ("shop".equalsIgnoreCase(scope) && !adminAuthService.isStoreManager(user)) {
+      throw new ApiException(403, "没有店铺统计权限");
+    }
+    if (adminAuthService.isStoreManager(user) && (!adminAuthService.isAdmin(user) || "shop".equalsIgnoreCase(scope))) {
+      return ApiResponse.ok(adminService.imageStatsForShop(
+          adminAuthService.requireStoreManagerShopId(authorization)));
+    }
     Long scopeUserId = adminAuthService.isAdmin(user) ? null : user.id();
     return ApiResponse.ok(adminService.imageStats(scopeUserId, dateFrom, dateTo));
   }
@@ -181,8 +190,17 @@ public class AdminController {
       @RequestParam(required = false) Long userId,
       @RequestParam(defaultValue = "1") int page,
       @RequestParam(defaultValue = "10") int pageSize,
-      @RequestParam(defaultValue = "true") boolean includeTotal) {
+      @RequestParam(defaultValue = "true") boolean includeTotal,
+      @RequestParam(required = false) String scope) {
     UserAccount user = adminAuthService.requireLogin(authorization);
+    if ("shop".equalsIgnoreCase(scope) && !adminAuthService.isStoreManager(user)) {
+      throw new ApiException(403, "没有店铺统计权限");
+    }
+    if (adminAuthService.isStoreManager(user) && (!adminAuthService.isAdmin(user) || "shop".equalsIgnoreCase(scope))) {
+      return ApiResponse.ok(adminService.imageTaskPageForShop(
+          adminAuthService.requireStoreManagerShopId(authorization), dateFrom, dateTo, status, model,
+          page, pageSize, includeTotal));
+    }
     Long scopeUserId = adminAuthService.isAdmin(user) ? null : user.id();
     return ApiResponse.ok(adminService.imageTaskPage(
         scopeUserId, dateFrom, dateTo, status, model, userId, page, pageSize, includeTotal));

@@ -26,7 +26,9 @@ import {
 
 const userStore = useUserStore()
 const { cycle: cycleTheme, isDark } = useTheme()
-const activeTab = ref('stats')
+const activeTab = ref(Array.isArray(userStore.profile?.roles) && userStore.profile.roles.includes('STORE_MANAGER')
+  ? 'store-stats'
+  : 'stats')
 const loading = ref(false)
 const saving = ref(false)
 const errorText = ref('')
@@ -232,6 +234,12 @@ const isAdmin = computed(() => {
   const profile = userStore.profile
   if (!profile) return false
   return Array.isArray(profile.roles) && profile.roles.includes('ADMIN')
+})
+const isStoreManager = computed(() => Array.isArray(userStore.profile?.roles)
+  && userStore.profile.roles.includes('STORE_MANAGER'))
+watch(isStoreManager, (enabled) => {
+  if (enabled && activeTab.value === 'stats') activeTab.value = 'store-stats'
+  if (!enabled && activeTab.value === 'store-stats') activeTab.value = 'stats'
 })
 
 /* ── Toast ── */
@@ -555,6 +563,7 @@ function syncTaskToday() {
 // 拼接日期筛选 query 参数（dateFrom / dateTo）
 function buildTaskQuery(page = taskCurrentPage.value) {
   const params = new URLSearchParams({ kind: statsKind.value })
+  if (activeTab.value === 'store-stats') params.set('scope', 'shop')
   if (taskDateFrom.value) params.set('dateFrom', taskDateFrom.value)
   if (taskDateTo.value) params.set('dateTo', taskDateTo.value)
   if (taskStatusFilter.value) params.set('status', taskStatusFilter.value)
@@ -585,14 +594,17 @@ async function fetchTaskStats(page = taskCurrentPage.value) {
   const kind = statsKind.value
   const dateFrom = taskDateFrom.value
   const dateTo = taskDateTo.value
+  const withScope = (url) => activeTab.value === 'store-stats'
+    ? `${url}${url.includes('?') ? '&' : '?'}scope=shop`
+    : url
   const overview =
     kind === 'all'
       ? Promise.all(
           ['image', 'video', 'enhance'].map((category) =>
-            api(consoleTaskStatsUrl(category, dateFrom, dateTo)),
+            api(withScope(consoleTaskStatsUrl(category, dateFrom, dateTo))),
           ),
         ).then((results) => mergeConsoleTaskStats(...results))
-      : api(consoleTaskStatsUrl(kind, dateFrom, dateTo))
+      : api(withScope(consoleTaskStatsUrl(kind, dateFrom, dateTo)))
   const [result, taskPage] = await Promise.all([
     overview,
     api('/api/admin/tasks' + buildTaskQuery(page)),
@@ -679,7 +691,8 @@ const tabs = computed(() => {
     list.push({ key: 'oss', label: 'OSS管理', icon: 'ri-hard-drive-3-line' })
     list.push({ key: 'finance', label: '财务统计', icon: 'ri-funds-line' })
   }
-  list.push({ key: 'stats', label: '生成统计', icon: 'ri-bar-chart-box-line' })
+  if (isStoreManager.value) list.push({ key: 'store-stats', label: '图片统计', icon: 'ri-image-ai-line' })
+  if (!isStoreManager.value || isAdmin.value) list.push({ key: 'stats', label: '生成统计', icon: 'ri-bar-chart-box-line' })
   return list
 })
 
@@ -1411,7 +1424,7 @@ const shouldRefreshTaskStats = computed(() =>
 async function refreshTaskStatsSilently({ force = false } = {}) {
   if (
     document.hidden ||
-    activeTab.value !== 'stats' ||
+    !['stats', 'store-stats'].includes(activeTab.value) ||
     loading.value ||
     taskReloading.value ||
     (!force && !shouldRefreshTaskStats.value)
@@ -1490,6 +1503,7 @@ const roleLabelMap = {
   OPERATOR: '运营',
   EDITOR: '编辑',
   DESIGNER: '设计师',
+  STORE_MANAGER: '店长',
 }
 const statusLabelMap = { ACTIVE: '启用', DISABLED: '禁用' }
 const taskStatusLabelMap = {
@@ -1650,7 +1664,7 @@ function matchesTrendOption(row, rawQuery) {
   return Boolean(matchPinyin(label, query))
 }
 
-const trendShowsCurrentUser = computed(() => !isAdmin.value && trendDimension.value === 'user')
+const trendShowsCurrentUser = computed(() => !isAdmin.value && !isStoreManager.value && trendDimension.value === 'user')
 
 function trendPointValue(point, metric = trendDimensionConfig.value.metric) {
   if (point?.value === null) return null
@@ -2047,7 +2061,7 @@ function drawDonutChart() {
 /* ── Redraw charts on tab switch / data load ── */
 watch([activeTab, stats, trendDimension, trendFilter, trendSelectedKeys], () => {
   nextTick(() => {
-    if (activeTab.value === 'stats') {
+    if (['stats', 'store-stats'].includes(activeTab.value)) {
       drawTrendChart()
       drawDonutChart()
     }
@@ -2056,6 +2070,7 @@ watch([activeTab, stats, trendDimension, trendFilter, trendSelectedKeys], () => 
 
 watch(activeTab, (tab) => {
   if (tab === 'ai-feature-mappings') refreshAiFeatureMappings()
+  if (tab === 'store-stats') void fetchTaskStats(1)
   void loadAdminTabData(tab)
 })
 
@@ -2163,7 +2178,7 @@ onUnmounted(() => {
 
     <p v-if="errorText" class="console-error">{{ errorText }}</p>
 
-    <section v-if="activeTab === 'stats'" class="console-stat-overview" aria-label="统计概览">
+    <section v-if="['stats', 'store-stats'].includes(activeTab)" class="console-stat-overview" aria-label="统计概览">
       <h2>统计概览</h2>
       <div class="console-trend-tabs console-stat-kind-tabs" role="tablist" aria-label="任务统计类型">
         <button v-for="kind in statsKinds" :key="kind.key" type="button" role="tab"
@@ -3038,7 +3053,7 @@ onUnmounted(() => {
     />
 
     <!-- Stats Tab -->
-    <section v-if="activeTab === 'stats'" class="console-stats">
+    <section v-if="['stats', 'store-stats'].includes(activeTab)" class="console-stats">
       <!-- 模型用量: 环形图 + 图例 -->
       <section class="console-card">
         <h2>模型用量</h2>
@@ -3282,7 +3297,7 @@ onUnmounted(() => {
                 </div>
               </div>
             </div>
-            <div class="custom-select console-filter-select task-user-filter" @click.stop="toggleTaskUserDropdown">
+            <div v-if="isAdmin" class="custom-select console-filter-select task-user-filter" @click.stop="toggleTaskUserDropdown">
               <div class="custom-select-trigger" :class="{ open: dropdownOpen.filterTaskUser }">
                 <span class="task-user-trigger-label">
                   {{ taskUserFilter ? taskUserLabel(taskUserFilter) : '全部用户' }}
@@ -3404,13 +3419,13 @@ onUnmounted(() => {
           </div>
         </div>
         <div
-          :class="['console-table', 'tasks-table', { 'tasks-table-admin': isAdmin }]"
+          :class="['console-table', 'tasks-table', { 'tasks-table-admin': isAdmin || isStoreManager }]"
           @scroll.passive="hideTaskPromptTooltip"
         >
           <div class="console-row console-row-head">
             <span>时间</span>
             <span>任务</span>
-            <span v-if="isAdmin">用户</span>
+            <span v-if="isAdmin || isStoreManager">用户</span>
             <span>模型</span>
             <span>通道</span>
             <span>状态</span>
@@ -3434,7 +3449,7 @@ onUnmounted(() => {
                 <small class="task-id" :title="task.taskId">ID · {{ task.taskId }}</small>
               </span>
             </span>
-            <span v-if="isAdmin">{{ task.userName || task.userId || '匿名' }}</span>
+            <span v-if="isAdmin || isStoreManager">{{ task.userName || task.userId || '匿名' }}</span>
             <span>{{ task.requestedModel || task.model }}</span>
             <span class="task-provider-cell">
               {{ taskProviderLabel(task.provider) }}

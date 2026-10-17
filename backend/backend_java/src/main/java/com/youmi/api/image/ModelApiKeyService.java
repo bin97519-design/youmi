@@ -219,9 +219,22 @@ public class ModelApiKeyService {
 
   public Optional<ResolvedModelApiKey> preferredEnabledModel(String modelType, String featureCode) {
     if (!isFeatureMappingConfigured(featureCode)) return preferredEnabledModel(modelType);
-    return featureMappings.defaultKeyIdIfConfigured(featureCode)
+    Optional<ResolvedModelApiKey> configuredDefault = featureMappings.defaultKeyIdIfConfigured(featureCode)
         .flatMap(id -> repository.findById(id))
         .filter(row -> row.enabled() && modelType.equals(row.modelType()))
+        .map(this::decrypt);
+    if (configuredDefault.isPresent()) return configuredDefault;
+
+    java.util.Set<Long> selected = java.util.Set.copyOf(
+        featureMappings.selectedKeyIdsIfConfigured(featureCode));
+    return repository.list().stream()
+        .filter(row -> selected.contains(row.id()))
+        .filter(ModelApiKeyRepository.StoredModelApiKey::enabled)
+        .filter(row -> modelType.equals(row.modelType()))
+        .filter(row -> row.model() != null && !row.model().isBlank())
+        .sorted(Comparator.comparingInt(ModelApiKeyRepository.StoredModelApiKey::priority).reversed()
+            .thenComparingLong(ModelApiKeyRepository.StoredModelApiKey::id))
+        .findFirst()
         .map(this::decrypt);
   }
 

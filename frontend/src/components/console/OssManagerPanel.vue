@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import ImageViewer from '../ImageViewer.vue'
 import { useUserStore } from '../../stores/user'
 import { apiPath } from '../../utils/apiBase'
+import { writeTextToClipboard } from '../../utils/clipboard'
 
 const emit = defineEmits(['error', 'success'])
 const userStore = useUserStore()
@@ -23,6 +24,7 @@ const datePreview = ref(null)
 const datePreviewLoading = ref(false)
 const dateDeleting = ref(false)
 const imageViewer = ref({ open: false, images: [], index: 0 })
+const videoViewer = ref({ open: false, url: '', title: '' })
 
 const breadcrumbs = computed(() => {
   const parts = prefix.value.split('/').filter(Boolean)
@@ -183,6 +185,20 @@ async function deleteObject(item) {
   }
 }
 
+async function copyObjectUrl(item) {
+  const url = item.url || item.previewUrl
+  if (!url) {
+    emit('error', '该对象没有可复制的链接地址')
+    return
+  }
+  try {
+    await writeTextToClipboard(url)
+    emit('success', '链接地址已复制')
+  } catch {
+    emit('error', '复制链接失败，请检查浏览器剪贴板权限')
+  }
+}
+
 function formatBytes(bytes) {
   const value = Number(bytes || 0)
   if (value < 1024) return `${value} B`
@@ -231,10 +247,15 @@ function previewLabel(item) {
   return fileExtension(item).slice(0, 5).toUpperCase() || 'FILE'
 }
 
-function openImagePreview(event, item) {
-  if (filePreviewType(item) !== 'image') return
+function openFilePreview(event, item) {
+  const type = filePreviewType(item)
+  if (type !== 'image' && type !== 'video') return
   event.preventDefault()
   event.stopPropagation()
+  if (type === 'video') {
+    videoViewer.value = { open: true, url: item.previewUrl, title: item.name }
+    return
+  }
   const images = filteredObjects.value
     .filter((object) => filePreviewType(object) === 'image' && object.previewUrl)
     .map((object) => ({ url: object.previewUrl, name: object.name }))
@@ -251,6 +272,10 @@ function downloadPreviewImage(image) {
   link.download = image.name
   link.rel = 'noopener'
   link.click()
+}
+
+function closeVideoPreview() {
+  videoViewer.value = { open: false, url: '', title: '' }
 }
 
 function handleVideoPreviewLoaded(event) {
@@ -345,8 +370,8 @@ onMounted(() => void loadStatus())
         <tbody>
           <tr v-for="item in filteredObjects" :key="item.key">
             <td class="oss-preview-cell">
-              <a v-if="!item.folder && item.previewUrl" class="oss-preview" :class="`is-${filePreviewType(item)}`" :href="item.previewUrl" target="_blank" rel="noopener noreferrer" :title="`${item.name} · 打开预览`" @click="openImagePreview($event, item)">
-                <img v-if="filePreviewType(item) === 'image'" :src="item.previewUrl" :alt="item.name" loading="lazy" />
+              <a v-if="!item.folder && item.previewUrl" class="oss-preview" :class="`is-${filePreviewType(item)}`" :href="item.previewUrl" target="_blank" rel="noopener noreferrer" :title="`${item.name} · 打开预览`" @click="openFilePreview($event, item)">
+                <img v-if="filePreviewType(item) === 'image'" :src="item.thumbnailUrl || item.previewUrl" :alt="item.name" loading="lazy" />
                 <video v-else-if="filePreviewType(item) === 'video'" :src="item.previewUrl" muted playsinline preload="metadata" @loadeddata="handleVideoPreviewLoaded" />
                 <template v-else>
                   <i :class="previewIcon(item)" aria-hidden="true"></i>
@@ -371,6 +396,9 @@ onMounted(() => void loadStatus())
             <td>{{ item.folder ? '-' : formatDate(item.lastModified) }}</td>
             <td class="oss-row-actions">
               <template v-if="!item.folder">
+                <button class="oss-icon-button" type="button" title="复制链接地址" aria-label="复制链接地址" @click="copyObjectUrl(item)">
+                  <i class="ri-link-m" aria-hidden="true"></i>
+                </button>
                 <a class="oss-icon-button" :href="item.previewUrl" :download="item.name" title="下载文件">
                   <i class="ri-download-2-line" aria-hidden="true"></i>
                 </a>
@@ -405,6 +433,19 @@ onMounted(() => void loadStatus())
       @change="imageViewer.index = $event"
       @download="downloadPreviewImage"
     />
+    <Teleport to="body">
+      <div v-if="videoViewer.open" class="oss-video-overlay" tabindex="-1" @click.self="closeVideoPreview" @keydown.esc="closeVideoPreview">
+        <section class="oss-video-dialog" role="dialog" aria-modal="true" :aria-label="videoViewer.title">
+          <header>
+            <strong :title="videoViewer.title">{{ videoViewer.title }}</strong>
+            <button class="oss-icon-button" type="button" title="关闭视频预览" aria-label="关闭视频预览" @click="closeVideoPreview">
+              <i class="ri-close-line" aria-hidden="true"></i>
+            </button>
+          </header>
+          <video :src="videoViewer.url" controls autoplay playsinline preload="metadata"></video>
+        </section>
+      </div>
+    </Teleport>
   </section>
 </template>
 
@@ -460,7 +501,12 @@ onMounted(() => void loadStatus())
 .oss-preview.is-archive { color: #e6b767; }
 .oss-preview.is-folder { color: var(--console-accent, #20bfd2); }
 .oss-preview-play { position: absolute; display: grid; width: 20px; height: 20px; place-items: center; border-radius: 50%; color: #fff; background: rgb(16 18 22 / 74%); font-size: 15px; }
-.oss-table-actions { width: 104px; text-align: right; }
+.oss-video-overlay { position: fixed; z-index: 3000; inset: 0; display: grid; place-items: center; padding: 24px; background: rgb(0 0 0 / 78%); }
+.oss-video-dialog { display: grid; width: min(100%, 1100px); max-height: 92vh; overflow: hidden; border: 1px solid var(--console-border, #41444c); border-radius: 8px; background: var(--console-surface, #202228); box-shadow: 0 18px 60px rgb(0 0 0 / 42%); }
+.oss-video-dialog header { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 16px; border-bottom: 1px solid var(--console-border, #383a40); }
+.oss-video-dialog header strong { overflow: hidden; color: var(--console-text, #edf0f3); font-size: 13px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.oss-video-dialog video { display: block; width: 100%; max-height: calc(92vh - 60px); background: #090a0c; object-fit: contain; }
+.oss-table-actions { width: 142px; text-align: right; }
 .oss-row-actions { white-space: nowrap; text-align: right; }
 .oss-row-actions .oss-icon-button { margin-left: 5px; vertical-align: middle; }
 .oss-name-button, .oss-object-name { display: flex; align-items: center; gap: 9px; min-width: 0; color: var(--console-text, #edf0f3); }
@@ -488,5 +534,7 @@ onMounted(() => void loadStatus())
   .oss-table th.oss-preview-heading, .oss-table td.oss-preview-cell { padding-right: 6px; padding-left: 10px; }
   .oss-preview { width: 54px; height: 40px; }
   .oss-row-actions .oss-icon-button { width: 30px; height: 30px; margin-left: 2px; }
+  .oss-video-overlay { padding: 12px; }
+  .oss-video-dialog video { max-height: calc(92vh - 56px); }
 }
 </style>

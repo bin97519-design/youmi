@@ -5,6 +5,7 @@ import { NODE_CONTROLS, parameterSummary } from '../config/nodeControls'
 import { nodeSpec } from '../config/nodeSpecs'
 import CanvasIcon from './CanvasIcon.vue'
 import ImageShortcutMenu from './ImageShortcutMenu.vue'
+import StyleGalleryModal from './StyleGalleryModal.vue'
 import { IMAGE_SHORTCUT_COLUMNS, imageShortcutPatch } from '../config/imageShortcuts'
 import { useCanvasV3TaskStore } from '../stores/tasks'
 import { imageMiCost } from '../../../utils/imageMiPricing'
@@ -45,6 +46,9 @@ const expanded = ref(false)
 const expandTrigger = ref(null)
 const promptElement = ref(null)
 const status = ref('')
+const previewReferenceId = ref('')
+const previewTrigger = ref(null)
+const styleGalleryOpen = ref(false)
 let promptEditStarted = false
 const spec = computed(() => nodeSpec(props.node.data.kind))
 const controls = computed(
@@ -62,9 +66,7 @@ const shortcutIcon = computed(
 const portrait = computed(() => portraitSettings(props.node.data.editTemplate?.settings))
 const summary = computed(() => parameterSummary(props.node.data.kind, params.value))
 const incoming = computed(() => graph.edges.filter((edge) => edge.target === props.node.id))
-const references = computed(() =>
-  imageReferences(props.node, graph.nodes, graph.edges, { draft: true }),
-)
+const references = computed(() => imageReferences(props.node, graph.nodes, graph.edges))
 const possibleReferences = computed(() =>
   graph.nodes.filter(
     (node) => node.id !== props.node.id && !references.value.some((ref) => ref.id === node.id),
@@ -205,7 +207,11 @@ function trapExpandedFocus(event) {
 function handleComposerKeydown(event) {
   trapExpandedFocus(event)
   if (event.key !== 'Escape') return
-  if (popup.value) {
+  if (previewReferenceId.value) {
+    event.preventDefault()
+    previewReferenceId.value = ''
+    previewTrigger.value?.focus({ preventScroll: true })
+  } else if (popup.value) {
     event.preventDefault()
     closePopup()
   } else if (expanded.value) {
@@ -224,6 +230,12 @@ function closeModels() {
   modelTrigger.value?.focus()
 }
 function closeOnOutside(event) {
+  if (previewReferenceId.value) {
+    const card = composerElement.value?.querySelector(
+      `[data-reference-id="${CSS.escape(previewReferenceId.value)}"]`,
+    )
+    if (!card?.contains(event.target)) previewReferenceId.value = ''
+  }
   if (!popup.value) return
   const panel = popup.value === 'models' ? modelMenu.value : nodePopup.value
   const trigger = popup.value === 'models' ? modelTrigger.value : popupTrigger.value
@@ -233,7 +245,7 @@ function closeOnOutside(event) {
 }
 function closeOnEscape(event) {
   if (event.key !== 'Escape') return
-  if (popup.value || expanded.value) {
+  if (previewReferenceId.value || popup.value || expanded.value) {
     event.preventDefault()
     event.stopPropagation()
     handleComposerKeydown(event)
@@ -277,6 +289,35 @@ function addReference(source) {
     targetHandle: 'input',
   })
   closePopup()
+}
+function removeReference(reference) {
+  if (generating.value || interrupted.value) return
+  const edge = incoming.value.find((candidate) => candidate.source === reference.id)
+  if (!edge) return
+  graph.removeEdge(edge.id)
+  if (previewReferenceId.value === reference.id) previewReferenceId.value = ''
+}
+function toggleReferencePreview(reference, event) {
+  if (!reference.data.assetUrl) return
+  previewTrigger.value = event.currentTarget
+  previewReferenceId.value = previewReferenceId.value === reference.id ? '' : reference.id
+}
+function openReferenceTool(tool, event) {
+  if (tool === '风格') {
+    popup.value = ''
+    previewReferenceId.value = ''
+    styleGalleryOpen.value = true
+    return
+  }
+  togglePopup('references', event)
+}
+function applyStyle(style) {
+  patch({ stylePreset: style }, true)
+  styleGalleryOpen.value = false
+}
+function removeStyle() {
+  if (!props.node.data.stylePreset || generating.value || interrupted.value) return
+  patch({ stylePreset: null }, true)
 }
 function selectModel(model) {
   patch({ model }, true)
@@ -340,6 +381,12 @@ function run() {
 </script>
 
 <template>
+  <StyleGalleryModal
+    :open="styleGalleryOpen"
+    :current-style="node.data.stylePreset"
+    @close="styleGalleryOpen = false"
+    @select="applyStyle"
+  />
   <Teleport to=".cv3-app-shell">
     <div
       v-if="expanded"
@@ -364,7 +411,12 @@ function run() {
         v-for="tool in spec.referenceTools"
         :key="tool"
         type="button"
-        @click="togglePopup('references', $event)"
+        :class="{
+          'is-open': tool === '风格' ? styleGalleryOpen : popup === 'references',
+          'has-value': tool === '风格' && node.data.stylePreset,
+        }"
+        :aria-pressed="tool === '风格' ? Boolean(node.data.stylePreset) : undefined"
+        @click="openReferenceTool(tool, $event)"
       >
         <CanvasIcon
           :name="tool === '标记' ? 'referenceMark' : tool === '风格' ? 'referenceStyle' : 'plus'"
@@ -372,6 +424,7 @@ function run() {
         />
         {{ tool }}
         <b v-if="tool === spec.referenceTools[0] && references.length">{{ references.length }}</b>
+        <i v-else-if="tool === '风格' && node.data.stylePreset" aria-hidden="true" />
       </button>
       <button
         ref="expandTrigger"
@@ -386,29 +439,99 @@ function run() {
         <CanvasIcon :name="expanded ? 'collapse' : 'expand'" :size="18" />
       </button>
     </div>
-    <div v-if="editTemplate && references.length" class="cv3-template-references">
-      <span
+    <div v-if="node.data.stylePreset" class="cv3-style-selection" aria-label="已选风格">
+      <img
+        v-if="node.data.stylePreset.image"
+        :src="node.data.stylePreset.image"
+        :alt="node.data.stylePreset.title"
+      />
+      <span>
+        <small>当前风格</small>
+        <strong>{{ node.data.stylePreset.title }}</strong>
+      </span>
+      <button
+        type="button"
+        aria-label="移除当前风格"
+        :disabled="generating || interrupted"
+        @click="removeStyle"
+      >
+        <CanvasIcon name="close" :size="11" />
+      </button>
+    </div>
+    <div
+      v-if="references.length"
+      class="cv3-reference-chips"
+      :class="{ 'is-template': editTemplate }"
+      role="list"
+      aria-label="已引用素材"
+    >
+      <div
         v-for="(reference, index) in references"
         :key="reference.id"
+        class="cv3-reference-card"
+        role="listitem"
+        :data-reference-id="reference.id"
         :title="reference.data.title"
       >
-        <img
-          v-if="reference.data.assetUrl"
-          :src="reference.data.assetUrl"
-          :alt="reference.data.title"
-        />
-        <CanvasIcon v-else :name="reference.data.kind" :size="20" />
-        <b>{{ index + 1 }}</b>
-      </span>
-    </div>
-    <div v-else-if="references.length" class="cv3-reference-chips">
-      <span v-for="reference in references" :key="reference.id">
-        <CanvasIcon
-          :name="NODE_CONTROLS[reference.data.kind] ? reference.data.kind : 'script'"
-          :size="12"
-        />
-        {{ reference.data.title }}
-      </span>
+        <span
+          class="cv3-reference-thumbnail"
+          :class="{ 'is-open': previewReferenceId === reference.id }"
+          role="button"
+          tabindex="0"
+          aria-haspopup="dialog"
+          :aria-expanded="previewReferenceId === reference.id"
+          :aria-label="'预览引用：' + reference.data.title"
+          @click="toggleReferencePreview(reference, $event)"
+          @keydown.enter.prevent="toggleReferencePreview(reference, $event)"
+          @keydown.space.prevent="toggleReferencePreview(reference, $event)"
+        >
+          <span class="cv3-reference-media">
+            <img
+              v-if="reference.data.assetUrl"
+              :src="reference.data.assetUrl"
+              :alt="reference.data.title"
+              draggable="false"
+            />
+            <CanvasIcon
+              v-else
+              :name="NODE_CONTROLS[reference.data.kind] ? reference.data.kind : 'script'"
+              :size="20"
+            />
+          </span>
+          <span class="cv3-reference-index" aria-hidden="true">{{ index + 1 }}</span>
+          <button
+            type="button"
+            class="cv3-reference-mention"
+            aria-label="@"
+            title="添加引用素材"
+            :aria-expanded="popup === 'references'"
+            @click.stop="togglePopup('references', $event)"
+          >
+            @
+          </button>
+          <button
+            type="button"
+            class="cv3-reference-remove"
+            :aria-label="'移除引用：' + reference.data.title"
+            :title="'移除 ' + reference.data.title"
+            :disabled="generating || interrupted"
+            @click.stop="removeReference(reference)"
+          >
+            <CanvasIcon name="close" :size="12" />
+          </button>
+          <span
+            v-if="reference.data.assetUrl"
+            class="cv3-reference-preview"
+            role="dialog"
+            :aria-label="'引用预览：' + reference.data.title"
+            :aria-hidden="previewReferenceId !== reference.id"
+          >
+            <span class="cv3-reference-preview-frame">
+              <img :src="reference.data.assetUrl" alt="" draggable="false" />
+            </span>
+          </span>
+        </span>
+      </div>
     </div>
     <p v-if="node.data.legacyReferenceNotice" class="cv3-composer-status" role="note">
       {{ node.data.legacyReferenceNotice }}

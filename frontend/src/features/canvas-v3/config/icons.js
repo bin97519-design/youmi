@@ -131,6 +131,22 @@ export const CANVAS_ICONS = {
     '0 0 20 20',
     '<path d="m4 10 4 4L16 6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>',
   ),
+  copy: icon(
+    '0 0 20 20',
+    '<g fill="none" stroke="currentColor" stroke-width="1.25"><rect x="6" y="6" width="10" height="10" rx="2"/><path d="M13 6V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h1"/></g>',
+  ),
+  thumbUp: icon(
+    '0 0 20 20',
+    '<path d="M6 8v9H3V8zm0 8h8.2a2 2 0 0 0 1.95-1.56l1.02-4.5A2 2 0 0 0 15.22 7H12l.55-2.2A2.25 2.25 0 0 0 10.36 2L6 8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>',
+  ),
+  thumbDown: icon(
+    '0 0 20 20',
+    '<path d="M6 12V3H3v9zm0-8h8.2a2 2 0 0 1 1.95 1.56l1.02 4.5A2 2 0 0 1 15.22 13H12l.55 2.2A2.25 2.25 0 0 1 10.36 18L6 12" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>',
+  ),
+  brain: icon(
+    '0 0 20 20',
+    '<path d="M8 4.2A2.5 2.5 0 0 0 3.8 6a2.7 2.7 0 0 0-.1 5A2.8 2.8 0 0 0 8 14.6V4.2Zm4 0A2.5 2.5 0 0 1 16.2 6a2.7 2.7 0 0 1 .1 5 2.8 2.8 0 0 1-4.3 3.6V4.2ZM8 7H6m2 4H5.5m6.5-4h2m-2 4h2.5M8 4v12m4-12v12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>',
+  ),
   search: icon(
     '0 0 20 20',
     '<g fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></g>',

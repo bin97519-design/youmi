@@ -58,4 +58,36 @@ class AdminImageStatsSqlTest {
     assertEquals(3L, scopedTrendQueries);
     queries.forEach(sql -> assertFalse(sql.contains("?GROUP BY"), sql));
   }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  @Test
+  void storeScopeQueriesKeepWhitespaceAroundShopFilters() {
+    JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+    List<String> queries = new ArrayList<>();
+    when(jdbcTemplate.queryForObject(anyString(), any(RowMapper.class), any(Object[].class)))
+        .thenAnswer(invocation -> {
+          queries.add(invocation.getArgument(0));
+          return new AdminDtos.ImageStatsSummary(0L, 0L, 0L, 0L, 0L, 0, 0, BigDecimal.ZERO);
+        });
+    when(jdbcTemplate.query(anyString(), any(RowMapper.class), any(Object[].class)))
+        .thenAnswer(invocation -> {
+          queries.add(invocation.getArgument(0));
+          return List.of();
+        });
+
+    AdminService service = new AdminService(
+        jdbcTemplate,
+        mock(PasswordHasher.class),
+        mock(ShopRepository.class),
+        mock(PlatformRepository.class),
+        mock(ImageGenerationProperties.class));
+
+    service.imageStatsForShop(12L);
+
+    assertEquals(3L, queries.stream().filter(sql -> sql.contains("WHERE user_id IN (")).count());
+    assertEquals(1L, queries.stream().filter(sql -> sql.contains("AND user_id IN (")).count());
+    assertEquals(3L, queries.stream().filter(sql -> sql.contains("AND t.user_id IN (")).count());
+    queries.forEach(sql -> assertFalse(sql.contains("WHEREuser_id"), sql));
+    queries.forEach(sql -> assertFalse(sql.contains("DAY) ANDuser_id"), sql));
+  }
 }

@@ -79,9 +79,9 @@ function findOpenPosition(nodes, desired, kind) {
   const collides = (position) =>
     nodes.some(
       (node) =>
-        position.x < node.position.x + nodeSize(node.data.kind).width + 40 &&
+        position.x < node.position.x + nodeSize(node.data.kind, node.data).width + 40 &&
         position.x + size.width + 40 > node.position.x &&
-        position.y < node.position.y + nodeSize(node.data.kind).height + 40 &&
+        position.y < node.position.y + nodeSize(node.data.kind, node.data).height + 40 &&
         position.y + size.height + 40 > node.position.y,
     )
   return (
@@ -298,6 +298,9 @@ export const useCanvasV3GraphStore = defineStore('canvas-v3-graph', () => {
       ...(preset.editTemplate
         ? { editTemplate: { ...preset.editTemplate, sourceNodeId: sourceId } }
         : {}),
+      ...(preset.stylePreset || source.data.stylePreset
+        ? { stylePreset: clone(preset.stylePreset || source.data.stylePreset) }
+        : {}),
     }
     nodes.value.forEach((node) => {
       node.selected = false
@@ -367,6 +370,8 @@ export const useCanvasV3GraphStore = defineStore('canvas-v3-graph', () => {
         title: output.title || `${operation} ${index + 1}`,
         model: source.data.model,
         assetUrl: output.url,
+        mediaWidth: output.width,
+        mediaHeight: output.height,
         pixelSize: { width: output.width, height: output.height },
         artifactStatus: 'ready',
         runState: 'succeeded',
@@ -392,7 +397,8 @@ export const useCanvasV3GraphStore = defineStore('canvas-v3-graph', () => {
   function createDemoWorkflow() {
     remember()
     const x0 = nodes.value.length
-      ? Math.max(...nodes.value.map((n) => n.position.x + nodeSize(n.data.kind).width)) + 200
+      ? Math.max(...nodes.value.map((n) => n.position.x + nodeSize(n.data.kind, n.data).width)) +
+        200
       : 80
     const plan = [
       ['text', 0, 80, '创意简报', '为一款咖啡品牌制作清晨主题短片，画面简洁温暖，突出光线与香气。'],

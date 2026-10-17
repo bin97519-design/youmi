@@ -181,7 +181,7 @@ class ModelApiKeyServiceTest {
     assertEquals("system_default", layering.selectionMode());
     assertTrue(layering.defaultRoute().contains("视觉优先线路"));
     assertEquals("dropdown", agent.selectionMode());
-    assertTrue(agent.defaultRoute().contains("全局 Agent 配置"));
+    assertTrue(agent.defaultRoute().contains("数据库识图推理模型"));
     assertEquals("dropdown", image.selectionMode());
     assertEquals("image-model", image.keyRoutes().get(0).model());
     assertEquals(preferred.id(), layering.keyRoutes().get(0).apiKeyId());
@@ -211,6 +211,27 @@ class ModelApiKeyServiceTest {
         ModelApiKeyService.MODEL_TYPE_VISION_REASONING, "canvas-layering").orElseThrow().id());
     assertEquals(first.id(), service.resolve("mapped-image", ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION)
         .orElseThrow().id());
+  }
+
+  @Test
+  void canvasAgentDefaultUsesHighestPriorityCredentialInsideItsDatabaseMapping() {
+    ModelApiKeyDtos.Row outside = service.create(new ModelApiKeyDtos.SaveRequest(
+        "未映射最高优先级", "vision-outside", ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
+        "router", "https://outside.example.com", "/chat", "/models", "sk-outside", true, 999), 1L);
+    ModelApiKeyDtos.Row lower = service.create(new ModelApiKeyDtos.SaveRequest(
+        "映射备用", "vision-lower", ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
+        "router", "https://lower.example.com", "/chat", "/models", "sk-lower", true, 10), 1L);
+    ModelApiKeyDtos.Row preferred = service.create(new ModelApiKeyDtos.SaveRequest(
+        "映射首选", "vision-preferred", ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
+        "router", "https://preferred.example.com", "/chat", "/models", "sk-preferred", true, 80), 1L);
+    var mappings = new AiFeatureMappingService(service, new AiFeatureMappingRepository(jdbcTemplate));
+    mappings.save("canvas-agent", new com.youmi.api.admin.AiFeatureMappingDtos.SaveRequest(
+        List.of(lower.id(), preferred.id()), null));
+
+    assertEquals(preferred.id(), service.preferredEnabledModel(
+        ModelApiKeyService.MODEL_TYPE_VISION_REASONING, "canvas-agent").orElseThrow().id());
+    assertNotEquals(outside.id(), service.preferredEnabledModel(
+        ModelApiKeyService.MODEL_TYPE_VISION_REASONING, "canvas-agent").orElseThrow().id());
   }
 
   @Test

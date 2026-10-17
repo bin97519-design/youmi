@@ -1,13 +1,20 @@
 package com.youmi.api.ai;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.youmi.api.admin.AdminAuthService;
 import com.youmi.api.common.ApiException;
 import com.youmi.api.common.ApiResponse;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -18,11 +25,13 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 @RestController
 @RequestMapping("/api/ai/canvas-agent")
 public class CanvasAgentController {
   private static final Logger log = LoggerFactory.getLogger(CanvasAgentController.class);
+  private static final ObjectMapper STREAM_JSON = new ObjectMapper();
 
   private final CanvasAgentService canvasAgentService;
   private final CanvasAgentRepository canvasAgentRepository;
@@ -115,6 +124,111 @@ public class CanvasAgentController {
           request == null ? "" : request.instruction(),
           error);
       throw error;
+    }
+  }
+
+  @PostMapping(value = "/chat/stream", produces = MediaType.APPLICATION_NDJSON_VALUE)
+  public StreamingResponseBody chatStream(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @RequestBody CanvasAgentDtos.ChatRequest request) {
+    Long userId = adminAuthService.requireUserId(authorization);
+    long startedAt = System.currentTimeMillis();
+    return output -> {
+      AtomicBoolean replyStarted = new AtomicBoolean(false);
+      try {
+        int layerCount = request == null || request.layers() == null ? 0 : request.layers().size();
+        int selectedCount = request == null || request.selectedLayerIds() == null
+            ? 0 : request.selectedLayerIds().size();
+        writeStreamEvent(output, Map.of(
+            "type", "thinking",
+            "id", "context",
+            "label", "正在读取画布中的 " + layerCount + " 个节点与 " + selectedCount + " 个选中素材",
+            "state", "active"));
+        writeStreamEvent(output, Map.of(
+            "type", "thinking",
+            "id", "context",
+            "label", "已读取画布中的 " + layerCount + " 个节点与 " + selectedCount + " 个选中素材",
+            "state", "complete"));
+        writeStreamEvent(output, Map.of(
+            "type", "thinking",
+            "id", "model",
+            "label", "正在使用数据库推理模型解析创作意图与生成约束",
+            "state", "active"));
+
+        CanvasAgentDtos.ChatResponse response = canvasAgentService.chatStream(
+            request,
+            delta -> writeStreamEvent(output, Map.of("type", "thinking_delta", "delta", delta)),
+            delta -> {
+              if (replyStarted.compareAndSet(false, true)) {
+                writeStreamEvent(output, Map.of(
+                    "type", "thinking", "id", "model",
+                    "label", "已解析创作意图、模型偏好与生成约束", "state", "complete"));
+                writeStreamEvent(output, Map.of(
+                    "type", "thinking", "id", "answer",
+                    "label", "正在流式整理回答与下一步建议", "state", "active"));
+              }
+              writeStreamEvent(output, Map.of("type", "reply_delta", "delta", delta));
+            });
+        if (!replyStarted.get()) {
+          writeStreamEvent(output, Map.of(
+              "type", "thinking", "id", "model",
+              "label", "已解析创作意图、模型偏好与生成约束", "state", "complete"));
+        }
+        writeStreamEvent(output, Map.of(
+            "type", "thinking", "id", "answer",
+            "label", response.readyToGenerate()
+                ? "已整理回答并准备可确认的生成草稿"
+                : "已整理回答与下一步建议",
+            "state", "complete"));
+        writeStreamEvent(output, Map.of("type", "result", "data", response));
+
+        int outputChars = length(response.reply())
+            + response.draftPrompts().stream().mapToInt(this::length).sum();
+        recordUsage(
+            userId,
+            request == null ? "" : request.canvasId(),
+            request == null ? "" : request.conversationId(),
+            "CHAT_STREAM",
+            response.provider(),
+            response.model(),
+            "SUCCESS",
+            startedAt,
+            length(request == null ? "" : request.instruction()),
+            outputChars,
+            0,
+            "");
+      } catch (UncheckedIOException disconnected) {
+        log.debug("Canvas Agent stream closed by client: {}", disconnected.getMessage());
+      } catch (Exception error) {
+        try {
+          writeStreamEvent(output, Map.of(
+              "type", "error",
+              "message", clean(error.getMessage(), 1000).isBlank()
+                  ? "TV Director 暂时无法回复，请稍后重试"
+                  : clean(error.getMessage(), 1000)));
+        } catch (UncheckedIOException disconnected) {
+          log.debug("Canvas Agent stream closed while reporting an error: {}", disconnected.getMessage());
+        }
+        recordFailure(
+            userId,
+            request == null ? "" : request.canvasId(),
+            request == null ? "" : request.conversationId(),
+            "CHAT_STREAM",
+            request == null ? null : request.agentModel(),
+            startedAt,
+            request == null ? "" : request.instruction(),
+            error);
+      }
+    };
+  }
+
+  private void writeStreamEvent(OutputStream output, Map<String, ?> event) {
+    try {
+      output.write(STREAM_JSON.writeValueAsString(event).getBytes(StandardCharsets.UTF_8));
+      output.write('\n');
+      output.flush();
+    } catch (IOException error) {
+      throw new UncheckedIOException(error);
     }
   }
 

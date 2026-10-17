@@ -1,4 +1,5 @@
 import { IMAGE_MODEL_CATALOG } from './modelCatalog'
+export { isStandaloneUploadedImage, nodeSize } from './nodeGeometry'
 
 export const NODE_CONTROLS = {
   image: {
@@ -87,11 +88,4 @@ export function parameterSummary(kind, params = {}) {
   ]
     .filter(Boolean)
     .join(' · ')
-}
-
-export function nodeSize(kind) {
-  return {
-    width: ['image', 'video'].includes(kind) ? 624 : 350,
-    height: ['text', 'reference'].includes(kind) ? 200 : 350,
-  }
 }

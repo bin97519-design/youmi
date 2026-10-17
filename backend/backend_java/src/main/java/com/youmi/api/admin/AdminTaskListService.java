@@ -36,6 +36,16 @@ public class AdminTaskListService {
 
   public TaskPage tasks(Long scopeUserId, String kind, String dateFrom, String dateTo, String status,
       String model, Long userId, int page, int pageSize) {
+    return tasks(scopeUserId, null, kind, dateFrom, dateTo, status, model, userId, page, pageSize);
+  }
+
+  public TaskPage tasksForShop(Long shopId, String kind, String dateFrom, String dateTo, String status,
+      String model, int page, int pageSize) {
+    return tasks(null, shopId, kind, dateFrom, dateTo, status, model, null, page, pageSize);
+  }
+
+  private TaskPage tasks(Long scopeUserId, Long scopeShopId, String kind, String dateFrom, String dateTo, String status,
+      String model, Long userId, int page, int pageSize) {
     if (!List.of("all", "image", "video", "enhance").contains(kind)) throw new ApiException(400, "任务类型无效");
     validateDates(dateFrom, dateTo);
     String statusFilter = status == null ? "" : status.trim().toUpperCase(Locale.ROOT);
@@ -47,13 +57,17 @@ public class AdminTaskListService {
     if (scopeUserId != null && userId != null && !scopeUserId.equals(userId)) {
       return new TaskPage(List.of(), 0, safePage, size);
     }
-    Long scope = scopeUserId == null ? userId : scopeUserId;
+    Long scope = scopeUserId == null && scopeShopId == null ? userId : scopeUserId;
     if ("image".equals(kind)) {
-      var result = images.imageTaskPage(scope, dateFrom, dateTo, statusFilter, model, null, safePage, size, true);
+      var result = scopeShopId == null
+          ? images.imageTaskPage(scope, dateFrom, dateTo, statusFilter, model, null, safePage, size, true)
+          : images.imageTaskPageForShop(scopeShopId, dateFrom, dateTo, statusFilter, model, safePage, size, true);
       return new TaskPage(result.tasks().stream().map(this::imageRow).toList(), result.total(), safePage, size);
     }
     String videoType = "video".equals(kind) ? "VIDEO" : "enhance".equals(kind) ? "VIDEO_ENHANCE" : null;
-    List<Map<String, Object>> rows = new ArrayList<>(videos.taskRows(scope, videoType, dateFrom, dateTo, statusFilter, model)
+    List<Map<String, Object>> rows = new ArrayList<>((scopeShopId == null
+        ? videos.taskRows(scope, videoType, dateFrom, dateTo, statusFilter, model)
+        : videos.taskRowsForShop(scopeShopId, videoType, dateFrom, dateTo, statusFilter, model))
         .stream().map(this::row).toList());
     long offset = (long) (safePage - 1) * size;
     long total = rows.size();
@@ -62,8 +76,11 @@ public class AdminTaskListService {
       // At most all video rows can precede an image, so only this image window can enter the requested page.
       imageStart = Math.max(0, offset - rows.size());
       long batch = imageStart / IMAGE_BATCH_SIZE;
-      var result = images.imageTaskPage(scope, dateFrom, dateTo, statusFilter, model, null,
-          Math.toIntExact(batch + 1), IMAGE_BATCH_SIZE, true);
+      var result = scopeShopId == null
+          ? images.imageTaskPage(scope, dateFrom, dateTo, statusFilter, model, null,
+              Math.toIntExact(batch + 1), IMAGE_BATCH_SIZE, true)
+          : images.imageTaskPageForShop(scopeShopId, dateFrom, dateTo, statusFilter, model,
+              Math.toIntExact(batch + 1), IMAGE_BATCH_SIZE, true);
       total += result.total();
       long imageEnd = Math.min(result.total(), offset + size);
       while (batch * IMAGE_BATCH_SIZE < imageEnd) {
@@ -74,8 +91,11 @@ public class AdminTaskListService {
         }
         batch++;
         if (batch * IMAGE_BATCH_SIZE >= imageEnd) break;
-        result = images.imageTaskPage(scope, dateFrom, dateTo, statusFilter, model, null,
-            Math.toIntExact(batch + 1), IMAGE_BATCH_SIZE, false);
+        result = scopeShopId == null
+            ? images.imageTaskPage(scope, dateFrom, dateTo, statusFilter, model, null,
+                Math.toIntExact(batch + 1), IMAGE_BATCH_SIZE, false)
+            : images.imageTaskPageForShop(scopeShopId, dateFrom, dateTo, statusFilter, model,
+                Math.toIntExact(batch + 1), IMAGE_BATCH_SIZE, false);
       }
     }
     rows.sort(ORDER);

@@ -38,6 +38,17 @@ public class AdminAuthService {
     return user.roles() != null && user.roles().contains("ADMIN");
   }
 
+  public boolean isStoreManager(UserAccount user) {
+    return user.roles() != null && user.roles().contains("STORE_MANAGER");
+  }
+
+  public Long requireStoreManagerShopId(String authorization) {
+    UserAccount user = requireLogin(authorization);
+    if (!isStoreManager(user)) throw new ApiException(403, "没有店铺统计权限");
+    if (user.shopId() == null) throw new ApiException(403, "店长账号尚未绑定店铺");
+    return user.shopId();
+  }
+
   public Long optionalUserId(String authorization) {
     return tokenService.getUserId(parseBearerToken(authorization)).orElse(null);
   }

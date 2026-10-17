@@ -175,6 +175,20 @@ public class OssStorageService {
     }
   }
 
+  public String getPresignedThumbnailUrl(String objectName) {
+    try {
+      OSS oss = ossClient();
+      Date expiration = new Date(System.currentTimeMillis() + 7 * 24 * 60 * 60 * 1000L);
+      GeneratePresignedUrlRequest request =
+          new GeneratePresignedUrlRequest(properties.getBucketName(), objectName, HttpMethod.GET);
+      request.setExpiration(expiration);
+      request.setProcess("image/resize,m_lfit,w_320,h_240,limit_1/quality,q_80/format,webp");
+      return oss.generatePresignedUrl(request).toString();
+    } catch (Exception exception) {
+      throw new ApiException(502, "Get OSS thumbnail URL failed: " + exception.getMessage());
+    }
+  }
+
   public Map<String, Object> createPutUploadSignature(
       String originalFileName,
       String contentType,
@@ -464,6 +478,9 @@ public class OssStorageService {
         item.put("lastModified", summary.getLastModified());
         item.put("url", getFileUrl(summary.getKey()));
         item.put("previewUrl", getPresignedFileUrl(summary.getKey()));
+        if (isOssThumbnailSupported(summary.getKey())) {
+          item.put("thumbnailUrl", getPresignedThumbnailUrl(summary.getKey()));
+        }
         objects.add(item);
       }
       objects.sort((left, right) -> {
@@ -482,6 +499,14 @@ public class OssStorageService {
     } catch (Exception exception) {
       throw new ApiException(502, "OSS 对象列表读取失败：" + exception.getMessage());
     }
+  }
+
+  private boolean isOssThumbnailSupported(String objectName) {
+    int dot = objectName.lastIndexOf('.');
+    if (dot < 0) return false;
+    String extension = objectName.substring(dot + 1).toLowerCase(java.util.Locale.ROOT);
+    return java.util.Set.of("jpg", "jpeg", "png", "webp", "bmp", "gif", "tif", "tiff")
+        .contains(extension);
   }
 
   public Map<String, Object> uploadAdminObject(MultipartFile file, String requestedKey) {

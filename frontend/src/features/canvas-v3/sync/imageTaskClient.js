@@ -1,4 +1,5 @@
 import { imageEditInstructions } from '../config/imageEditPresets.js'
+import { imageStyleInstructions } from '../config/styleGallery.js'
 
 const SUCCESS = new Set([
   'completed',
@@ -131,6 +132,7 @@ export function imageTaskRequest(node, references, clientTaskId) {
   )
   const prompt = [
     imageEditInstructions(node.data),
+    imageStyleInstructions(node.data),
     node.data.prompt?.trim(),
     ...texts.map((ref) => `${ref.data.title}：\n${ref.data.prompt}`),
   ]

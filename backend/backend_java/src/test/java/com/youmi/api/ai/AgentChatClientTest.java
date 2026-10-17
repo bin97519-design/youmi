@@ -21,6 +21,52 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 class AgentChatClientTest {
+  @Test void configuredModelStreamsSseDeltasAndSendsStreamFlag() throws Exception {
+    var mapper = new ObjectMapper();
+    List<JsonNode> bodies = new ArrayList<>();
+    List<String> acceptHeaders = new ArrayList<>();
+    var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext("/v1/chat/completions", exchange -> {
+      bodies.add(mapper.readTree(exchange.getRequestBody()));
+      acceptHeaders.add(exchange.getRequestHeaders().getFirst("Accept"));
+      exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+      exchange.sendResponseHeaders(200, 0);
+      String first = "data: " + mapper.writeValueAsString(java.util.Map.of(
+          "choices", List.of(java.util.Map.of("delta", java.util.Map.of(
+              "content", "{\"reply\":\"你"))))) + "\n\n";
+      String second = "data: " + mapper.writeValueAsString(java.util.Map.of(
+          "choices", List.of(java.util.Map.of("delta", java.util.Map.of(
+              "content", "好\"}"))))) + "\n\n";
+      exchange.getResponseBody().write(first.getBytes(StandardCharsets.UTF_8));
+      exchange.getResponseBody().flush();
+      exchange.getResponseBody().write(second.getBytes(StandardCharsets.UTF_8));
+      exchange.getResponseBody().write("data: [DONE]\n\n".getBytes(StandardCharsets.UTF_8));
+      exchange.close();
+    });
+    server.start();
+    try {
+      var properties = new AgentChatProperties();
+      properties.setTimeoutSeconds(10);
+      var client = new AgentChatClient(mapper, properties);
+      var credential = new ModelApiKeyService.ResolvedModelApiKey(
+          9, "database-agent", "database-router",
+          "http://127.0.0.1:" + server.getAddress().getPort() + "/v1",
+          "/chat/completions", "", "local-test-only", java.util.Map.of());
+      List<String> deltas = new ArrayList<>();
+
+      var result = client.completeConfiguredModelStream(
+          credential, "system", "Hello", List.of(), 0.2,
+          "canvas-agent", "dropdown", null, deltas::add);
+
+      assertTrue(bodies.get(0).path("stream").asBoolean());
+      assertEquals("text/event-stream", acceptHeaders.get(0));
+      assertEquals(List.of("{\"reply\":\"你", "好\"}"), deltas);
+      assertEquals("{\"reply\":\"你好\"}", result.content());
+    } finally {
+      server.stop(0);
+    }
+  }
+
   @Test void configuredModelForwardsDefaultDataToItsConfiguredEndpoint() throws Exception {
     var mapper = new ObjectMapper();
     List<JsonNode> bodies = new ArrayList<>();

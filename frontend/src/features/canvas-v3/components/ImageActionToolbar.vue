@@ -8,6 +8,7 @@ import { imageGridMenuPlacement } from '../config/popupPlacement'
 import { imageEditPreset, PORTRAIT_MENU } from '../config/imageEditPresets'
 const props = defineProps({
   node: { type: Object, required: true },
+  left: { type: Number, required: true },
   top: { type: Number, default: 56 },
 })
 const emit = defineEmits(['preview', 'focus', 'emotion', 'angles'])
@@ -211,7 +212,7 @@ function download() {
 <template>
   <div
     class="cv3-image-toolbar"
-    :style="{ top: top + 'px' }"
+    :style="{ top: top + 'px', left: left + 'px' }"
     role="toolbar"
     aria-label="图片编辑工具栏"
   >

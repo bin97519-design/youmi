@@ -1,3 +1,5 @@
+import { HOME_COMMERCE_CATEGORY, HOME_COMMERCE_SKILL_RECORDS } from './homeCommerceSkills.js'
+
 const freezeList = (items) => Object.freeze(items.map((item) => Object.freeze(item)))
 
 const COMMON_SKILL_RECORDS = [
@@ -138,11 +140,14 @@ const COMMON_SKILL_RECORDS = [
   },
 ]
 
-export const DIRECTOR_SKILL_CATEGORIES = freezeList([{ id: 'common', label: '通用' }])
+export const DIRECTOR_SKILL_CATEGORIES = freezeList([
+  { id: HOME_COMMERCE_CATEGORY.id, label: HOME_COMMERCE_CATEGORY.label },
+  { id: 'common', label: '通用' },
+])
 
 export const DEFAULT_DIRECTOR_SKILL_CATEGORY = 'common'
 
-export const DIRECTOR_SKILL_CATALOG = freezeList(
+const COMMON_DIRECTOR_SKILLS = freezeList(
   COMMON_SKILL_RECORDS.map((skill, index) => ({
     ...skill,
     order: index + 1,
@@ -155,8 +160,25 @@ export const DIRECTOR_SKILL_CATALOG = freezeList(
   })),
 )
 
+const HOME_COMMERCE_DIRECTOR_SKILLS = freezeList(
+  HOME_COMMERCE_SKILL_RECORDS.map((skill, index) => ({
+    ...skill,
+    order: index + 1,
+    id: `youmi-home-commerce/${skill.skillKey}`,
+    label: skill.name,
+    category: HOME_COMMERCE_CATEGORY.id,
+    categoryLabel: HOME_COMMERCE_CATEGORY.label,
+  })),
+)
+
+export const DIRECTOR_SKILL_CATALOG = freezeList([
+  ...HOME_COMMERCE_DIRECTOR_SKILLS,
+  ...COMMON_DIRECTOR_SKILLS,
+])
+
 export const DIRECTOR_SKILL_SECTIONS = Object.freeze({
-  common: DIRECTOR_SKILL_CATALOG,
+  [HOME_COMMERCE_CATEGORY.id]: HOME_COMMERCE_DIRECTOR_SKILLS,
+  common: COMMON_DIRECTOR_SKILLS,
 })
 
 const DIRECTOR_SKILL_BY_ID = Object.freeze(
@@ -239,6 +261,9 @@ export function searchDirectorSkills(query, filters = {}) {
         skill.skillKey,
         skill.shortSlug,
         skill.categoryLabel,
+        skill.workflow,
+        skill.scenario,
+        skill.sourceName,
       ].some((value) => String(value).toLocaleLowerCase().includes(normalizedQuery)),
     ),
   )
@@ -261,6 +286,10 @@ export function createDirectorSkillStructuredPart(skillOrIdentity, options) {
   const serializationOptions = getSkillSerializationOptions(skillOrIdentity, options)
   copyOptionalField(structuredPart, serializationOptions, 'prompt')
   copyOptionalField(structuredPart, serializationOptions, 'draft')
+  const executionMetadata = { ...skill, ...serializationOptions }
+  copyOptionalField(structuredPart, executionMetadata, 'modality')
+  copyOptionalField(structuredPart, executionMetadata, 'workflow')
+  copyOptionalField(structuredPart, executionMetadata, 'category')
   return structuredPart
 }
 

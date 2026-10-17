@@ -14,6 +14,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -45,11 +46,19 @@ public class AdminVideoStatsService {
   }
 
   public Response stats(Long scopeUserId, String taskType, String dateFrom, String dateTo) {
+    return stats(scopeUserId, null, taskType, dateFrom, dateTo);
+  }
+
+  public Response statsForShop(Long shopId, String taskType, String dateFrom, String dateTo) {
+    return stats(null, shopId, taskType, dateFrom, dateTo);
+  }
+
+  private Response stats(Long scopeUserId, Long scopeShopId, String taskType, String dateFrom, String dateTo) {
     if (!List.of("VIDEO", "VIDEO_ENHANCE").contains(taskType)) throw new ApiException(400, "任务类型无效");
     LocalDate from = parseDate(dateFrom);
     LocalDate to = parseDate(dateTo);
     if (from != null && to != null && from.isAfter(to)) throw new ApiException(400, "日期范围无效");
-    List<Entry> entries = entries(scopeUserId).stream()
+    List<Entry> entries = entries(scopeUserId, scopeShopId).stream()
         .filter(e -> taskType.equals(e.task().taskType())).toList();
     LocalDate today = LocalDate.now(ZONE);
     long completed = entries.stream().filter(e -> "completed".equals(e.task().status())).count();
@@ -85,13 +94,23 @@ public class AdminVideoStatsService {
 
   public List<TaskRow> taskRows(Long scopeUserId, String taskType, String dateFrom, String dateTo,
       String status, String model) {
+    return taskRows(scopeUserId, null, taskType, dateFrom, dateTo, status, model);
+  }
+
+  public List<TaskRow> taskRowsForShop(Long shopId, String taskType, String dateFrom, String dateTo,
+      String status, String model) {
+    return taskRows(null, shopId, taskType, dateFrom, dateTo, status, model);
+  }
+
+  private List<TaskRow> taskRows(Long scopeUserId, Long scopeShopId, String taskType, String dateFrom, String dateTo,
+      String status, String model) {
     if (taskType != null && !List.of("VIDEO", "VIDEO_ENHANCE").contains(taskType)) {
       throw new ApiException(400, "任务类型无效");
     }
     LocalDate from = parseDate(dateFrom);
     LocalDate to = parseDate(dateTo);
     if (from != null && to != null && from.isAfter(to)) throw new ApiException(400, "日期范围无效");
-    return entries(scopeUserId).stream()
+    return entries(scopeUserId, scopeShopId).stream()
         .filter(e -> taskType == null || taskType.equals(e.task().taskType()))
         .filter(e -> from == null || !day(e.createdAt()).isBefore(from))
         .filter(e -> to == null || !day(e.createdAt()).isAfter(to))
@@ -101,12 +120,15 @@ public class AdminVideoStatsService {
         .toList();
   }
 
-  private List<Entry> entries(Long scopeUserId) {
-    Map<Long, Account> accounts = accounts(scopeUserId);
+  private List<Entry> entries(Long scopeUserId, Long scopeShopId) {
+    Map<Long, Account> accounts = accounts(scopeUserId, scopeShopId);
+    Set<Long> userIds = accounts.keySet();
     Map<String, Ledger> ledgers = new LinkedHashMap<>();
-    for (Ledger ledger : ledgers(scopeUserId)) ledgers.put(key(ledger.userId(), ledger.taskId()), ledger);
+    for (Ledger ledger : ledgers(scopeUserId, scopeShopId)) ledgers.put(key(ledger.userId(), ledger.taskId()), ledger);
     Map<String, VideoTaskHistory.Snapshot> snapshots = new LinkedHashMap<>();
-    for (var snapshot : history.list(scopeUserId)) snapshots.put(key(snapshot.userId(), snapshot.taskId()), snapshot);
+    List<VideoTaskHistory.Snapshot> savedTasks = scopeShopId == null
+        ? history.list(scopeUserId) : history.listForUsers(userIds);
+    for (var snapshot : savedTasks) snapshots.put(key(snapshot.userId(), snapshot.taskId()), snapshot);
     List<Entry> entries = new ArrayList<>();
     for (var pair : ledgers.entrySet()) {
       Ledger ledger = pair.getValue();
@@ -131,23 +153,24 @@ public class AdminVideoStatsService {
     };
   }
 
-  private List<Ledger> ledgers(Long scope) {
+  private List<Ledger> ledgers(Long scope, Long scopeShopId) {
     String sql = "SELECT id, user_id, task_id, price, status, created_at, updated_at FROM ym_mi_value_log"
-        + " WHERE biz_type = 'VIDEO'" + (scope == null ? "" : " AND user_id = ?") + " ORDER BY id";
+        + " WHERE biz_type = 'VIDEO'" + (scope != null ? " AND user_id = ?"
+            : scopeShopId != null ? " AND user_id IN (SELECT id FROM ym_sys_user WHERE shop_id = ?)" : "") + " ORDER BY id";
     return jdbc.query(sql, (rs, n) -> {
       long id = rs.getLong("id");
       String taskId = rs.getString("task_id");
       return new Ledger(id, rs.getLong("user_id"), taskId == null || taskId.isBlank() ? "video-charge:" + id : taskId,
           rs.getBigDecimal("price") == null ? BigDecimal.ZERO : rs.getBigDecimal("price"), rs.getString("status"), epoch(rs.getTimestamp("created_at")), epoch(rs.getTimestamp("updated_at")));
-    }, scope == null ? new Object[]{} : new Object[]{scope});
+    }, scope != null ? new Object[]{scope} : scopeShopId != null ? new Object[]{scopeShopId} : new Object[]{});
   }
 
-  private Map<Long, Account> accounts(Long scope) {
+  private Map<Long, Account> accounts(Long scope, Long scopeShopId) {
     String sql = """
         SELECT u.id, u.account, COALESCE(NULLIF(u.nickname, ''), u.account) AS user_name,
                s.id AS shop_id, s.name AS shop_name
         FROM ym_sys_user u LEFT JOIN ym_shop s ON s.id = u.shop_id
-        """ + (scope == null ? "" : " WHERE u.id = ?");
+        """ + (scope != null ? " WHERE u.id = ?" : scopeShopId != null ? " WHERE u.shop_id = ?" : "");
     Map<Long, Account> result = new LinkedHashMap<>();
     jdbc.query(sql, (rs, n) -> {
       Long id = rs.getLong("id");
@@ -155,7 +178,7 @@ public class AdminVideoStatsService {
       result.put(id, new Account(id, rs.getString("account"), rs.getString("user_name"),
           shop == null ? "unbound" : shop, shop == null ? "未绑定店铺" : rs.getString("shop_name")));
       return id;
-    }, scope == null ? new Object[]{} : new Object[]{scope});
+    }, scope != null ? new Object[]{scope} : scopeShopId != null ? new Object[]{scopeShopId} : new Object[]{});
     return result;
   }
 

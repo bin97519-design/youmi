@@ -324,18 +324,36 @@ public class AdminService {
   }
 
   public AdminDtos.ImageStatsResponse imageStats(Long scopeUserId, String dateFrom, String dateTo) {
+    return imageStats(scopeUserId, null);
+  }
+
+  public AdminDtos.ImageStatsResponse imageStatsForShop(Long shopId) {
+    return imageStats(null, shopId);
+  }
+
+  private AdminDtos.ImageStatsResponse imageStats(Long scopeUserId, Long scopeShopId) {
     return new AdminDtos.ImageStatsResponse(
-        imageSummary(scopeUserId),
+        imageSummary(scopeUserId, scopeShopId),
         List.of(),
-        dailyImageStats(scopeUserId),
-        modelImageStats(scopeUserId),
-        providerSuccessStats(scopeUserId),
-        modelDailyTrends(scopeUserId),
-        shopDailyTrends(scopeUserId),
-        userDailyTrends(scopeUserId));
+        dailyImageStats(scopeUserId, scopeShopId),
+        modelImageStats(scopeUserId, scopeShopId),
+        providerSuccessStats(scopeUserId, scopeShopId),
+        modelDailyTrends(scopeUserId, scopeShopId),
+        shopDailyTrends(scopeUserId, scopeShopId),
+        userDailyTrends(scopeUserId, scopeShopId));
   }
 
   public AdminDtos.ImageTaskPage imageTaskPage(Long scopeUserId, String dateFrom, String dateTo,
+      String status, String model, Long userId, int page, int pageSize, boolean includeTotal) {
+    return imageTaskPage(scopeUserId, null, dateFrom, dateTo, status, model, userId, page, pageSize, includeTotal);
+  }
+
+  public AdminDtos.ImageTaskPage imageTaskPageForShop(Long shopId, String dateFrom, String dateTo,
+      String status, String model, int page, int pageSize, boolean includeTotal) {
+    return imageTaskPage(null, shopId, dateFrom, dateTo, status, model, null, page, pageSize, includeTotal);
+  }
+
+  private AdminDtos.ImageTaskPage imageTaskPage(Long scopeUserId, Long scopeShopId, String dateFrom, String dateTo,
       String status, String model, Long userId, int page, int pageSize, boolean includeTotal) {
     int safePage = Math.max(1, page);
     int safePageSize = Math.min(100, Math.max(1, pageSize));
@@ -345,6 +363,9 @@ public class AdminService {
     if (scopeUserId != null) {
       where.append(" AND t.user_id = ?");
       args.add(scopeUserId);
+    } else if (scopeShopId != null) {
+      where.append(" AND t.user_id IN (SELECT id FROM ym_sys_user WHERE shop_id = ?)");
+      args.add(scopeShopId);
     }
     if (dateFrom != null && !dateFrom.isBlank()) {
       where.append(" AND t.created_at >= ?");
@@ -391,10 +412,10 @@ public class AdminService {
     return new AdminDtos.ImageTaskPage(tasks, total == null ? -1 : total, safePage, safePageSize);
   }
 
-  private AdminDtos.ImageStatsSummary imageSummary(Long scopeUserId) {
+  private AdminDtos.ImageStatsSummary imageSummary(Long scopeUserId, Long scopeShopId) {
     String sql;
     Object[] args;
-    if (scopeUserId != null) {
+    if (scopeUserId != null || scopeShopId != null) {
       sql = """
           SELECT
             COUNT(*) AS total_tasks,
@@ -406,9 +427,8 @@ public class AdminService {
             COALESCE(SUM(mi_cost), 0) AS total_mi_cost,
             COALESCE(SUM(money_cost), 0) AS total_money_cost
           FROM ym_image_task
-          WHERE user_id = ?
-          """;
-      args = new Object[]{scopeUserId};
+          WHERE """ + (scopeUserId != null ? " user_id = ?" : " user_id IN (SELECT id FROM ym_sys_user WHERE shop_id = ?)");
+      args = new Object[]{scopeUserId != null ? scopeUserId : scopeShopId};
     } else {
       sql = """
           SELECT
@@ -435,21 +455,25 @@ public class AdminService {
         rs.getBigDecimal("total_money_cost")), args);
   }
 
-  private List<AdminDtos.DailyImageStat> dailyImageStats(Long scopeUserId) {
+  private AdminDtos.ImageStatsSummary imageSummary(Long scopeUserId) {
+    return imageSummary(scopeUserId, null);
+  }
+
+  private List<AdminDtos.DailyImageStat> dailyImageStats(Long scopeUserId, Long scopeShopId) {
     String sql;
     Object[] args;
-    if (scopeUserId != null) {
+    if (scopeUserId != null || scopeShopId != null) {
       sql = """
           SELECT DATE(created_at) AS day, COUNT(*) AS tasks,
                  SUM(CASE WHEN LOWER(status) IN ('failed', 'error', 'cancelled', 'canceled') THEN 1 ELSE 0 END) AS failed_tasks,
                  COALESCE(SUM(image_count), 0) AS images,
                  COALESCE(SUM(mi_cost), 0) AS mi_cost, COALESCE(SUM(money_cost), 0) AS money_cost
           FROM ym_image_task
-          WHERE created_at >= DATE_SUB(CURRENT_DATE, INTERVAL 13 DAY) AND user_id = ?
+          WHERE created_at >= DATE_SUB(CURRENT_DATE, INTERVAL 13 DAY) AND """ + (scopeUserId != null ? " user_id = ?" : " user_id IN (SELECT id FROM ym_sys_user WHERE shop_id = ?)") + " " + """
           GROUP BY DATE(created_at)
           ORDER BY day
           """;
-      args = new Object[]{scopeUserId};
+      args = new Object[]{scopeUserId != null ? scopeUserId : scopeShopId};
     } else {
       sql = """
           SELECT DATE(created_at) AS day, COUNT(*) AS tasks,
@@ -472,19 +496,19 @@ public class AdminService {
         rs.getBigDecimal("money_cost")), args);
   }
 
-  private List<AdminDtos.ModelImageStat> modelImageStats(Long scopeUserId) {
+  private List<AdminDtos.ModelImageStat> modelImageStats(Long scopeUserId, Long scopeShopId) {
     String sql;
     Object[] args;
-    if (scopeUserId != null) {
+    if (scopeUserId != null || scopeShopId != null) {
       sql = """
           SELECT COALESCE(requested_model, model, 'unknown') AS model, COUNT(*) AS tasks,
                  COALESCE(SUM(image_count), 0) AS images, COALESCE(SUM(mi_cost), 0) AS mi_cost,
                  COALESCE(SUM(money_cost), 0) AS money_cost
           FROM ym_image_task
-          WHERE user_id = ?
+          WHERE """ + (scopeUserId != null ? " user_id = ?" : " user_id IN (SELECT id FROM ym_sys_user WHERE shop_id = ?)") + " " + """
           GROUP BY COALESCE(requested_model, model, 'unknown')
           """;
-      args = new Object[]{scopeUserId};
+      args = new Object[]{scopeUserId != null ? scopeUserId : scopeShopId};
     } else {
       sql = """
           SELECT COALESCE(requested_model, model, 'unknown') AS model, COUNT(*) AS tasks,
@@ -519,8 +543,8 @@ public class AdminService {
     return result.size() > 12 ? new ArrayList<>(result.subList(0, 12)) : result;
   }
 
-  private List<AdminDtos.DimensionImageTrend> modelDailyTrends(Long scopeUserId) {
-    String where = scopeUserId == null ? "" : " AND t.user_id = ? ";
+  private List<AdminDtos.DimensionImageTrend> modelDailyTrends(Long scopeUserId, Long scopeShopId) {
+    String where = imageScopeCondition(scopeUserId, scopeShopId);
     String sql = """
         SELECT COALESCE(t.requested_model, t.model, 'unknown') AS dimension_key,
                COALESCE(t.requested_model, t.model, 'unknown') AS dimension_label,
@@ -536,11 +560,11 @@ public class AdminService {
         GROUP BY COALESCE(t.requested_model, t.model, 'unknown'), DATE(t.created_at)
         ORDER BY day
         """;
-    return buildDimensionTrends(queryDimensionTrendRows(sql, scopeUserId), true);
+    return buildDimensionTrends(queryDimensionTrendRows(sql, scopeUserId, scopeShopId), true);
   }
 
-  private List<AdminDtos.DimensionImageTrend> shopDailyTrends(Long scopeUserId) {
-    String where = scopeUserId == null ? "" : " AND t.user_id = ? ";
+  private List<AdminDtos.DimensionImageTrend> shopDailyTrends(Long scopeUserId, Long scopeShopId) {
+    String where = imageScopeCondition(scopeUserId, scopeShopId);
     String sql = """
         SELECT COALESCE(CAST(s.id AS CHAR), 'unbound') AS dimension_key,
                CASE
@@ -563,11 +587,11 @@ public class AdminService {
         GROUP BY s.id, s.name, p.name, s.platform, DATE(t.created_at)
         ORDER BY day
         """;
-    return buildDimensionTrends(queryDimensionTrendRows(sql, scopeUserId), false);
+    return buildDimensionTrends(queryDimensionTrendRows(sql, scopeUserId, scopeShopId), false);
   }
 
-  private List<AdminDtos.DimensionImageTrend> userDailyTrends(Long scopeUserId) {
-    String where = scopeUserId == null ? "" : " AND t.user_id = ? ";
+  private List<AdminDtos.DimensionImageTrend> userDailyTrends(Long scopeUserId, Long scopeShopId) {
+    String where = imageScopeCondition(scopeUserId, scopeShopId);
     String sql = """
         SELECT COALESCE(u.account, CONCAT('user-', t.user_id), 'unknown') AS dimension_key,
                COALESCE(NULLIF(u.nickname, ''), u.account, CONCAT('用户 #', t.user_id), '未知用户') AS dimension_label,
@@ -584,11 +608,18 @@ public class AdminService {
         GROUP BY t.user_id, u.account, u.nickname, DATE(t.created_at)
         ORDER BY day
         """;
-    return buildDimensionTrends(queryDimensionTrendRows(sql, scopeUserId), false);
+    return buildDimensionTrends(queryDimensionTrendRows(sql, scopeUserId, scopeShopId), false);
   }
 
-  private List<RawDimensionTrend> queryDimensionTrendRows(String sql, Long scopeUserId) {
-    Object[] args = scopeUserId == null ? new Object[]{} : new Object[]{scopeUserId};
+  private String imageScopeCondition(Long scopeUserId, Long scopeShopId) {
+    if (scopeUserId != null) return " AND t.user_id = ? ";
+    if (scopeShopId != null) return " AND t.user_id IN (SELECT id FROM ym_sys_user WHERE shop_id = ?) ";
+    return "";
+  }
+
+  private List<RawDimensionTrend> queryDimensionTrendRows(String sql, Long scopeUserId, Long scopeShopId) {
+    Object[] args = scopeUserId != null ? new Object[]{scopeUserId}
+        : scopeShopId != null ? new Object[]{scopeShopId} : new Object[]{};
     return jdbcTemplate.query(sql, (rs, rowNum) -> new RawDimensionTrend(
         rs.getString("dimension_key"),
         rs.getString("dimension_label"),
@@ -659,8 +690,9 @@ public class AdminService {
     }
   }
 
-  private List<AdminDtos.ProviderSuccessStat> providerSuccessStats(Long scopeUserId) {
-    String where = scopeUserId == null ? "" : " WHERE user_id = ?";
+  private List<AdminDtos.ProviderSuccessStat> providerSuccessStats(Long scopeUserId, Long scopeShopId) {
+    String where = scopeUserId != null ? " WHERE user_id = ?"
+        : scopeShopId != null ? " WHERE user_id IN (SELECT id FROM ym_sys_user WHERE shop_id = ?)" : "";
     String sql = """
         SELECT COALESCE(provider, 'unknown') AS provider,
                COUNT(*) AS total_tasks,
@@ -668,7 +700,8 @@ public class AdminService {
                SUM(CASE WHEN LOWER(status) IN ('failed', 'error', 'cancelled', 'canceled') THEN 1 ELSE 0 END) AS failed_tasks
         FROM ym_image_task
         """ + where + " GROUP BY COALESCE(provider, 'unknown')";
-    Object[] args = scopeUserId == null ? new Object[]{} : new Object[]{scopeUserId};
+    Object[] args = scopeUserId != null ? new Object[]{scopeUserId}
+        : scopeShopId != null ? new Object[]{scopeShopId} : new Object[]{};
     List<AdminDtos.ProviderSuccessStat> rawStats = jdbcTemplate.query(sql, (rs, rowNum) -> {
       long successful = rs.getLong("successful_tasks");
       long failed = rs.getLong("failed_tasks");

@@ -14,6 +14,7 @@ import { serializeDirectorSkillChip } from '../config/directorSkillCatalog.js'
 import { imageMiCost } from '../../../utils/imageMiPricing.js'
 import AgentOrb from './AgentOrb.vue'
 import CanvasIcon from './CanvasIcon.vue'
+import DirectorRichText from './DirectorRichText.vue'
 import DirectorGenerationModePicker from './DirectorGenerationModePicker.vue'
 import DirectorModelPicker from './DirectorModelPicker.vue'
 import DirectorSkillPicker from './DirectorSkillPicker.vue'
@@ -24,6 +25,9 @@ const props = defineProps({
   dockWidth: { type: Number, default: 340 },
   sessionId: { type: String, default: '' },
   agentRuns: { type: Array, default: () => [] },
+  conversations: { type: Array, default: () => [] },
+  conversationId: { type: String, default: '' },
+  conversationLoading: { type: Boolean, default: false },
 })
 const emit = defineEmits([
   'close',
@@ -32,8 +36,12 @@ const emit = defineEmits([
   'dock-width-commit',
   'generation-mode-change',
   'submit',
+  'cancel-agent',
   'confirm-generation',
   'retry-agent',
+  'new-conversation',
+  'load-conversations',
+  'select-conversation',
 ])
 const STORAGE_KEY = 'libtv:chatAgentDrawer:floatRect'
 const GENERATION_MODE_KEY = 'libtv:director:generationMode'
@@ -42,6 +50,7 @@ const MIN_WIDTH = 320
 const MIN_HEIGHT = 400
 
 const panel = ref(null)
+const messageViewport = ref(null)
 const closeButton = ref(null)
 const modeTrigger = ref(null)
 const modeMenu = ref(null)
@@ -55,6 +64,19 @@ const skillFileInput = ref(null)
 const composerInput = ref(null)
 const prompt = ref('')
 const sentMessages = ref([])
+const thinkingOpen = ref(new Set())
+const thinkingPreviewText = ref({})
+const messageFeedback = ref({})
+const copiedMessageKey = ref('')
+const scrollPinned = ref(true)
+const autoScrollEnabled = ref(true)
+const historyOpen = ref(false)
+const settingsOpen = ref(false)
+const pluginOpen = ref(false)
+const headerNotice = ref('')
+let noticeTimer = 0
+const thinkingPreviewTargets = new Map()
+const thinkingPreviewTimers = new Map()
 const rect = reactive({ ...DEFAULT_RECT })
 const drag = reactive({ active: false, kind: '', direction: '', cursor: '', start: null })
 const activeModeId = ref('omni')
@@ -89,6 +111,13 @@ const activeDirectorRole = computed(
   () => DIRECTOR_ROLES.find((role) => role.id === activeDirectorRoleId.value) || DIRECTOR_ROLES[0],
 )
 const scriptModeActive = computed(() => activeModeId.value.startsWith('script_'))
+const activeAgentRun = computed(() => {
+  for (let index = props.agentRuns.length - 1; index >= 0; index -= 1) {
+    const run = props.agentRuns[index]
+    if (['planning', 'streaming'].includes(run?.phase)) return run
+  }
+  return null
+})
 const conversationItems = computed(() => {
   const items = []
   const runsByMessageId = new Map(
@@ -107,6 +136,13 @@ const conversationItems = computed(() => {
     if (!renderedRuns.has(run.id)) items.push({ type: 'agent', key: run.id, run })
   return items
 })
+const conversationTitle = computed(() => {
+  const first = sentMessages.value.find((message) =>
+    String(message?.display || message?.content || '').trim(),
+  )
+  const title = String(first?.display || first?.content || '').trim()
+  return title ? title.slice(0, 24) : '新对话'
+})
 const hasInlinePopup = computed(
   () =>
     modeMenuOpen.value ||
@@ -114,7 +150,10 @@ const hasInlinePopup = computed(
     skillMenuOpen.value ||
     generationModeMenuOpen.value ||
     adaptationSettingsOpen.value ||
-    directorCustomMenuOpen.value,
+    directorCustomMenuOpen.value ||
+    historyOpen.value ||
+    settingsOpen.value ||
+    pluginOpen.value,
 )
 const adaptationSummary = computed(() => {
   const selected = DIRECTOR_ADAPTATION_DIRECTIONS.find(
@@ -386,6 +425,9 @@ function closeInlinePopups({ restoreFocus = false } = {}) {
   generationModeMenuOpen.value = false
   adaptationSettingsOpen.value = false
   directorCustomMenuOpen.value = false
+  historyOpen.value = false
+  settingsOpen.value = false
+  pluginOpen.value = false
 }
 
 function restoreGenerationMode() {
@@ -711,9 +753,228 @@ function handleDocumentPointerDown(event) {
     !isEventInside(event, directorCustomTrigger.value, directorCustomMenu.value)
   )
     directorCustomMenuOpen.value = false
+  const path = event.composedPath?.() || []
+  if (!path.some((target) => target?.closest?.('.cv3-director-header-popover'))) {
+    const trigger = path.find((target) => target?.dataset?.directorHeaderTrigger)
+    if (!trigger) {
+      historyOpen.value = false
+      settingsOpen.value = false
+      pluginOpen.value = false
+    }
+  }
+}
+
+function showHeaderNotice(message) {
+  headerNotice.value = message
+  window.clearTimeout(noticeTimer)
+  noticeTimer = window.setTimeout(() => {
+    headerNotice.value = ''
+  }, 1800)
+}
+
+async function writeClipboard(text) {
+  const content = String(text || '')
+  if (!content) return false
+  try {
+    await navigator.clipboard.writeText(content)
+    return true
+  } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = content
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    const copied = document.execCommand('copy')
+    textarea.remove()
+    return copied
+  }
+}
+
+async function copyMessage(key, content) {
+  if (!(await writeClipboard(content))) return
+  copiedMessageKey.value = key
+  window.setTimeout(() => {
+    if (copiedMessageKey.value === key) copiedMessageKey.value = ''
+  }, 1600)
+}
+
+function setMessageFeedback(runId, value) {
+  messageFeedback.value = {
+    ...messageFeedback.value,
+    [runId]: messageFeedback.value[runId] === value ? '' : value,
+  }
+}
+
+async function toggleThinking(runId) {
+  const next = new Set(thinkingOpen.value)
+  if (next.has(runId)) next.delete(runId)
+  else next.add(runId)
+  thinkingOpen.value = next
+  await nextTick()
+  onMessagesScroll()
+}
+
+function directorThinkingSteps(run) {
+  if (Array.isArray(run?.thinking) && run.thinking.length) return run.thinking
+  if (run?.phase === 'planning')
+    return [{ label: '正在读取画布上下文并理解你的创作意图', state: 'active' }]
+  if (run?.phase === 'failed') return [{ label: run.error || '本次分析未完成', state: 'error' }]
+  return [
+    { label: '已读取当前画布与选中素材', state: 'complete' },
+    { label: '已解析创作意图和生成约束', state: 'complete' },
+    { label: '已组织回答与下一步执行方案', state: 'complete' },
+  ]
+}
+
+function directorThinkingPreview(run) {
+  return String(run?.thinkingText || thinkingPreviewText.value[run?.id] || '')
+}
+
+function directorThinkingPreviewTarget(run) {
+  if (!['planning', 'streaming'].includes(run?.phase) || run?.thinkingText) return ''
+  const visibleSteps = directorThinkingSteps(run)
+    .filter((step) => step?.state !== 'pending')
+    .map((step) => String(step?.label || step || '').trim())
+    .filter(Boolean)
+  if (!visibleSteps.length) return '正在理解你的创作需求并准备下一步建议。'
+  return `${visibleSteps.join('。').replace(/[。；;]+$/u, '')}。`
+}
+
+function directorThinkingNarrative(run) {
+  const streamed = String(run?.thinkingText || '').trim()
+  if (streamed) return streamed
+  const steps = directorThinkingSteps(run)
+    .filter((step) => step?.state !== 'pending')
+    .map((step) => String(step?.label || step || '').trim())
+    .filter(Boolean)
+  if (!steps.length) return '本轮没有可展示的思考过程。'
+  return `本轮先${steps.join('；随后').replace(/^已/u, '')}。`
+}
+
+function stopThinkingPreview(runId) {
+  const timer = thinkingPreviewTimers.get(runId)
+  if (timer) window.clearTimeout(timer)
+  thinkingPreviewTimers.delete(runId)
+}
+
+function typeThinkingPreview(run) {
+  const runId = String(run?.id || '')
+  if (!runId) return
+  const target = directorThinkingPreviewTarget(run)
+  thinkingPreviewTargets.set(runId, target)
+  if (!target) {
+    stopThinkingPreview(runId)
+    return
+  }
+  let current = String(thinkingPreviewText.value[runId] || '')
+  if (!target.startsWith(current)) {
+    current = ''
+    thinkingPreviewText.value = { ...thinkingPreviewText.value, [runId]: '' }
+  }
+  if (thinkingPreviewTimers.has(runId) || current.length >= target.length) return
+
+  const tick = () => {
+    const latestTarget = thinkingPreviewTargets.get(runId) || ''
+    const latest = String(thinkingPreviewText.value[runId] || '')
+    if (!latestTarget || latest.length >= latestTarget.length) {
+      stopThinkingPreview(runId)
+      return
+    }
+    const step = Math.min(2, latestTarget.length - latest.length)
+    thinkingPreviewText.value = {
+      ...thinkingPreviewText.value,
+      [runId]: latestTarget.slice(0, latest.length + step),
+    }
+    thinkingPreviewTimers.set(runId, window.setTimeout(tick, 34))
+  }
+  thinkingPreviewTimers.set(runId, window.setTimeout(tick, current ? 34 : 380))
+}
+
+function onMessagesScroll() {
+  const viewport = messageViewport.value
+  if (!viewport) return
+  scrollPinned.value = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 48
+}
+
+async function scrollToBottom(behavior = 'smooth') {
+  await nextTick()
+  const viewport = messageViewport.value
+  if (!viewport) return
+  viewport.scrollTo({ top: viewport.scrollHeight, behavior })
+  scrollPinned.value = true
+}
+
+function closeHeaderPopovers() {
+  historyOpen.value = false
+  settingsOpen.value = false
+  pluginOpen.value = false
+}
+
+function toggleHistory() {
+  const next = !historyOpen.value
+  closeHeaderPopovers()
+  historyOpen.value = next
+  if (next) emit('load-conversations')
+}
+
+function toggleSettings() {
+  const next = !settingsOpen.value
+  closeHeaderPopovers()
+  settingsOpen.value = next
+}
+
+function togglePlugin() {
+  const next = !pluginOpen.value
+  closeHeaderPopovers()
+  pluginOpen.value = next
+}
+
+function startNewConversation() {
+  sentMessages.value = []
+  thinkingOpen.value = new Set()
+  messageFeedback.value = {}
+  closeHeaderPopovers()
+  emit('new-conversation')
+  nextTick(() => composerInput.value?.focus({ preventScroll: true }))
+}
+
+function restoreConversation(conversation) {
+  const records = Array.isArray(conversation?.messages) ? conversation.messages : []
+  sentMessages.value = records
+    .filter((message) => message?.role === 'user')
+    .map((message, index) => ({
+      id: message.id || `restored-message-${index}`,
+      content: message.content || '',
+      display: message.display || message.content || '',
+      raw: message.raw || message.content || '',
+      parts: Array.isArray(message.parts) ? message.parts : [],
+      dryRunIntent: message.dryRunIntent !== false,
+      context: message.context || {},
+    }))
+  closeHeaderPopovers()
+  emit('select-conversation', conversation)
+  void scrollToBottom('auto')
+}
+
+function conversationTranscript() {
+  return conversationItems.value
+    .map((item) =>
+      item.type === 'user'
+        ? `我：${item.message?.display || item.message?.content || ''}`
+        : `TV Director：${item.run?.reply || item.run?.error || ''}`,
+    )
+    .filter((line) => !line.endsWith('：'))
+    .join('\n\n')
+}
+
+async function shareConversation() {
+  const copied = await writeClipboard(conversationTranscript())
+  showHeaderNotice(copied ? '对话内容已复制' : '暂无可分享内容')
 }
 
 function submitPrompt() {
+  if (activeAgentRun.value) return
   const content = prompt.value.trim()
   if (!content && !selectedModels.value.length && !selectedSkills.value.length) return
   const serializedModels = selectedModels.value.map(serializeDirectorModelChip).filter(Boolean)
@@ -767,6 +1028,12 @@ function submitPrompt() {
   activeModelChipId.value = ''
   activeSkillChipId.value = ''
   pendingDryRunIntent.value = undefined
+  void scrollToBottom('smooth')
+}
+
+function cancelActiveAgent() {
+  if (!activeAgentRun.value) return
+  emit('cancel-agent', activeAgentRun.value.id)
 }
 
 function handleViewportResize() {
@@ -785,6 +1052,10 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   endInteraction()
+  window.clearTimeout(noticeTimer)
+  for (const timer of thinkingPreviewTimers.values()) window.clearTimeout(timer)
+  thinkingPreviewTimers.clear()
+  thinkingPreviewTargets.clear()
   window.removeEventListener('resize', handleViewportResize)
   document.removeEventListener('pointerdown', handleDocumentPointerDown, true)
 })
@@ -814,6 +1085,15 @@ watch(generationModeMenuOpen, (open) => {
   skillMenuOpen.value = false
   closeModeMenu()
 })
+
+watch(
+  () => props.agentRuns,
+  () => {
+    for (const run of props.agentRuns) typeThinkingPreview(run)
+    if (autoScrollEnabled.value && scrollPinned.value) void scrollToBottom('smooth')
+  },
+  { deep: true, immediate: true },
+)
 </script>
 
 <template>
@@ -842,21 +1122,61 @@ watch(generationModeMenuOpen, (open) => {
       @pointerdown.stop="beginInteraction($event, 'dock-resize')"
     />
     <header class="cv3-director-header" @pointerdown="beginInteraction($event, 'move')">
-      <h2 id="cv3-director-title">新对话</h2>
+      <h2 id="cv3-director-title">{{ conversationTitle }}</h2>
       <nav aria-label="TV Director 工具">
-        <button type="button" title="新对话" aria-label="新对话" disabled>
+        <button
+          type="button"
+          title="新对话"
+          aria-label="新对话"
+          @pointerdown.stop
+          @click.stop="startNewConversation"
+        >
           <CanvasIcon name="plus" :size="16" />
         </button>
-        <button type="button" title="历史记录" aria-label="历史记录">
+        <button
+          type="button"
+          title="历史对话"
+          aria-label="历史对话"
+          data-director-header-trigger="history"
+          :aria-expanded="historyOpen"
+          aria-haspopup="dialog"
+          @pointerdown.stop
+          @click.stop="toggleHistory"
+        >
           <CanvasIcon name="history" :size="16" />
         </button>
-        <button type="button" title="分享" aria-label="分享" disabled>
+        <button
+          type="button"
+          title="分享"
+          aria-label="分享对话"
+          :disabled="!conversationItems.length"
+          @pointerdown.stop
+          @click.stop="shareConversation"
+        >
           <CanvasIcon name="share" :size="14" />
         </button>
-        <button type="button" title="全局设置" aria-label="全局设置">
+        <button
+          type="button"
+          title="TV Director 全局设置"
+          aria-label="TV Director 全局设置"
+          data-director-header-trigger="settings"
+          :aria-expanded="settingsOpen"
+          aria-haspopup="dialog"
+          @pointerdown.stop
+          @click.stop="toggleSettings"
+        >
           <CanvasIcon name="settings" :size="16" />
         </button>
-        <button type="button" title="LibTV Plugin" aria-label="LibTV Plugin">
+        <button
+          type="button"
+          title="LibTV Plugin"
+          aria-label="LibTV Plugin"
+          data-director-header-trigger="plugin"
+          :aria-expanded="pluginOpen"
+          aria-haspopup="dialog"
+          @pointerdown.stop
+          @click.stop="togglePlugin"
+        >
           <CanvasIcon name="links" :size="14" />
         </button>
         <button
@@ -864,6 +1184,7 @@ watch(generationModeMenuOpen, (open) => {
           :title="docked ? '切换为浮窗' : '停靠到右侧'"
           :aria-label="docked ? '切换为浮窗' : '停靠到右侧'"
           :aria-pressed="docked"
+          @pointerdown.stop
           @click="emit('update:docked', !docked)"
         >
           <CanvasIcon :name="docked ? 'directorFloat' : 'directorDock'" :size="16" />
@@ -874,15 +1195,96 @@ watch(generationModeMenuOpen, (open) => {
           class="cv3-director-close"
           title="关闭"
           aria-label="关闭 TV Director"
+          @pointerdown.stop
           @click="emit('close')"
         >
           <span aria-hidden="true">−</span>
         </button>
       </nav>
+      <Transition name="cv3-director-popover">
+        <section
+          v-if="historyOpen"
+          class="cv3-director-header-popover cv3-director-history-popover"
+          role="dialog"
+          aria-label="历史对话"
+          @pointerdown.stop
+        >
+          <header>
+            <strong>历史对话</strong>
+            <small>{{ conversations.length }} 条</small>
+          </header>
+          <p v-if="conversationLoading" class="cv3-director-popover-empty">正在加载…</p>
+          <p v-else-if="!conversations.length" class="cv3-director-popover-empty">暂无历史对话</p>
+          <div v-else class="cv3-director-history-list">
+            <button
+              v-for="conversation in conversations"
+              :key="conversation.id"
+              type="button"
+              :class="{ 'is-active': conversation.id === conversationId }"
+              @click="restoreConversation(conversation)"
+            >
+              <span>{{ conversation.title || '新对话' }}</span>
+              <small>{{ new Date(conversation.updatedAt || Date.now()).toLocaleString() }}</small>
+            </button>
+          </div>
+        </section>
+        <section
+          v-else-if="settingsOpen"
+          class="cv3-director-header-popover cv3-director-settings-popover"
+          role="dialog"
+          aria-label="TV Director 全局设置"
+          @pointerdown.stop
+        >
+          <strong>全局设置</strong>
+          <label>
+            <span>新回复自动滚动到底部</span>
+            <input v-model="autoScrollEnabled" type="checkbox" />
+          </label>
+          <label>
+            <span>默认展开思考过程</span>
+            <input
+              type="checkbox"
+              :checked="
+                conversationItems
+                  .filter((item) => item.type === 'agent')
+                  .every((item) => thinkingOpen.has(item.run.id))
+              "
+              @change="
+                thinkingOpen = $event.target.checked
+                  ? new Set(
+                      conversationItems
+                        .filter((item) => item.type === 'agent')
+                        .map((item) => item.run.id),
+                    )
+                  : new Set()
+              "
+            />
+          </label>
+        </section>
+        <section
+          v-else-if="pluginOpen"
+          class="cv3-director-header-popover cv3-director-plugin-popover"
+          role="dialog"
+          aria-label="LibTV Plugin"
+          @pointerdown.stop
+        >
+          <strong>LibTV Plugin</strong>
+          <p>模型、Skill 与画布节点会作为结构化上下文发送给 TV Director。</p>
+          <p>当前会话：{{ conversationId || '新对话' }}</p>
+        </section>
+      </Transition>
+      <output v-if="headerNotice" class="cv3-director-header-notice" role="status">
+        {{ headerNotice }}
+      </output>
     </header>
 
     <div class="cv3-director-body">
-      <div class="cv3-director-messages" aria-live="polite">
+      <div
+        ref="messageViewport"
+        class="cv3-director-messages"
+        aria-live="polite"
+        @scroll.passive="onMessagesScroll"
+      >
         <section v-if="skillCreationOpen" class="cv3-director-skill-question">
           <div class="cv3-director-skill-question-icon" aria-hidden="true">
             <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
@@ -1088,25 +1490,87 @@ watch(generationModeMenuOpen, (open) => {
         </div>
         <div v-else class="cv3-director-chat">
           <template v-for="item in conversationItems" :key="item.key">
-            <p v-if="item.type === 'user'" class="cv3-director-user-message">
-              {{ typeof item.message === 'string' ? item.message : item.message.display }}
-            </p>
+            <div v-if="item.type === 'user'" class="cv3-director-user-turn">
+              <div class="cv3-director-user-message">
+                {{ typeof item.message === 'string' ? item.message : item.message.display }}
+              </div>
+              <button
+                type="button"
+                class="cv3-director-message-action"
+                :aria-label="copiedMessageKey === item.key ? '已复制' : '复制消息'"
+                :title="copiedMessageKey === item.key ? '已复制' : '复制'"
+                @click="
+                  copyMessage(
+                    item.key,
+                    item.message?.display || item.message?.content || item.message,
+                  )
+                "
+              >
+                <CanvasIcon :name="copiedMessageKey === item.key ? 'check' : 'copy'" :size="14" />
+              </button>
+            </div>
             <article
               v-else
               class="cv3-director-agent-run"
               :class="`is-${item.run.phase}`"
-              :aria-busy="['planning', 'submitting'].includes(item.run.phase)"
+              :aria-busy="['planning', 'streaming', 'submitting'].includes(item.run.phase)"
             >
+              <template v-if="['planning', 'streaming'].includes(item.run.phase)">
+                <div class="cv3-director-thinking-live-block">
+                  <div class="cv3-director-thinking-live" role="status">
+                    <span class="cv3-director-agent-spinner" aria-hidden="true" />
+                    <span>思考中...</span>
+                    <CanvasIcon name="chevron" :size="11" aria-hidden="true" />
+                  </div>
+                  <div
+                    v-if="directorThinkingPreview(item.run)"
+                    class="cv3-director-thinking-preview"
+                    aria-label="流式思考过程"
+                    aria-live="polite"
+                  >
+                    <span class="cv3-director-thinking-copy">
+                      {{ directorThinkingPreview(item.run) }}
+                    </span>
+                    <span class="cv3-director-thinking-caret" aria-hidden="true" />
+                  </div>
+                </div>
+              </template>
+              <template v-else>
+                <button
+                  type="button"
+                  class="cv3-director-thinking-trigger"
+                  :aria-expanded="thinkingOpen.has(item.run.id)"
+                  @click="toggleThinking(item.run.id)"
+                >
+                  <CanvasIcon name="brain" :size="16" />
+                  <span>思考过程</span>
+                  <CanvasIcon
+                    name="chevron"
+                    :size="14"
+                    :class="{ 'is-open': thinkingOpen.has(item.run.id) }"
+                  />
+                </button>
+                <Transition name="cv3-director-thought">
+                  <div
+                    v-if="thinkingOpen.has(item.run.id)"
+                    class="cv3-director-thinking-detail"
+                    aria-label="思考过程摘要"
+                  >
+                    <p>{{ directorThinkingNarrative(item.run) }}</p>
+                  </div>
+                </Transition>
+              </template>
+              <div v-if="item.run.reply" class="cv3-director-streaming-reply">
+                <DirectorRichText class="cv3-director-agent-reply" :text="item.run.reply" />
+              </div>
               <div
-                v-if="item.run.phase === 'planning'"
-                class="cv3-director-agent-status"
+                v-if="item.run.reply && ['planning', 'streaming'].includes(item.run.phase)"
+                class="cv3-director-thinking-tail"
                 role="status"
+                aria-label="仍在处理"
               >
                 <span class="cv3-director-agent-spinner" aria-hidden="true" />
-                TV Director 正在理解画布并准备草稿…
-              </div>
-              <div v-else-if="item.run.reply" class="cv3-director-agent-reply">
-                {{ item.run.reply }}
+                <span>思考中...</span>
               </div>
 
               <div v-if="item.run.draft" class="cv3-director-agent-draft">
@@ -1157,10 +1621,57 @@ watch(generationModeMenuOpen, (open) => {
                   重试
                 </button>
               </div>
+              <footer
+                v-if="item.run.reply && item.run.phase !== 'streaming'"
+                class="cv3-director-message-actions"
+              >
+                <button
+                  type="button"
+                  :aria-label="copiedMessageKey === item.run.id ? '已复制' : '复制回复'"
+                  :title="copiedMessageKey === item.run.id ? '已复制' : '复制'"
+                  @click="copyMessage(item.run.id, item.run.reply)"
+                >
+                  <CanvasIcon
+                    :name="copiedMessageKey === item.run.id ? 'check' : 'copy'"
+                    :size="14"
+                  />
+                </button>
+                <button
+                  type="button"
+                  aria-label="点赞"
+                  title="点赞"
+                  :aria-pressed="messageFeedback[item.run.id] === 'like'"
+                  :class="{ 'is-active': messageFeedback[item.run.id] === 'like' }"
+                  @click="setMessageFeedback(item.run.id, 'like')"
+                >
+                  <CanvasIcon name="thumbUp" :size="14" />
+                </button>
+                <button
+                  type="button"
+                  aria-label="点踩"
+                  title="点踩"
+                  :aria-pressed="messageFeedback[item.run.id] === 'dislike'"
+                  :class="{ 'is-active': messageFeedback[item.run.id] === 'dislike' }"
+                  @click="setMessageFeedback(item.run.id, 'dislike')"
+                >
+                  <CanvasIcon name="thumbDown" :size="14" />
+                </button>
+              </footer>
             </article>
           </template>
         </div>
       </div>
+
+      <button
+        v-if="!scrollPinned && conversationItems.length"
+        type="button"
+        class="cv3-director-scroll-bottom"
+        aria-label="回到底部"
+        title="回到底部"
+        @click="scrollToBottom()"
+      >
+        <CanvasIcon name="arrowUp" :size="17" />
+      </button>
 
       <div
         class="cv3-director-composer"
@@ -1334,6 +1845,17 @@ watch(generationModeMenuOpen, (open) => {
             />
             <span class="cv3-director-spacer" />
             <button
+              v-if="activeAgentRun"
+              class="cv3-director-stop"
+              type="button"
+              aria-label="停止生成"
+              title="停止生成"
+              @click="cancelActiveAgent"
+            >
+              <span class="cv3-director-stop-mark" aria-hidden="true" />
+            </button>
+            <button
+              v-else
               class="cv3-director-send"
               type="submit"
               aria-label="发送"
@@ -1564,6 +2086,7 @@ watch(generationModeMenuOpen, (open) => {
 }
 
 .cv3-director-header {
+  position: relative;
   display: flex;
   height: 52px;
   flex: 0 0 52px;
@@ -1632,6 +2155,117 @@ watch(generationModeMenuOpen, (open) => {
   cursor: default;
 }
 
+.cv3-director-header-popover {
+  position: absolute;
+  z-index: 240;
+  top: 44px;
+  right: 14px;
+  display: flex;
+  width: min(304px, calc(100% - 28px));
+  max-height: 360px;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  background: #282828;
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.36);
+  color: rgba(255, 255, 255, 0.86);
+  cursor: default;
+}
+
+.cv3-director-header-popover > header {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px;
+}
+
+.cv3-director-header-popover strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.cv3-director-header-popover small,
+.cv3-director-header-popover p {
+  color: rgba(255, 255, 255, 0.46);
+  font-size: 11px;
+  line-height: 17px;
+}
+
+.cv3-director-popover-empty {
+  margin: 0;
+  padding: 24px 8px;
+  text-align: center;
+}
+
+.cv3-director-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.cv3-director-header .cv3-director-history-list button {
+  display: flex;
+  width: 100%;
+  height: auto;
+  min-height: 50px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 7px 9px;
+  border-radius: 10px;
+  text-align: left;
+}
+
+.cv3-director-header .cv3-director-history-list button.is-active {
+  background: rgba(73, 178, 255, 0.12);
+  color: #fff;
+}
+
+.cv3-director-history-list span {
+  width: 100%;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cv3-director-settings-popover label {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px;
+  font-size: 12px;
+}
+
+.cv3-director-settings-popover input {
+  width: 16px;
+  height: 16px;
+  accent-color: #4dbdff;
+}
+
+.cv3-director-plugin-popover p {
+  margin: 0;
+}
+
+.cv3-director-header-notice {
+  position: absolute;
+  z-index: 260;
+  top: 48px;
+  right: 16px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 9px;
+  background: #303030;
+  color: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  font-size: 11px;
+}
+
 .cv3-director-close span {
   position: relative;
   top: -1px;
@@ -1641,6 +2275,7 @@ watch(generationModeMenuOpen, (open) => {
 }
 
 .cv3-director-body {
+  position: relative;
   display: flex;
   min-height: 0;
   flex: 1;
@@ -1651,11 +2286,53 @@ watch(generationModeMenuOpen, (open) => {
   display: flex;
   min-height: 0;
   flex: 1;
-  align-items: flex-end;
-  padding: 8px 16px;
-  overflow: auto;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 8px 16px 12px;
+  overflow-x: hidden;
+  overflow-y: scroll;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   scrollbar-color: #5a5a5a transparent;
   scrollbar-width: thin;
+}
+
+.cv3-director-messages::-webkit-scrollbar {
+  width: 6px;
+}
+
+.cv3-director-messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.cv3-director-messages::-webkit-scrollbar-thumb {
+  min-height: 38px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: #686868;
+  background-clip: padding-box;
+}
+
+.cv3-director-messages::-webkit-scrollbar-thumb:hover {
+  background: #858585;
+  background-clip: padding-box;
+}
+
+.cv3-director-messages::-webkit-scrollbar-button:single-button {
+  display: block;
+  width: 6px;
+  height: 10px;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 6px 6px;
+}
+
+.cv3-director-messages::-webkit-scrollbar-button:single-button:vertical:decrement {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='6' viewBox='0 0 6 6'%3E%3Cpath d='M1 4 3 2l2 2' fill='none' stroke='%23787878' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+.cv3-director-messages::-webkit-scrollbar-button:single-button:vertical:increment {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='6' viewBox='0 0 6 6'%3E%3Cpath d='m1 2 2 2 2-2' fill='none' stroke='%23787878' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
 .cv3-director-welcome {
@@ -2095,43 +2772,184 @@ watch(generationModeMenuOpen, (open) => {
   display: flex;
   width: 100%;
   flex-direction: column;
-  gap: 8px;
+  gap: 18px;
+  margin-top: auto;
   animation: cv3-director-fade-in 200ms ease-out both;
 }
 
-.cv3-director-user-message {
-  max-width: 85%;
+.cv3-director-user-turn {
+  display: flex;
+  max-width: 88%;
   align-self: flex-end;
-  margin: 0;
-  padding: 9px 12px;
-  border-radius: 14px 14px 4px 14px;
-  background: #303030;
-  color: #eee;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cv3-director-user-message {
+  max-width: 100%;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #f7f7f7;
   font-size: 14px;
-  line-height: 20px;
+  line-height: 24px;
+  overflow-wrap: anywhere;
+}
+
+.cv3-director-message-action,
+.cv3-director-message-actions button {
+  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.42);
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease;
+}
+
+.cv3-director-message-action {
+  opacity: 0;
+}
+
+.cv3-director-user-turn:hover .cv3-director-message-action,
+.cv3-director-message-action:focus-visible {
+  opacity: 1;
+}
+
+.cv3-director-message-action:hover,
+.cv3-director-message-action:focus-visible,
+.cv3-director-message-actions button:hover,
+.cv3-director-message-actions button:focus-visible,
+.cv3-director-message-actions button.is-active {
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(255, 255, 255, 0.88);
+  outline: none;
 }
 
 .cv3-director-agent-run {
   display: flex;
-  width: min(94%, 420px);
+  width: 100%;
   align-self: flex-start;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px 11px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 14px 14px 14px 4px;
-  background: rgba(255, 255, 255, 0.035);
-  color: rgba(255, 255, 255, 0.82);
-  font-size: 13px;
-  line-height: 19px;
+  gap: 10px;
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 14px;
+  line-height: 22px;
 }
 
-.cv3-director-agent-status,
+.cv3-director-thinking-trigger {
+  display: inline-flex;
+  width: max-content;
+  max-width: 100%;
+  min-height: 24px;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: #919191;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: normal;
+  text-align: left;
+}
+
+.cv3-director-thinking-trigger:hover,
+.cv3-director-thinking-trigger:focus-visible {
+  color: rgba(255, 255, 255, 0.82);
+  outline: none;
+}
+
+.cv3-director-thinking-trigger > :deep(.cv3-icon:last-child) {
+  transform: rotate(-90deg);
+  transition: transform 180ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.cv3-director-thinking-trigger > :deep(.cv3-icon:last-child.is-open) {
+  transform: rotate(0deg);
+}
+
+.cv3-director-thinking-detail {
+  margin: 8px 0;
+  color: #919191;
+  font-size: 13px;
+  line-height: 24px;
+  font-weight: 400;
+}
+
+.cv3-director-thinking-detail :deep(p) {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.cv3-director-thinking-live,
+.cv3-director-thinking-tail,
 .cv3-director-agent-error,
 .cv3-director-agent-draft footer {
   display: flex;
   align-items: center;
   gap: 7px;
+}
+
+.cv3-director-thinking-live {
+  min-height: 24px;
+  color: #919191;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: normal;
+}
+
+.cv3-director-thinking-live-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cv3-director-thinking-tail {
+  min-height: 24px;
+  color: #919191;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: normal;
+}
+
+.cv3-director-thinking-live > :deep(.cv3-icon) {
+  transform: rotate(-90deg);
+}
+
+.cv3-director-thinking-preview {
+  position: relative;
+  min-height: 44px;
+  margin: 8px 0;
+  color: #919191;
+  font-size: 13px;
+  line-height: 24px;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+
+.cv3-director-thinking-copy {
+  white-space: pre-wrap;
+}
+
+.cv3-director-thinking-preview > .cv3-director-thinking-caret {
+  display: inline-block;
+  width: 1.5px;
+  height: 14px;
+  margin-left: 2px;
+  border-radius: 1px;
+  background: rgba(255, 255, 255, 0.42);
+  vertical-align: -2px;
+  animation: cv3-director-caret-blink 850ms steps(1, end) infinite;
 }
 
 .cv3-director-agent-spinner {
@@ -2145,7 +2963,43 @@ watch(generationModeMenuOpen, (open) => {
 }
 
 .cv3-director-agent-reply {
-  white-space: pre-wrap;
+  width: 100%;
+}
+
+.cv3-director-streaming-reply {
+  position: relative;
+  width: 100%;
+}
+
+.cv3-director-agent-run.is-streaming :deep(.cv3-director-agent-reply > :last-child)::after {
+  content: '';
+  display: inline-block;
+  width: 2px;
+  height: 16px;
+  margin-left: 2px;
+  border-radius: 1px;
+  background: #62dff5;
+  vertical-align: -2px;
+  animation: cv3-director-caret-blink 850ms steps(1, end) infinite;
+}
+
+@keyframes cv3-director-caret-blink {
+  0%,
+  48% {
+    opacity: 1;
+  }
+  49%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.cv3-director-message-actions {
+  display: flex;
+  min-height: 26px;
+  align-items: center;
+  gap: 1px;
+  margin-top: -4px;
 }
 
 .cv3-director-agent-draft {
@@ -2233,6 +3087,66 @@ watch(generationModeMenuOpen, (open) => {
   to {
     transform: rotate(360deg);
   }
+}
+
+@keyframes cv3-director-thinking-pulse {
+  50% {
+    opacity: 0.48;
+    transform: scale(0.78);
+  }
+}
+
+.cv3-director-scroll-bottom {
+  position: absolute;
+  z-index: 60;
+  right: auto;
+  bottom: 144px;
+  left: 50%;
+  display: inline-flex;
+  width: 40px;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid #484848;
+  border-radius: 50%;
+  background: rgba(36, 36, 36, 0.96);
+  color: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.24);
+  cursor: pointer;
+  transform: translateX(-50%);
+  transition:
+    border-color 150ms ease,
+    background-color 150ms ease,
+    color 150ms ease,
+    transform 150ms ease;
+}
+
+.cv3-director-scroll-bottom :deep(.cv3-icon) {
+  transform: rotate(180deg);
+}
+
+.cv3-director-scroll-bottom:hover,
+.cv3-director-scroll-bottom:focus-visible {
+  border-color: rgba(255, 255, 255, 0.2);
+  background: #2c2c2c;
+  color: #fff;
+  outline: none;
+  transform: translateX(-50%) translateY(-1px);
+}
+
+.cv3-director-thought-enter-active,
+.cv3-director-thought-leave-active {
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+  transform-origin: top left;
+}
+
+.cv3-director-thought-enter-from,
+.cv3-director-thought-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 
 .cv3-director-composer {
@@ -2738,6 +3652,25 @@ watch(generationModeMenuOpen, (open) => {
   color: #171717;
 }
 
+.cv3-director-composer-controls .cv3-director-stop {
+  border-radius: 12px;
+  background: #f0f0f0;
+  color: #171717;
+}
+
+.cv3-director-composer-controls .cv3-director-stop:hover,
+.cv3-director-composer-controls .cv3-director-stop:focus-visible {
+  background: #fff;
+}
+
+.cv3-director-stop-mark {
+  display: block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: #181818;
+}
+
 .cv3-director-composer-controls .cv3-director-send:disabled {
   background: #919191;
   color: #171717;
@@ -2781,7 +3714,8 @@ watch(generationModeMenuOpen, (open) => {
   .cv3-director-script-home,
   .cv3-director-directing,
   .cv3-director-skill-question,
-  .cv3-director-agent-spinner {
+  .cv3-director-agent-spinner,
+  .cv3-director-agent-run.is-streaming :deep(.cv3-director-agent-reply > :last-child)::after {
     animation: none;
   }
 
@@ -2792,7 +3726,10 @@ watch(generationModeMenuOpen, (open) => {
   .cv3-director-skill-question-options button,
   .cv3-director-composer-controls .cv3-director-mode :deep(svg),
   .cv3-director-popover-enter-active,
-  .cv3-director-popover-leave-active {
+  .cv3-director-popover-leave-active,
+  .cv3-director-thought-enter-active,
+  .cv3-director-thought-leave-active,
+  .cv3-director-thinking-trigger > :deep(.cv3-icon:last-child) {
     transition: none;
   }
 }

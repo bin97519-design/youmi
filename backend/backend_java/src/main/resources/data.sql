@@ -1,5 +1,5 @@
 INSERT INTO ym_sys_role (code, name)
-VALUES ('ADMIN', '管理员'), ('USER', '普通用户'), ('OPERATOR', '运营'), ('DESIGNER', '设计师')
+VALUES ('ADMIN', '管理员'), ('USER', '普通用户'), ('OPERATOR', '运营'), ('DESIGNER', '设计师'), ('STORE_MANAGER', '店长')
 ON DUPLICATE KEY UPDATE name = VALUES(name);
 
 INSERT INTO ym_sys_user (id, account, phone, nickname, password_hash, password_salt, status, mi_value, plan_name)
@@ -25,7 +25,10 @@ INSERT IGNORE INTO ym_sys_role_permission (role_id, permission_code)
 SELECT id, 'console:all' FROM ym_sys_role WHERE code = 'ADMIN';
 
 INSERT IGNORE INTO ym_sys_role_permission (role_id, permission_code)
-SELECT id, 'image:generate' FROM ym_sys_role WHERE code IN ('USER', 'OPERATOR', 'DESIGNER');
+SELECT id, 'image:generate' FROM ym_sys_role WHERE code IN ('USER', 'OPERATOR', 'DESIGNER', 'STORE_MANAGER');
 
 INSERT IGNORE INTO ym_sys_role_permission (role_id, permission_code)
 SELECT id, 'gallery:manage' FROM ym_sys_role WHERE code = 'OPERATOR';
+
+INSERT IGNORE INTO ym_sys_role_permission (role_id, permission_code)
+SELECT id, 'gallery:manage' FROM ym_sys_role WHERE code = 'STORE_MANAGER';

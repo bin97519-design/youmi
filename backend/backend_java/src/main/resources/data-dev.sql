@@ -3,7 +3,8 @@ MERGE INTO ym_sys_role (code, name) KEY (code)
 VALUES ('ADMIN', '管理员'),
        ('USER', '普通用户'),
        ('OPERATOR', '运营'),
-       ('DESIGNER', '设计师');
+       ('DESIGNER', '设计师'),
+       ('STORE_MANAGER', '店长');
 
 MERGE INTO ym_sys_user (id, account, phone, nickname, password_hash, password_salt, status, mi_value, plan_name) KEY (id)
 VALUES
@@ -32,4 +33,10 @@ MERGE INTO ym_sys_role_permission (role_id, permission_code) KEY (role_id, permi
 VALUES ((SELECT id FROM ym_sys_role WHERE code = 'DESIGNER'), 'image:generate');
 
 MERGE INTO ym_sys_role_permission (role_id, permission_code) KEY (role_id, permission_code)
+VALUES ((SELECT id FROM ym_sys_role WHERE code = 'STORE_MANAGER'), 'image:generate');
+
+MERGE INTO ym_sys_role_permission (role_id, permission_code) KEY (role_id, permission_code)
 VALUES ((SELECT id FROM ym_sys_role WHERE code = 'OPERATOR'), 'gallery:manage');
+
+MERGE INTO ym_sys_role_permission (role_id, permission_code) KEY (role_id, permission_code)
+VALUES ((SELECT id FROM ym_sys_role WHERE code = 'STORE_MANAGER'), 'gallery:manage');

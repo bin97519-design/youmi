@@ -88,6 +88,7 @@ async function importFile(event) {
       title: file.name,
       assetUrl: reader.result,
       artifactStatus: 'ready',
+      mediaOrigin: 'upload',
     })
     message.value = '图片已加入画布，可以连线引用。'
   }

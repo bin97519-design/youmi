@@ -3,7 +3,10 @@ package com.youmi.api.ai;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.youmi.api.image.ModelApiKeyService.ResolvedModelApiKey;
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -14,6 +17,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import javax.net.ssl.SSLHandshakeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -247,6 +251,134 @@ public class AgentChatClient {
     return new AiChatDtos.CompletionResult(credential.provider(), credential.model(), contentText);
   }
 
+  /**
+   * Streams an OpenAI-compatible chat completion while preserving the configured database
+   * credential and request defaults. Providers that ignore {@code stream=true} and return a
+   * regular completion are supported as a compatibility fallback.
+   */
+  public AiChatDtos.CompletionResult completeConfiguredModelStream(
+      ResolvedModelApiKey credential,
+      String systemPrompt,
+      String userPrompt,
+      List<String> imageUrls,
+      Double temperature,
+      String source,
+      String selectionMode,
+      Integer maxTokens,
+      Consumer<String> onDelta) throws Exception {
+    if (credential == null || credential.apiKey() == null || credential.apiKey().isBlank()) {
+      throw new IllegalStateException("识图推理模型 API Key 未配置");
+    }
+    List<Object> content = new ArrayList<>();
+    content.add(Map.of("type", "text", "text", userPrompt == null ? "" : userPrompt));
+    if (imageUrls != null) {
+      imageUrls.stream()
+          .filter(url -> url != null && !url.isBlank() && !url.startsWith("blob:"))
+          .map(String::trim)
+          .distinct()
+          .limit(8)
+          .forEach(url -> content.add(Map.of(
+              "type", "image_url", "image_url", Map.of("url", url))));
+    }
+    List<Map<String, Object>> messages = new ArrayList<>();
+    if (systemPrompt != null && !systemPrompt.isBlank()) {
+      messages.add(Map.of("role", "system", "content", systemPrompt));
+    }
+    messages.add(Map.of("role", "user", "content", content));
+
+    Map<String, Object> body = new LinkedHashMap<>();
+    body.putAll(credential.defaultData());
+    body.put("model", credential.model());
+    body.put("max_tokens", maxTokens == null ? Math.max(200, properties.getMaxTokens())
+        : Math.max(200, Math.min(16000, maxTokens)));
+    body.put("temperature", temperature == null ? properties.getTemperature() : temperature);
+    body.put("messages", messages);
+    body.put("stream", true);
+    HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create(credential.generationEndpoint()))
+        .timeout(Duration.ofSeconds(Math.max(8, properties.getTimeoutSeconds())))
+        .header("Authorization", "Bearer " + credential.apiKey())
+        .header("Content-Type", "application/json")
+        .header("Accept", "text/event-stream")
+        .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
+        .build();
+
+    long started = System.nanoTime();
+    HttpResponse<InputStream> response;
+    try {
+      response = sendStreamWithHandshakeRetry(request);
+    } catch (Exception error) {
+      recordCall(source, "chat", credential.provider(), credential.model(), credential.id(), selectionMode,
+          false, null, started, error);
+      throw error;
+    }
+    if (response.statusCode() < 200 || response.statusCode() >= 300) {
+      String responseBody;
+      try (InputStream input = response.body()) {
+        responseBody = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+      }
+      recordCall(source, "chat", credential.provider(), credential.model(), credential.id(), selectionMode,
+          false, response.statusCode(), started, null);
+      String detail = compact(responseBody)
+          .replace(credential.apiKey(), "[redacted]")
+          .replaceAll("sk-[A-Za-z0-9_-]+", "[redacted]");
+      throw new IllegalStateException(
+          "识图推理模型请求失败（HTTP " + response.statusCode() + "）: " + detail);
+    }
+
+    StringBuilder completed = new StringBuilder();
+    Consumer<String> deltaConsumer = onDelta == null ? ignored -> { } : onDelta;
+    try (InputStream input = response.body();
+        BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
+      String line;
+      StringBuilder regularResponse = new StringBuilder();
+      while ((line = reader.readLine()) != null) {
+        if (line.isBlank() || line.startsWith(":")) continue;
+        if (!line.startsWith("data:")) {
+          regularResponse.append(line);
+          continue;
+        }
+        String payload = line.substring(5).trim();
+        if (payload.isBlank()) continue;
+        if ("[DONE]".equals(payload)) break;
+        emitStreamingPayload(payload, completed, deltaConsumer);
+      }
+      if (!regularResponse.isEmpty()) {
+        JsonNode root = objectMapper.readTree(regularResponse.toString());
+        String value = readContent(root);
+        if (!value.isBlank()) {
+          completed.append(value);
+          deltaConsumer.accept(value);
+        }
+      }
+    } catch (Exception error) {
+      recordCall(source, "chat", credential.provider(), credential.model(), credential.id(), selectionMode,
+          false, response.statusCode(), started, error);
+      throw error;
+    }
+    recordCall(source, "chat", credential.provider(), credential.model(), credential.id(), selectionMode,
+        true, response.statusCode(), started, null);
+    if (completed.isEmpty()) throw new IllegalStateException("识图推理模型返回内容为空");
+    return new AiChatDtos.CompletionResult(
+        credential.provider(), credential.model(), completed.toString());
+  }
+
+  private void emitStreamingPayload(
+      String payload, StringBuilder completed, Consumer<String> onDelta) throws Exception {
+    JsonNode root = objectMapper.readTree(payload);
+    JsonNode choices = root.path("choices");
+    if (!choices.isArray() || choices.isEmpty()) return;
+    JsonNode choice = choices.get(0);
+    JsonNode content = choice.path("delta").path("content");
+    if (content.isMissingNode() || content.isNull()) {
+      content = choice.path("message").path("content");
+    }
+    String value = readTextContent(content);
+    if (value.isEmpty()) return;
+    completed.append(value);
+    onDelta.accept(value);
+  }
+
   private AiChatDtos.CompletionResult completeRaw(
       List<Map<String, Object>> rawMessages, Double temperature) throws Exception {
     return completeRaw(rawMessages, temperature, null, null);
@@ -338,6 +470,23 @@ public class AgentChatClient {
     throw new IOException("Agent model request failed after HTTPS handshake retries");
   }
 
+  private HttpResponse<InputStream> sendStreamWithHandshakeRetry(HttpRequest request)
+      throws IOException, InterruptedException {
+    for (int attempt = 1; attempt <= MAX_HANDSHAKE_ATTEMPTS; attempt++) {
+      try {
+        HttpClient client = attempt == 1 ? httpClient : buildHttpClient();
+        return client.send(request, HttpResponse.BodyHandlers.ofInputStream());
+      } catch (IOException error) {
+        if (!isHandshakeFailure(error) || attempt == MAX_HANDSHAKE_ATTEMPTS) throw error;
+        log.warn(
+            "Agent HTTPS streaming handshake failed (attempt {}/{}), retrying with a new connection: {}",
+            attempt, MAX_HANDSHAKE_ATTEMPTS, error.getMessage());
+        Thread.sleep(300L * attempt);
+      }
+    }
+    throw new IOException("Agent streaming request failed after HTTPS handshake retries");
+  }
+
   private boolean isHandshakeFailure(Throwable error) {
     Throwable current = error;
     while (current != null) {
@@ -361,6 +510,18 @@ public class AgentChatClient {
         if (!text.isEmpty()) text.append('\n');
         text.append(value.trim());
       }
+    }
+    return text.toString();
+  }
+
+  private String readTextContent(JsonNode content) {
+    if (content == null || content.isMissingNode() || content.isNull()) return "";
+    if (content.isTextual()) return content.asText("");
+    if (!content.isArray()) return "";
+    StringBuilder text = new StringBuilder();
+    for (JsonNode item : content) {
+      String value = item.path("text").asText(item.path("content").asText(""));
+      if (!value.isEmpty()) text.append(value);
     }
     return text.toString();
   }

@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -67,6 +68,18 @@ public class VideoTaskHistory {
     scan(historyRoot, scopeUserId, "history", result);
     scan(enhanceRoot, scopeUserId, "enhance", result);
     scan(chatRoot, scopeUserId, "chat", result);
+    return result;
+  }
+
+  public List<Snapshot> listForUsers(Set<Long> userIds) {
+    List<Snapshot> result = new ArrayList<>();
+    if (userIds == null || userIds.isEmpty()) return result;
+    for (Long userId : userIds) {
+      if (userId == null || userId < 1) continue;
+      scan(historyRoot, userId, "history", result);
+      scan(enhanceRoot, userId, "enhance", result);
+      scan(chatRoot, userId, "chat", result);
+    }
     return result;
   }
 

@@ -103,7 +103,7 @@ function createDocument() {
 function openDocument(id) {
   if (!userStore.requireLogin()) return;
   canvas.markOpened(id);
-  router.push(`/canvas/${id}`);
+  router.push(id.startsWith('v2-') ? `/canvas-v2/${id}` : `/canvas/${id}`);
 }
 
 function requestRemoveDocument(doc) {

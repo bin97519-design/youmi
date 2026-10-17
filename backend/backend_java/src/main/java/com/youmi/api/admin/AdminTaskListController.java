@@ -29,8 +29,16 @@ public class AdminTaskListController {
       @RequestParam(required = false) String model,
       @RequestParam(required = false) Long userId,
       @RequestParam(defaultValue = "1") int page,
-      @RequestParam(defaultValue = "10") int pageSize) {
+      @RequestParam(defaultValue = "10") int pageSize,
+      @RequestParam(required = false) String scope) {
     UserAccount user = auth.requireLogin(authorization);
+    if ("shop".equalsIgnoreCase(scope) && !auth.isStoreManager(user)) {
+      throw new com.youmi.api.common.ApiException(403, "没有店铺统计权限");
+    }
+    if (auth.isStoreManager(user) && (!auth.isAdmin(user) || "shop".equalsIgnoreCase(scope))) {
+      Long shopId = auth.requireStoreManagerShopId(authorization);
+      return ApiResponse.ok(service.tasksForShop(shopId, kind, dateFrom, dateTo, status, model, page, pageSize));
+    }
     return ApiResponse.ok(service.tasks(auth.isAdmin(user) ? null : user.id(), kind,
         dateFrom, dateTo, status, model, userId, page, pageSize));
   }

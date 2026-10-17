@@ -81,6 +81,7 @@ export function imageGenerationTarget(graph, nodeId) {
     prompt: node.data.prompt,
     params: node.data.params,
     editTemplate: node.data.editTemplate,
+    stylePreset: node.data.stylePreset,
     inputs: imageReferences(node, graph.nodes, graph.edges).map((n) => [
       n.id,
       n.data.assetUrl,
@@ -99,6 +100,7 @@ export function imageGenerationTarget(graph, nodeId) {
     prompt: node.data.prompt || '',
     params: { ...node.data.params },
     editTemplate: node.data.editTemplate,
+    stylePreset: node.data.stylePreset,
     inheritReferences: true,
   })
   graph.updateNodeData(output.id, { editDraft: { sourceId: node.id, signature } })

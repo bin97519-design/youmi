@@ -302,6 +302,7 @@ test('Director catalogue aliases resolve one exact executable task model and nev
 
 test('Canvas shell consumes Director submits through a two-stage plan and generation pipeline', async () => {
   const shell = await readFile(shellUrl, 'utf8')
+  const panel = await readFile(panelUrl, 'utf8')
   const directorTag = shell.match(/<DirectorPanel\b[\s\S]*?\/>/)?.[0] || ''
   const handleSubmit = getFunction(shell, 'handleDirectorSubmit')
   const plan = getFunction(shell, 'planDirectorMessage')
@@ -323,6 +324,13 @@ test('Canvas shell consumes Director submits through a two-stage plan and genera
   assert.doesNotMatch(handleSubmit, /tasks\.runImage|\/api\/image-tasks|\/api\/video-tasks/)
 
   assert.match(plan, /\/api\/ai\/canvas-agent\/chat/)
+  assert.match(plan, /\/api\/ai\/canvas-agent\/chat\/stream/)
+  assert.match(plan, /readDirectorStream\(/)
+  assert.match(shell, /response\.body\.getReader\(\)/)
+  assert.match(shell, /event\.type === ['"]reply_delta['"]/)
+  assert.match(shell, /phase:\s*['"]streaming['"]/)
+  assert.match(panel, /['"]planning['"], ['"]streaming['"], ['"]submitting['"]/)
+  assert.match(panel, /cv3-director-caret-blink/)
   assert.match(shell, /if \(!requested\.length && !intent\.nodeModel\) return \[\]/)
   assert.match(plan, /Agent 不会替你选择付费模型/)
   assert.match(shell, /if \(requestedKeys\.size > 1\)[\s\S]*?一次生成只能选择一个模型/)

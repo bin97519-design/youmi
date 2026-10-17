@@ -25,7 +25,7 @@ const createButton = ref(null)
 const createMenu = ref(null)
 const directoryDialog = ref(null)
 const detailDialog = ref(null)
-const activeTab = ref('general')
+const activeTab = ref('home-commerce')
 const searchQuery = ref('')
 const debouncedSearchQuery = ref('')
 const createMenuOpen = ref(false)
@@ -46,6 +46,7 @@ let createCloseTimer = 0
 let searchDebounceTimer = 0
 
 const tabs = [
+  { id: 'home-commerce', label: '家居电商' },
   { id: 'general', label: '通用' },
   { id: 'favorite', label: '收藏' },
   { id: 'mine', label: '我的' },
@@ -59,6 +60,7 @@ const directoryCategories = [
   { id: 'anime-game', label: '动漫游戏' },
   { id: 'music-video', label: '音乐MV' },
   { id: 'creator', label: '自媒体创作' },
+  { id: 'home-commerce', label: '家居电商' },
   { id: 'common', label: '通用技能' },
   { id: 'discover', label: '发现' },
 ]
@@ -82,7 +84,11 @@ const categoryOptions = computed(() => {
 const normalizedSearch = computed(() => debouncedSearchQuery.value.trim().toLocaleLowerCase())
 const visibleSkills = computed(() => {
   let values = catalog.value
-  if (activeTab.value === 'favorite') {
+  if (activeTab.value === 'home-commerce') {
+    values = values.filter((skill) => skill.category === 'home-commerce')
+  } else if (activeTab.value === 'general') {
+    values = values.filter((skill) => skill.category === 'common')
+  } else if (activeTab.value === 'favorite') {
     values = values.filter((skill) => favorites.value.has(skill.id || skill.skillKey))
   } else if (activeTab.value === 'mine') {
     values = values.filter((skill) => skill.owned || skill.mine || skill.isMine)
@@ -94,6 +100,8 @@ const visibleSkills = computed(() => {
 const normalizedDirectorySearch = computed(() => directoryQuery.value.trim().toLocaleLowerCase())
 const directorySkills = computed(() =>
   catalog.value.filter((skill) => {
+    if (activeTab.value === 'home-commerce' && skill.category !== 'home-commerce') return false
+    if (activeTab.value === 'general' && skill.category !== 'common') return false
     if (activeTab.value === 'favorite' && !favorites.value.has(skillId(skill))) return false
     if (activeTab.value === 'mine' && !(skill.owned || skill.mine || skill.isMine)) return false
     const category = skill.category || skill.categoryId || skill.categoryLabel
@@ -109,6 +117,7 @@ const directorySkills = computed(() =>
 )
 
 function detailField(skill, field) {
+  if (skill?.[field]) return skill[field]
   if (skill?.shortSlug === 'viral-video-replicator') {
     if (field === 'scenario') return '带货短视频、创意特效视频'
     if (field === 'usage') return '导入爆款视频和替换的内容'
@@ -412,7 +421,7 @@ watch(
   () => props.open,
   async (open) => {
     if (open) {
-      activeTab.value = 'general'
+      activeTab.value = 'home-commerce'
       searchQuery.value = ''
       debouncedSearchQuery.value = ''
       await nextTick()
@@ -724,6 +733,13 @@ onBeforeUnmount(() => {
             <nav aria-label="Skill 目录分组">
               <button
                 type="button"
+                :class="{ 'is-active': activeTab === 'home-commerce' }"
+                @click="showMainTab('home-commerce')"
+              >
+                家居电商
+              </button>
+              <button
+                type="button"
                 :class="{ 'is-active': activeTab === 'general' }"
                 @click="showMainTab('general')"
               >
@@ -927,6 +943,12 @@ onBeforeUnmount(() => {
                 <div>
                   <dt>输出内容</dt>
                   <dd>{{ detailField(detailSkill, 'output') }}</dd>
+                </div>
+                <div v-if="detailSkill.sourceName">
+                  <dt>研究来源</dt>
+                  <dd>
+                    {{ detailSkill.sourceName }} · {{ detailSkill.sourceLicense || '参考架构' }}
+                  </dd>
                 </div>
               </dl>
             </section>

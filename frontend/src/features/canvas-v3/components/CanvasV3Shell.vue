@@ -11,7 +11,7 @@ import { useUserStore } from '../../../stores/user'
 import { apiPath } from '../../../utils/apiBase'
 import { canCreateAgentDraft } from '../../../utils/agentDraft'
 import { useCanvasV3Persistence } from '../sync/useCanvasV3Persistence'
-import { nodeSize } from '../config/nodeControls'
+import { isStandaloneUploadedImage, nodeSize } from '../config/nodeControls'
 import {
   resolveConfiguredImageTaskModel,
   resolveDirectorImageTaskModel,
@@ -51,8 +51,12 @@ const agentOrb = ref(null)
 const DIRECTOR_MODE_KEY = 'libtv:chatAgentDrawer:mode'
 const DIRECTOR_WIDTH_KEY = 'libtv:chatAgentDrawer:width'
 const directorAgentRuns = ref([])
+const directorConversationId = ref(directorRequestId('conversation'))
+const directorConversations = ref([])
+const directorConversationLoading = ref(false)
 const directorPlanningRequests = new Map()
 const directorGenerationSubmissions = new Set()
+let directorConversationSyncTimer = 0
 
 function defaultDirectorDockWidth() {
   return window.innerWidth > 1520 ? 400 : 340
@@ -120,7 +124,8 @@ async function openAngles(node) {
   // Reserve the full editor, the 12px image gap and the bottom canvas tools.
   const available = Math.max(80, screenSize.value.height - 550)
   const zoom = Math.max(0.2, Math.min(getViewport().zoom, 0.85, available / 350))
-  const sourceCenterY = source.position.y + 175
+  const sourceSize = nodeSize(source.data.kind, source.data)
+  const sourceCenterY = source.position.y + sourceSize.height / 2
   const desiredCenterY = 76 + 175 * zoom
   await setCenter(
     source.position.x + 312,
@@ -156,7 +161,7 @@ const zoomPercent = computed(() => Math.round(liveViewport.value.zoom * 100))
 const composerPosition = computed(() => {
   const node = graph.activeNode
   if (!node) return { x: 0, y: 0 }
-  const size = nodeSize(node.data.kind)
+  const size = nodeSize(node.data.kind, node.data)
   const view = liveViewport.value
   const width = Math.min(660, screenSize.value.width - 32)
   return {
@@ -179,10 +184,11 @@ const composerPosition = computed(() => {
 const angleAnchor = computed(() => {
   const node = angleSource.value
   const view = liveViewport.value
+  const size = node ? nodeSize(node.data.kind, node.data) : null
   return node
     ? {
-        centerX: (node.position.x + 312) * view.zoom + view.x,
-        bottom: (node.position.y + 350) * view.zoom + view.y,
+        centerX: (node.position.x + size.width / 2) * view.zoom + view.x,
+        bottom: (node.position.y + size.height) * view.zoom + view.y,
       }
     : { centerX: screenSize.value.width / 2, bottom: 100 }
 })
@@ -192,25 +198,28 @@ const showComposer = computed(
     !emotionSource.value &&
     !angleSource.value &&
     graph.activeNode &&
-    !['text', 'reference'].includes(graph.activeNode.data.kind),
+    !['text', 'reference'].includes(graph.activeNode.data.kind) &&
+    !isStandaloneUploadedImage(graph.activeNode.data),
 )
 const storyboardNodes = computed(() =>
   nodes.value.filter((node) => ['image', 'video', 'script'].includes(node.data.kind)),
 )
-const imageToolbarTop = computed(() =>
-  graph.activeNode
-    ? Math.max(
-        56,
-        graph.activeNode.position.y * liveViewport.value.zoom + liveViewport.value.y - 84,
-      )
-    : 56,
-)
+const imageToolbarPosition = computed(() => {
+  const node = graph.activeNode
+  if (!node) return { left: screenSize.value.width / 2, top: 56 }
+  const size = nodeSize(node.data.kind, node.data)
+  const view = liveViewport.value
+  return {
+    left: (node.position.x + size.width / 2) * view.zoom + view.x,
+    top: node.position.y * view.zoom + view.y - 84,
+  }
+})
 const pendingReferencePath = computed(() => {
   const pending = pendingReference.value
   if (!pending) return ''
   const node = nodes.value.find((item) => item.id === pending.start.nodeId)
   if (!node) return ''
-  const size = nodeSize(node.data.kind)
+  const size = nodeSize(node.data.kind, node.data)
   const reversed = pending.start.handleType === 'target'
   const sx =
     (node.position.x + (reversed ? 0 : size.width)) * liveViewport.value.zoom + liveViewport.value.x
@@ -387,7 +396,8 @@ function focusStoryboard(node) {
     item.selected = item.id === node.id
   })
   mode.value = 'workflow'
-  setCenter(node.position.x + nodeSize(node.data.kind).width / 2, node.position.y + 245, {
+  const size = nodeSize(node.data.kind, node.data)
+  setCenter(node.position.x + size.width / 2, node.position.y + size.height / 2, {
     zoom: 0.8,
     duration: 200,
   })
@@ -396,8 +406,8 @@ async function focusGenerated(node) {
   const source = nodes.value.find((item) => item.id === node.data.sourceImageNodeId)
   if (!source) return focusStoryboard(node)
   await nextTick()
-  const sourceSize = nodeSize(source.data.kind)
-  const targetSize = nodeSize(node.data.kind)
+  const sourceSize = nodeSize(source.data.kind, source.data)
+  const targetSize = nodeSize(node.data.kind, node.data)
   const minX = Math.min(source.position.x, node.position.x)
   const minY = Math.min(source.position.y, node.position.y)
   const maxX = Math.max(source.position.x + sourceSize.width, node.position.x + targetSize.width)
@@ -431,7 +441,129 @@ function updateDirectorRun(runId, patch) {
   if (index < 0) return null
   const next = { ...directorAgentRuns.value[index], ...patch }
   directorAgentRuns.value.splice(index, 1, next)
+  scheduleDirectorConversationSync()
   return next
+}
+
+function serializedDirectorRun(run) {
+  return {
+    id: run.id,
+    clientTaskId: run.clientTaskId,
+    clientMessageId: run.clientMessageId,
+    instruction: run.instruction,
+    display: run.display,
+    message: run.message,
+    generationIntent: run.generationIntent,
+    dryRun: run.dryRun,
+    phase: run.phase,
+    reply: run.reply,
+    thinking: run.thinking,
+    thinkingText: run.thinkingText,
+    draft: run.draft,
+    nodeId: run.nodeId,
+    submissionStarted: run.submissionStarted,
+    submissionState: run.submissionState,
+    error: run.error,
+  }
+}
+
+function directorConversationMessages() {
+  return directorAgentRuns.value.flatMap((run) => [
+    {
+      role: 'user',
+      id: run.message?.id || run.clientMessageId,
+      content: run.message?.content || run.instruction,
+      display: run.message?.display || run.display || run.instruction,
+      raw: run.message?.raw || run.instruction,
+      parts: run.message?.parts || [],
+      dryRunIntent: run.message?.dryRunIntent !== false,
+      context: run.message?.context || {},
+    },
+    { role: 'assistant', run: serializedDirectorRun(run) },
+  ])
+}
+
+function directorConversationTitle() {
+  const first = directorAgentRuns.value[0]
+  return (
+    String(first?.display || first?.instruction || '新对话')
+      .trim()
+      .slice(0, 80) || '新对话'
+  )
+}
+
+async function saveDirectorConversation() {
+  if (!user.token || !directorAgentRuns.value.length) return
+  const response = await fetch(
+    apiPath(
+      `/api/ai/canvas-agent/conversations/${encodeURIComponent(directorConversationId.value)}`,
+    ),
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...user.authHeaders() },
+      body: JSON.stringify({
+        canvasId: props.projectId,
+        title: directorConversationTitle(),
+        messages: directorConversationMessages(),
+      }),
+    },
+  )
+  await readDirectorApiResponse(response)
+}
+
+function scheduleDirectorConversationSync() {
+  window.clearTimeout(directorConversationSyncTimer)
+  directorConversationSyncTimer = window.setTimeout(() => {
+    void saveDirectorConversation().catch(() => {})
+  }, 350)
+}
+
+async function loadDirectorConversations() {
+  if (!user.token) {
+    directorConversations.value = []
+    return
+  }
+  directorConversationLoading.value = true
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), 5000)
+  try {
+    const response = await readDirectorApiResponse(
+      await fetch(
+        apiPath(
+          `/api/ai/canvas-agent/conversations?canvasId=${encodeURIComponent(props.projectId)}`,
+        ),
+        { headers: user.authHeaders(), signal: controller.signal },
+      ),
+    )
+    directorConversations.value = Array.isArray(response) ? response : []
+  } catch {
+    directorConversations.value = []
+  } finally {
+    window.clearTimeout(timeout)
+    directorConversationLoading.value = false
+  }
+}
+
+function stopDirectorConversationWork() {
+  for (const controller of directorPlanningRequests.values()) controller.abort()
+  directorPlanningRequests.clear()
+  directorGenerationSubmissions.clear()
+}
+
+function startDirectorConversation() {
+  window.clearTimeout(directorConversationSyncTimer)
+  void saveDirectorConversation().catch(() => {})
+  stopDirectorConversationWork()
+  directorConversationId.value = directorRequestId('conversation')
+  directorAgentRuns.value = []
+}
+
+function selectDirectorConversation(conversation) {
+  stopDirectorConversationWork()
+  directorConversationId.value = String(conversation?.id || directorRequestId('conversation'))
+  directorAgentRuns.value = (Array.isArray(conversation?.messages) ? conversation.messages : [])
+    .filter((message) => message?.role === 'assistant' && message?.run?.id)
+    .map((message) => ({ ...message.run }))
 }
 
 function directorLayerContext(node) {
@@ -569,6 +701,85 @@ async function readDirectorApiResponse(response) {
   return result.data
 }
 
+function applyDirectorThinkingEvent(runId, event) {
+  const run = directorRun(runId)
+  if (!run) return
+  const id = String(event?.id || `step-${run.thinking?.length || 0}`)
+  const steps = Array.isArray(run.thinking) ? run.thinking.map((step) => ({ ...step })) : []
+  const index = steps.findIndex((step) => step.id === id)
+  const next = {
+    id,
+    label: String(event?.label || ''),
+    state: String(event?.state || 'complete'),
+  }
+  if (index < 0) steps.push(next)
+  else steps.splice(index, 1, next)
+  updateDirectorRun(runId, { thinking: steps })
+}
+
+async function readDirectorStream(response, runId) {
+  if (!response.ok) return readDirectorApiResponse(response)
+  if (!response.body?.getReader) throw new Error('当前浏览器不支持流式回复，请升级浏览器后重试')
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let result = null
+
+  const consumeLine = (rawLine) => {
+    const line = rawLine.trim()
+    if (!line) return
+    let event
+    try {
+      event = JSON.parse(line)
+    } catch {
+      throw new Error('TV Director 返回了无法识别的流式数据')
+    }
+    if (event.type === 'thinking') {
+      applyDirectorThinkingEvent(runId, event)
+      return
+    }
+    if (event.type === 'thinking_delta') {
+      const delta = String(event.delta || '')
+      if (!delta) return
+      const run = directorRun(runId)
+      if (run)
+        updateDirectorRun(runId, {
+          thinkingText: `${run.thinkingText || ''}${delta}`,
+        })
+      return
+    }
+    if (event.type === 'reply_delta') {
+      const delta = String(event.delta || '')
+      if (!delta) return
+      const run = directorRun(runId)
+      if (run) updateDirectorRun(runId, { phase: 'streaming', reply: `${run.reply || ''}${delta}` })
+      return
+    }
+    if (event.type === 'result') {
+      result = event.data
+      return
+    }
+    if (event.type === 'error') throw new Error(event.message || 'TV Director 暂时无法回复')
+  }
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+      for (const line of lines) consumeLine(line)
+      if (done) break
+    }
+    if (buffer.trim()) consumeLine(buffer)
+  } finally {
+    reader.releaseLock()
+  }
+  if (!result) throw new Error('TV Director 流式回复未完整结束，请重试')
+  return result
+}
+
 async function planDirectorMessage(runId) {
   const run = directorRun(runId)
   if (!run || directorPlanningRequests.has(runId)) return
@@ -579,7 +790,18 @@ async function planDirectorMessage(runId) {
 
   const controller = new AbortController()
   directorPlanningRequests.set(runId, controller)
-  updateDirectorRun(runId, { phase: 'planning', error: '', reply: '', draft: null })
+  updateDirectorRun(runId, {
+    phase: 'planning',
+    error: '',
+    reply: '',
+    thinkingText: '',
+    draft: null,
+    thinking: [
+      { id: 'context', label: '正在读取画布上下文与选中素材', state: 'active' },
+      { id: 'model', label: '等待数据库推理模型开始响应', state: 'pending' },
+      { id: 'answer', label: '等待流式整理回答与下一步建议', state: 'pending' },
+    ],
+  })
   try {
     await tasks.loadModels()
     if (controller.signal.aborted) return
@@ -590,8 +812,8 @@ async function planDirectorMessage(runId) {
         ? resolvedModels.map((option) => option.value)
         : intent.requestedModels.map((model) => model.id).filter(Boolean)
     const primaryModel = resolvedModels[0] || intent.requestedModels[0] || null
-    const response = await readDirectorApiResponse(
-      await fetch(apiPath('/api/ai/canvas-agent/chat'), {
+    const response = await readDirectorStream(
+      await fetch(apiPath('/api/ai/canvas-agent/chat/stream'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -610,9 +832,11 @@ async function planDirectorMessage(runId) {
           ratio: intent.ratio,
           resolution: intent.resolution,
           count: intent.count,
-          conversationId: `canvas-v3:${props.projectId}`,
+          conversationId: directorConversationId.value,
+          agentModel: 'default',
         }),
       }),
+      runId,
     )
     if (controller.signal.aborted) return
     const prompts = normalizeDirectorPrompts(response)
@@ -685,20 +909,30 @@ function handleDirectorSubmit(message) {
     // Freeze approval policy at send time. Picker changes are inert until another message is sent.
     dryRun: message.dryRunIntent !== false,
     phase: 'planning',
+    thinking: [
+      { id: 'context', label: '正在读取画布上下文与选中素材', state: 'active' },
+      { id: 'model', label: '等待数据库推理模型开始响应', state: 'pending' },
+      { id: 'answer', label: '等待流式整理回答与下一步建议', state: 'pending' },
+    ],
     reply: '',
+    thinkingText: '',
     draft: null,
     nodeId: '',
     submissionStarted: false,
     error: '',
   }
   directorAgentRuns.value.push(run)
+  scheduleDirectorConversationSync()
   void planDirectorMessage(run.id)
 }
 
 function directorDraftPosition(referenceNode) {
   if (referenceNode)
     return {
-      x: referenceNode.position.x + nodeSize(referenceNode.data.kind).width + 176,
+      x:
+        referenceNode.position.x +
+        nodeSize(referenceNode.data.kind, referenceNode.data).width +
+        176,
       y: referenceNode.position.y,
     }
   const rect = canvasWrap.value?.getBoundingClientRect()
@@ -910,6 +1144,23 @@ function retryDirectorAgent(runId) {
   void planDirectorMessage(runId)
 }
 
+function cancelDirectorAgent(runId) {
+  const run = directorRun(runId)
+  if (!run || !['planning', 'streaming'].includes(run.phase)) return
+  directorPlanningRequests.get(runId)?.abort()
+  directorPlanningRequests.delete(runId)
+  updateDirectorRun(runId, {
+    phase: 'cancelled',
+    error: '',
+    thinking: [
+      ...(Array.isArray(run.thinking)
+        ? run.thinking.filter((step) => step?.state === 'complete')
+        : []),
+      { id: 'cancelled', label: '已停止本次回复', state: 'complete' },
+    ],
+  })
+}
+
 function addFromStoryboard() {
   mode.value = 'workflow'
   toggleNodeLibrary()
@@ -1019,6 +1270,7 @@ onMounted(async () => {
   }
 })
 onBeforeUnmount(() => {
+  window.clearTimeout(directorConversationSyncTimer)
   for (const controller of directorPlanningRequests.values()) controller.abort()
   directorPlanningRequests.clear()
   directorGenerationSubmissions.clear()
@@ -1141,7 +1393,8 @@ onBeforeUnmount(() => {
           !['preparing', 'submitting', 'queued', 'running'].includes(graph.activeNode.data.runState)
         "
         :node="graph.activeNode"
-        :top="imageToolbarTop"
+        :left="imageToolbarPosition.left"
+        :top="imageToolbarPosition.top"
         @preview="openImagePreview"
         @focus="focusStoryboard"
         @emotion="openEmotion"
@@ -1192,12 +1445,19 @@ onBeforeUnmount(() => {
         :dock-width="directorDockWidth"
         :session-id="projectId"
         :agent-runs="directorAgentRuns"
+        :conversations="directorConversations"
+        :conversation-id="directorConversationId"
+        :conversation-loading="directorConversationLoading"
         @update:docked="setDirectorDocked"
         @update:dock-width="setDirectorDockWidth"
         @dock-width-commit="commitDirectorDockWidth"
         @submit="handleDirectorSubmit"
+        @cancel-agent="cancelDirectorAgent"
         @confirm-generation="confirmDirectorGeneration"
         @retry-agent="retryDirectorAgent"
+        @new-conversation="startDirectorConversation"
+        @load-conversations="loadDirectorConversations"
+        @select-conversation="selectDirectorConversation"
         @close="closeDirector"
       />
       <section v-if="mode === 'storyboard'" class="cv3-storyboard">

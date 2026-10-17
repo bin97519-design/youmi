@@ -7,6 +7,7 @@ import { nodeSize } from '../config/nodeControls'
 import CanvasIcon from './CanvasIcon.vue'
 import { useCanvasV3TaskStore } from '../stores/tasks'
 import { IMAGE_TASK_ACTIVE_STATES, imageTaskFeedback } from '../config/imageTaskState'
+import { magneticHandleHome, magneticHandleOffset } from '../config/magneticHandle'
 const props = defineProps({
   id: { type: String, required: true },
   data: { type: Object, required: true },
@@ -33,9 +34,36 @@ function recordMediaSize(event) {
     graph.updateNodeData(props.id, { mediaWidth: naturalWidth, mediaHeight: naturalHeight })
 }
 const spec = computed(() => nodeSpec(props.data.kind))
-const size = computed(() => nodeSize(props.data.kind))
+const size = computed(() => nodeSize(props.data.kind, props.data))
 const isText = computed(() => ['text', 'reference'].includes(props.data.kind))
 const incoming = computed(() => graph.edges.filter((edge) => edge.target === props.id).length)
+
+function setHandleIndicatorPosition(hitArea, offset) {
+  const indicator = hitArea.querySelector('.cv3-handle-indicator')
+  if (!indicator) return
+  indicator.style.setProperty('--cv3-handle-shift-x', `${offset.x}px`)
+  indicator.style.setProperty('--cv3-handle-shift-y', `${offset.y}px`)
+}
+
+function followHandlePointer(event) {
+  const hitArea = event.currentTarget
+  const rect = hitArea.getBoundingClientRect()
+  setHandleIndicatorPosition(
+    hitArea,
+    magneticHandleOffset(
+      { x: event.clientX, y: event.clientY },
+      { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+      hitArea.dataset.side,
+    ),
+  )
+}
+
+function resetHandlePointer(event) {
+  setHandleIndicatorPosition(
+    event.currentTarget,
+    magneticHandleHome(event.currentTarget.dataset.side),
+  )
+}
 </script>
 
 <template>
@@ -59,7 +87,28 @@ const incoming = computed(() => graph.edges.filter((edge) => edge.target === pro
       </span>
       <span v-if="incoming && !data.assetUrl" class="cv3-ref-count">{{ incoming }} 引用</span>
     </header>
-    <Handle id="input" type="target" :position="Position.Left" class="cv3-handle" />
+    <Handle
+      id="input"
+      type="target"
+      :position="Position.Left"
+      class="cv3-handle cv3-handle-target"
+      aria-label="连接到此节点"
+    >
+      <span
+        class="cv3-handle-hit"
+        data-side="target"
+        @pointermove="followHandlePointer"
+        @pointerleave="resetHandlePointer"
+      >
+        <span class="cv3-handle-indicator" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+            <circle cx="10" cy="10" r="9.35" class="cv3-handle-fill" />
+            <circle cx="10" cy="10" r="9.35" class="cv3-handle-ring" />
+            <path d="M10 6.5v7M6.5 10h7" class="cv3-handle-plus" />
+          </svg>
+        </span>
+      </span>
+    </Handle>
     <textarea
       v-if="isText"
       class="cv3-text-node-editor nodrag nowheel"
@@ -153,6 +202,27 @@ const incoming = computed(() => graph.edges.filter((edge) => edge.target === pro
         </button>
       </div>
     </template>
-    <Handle id="output" type="source" :position="Position.Right" class="cv3-handle" />
+    <Handle
+      id="output"
+      type="source"
+      :position="Position.Right"
+      class="cv3-handle cv3-handle-source"
+      aria-label="从此节点创建连接"
+    >
+      <span
+        class="cv3-handle-hit"
+        data-side="source"
+        @pointermove="followHandlePointer"
+        @pointerleave="resetHandlePointer"
+      >
+        <span class="cv3-handle-indicator" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+            <circle cx="10" cy="10" r="9.35" class="cv3-handle-fill" />
+            <circle cx="10" cy="10" r="9.35" class="cv3-handle-ring" />
+            <path d="M10 6.5v7M6.5 10h7" class="cv3-handle-plus" />
+          </svg>
+        </span>
+      </span>
+    </Handle>
   </article>
 </template>

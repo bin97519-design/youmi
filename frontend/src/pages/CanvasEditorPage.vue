@@ -2154,7 +2154,7 @@ const canvasTools = [
   },
 ]
 const dragState = ref(null)
-const layerClickMemory = { layerId: '', at: 0, x: 0, y: 0 }
+const layerClickMemory = { layerId: '', at: 0, x: 0, y: 0, selectedLayerIds: [] }
 const nativeLayerDblClickGuard = { layerId: '', until: 0 }
 const panState = ref(null) // 手形工具 & 右键拖动共用
 const resizeState = ref(null)
@@ -6135,11 +6135,13 @@ function showVideoControlsTemporarily() {
 }
 
 // 打开图片查看器
-function openImageViewer(url, name, layerId = '') {
-  // 收集所有选中图层中的图片，支持多图切换
-  const imageLayers = selectedLayerIds.value
-    .map((id) => layers.value.find((l) => l.id === id))
-    .filter((l) => l && l.url && (l.type === 'image' || (!l.type && l.url)))
+function openImageViewer(url, name, layerId = '', selectionSnapshot = null) {
+  const selectedImages = (selectionSnapshot || selectedLayerIds.value)
+    .map((id) => layers.value.find((layer) => layer.id === id))
+    .filter((layer) => isRealImageLayer(layer))
+  const imageLayers = selectedImages.length > 1
+    ? selectedImages
+    : layers.value.filter((layer) => isRealImageLayer(layer) && layer.visible !== false)
 
   let images = []
   let currentIndex = 0
@@ -6542,7 +6544,7 @@ function downloadVideo() {
 }
 
 // figure 上的 dblclick 统一入口（因为 setPointerCapture 会劫持内层事件）
-function onLayerDblClick(event, layer) {
+function onLayerDblClick(event, layer, selectionSnapshot = null) {
   if (
     event?.type === 'dblclick' &&
     nativeLayerDblClickGuard.layerId === layer.id &&
@@ -6564,7 +6566,12 @@ function onLayerDblClick(event, layer) {
     openVideoViewer(layer.url, layer.name)
   } else if (layer.url && (layer.type === 'image' || (layer.url && !layer.type))) {
     // 双击图片：打开查看器
-    openImageViewer(layer.url, layer.name, layer.id)
+    const clickSelectionSnapshot =
+      selectionSnapshot ||
+      (layerClickMemory.layerId === layer.id && Date.now() - layerClickMemory.at <= 650
+        ? layerClickMemory.selectedLayerIds
+        : null)
+    openImageViewer(layer.url, layer.name, layer.id, clickSelectionSnapshot)
   }
 }
 
@@ -7693,18 +7700,20 @@ function startLayerDrag(event, layer, { groupSourceIds = null, fromGroupFrame = 
 function openLayerFromSecondPointerDown(event, layer) {
   if (event.type !== 'pointerdown' || event.button !== 0) return false
   const now = Date.now()
-  const closeInTime = now - layerClickMemory.at <= 450
+  const closeInTime = now - layerClickMemory.at <= 650
   const closeInSpace =
     Math.hypot(event.clientX - layerClickMemory.x, event.clientY - layerClickMemory.y) <= 8
   if (layerClickMemory.layerId !== layer.id || !closeInTime || !closeInSpace) return false
 
   layerClickMemory.layerId = ''
   layerClickMemory.at = 0
+  const selectionSnapshot = layerClickMemory.selectedLayerIds
+  layerClickMemory.selectedLayerIds = []
   nativeLayerDblClickGuard.layerId = layer.id
   nativeLayerDblClickGuard.until = now + 600
   event.preventDefault()
   event.stopPropagation()
-  onLayerDblClick(event, layer)
+  onLayerDblClick(event, layer, selectionSnapshot)
   return true
 }
 
@@ -7790,9 +7799,11 @@ function stopLayerDrag(event) {
     layerClickMemory.at = Date.now()
     layerClickMemory.x = event.clientX
     layerClickMemory.y = event.clientY
+    layerClickMemory.selectedLayerIds = [...ds.ids]
   } else {
     layerClickMemory.layerId = ''
     layerClickMemory.at = 0
+    layerClickMemory.selectedLayerIds = []
   }
   if (_layerDragListenersAttached) {
     window.removeEventListener('pointermove', moveLayer, true)

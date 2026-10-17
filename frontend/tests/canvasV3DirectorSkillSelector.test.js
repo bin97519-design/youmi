@@ -118,9 +118,14 @@ const skillContract = [
 
 test('Director Skill catalogue preserves all 15 captured common Skills and metadata', () => {
   assert.equal(DEFAULT_DIRECTOR_SKILL_CATEGORY, 'common')
-  assert.deepEqual(DIRECTOR_SKILL_CATEGORIES, [{ id: 'common', label: '通用' }])
+  assert.deepEqual(DIRECTOR_SKILL_CATEGORIES, [
+    { id: 'home-commerce', label: '家居电商' },
+    { id: 'common', label: '通用' },
+  ])
+  const commonSkills = getDirectorSkillSection('common')
+  const homeSkills = getDirectorSkillSection('home-commerce')
   assert.deepEqual(
-    DIRECTOR_SKILL_CATALOG.map(
+    commonSkills.map(
       ({ skillKey, name, description, version, resultType, modality, id, order }) => [
         skillKey,
         name,
@@ -143,35 +148,47 @@ test('Director Skill catalogue preserves all 15 captured common Skills and metad
       index + 1,
     ]),
   )
-  assert.equal(DIRECTOR_SKILL_SECTIONS.common, DIRECTOR_SKILL_CATALOG)
-  assert.equal(new Set(DIRECTOR_SKILL_CATALOG.map((skill) => skill.id)).size, 15)
+  assert.equal(DIRECTOR_SKILL_SECTIONS.common, commonSkills)
+  assert.equal(DIRECTOR_SKILL_SECTIONS['home-commerce'], homeSkills)
+  assert.equal(commonSkills.length, 15)
+  assert.equal(homeSkills.length, 10)
+  assert.equal(new Set(DIRECTOR_SKILL_CATALOG.map((skill) => skill.id)).size, 25)
   assert.ok(Object.isFrozen(DIRECTOR_SKILL_CATALOG))
   assert.ok(Object.isFrozen(DIRECTOR_SKILL_CATEGORIES))
   assert.ok(Object.isFrozen(DIRECTOR_SKILL_SECTIONS))
-  for (const skill of DIRECTOR_SKILL_CATALOG) {
+  for (const skill of commonSkills) {
     assert.ok(Object.isFrozen(skill))
     assert.match(skill.coverUrl, /^https:\/\//)
     assert.equal(skill.category, 'common')
     assert.equal(skill.categoryLabel, '通用')
   }
+  for (const skill of homeSkills) {
+    assert.ok(Object.isFrozen(skill))
+    assert.equal(skill.category, 'home-commerce')
+    assert.equal(skill.categoryLabel, '家居电商')
+    assert.match(skill.prompt, /家居|淘系/)
+    assert.match(skill.sourceUrl, /^https:\/\/github\.com\//)
+  }
 })
 
 test('Director Skill lookup, search, marker and structured serialization helpers are stable', () => {
-  const first = DIRECTOR_SKILL_CATALOG[0]
+  const first = getDirectorSkillSection('common')[0]
+  const commonSkills = getDirectorSkillSection('common')
 
   assert.equal(normalizeDirectorSkillCategory('common'), 'common')
   assert.equal(normalizeDirectorSkillCategory('missing'), 'common')
-  assert.equal(getDirectorSkillSection(), DIRECTOR_SKILL_CATALOG)
-  assert.equal(getDirectorSkillSection('missing'), DIRECTOR_SKILL_CATALOG)
+  assert.equal(getDirectorSkillSection(), commonSkills)
+  assert.equal(getDirectorSkillSection('missing'), commonSkills)
   assert.equal(getDirectorSkillById(first.id), first)
   assert.equal(getDirectorSkillById({ id: first.id }), first)
   assert.equal(getDirectorSkillByKey(first.skillKey), first)
   assert.equal(getDirectorSkillByKey(first.shortSlug), first)
   assert.equal(getDirectorSkillByKey({ skillKey: first.skillKey }), first)
   assert.equal(getDirectorSkillByKey('missing'), null)
-  assert.deepEqual(filterDirectorSkills({ modality: 'video', resultType: 3 }), [
-    ...DIRECTOR_SKILL_CATALOG,
-  ])
+  assert.deepEqual(
+    filterDirectorSkills({ modality: 'video', resultType: 3 }),
+    DIRECTOR_SKILL_CATALOG.filter((skill) => skill.modality === 'video' && skill.resultType === 3),
+  )
   assert.deepEqual(
     searchDirectorSkills('武侠').map((skill) => skill.name),
     ['古典武侠电影全流程导演'],
@@ -189,6 +206,8 @@ test('Director Skill lookup, search, marker and structured serialization helpers
     type: 'skill',
     id: first.id,
     name: '皮克斯动画广告',
+    modality: 'video',
+    category: 'common',
   })
   assert.deepEqual(createDirectorSkillStructuredPart(first, { prompt: '电影广告', draft: true }), {
     type: 'skill',
@@ -196,6 +215,8 @@ test('Director Skill lookup, search, marker and structured serialization helpers
     name: '皮克斯动画广告',
     prompt: '电影广告',
     draft: true,
+    modality: 'video',
+    category: 'common',
   })
   assert.deepEqual(serializeDirectorSkillChip(first.skillKey, { prompt: '电影广告' }), {
     marker: `{{ skill:libtv-user-generated/${first.skillKey} }}`,
@@ -204,6 +225,8 @@ test('Director Skill lookup, search, marker and structured serialization helpers
       id: first.id,
       name: '皮克斯动画广告',
       prompt: '电影广告',
+      modality: 'video',
+      category: 'common',
     },
   })
   for (const unknown of [undefined, null, '', 'missing', {}]) {
