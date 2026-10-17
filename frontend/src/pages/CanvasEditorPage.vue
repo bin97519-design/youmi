@@ -5866,7 +5866,8 @@ const savedEnhancementIds = computed(() =>
     .map((layer) => layer.id.slice('enhance-'.length)),
 )
 function openVideoEnhancement(source = videoViewer) {
-  if (!source?.url || source.generating) return
+  // The playable result can arrive before the provider finishes settlement.
+  if (!source?.url) return
   videoViewerRef.value?.pause()
   enhanceSource.value = {
     url: source.url,
@@ -6662,7 +6663,7 @@ function removeChatReferenceImage(imageId) {
 }
 
 function addVideoToAgent(layer) {
-  if (!layer?.url || layer.type !== 'video' || layer.generating || !userStore.requireLogin()) return
+  if (!layer?.url || layer.type !== 'video' || !userStore.requireLogin()) return
   selectChatMode('agent')
   rightPanelVisible.value = true
   rightTab.value = 'chat'
@@ -10280,7 +10281,7 @@ async function deleteAgentConversation(conversationId) {
   scrollChatToBottom()
 }
 
-function buildCanvasAgentContext() {
+function buildCanvasAgentContext(instruction = '') {
   const layerContexts = layers.value.map((layer, index) => ({
     id: layer.id,
     name: layer.name || layerName(index),
@@ -10307,6 +10308,8 @@ function buildCanvasAgentContext() {
   const referenceLayerIds = new Set()
   const resolvedReferences = resolveAgentReferenceImages({
     currentImages: chatReferenceImages.value,
+    messages: chatMessages.value,
+    instruction,
   })
 
   for (const [referenceIndex, image] of resolvedReferences.images.entries()) {
@@ -10640,7 +10643,7 @@ async function runCanvasAgent() {
   if (!instruction) return
   if (!userStore.requireLogin()) return
 
-  const context = buildCanvasAgentContext()
+  const context = buildCanvasAgentContext(instruction)
   try {
     if (attachedVideo) agentVideoFrameLimit(context.referenceLayerIds.length)
   } catch (error) {
@@ -10675,9 +10678,6 @@ async function runCanvasAgent() {
     duration: videoDuration.value,
     generateAudio: videoGenerateAudio.value,
     referenceMode: videoReferenceMode.value,
-    ...[...chatMessages.value]
-      .reverse()
-      .find((message) => message.agentDraft?.generationType === 'video')?.agentDraft.video,
     ...videoContext?.video,
   }
   const createdAt = Date.now()
@@ -10772,7 +10772,9 @@ async function runCanvasAgent() {
         : response?.draftPrompt,
       referenceVideo ? 'video' : response?.generationType,
     )
-    const references = (response?.referenceLayerIds || [])
+    const references = (context.inheritedReferenceImages
+      ? context.referenceLayerIds
+      : response?.referenceLayerIds || [])
       .filter((id) => context.referenceLayerIds.includes(id))
       .map((id) => context.referenceLookup.get(id))
       .filter((reference) => reference?.url)
@@ -10934,9 +10936,32 @@ function updateAgentVideoSettings(
     )
   )
     return
-  updateChatMessage(message.id, { agentDraft: { ...message.agentDraft, video, referenceImages } })
+  const activeIndex = agentDraftActiveIndex(message.agentDraft)
+  const items = agentDraftItems(message.agentDraft).map((item, index) =>
+    index === activeIndex ? { ...item, video, referenceImages } : item)
+  updateChatMessage(message.id, { agentDraft: { ...message.agentDraft, video, referenceImages, items } })
+  videoModel.value = video.model
+  videoRatio.value = video.ratio
+  videoResolution.value = video.resolution
+  videoDuration.value = Number(video.duration)
+  videoGenerateAudio.value = video.generateAudio !== false
+  videoReferenceMode.value = video.referenceMode
+  syncSelectedVideoNodeGenerationSettings()
   void loadVideoCapabilities()
 }
+
+watch(chatVideoGenerationSettings, (video) => {
+  const message = [...chatMessages.value].reverse().find(item =>
+    item.agentDraft?.generationType === 'video' && !item.agentDraft.promptOnly &&
+    !['submitting', 'submitted', 'unknown'].includes(agentDraftActiveItem(item.agentDraft)?.status))
+  if (!message) return
+  const item = agentDraftActiveItem(message.agentDraft)
+  if (JSON.stringify(item?.video || message.agentDraft.video) === JSON.stringify(video)) return
+  const activeIndex = agentDraftActiveIndex(message.agentDraft)
+  const items = agentDraftItems(message.agentDraft).map((entry, index) =>
+    index === activeIndex ? { ...entry, video: { ...video } } : entry)
+  updateChatMessage(message.id, { agentDraft: { ...message.agentDraft, video: { ...video }, items } })
+}, { flush: 'post' })
 
 async function confirmAgentVideoGeneration(message) {
   const draft = message.agentDraft
@@ -10957,7 +10982,7 @@ async function confirmAgentVideoGeneration(message) {
     await sendVideoChat({
       prompt: item.prompt,
       references: (draft.referenceImages || []).map((reference) => ({ ...reference })),
-      config: { ...draft.video },
+      config: { ...(item.video || draft.video) },
       agentConversationId: message.agentConversationId || activeAgentConversationId.value,
       hideUserMessage: true,
       preserveComposer: true,
@@ -11429,6 +11454,11 @@ function videoNodeBusy(layer) {
   return Boolean(layer.generating || activity?.uploading || activity?.submitting)
 }
 
+function videoMediaBusy(layer) {
+  const activity = videoNodeActivity[layer.id]
+  return Boolean((layer.generating && !layer.url) || activity?.uploading || activity?.submitting)
+}
+
 function videoNodeDraftFor(layer) {
   return normalizeVideoNodeDraft(
     layer.videoNodeDraft || {
@@ -11615,7 +11645,7 @@ async function uploadVideoNodeFile(layer, file, reference = false, referenceInde
   if (
     !file ||
     layer.locked ||
-    videoNodeBusy(layer) ||
+    (reference ? videoNodeBusy(layer) : videoMediaBusy(layer)) ||
     videoReversePrompt.isBusy(layer) ||
     !userStore.requireLogin()
   )
@@ -11675,6 +11705,7 @@ async function uploadVideoNodeFile(layer, file, reference = false, referenceInde
         status: 'completed',
         statusText: '',
         lastError: '',
+        generating: false,
       })
       revealCanvasMedia(layerId)
       videoReversePrompt.rememberUpload(layerId, url, file)
@@ -11936,13 +11967,15 @@ async function pollVideoTaskUntilDone(taskId, layerId, assistantId = '') {
   for (let index = 0; index < VIDEO_TASK_MAX_POLLS || resultAvailable; index += 1) {
     await wait(resultAvailable ? VIDEO_BILLING_POLL_INTERVAL : VIDEO_TASK_POLL_INTERVAL)
     if (!_mounted.value) return false
-    if (!layers.value.some((layer) => layer.id === layerId)) return false
+    if (!layers.value.some((layer) => layer.id === layerId && layer.taskId === taskId)) return false
 
     let task
     try {
       task = await fetchVideoTask(taskId)
+      if (!layers.value.some((layer) => layer.id === layerId && layer.taskId === taskId)) return false
       consecutiveQueryErrors = 0
     } catch (error) {
+      if (!layers.value.some((layer) => layer.id === layerId && layer.taskId === taskId)) return false
       consecutiveQueryErrors += 1
       if (!resultAvailable && consecutiveQueryErrors > 5) throw error
       const retryText = resultAvailable
@@ -16005,7 +16038,7 @@ async function loadImageForCropUncached(layer) {
                     type="button"
                     title="发送给 Agent"
                     aria-label="发送给 Agent"
-                    :disabled="layer.generating || videoNodeBusy(layer)"
+                    :disabled="!layer.url || videoMediaBusy(layer)"
                     @click.stop="addVideoToAgent(layer)"
                   >
                     <i class="ri-chat-upload-line" aria-hidden="true"></i>
@@ -16015,7 +16048,7 @@ async function loadImageForCropUncached(layer) {
                     v-if="layer.type === 'video'"
                     type="button"
                     title="反推提示词"
-                    :disabled="layer.generating || videoNodeBusy(layer)"
+                    :disabled="!layer.url || videoMediaBusy(layer)"
                     @click.stop="videoReversePrompt.reverse(layer)"
                   >
                     <i
@@ -16034,7 +16067,7 @@ async function loadImageForCropUncached(layer) {
                     title="替换视频"
                     aria-label="替换视频"
                     :disabled="
-                      layer.locked || videoNodeBusy(layer) || videoReversePrompt.isBusy(layer)
+                      layer.locked || videoMediaBusy(layer) || videoReversePrompt.isBusy(layer)
                     "
                     @click.stop="uploadNodeMedia(layer)"
                   >
@@ -16120,7 +16153,7 @@ async function loadImageForCropUncached(layer) {
                     v-if="layer.type === 'video'"
                     type="button"
                     title="视频超分"
-                    :disabled="layer.generating"
+                    :disabled="!layer.url"
                     @click.stop="openVideoEnhancement(layer)"
                   >
                     <i class="ri-magic-line" aria-hidden="true"></i>
@@ -17626,6 +17659,11 @@ async function loadImageForCropUncached(layer) {
                   </nav>
                   <div class="uc-agent-draft-prompt" :class="{ 'uc-prompt-collapsed': isLongChatPrompt(agentDraftActiveItem(message.agentDraft)?.prompt) && !expandedChatPrompts['draft-' + message.id + '-' + agentDraftActiveIndex(message.agentDraft)] }" tabindex="0" aria-label="当前提示词内容">
                     <div
+                      v-if="isLongChatPrompt(agentDraftActiveItem(message.agentDraft)?.prompt) && !expandedChatPrompts['draft-' + message.id + '-' + agentDraftActiveIndex(message.agentDraft)]"
+                      class="uc-agent-draft-preview"
+                    >{{ agentDraftActiveItem(message.agentDraft)?.prompt }}</div>
+                    <template v-else>
+                    <div
                       v-for="(paragraph, paragraphIndex) in agentDraftPromptParagraphs(
                         agentDraftActiveItem(message.agentDraft)?.prompt,
                       )"
@@ -17634,6 +17672,7 @@ async function loadImageForCropUncached(layer) {
                     >
                       {{ paragraph }}
                     </div>
+                    </template>
                   </div>
                   <button
                     v-if="isLongChatPrompt(agentDraftActiveItem(message.agentDraft)?.prompt)"
@@ -17647,6 +17686,7 @@ async function loadImageForCropUncached(layer) {
                   </button>
                   <AgentVideoSettings
                     v-if="message.agentDraft.generationType === 'video' && !message.agentDraft.promptOnly"
+                    allow-seedance-frames
                     :model-options="videoModelOptions"
                     :model-value="
                       agentDraftActiveItem(message.agentDraft)?.video || message.agentDraft.video
@@ -19929,13 +19969,28 @@ async function loadImageForCropUncached(layer) {
   color: #64748b;
   font-size: 18px;
 }
-.uc-chat-msg-bubble.uc-prompt-collapsed,
-.uc-agent-draft-prompt.uc-prompt-collapsed {
+.uc-chat-msg-bubble.uc-prompt-collapsed {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 5;
   max-height: 8em;
   overflow: hidden;
+}
+.uc-agent-draft-prompt.uc-prompt-collapsed {
+  display: block;
+  max-height: none;
+  overflow: hidden;
+  scrollbar-gutter: auto;
+}
+.uc-agent-draft-preview {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+  overflow: hidden;
+  white-space: pre-line;
+  font-size: 13px;
+  line-height: 1.82;
+  max-height: calc(5 * 1.82 * 13px);
 }
 .uc-prompt-fold-toggle {
   display: flex;

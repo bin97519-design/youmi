@@ -262,7 +262,7 @@ function change(key, value) {
           @update:model-value="change('duration', Number($event))"
         />
       </div>
-      <div v-if="modeVisible" class="agent-video-field">
+      <div v-if="modeVisible" class="agent-video-field agent-video-mode">
         <span>模式</span>
         <ThemedSelect
           floating
@@ -273,15 +273,18 @@ function change(key, value) {
           @update:model-value="change('referenceMode', $event)"
         />
       </div>
-      <label v-if="supportsVideoAudioToggle(modelValue.model)" class="agent-video-audio">
-        <input
-          type="checkbox"
-          :checked="modelValue.generateAudio"
-          @change="change('generateAudio', $event.target.checked)"
-        />
-        <span>生成声音</span>
-      </label>
-      <span v-else class="agent-video-audio" title="当前接口不支持关闭声音">原生有声</span>
+      <div class="agent-video-field agent-video-audio-field">
+        <span>声音</span>
+        <button type="button" class="agent-video-audio-button"
+          :class="{ active: !supportsVideoAudioToggle(modelValue.model) || modelValue.generateAudio !== false }"
+          :disabled="disabled || !supportsVideoAudioToggle(modelValue.model)"
+          :aria-pressed="!supportsVideoAudioToggle(modelValue.model) || modelValue.generateAudio !== false"
+          aria-label="生成声音"
+          @click="change('generateAudio', modelValue.generateAudio === false)">
+          <i :class="modelValue.generateAudio === false && supportsVideoAudioToggle(modelValue.model) ? 'ri-volume-mute-line' : 'ri-volume-up-line'" aria-hidden="true"></i>
+          {{ !supportsVideoAudioToggle(modelValue.model) ? '原生有声' : modelValue.generateAudio === false ? '关闭' : '开启' }}
+        </button>
+      </div>
       <div v-if="references.length" class="agent-video-references" aria-label="视频参考图">
         <div
           v-for="(reference, index) in references"
@@ -316,7 +319,7 @@ function change(key, value) {
 <style scoped>
 .agent-video-settings {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1.8fr) repeat(3, minmax(0, 1fr));
   gap: 8px;
   min-width: 0;
   margin: 0;
@@ -332,10 +335,39 @@ function change(key, value) {
   min-width: 0;
   font-size: 12px;
 }
-.agent-video-model,
 .agent-video-price,
 .agent-video-references {
   grid-column: 1 / -1;
+}
+.agent-video-mode,
+.agent-video-audio-field {
+  grid-column: span 2;
+}
+.agent-video-settings:not(.is-compact) .agent-video-field > span {
+  color: var(--canvas-text-muted, #9b9da3);
+  font-size: 11px;
+}
+.agent-video-settings:not(.is-compact) :deep(.themed-select-trigger) {
+  height: 38px;
+  padding: 0 7px;
+  border-radius: 9px;
+}
+.agent-video-audio-button {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 5px;
+  height: 38px;
+  border: 1px solid var(--canvas-border, #41434a);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--canvas-text-muted, #9b9da3);
+  cursor: pointer;
+}
+.agent-video-audio-button.active {
+  color: var(--canvas-accent, #19bfd3);
+  border-color: var(--canvas-accent, #19bfd3);
+  background: var(--canvas-accent-soft, rgba(25, 191, 211, 0.1));
 }
 .agent-video-settings :deep(.themed-select-trigger) {
   width: 100%;

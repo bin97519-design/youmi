@@ -6,6 +6,7 @@ import com.youmi.api.common.ApiException;
 import com.youmi.api.ai.AiCallLogService;
 import com.youmi.api.file.OssStorageService;
 import java.io.InputStream;
+import java.io.ByteArrayInputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -45,6 +46,41 @@ public class VideoGenerationClient {
   private final ThreadLocal<String> telemetryModel = new ThreadLocal<>();
   private final ConcurrentMap<String, String> persistedVideoUrls = new ConcurrentHashMap<>();
   private final ConcurrentMap<String, Object> persistLocks = new ConcurrentHashMap<>();
+  private final ConcurrentMap<String, java.util.concurrent.FutureTask<String>> persistenceJobs = new ConcurrentHashMap<>();
+  private final java.util.concurrent.ExecutorService persistenceExecutor = java.util.concurrent.Executors.newFixedThreadPool(2, runnable -> {
+    Thread thread = new Thread(runnable, "video-result-persistence");
+    thread.setDaemon(true);
+    return thread;
+  });
+
+  @jakarta.annotation.PreDestroy
+  void stopPersistenceWorkers() { persistenceExecutor.shutdownNow(); }
+
+  String persistVideoAsync(String taskId, String realTaskId, String providerUrl, Long userId) throws Exception {
+    return persistVideoAsync(taskId, () -> persistVideo(taskId, realTaskId, providerUrl, userId));
+  }
+
+  String persistVideoAsync(String taskId, java.util.concurrent.Callable<String> persistence) throws Exception {
+    String cached = persistedVideoUrls.get(taskId);
+    if (cached != null) return cached;
+    var job = persistenceJobs.computeIfAbsent(taskId, ignored -> {
+      var created = new java.util.concurrent.FutureTask<String>(persistence);
+      persistenceExecutor.execute(created);
+      return created;
+    });
+    if (!job.isDone()) return null;
+    try {
+      String url = job.get();
+      if (url == null || url.isBlank()) throw new IllegalStateException("Video persistence returned no URL");
+      persistedVideoUrls.put(taskId, url);
+      persistenceJobs.remove(taskId, job);
+      return url;
+    } catch (java.util.concurrent.ExecutionException error) {
+      persistenceJobs.remove(taskId, job);
+      if (error.getCause() instanceof Exception cause) throw cause;
+      throw new IllegalStateException("Video persistence failed", error.getCause());
+    }
+  }
 
   public VideoGenerationClient(
       ObjectMapper objectMapper,
@@ -280,7 +316,10 @@ public class VideoGenerationClient {
           .header("Accept", "video/*,application/octet-stream")
           .header("User-Agent", "Youmi-Canvas/1.0")
           .GET().build();
-      return httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+      // Complete the response body inside the timed HTTP operation. ofInputStream
+      // returns at headers and leaves later stream reads outside the request timeout.
+      return httpClient.send(request, info -> HttpResponse.BodySubscribers.mapping(
+          HttpResponse.BodySubscribers.ofByteArray(), bytes -> (InputStream) new ByteArrayInputStream(bytes)));
     });
   }
 

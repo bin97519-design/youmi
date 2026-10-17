@@ -243,7 +243,7 @@ export function useVideoReversePrompt(options) {
   }
 
   async function reverse(source) {
-    if (!source?.url || source.generating || !requireLogin()) return
+    if (!source?.url || !requireLogin()) return
     const existing = resultFor(source)
     if (existing) {
       void focusNode(existing.id)

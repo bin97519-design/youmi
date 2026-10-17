@@ -408,13 +408,13 @@ class AnmiaoVideoClientTest {
     assertNull(running.getProgress());
 
     body.set("{\"status\":\"succeeded\",\"content\":{\"video_url\":\"https://videos.example/result.mp4\"}}");
-    when(media.persistVideo("anmiao-video:99936297", "99936297", "https://videos.example/result.mp4", 7L))
+    when(media.persistVideoAsync("anmiao-video:99936297", "99936297", "https://videos.example/result.mp4", 7L))
         .thenReturn("https://oss.example/users/7/result.mp4");
     var completed = client.getTask("anmiao-video:99936297", 7L);
     assertEquals("completed", completed.getStatus());
     assertEquals(List.of("https://oss.example/users/7/result.mp4"), completed.getVideoUrls());
     assertEquals(100, completed.getProgress());
-    verify(media).persistVideo("anmiao-video:99936297", "99936297", "https://videos.example/result.mp4", 7L);
+    verify(media).persistVideoAsync("anmiao-video:99936297", "99936297", "https://videos.example/result.mp4", 7L);
 
     body.set("{\"status\":\"failed\",\"error\":{\"code\":\"SensitiveContentDetected\","
         + "\"message\":\"输入未通过审核\"}}");
@@ -427,7 +427,7 @@ class AnmiaoVideoClientTest {
     start();
     server.createContext("/contents/generations/tasks/99936297", exchange -> respond(exchange, 200,
         "{\"status\":\"succeeded\",\"content\":{\"video_url\":\"https://videos.example/result.mp4\"}}"));
-    when(media.persistVideo("anmiao-video:99936297", "99936297", "https://videos.example/result.mp4", 7L))
+    when(media.persistVideoAsync("anmiao-video:99936297", "99936297", "https://videos.example/result.mp4", 7L))
         .thenThrow(new IOException("temporary download failure"));
     var result = client(3).getTask("anmiao-video:99936297", 7L);
     assertEquals("persisting", result.getStatus());

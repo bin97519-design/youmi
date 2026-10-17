@@ -42,6 +42,20 @@ class CanvasAgentServiceTest {
     assertTrue(sent.contains(instruction));
     assertTrue(sent.contains("口播设计"));
     assertTrue(sent.contains("每秒3至4字"));
+    assertTrue(sent.contains("分镜1（0秒-4秒）："));
+    assertTrue(sent.contains("最后一镜结束秒数必须等于durationSeconds"));
+    assertTrue(sent.contains("时长必须由提示词中的具体内容推导"));
+    assertTrue(sent.contains("按并行关系计时"));
+    assertTrue(sent.contains("独立观看价值"));
+    assertTrue(sent.contains("起点、发展、变化与切出状态"));
+    assertTrue(sent.contains("可说话时间=该段区间秒数"));
+    assertTrue(sent.contains("台词实际进入与结束时间"));
+    assertTrue(sent.contains("至少有一个完整使用事件"));
+    assertTrue(sent.contains("允许根据用户卖点和创意需要安排夹层、内部剖面"));
+    assertTrue(sent.contains("不因用户只提供外观图而禁止这些镜头"));
+    assertFalse(sent.contains("没有明确结构资料时，禁止安排剖面"));
+    assertTrue(sent.contains("返回前在内部执行一次成稿复核"));
+    assertTrue(sent.contains("任一项缺失就直接在本次答案中补写或改写对应镜头"));
     assertEquals(script, result.draftPrompts().get(0));
     // Planning may exceed the provider's submission limit without silently losing text.
     assertFalse(result.readyToGenerate());

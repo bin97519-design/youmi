@@ -30,92 +30,40 @@ class ReversePromptServiceTest {
       """;
 
   @Test
-  void fallsBackToDashScopeWhenXfyunIsBusy() throws Exception {
-    DashScopeClient dashScopeClient = mock(DashScopeClient.class);
-    XfyunVisionClient xfyunVisionClient = mock(XfyunVisionClient.class);
-    when(xfyunVisionClient.isConfigured()).thenReturn(true);
-    when(xfyunVisionClient.analyzeImage(anyString(), anyString(), anyString()))
-        .thenThrow(new IOException("Xfyun vision transient response: 503 code 10310"));
-    when(dashScopeClient.isConfigured()).thenReturn(true);
-    when(dashScopeClient.model()).thenReturn("qwen3.7-plus");
-    when(dashScopeClient.completeVision(
-        anyString(), anyString(), anyList(), anyDouble(), anyInt()))
-        .thenReturn(new AiChatDtos.CompletionResult("dashscope", "qwen3.7-plus", VALID_RESULT));
-
-    ReversePromptService service = new ReversePromptService(
-        new ObjectMapper(),
-        dashScopeClient,
-        xfyunVisionClient,
-        new ReversePromptTemplateService());
-
-    ReversePromptDtos.AnalyzeImageResponse response = service.analyze(
-        new ReversePromptDtos.AnalyzeImageRequest(
-            "general",
-            "https://example.com/reference.png",
-            null,
-            false));
-
-    assertEquals("dashscope", response.provider());
-    assertEquals("qwen3.7-plus", response.model());
-    assertEquals("清爽", response.promptJson().path("visual_style").path("overall_tone").asText());
+  void usesLunaForEveryPromptCategoryWithoutFallback() throws Exception {
+    var agent = mock(com.youmi.api.ai.AgentChatClient.class);
+    var keys = mock(com.youmi.api.image.ModelApiKeyService.class);
+    var credential = new com.youmi.api.image.ModelApiKeyService.ResolvedModelApiKey(
+        5L, "gpt-5.6-luna", "test", "https://example.com", "/v1/chat/completions", "", "test-key");
+    when(keys.resolve("gpt-5.6-luna", "vision_reasoning")).thenReturn(java.util.Optional.of(credential));
+    when(agent.completeConfiguredModel(org.mockito.ArgumentMatchers.eq(credential), anyString(),
+        anyString(), anyList(), org.mockito.ArgumentMatchers.eq(0.15),
+        org.mockito.ArgumentMatchers.eq("reverse-prompt"), org.mockito.ArgumentMatchers.eq("fixed_model"),
+        org.mockito.ArgumentMatchers.eq(4096)))
+        .thenReturn(new AiChatDtos.CompletionResult("test", "gpt-5.6-luna", VALID_RESULT));
+    var dash = mock(DashScopeClient.class);
+    var xfyun = mock(XfyunVisionClient.class);
+    var templates = new ReversePromptTemplateService();
+    var service = new ReversePromptService(new ObjectMapper(), dash, xfyun, templates);
+    service.setPromptModelClients(agent, keys);
+    for (var category : templates.categories()) {
+      var response = service.analyze(new ReversePromptDtos.AnalyzeImageRequest(
+          category.value(), "https://example.com/reference.png", null, false));
+      assertEquals("gpt-5.6-luna", response.model());
+      assertEquals("清爽", response.promptJson().path("visual_style").path("overall_tone").asText());
+    }
+    org.mockito.Mockito.verifyNoInteractions(xfyun, dash);
   }
 
   @Test
-  void fallsBackToDashScopeWhenXfyunAuthorizationExpires() throws Exception {
-    DashScopeClient dashScopeClient = mock(DashScopeClient.class);
-    XfyunVisionClient xfyunVisionClient = mock(XfyunVisionClient.class);
-    when(xfyunVisionClient.isConfigured()).thenReturn(true);
-    when(xfyunVisionClient.analyzeImage(anyString(), anyString(), anyString()))
-        .thenThrow(new IllegalStateException(
-            "Xfyun vision request failed: 403 code 11200 authorization failed"));
-    when(dashScopeClient.isConfigured()).thenReturn(true);
-    when(dashScopeClient.model()).thenReturn("qwen3.7-plus");
-    when(dashScopeClient.completeVision(
-        anyString(), anyString(), anyList(), anyDouble(), anyInt()))
-        .thenReturn(new AiChatDtos.CompletionResult(
-            "dashscope", "qwen3.7-plus", VALID_RESULT));
-
-    ReversePromptService service = new ReversePromptService(
-        new ObjectMapper(),
-        dashScopeClient,
-        xfyunVisionClient,
-        new ReversePromptTemplateService());
-
-    ReversePromptDtos.AnalyzeImageResponse response = service.analyze(
-        new ReversePromptDtos.AnalyzeImageRequest(
-            "general",
-            "https://example.com/reference.png",
-            null,
-            false));
-
-    assertEquals("dashscope", response.provider());
-    assertEquals("qwen3.7-plus", response.model());
-  }
-
-  @Test
-  void returnsFriendlyMessageWhenBusyAndFallbackIsUnavailable() throws Exception {
-    DashScopeClient dashScopeClient = mock(DashScopeClient.class);
-    XfyunVisionClient xfyunVisionClient = mock(XfyunVisionClient.class);
-    when(xfyunVisionClient.isConfigured()).thenReturn(true);
-    when(xfyunVisionClient.analyzeImage(anyString(), anyString(), anyString()))
-        .thenThrow(new IOException("Xfyun vision transient response: 503 code 10310"));
-    when(dashScopeClient.isConfigured()).thenReturn(false);
-
-    ReversePromptService service = new ReversePromptService(
-        new ObjectMapper(),
-        dashScopeClient,
-        xfyunVisionClient,
-        new ReversePromptTemplateService());
-
-    IllegalStateException error = assertThrows(
-        IllegalStateException.class,
-        () -> service.analyze(new ReversePromptDtos.AnalyzeImageRequest(
-            "mattress",
-            "https://example.com/reference.png",
-            null,
-            false)));
-
-    assertEquals("讯飞视觉服务繁忙，请稍后重试", error.getMessage());
+  void missingLunaConfigurationDoesNotSilentlyUseAnotherModel() {
+    var service = new ReversePromptService(new ObjectMapper(), mock(DashScopeClient.class),
+        mock(XfyunVisionClient.class), new ReversePromptTemplateService());
+    service.setPromptModelClients(mock(com.youmi.api.ai.AgentChatClient.class),
+        mock(com.youmi.api.image.ModelApiKeyService.class));
+    var error = assertThrows(com.youmi.api.common.ApiException.class, () -> service.analyze(
+        new ReversePromptDtos.AnalyzeImageRequest("general", "https://example.com/reference.png", null, false)));
+    assertTrue(error.getMessage().contains("gpt-5.6-luna"));
   }
 
   @Test

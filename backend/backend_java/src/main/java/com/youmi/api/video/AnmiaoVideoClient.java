@@ -233,7 +233,12 @@ public class AnmiaoVideoClient {
       requirePublicUrl(url);
       if (properties.isPersistGeneratedVideos()) {
         try {
-          result.setVideoUrls(List.of(media.persistVideo(taskId, id, url, userId)));
+          String storedUrl = media.persistVideoAsync(taskId, id, url, userId);
+          if (storedUrl == null) {
+            result.setStatus("persisting");
+            result.setStage("生成已完成，正在下载并保存成片");
+            result.setProgress(null);
+          } else result.setVideoUrls(List.of(storedUrl));
         } catch (Exception error) {
           result.setStatus("persisting");
           result.setStage("正在保存成片，稍后自动重试");

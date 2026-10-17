@@ -67,6 +67,40 @@ class AgentChatClientTest {
     }
   }
 
+  @Test void retriesEmptyLengthLimitedResponseOnceWithLargerBudget() throws Exception {
+    var properties = new AgentChatProperties();
+    properties.setMaxTokens(4000);
+    var client = new AgentChatClient(new ObjectMapper(), properties);
+    var http = mock(HttpClient.class);
+    HttpResponse<String> empty = mock(HttpResponse.class);
+    HttpResponse<String> completed = mock(HttpResponse.class);
+    when(empty.statusCode()).thenReturn(200);
+    when(empty.body()).thenReturn("{\"choices\":[{\"finish_reason\":\"length\",\"message\":{\"content\":null,\"reasoning_content\":\"private reasoning\"}}],\"usage\":{\"completion_tokens\":4000}}");
+    when(completed.statusCode()).thenReturn(200);
+    when(completed.body()).thenReturn("{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"完整脚本\"}}]}");
+    when(http.send(any(), org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<String>>any())).thenReturn(empty, completed);
+    ReflectionTestUtils.setField(client, "httpClient", http);
+    var key = new ModelApiKeyService.ResolvedModelApiKey(5L,"gpt-5.6-luna","test","https://example.com","/chat","","test-key");
+    var result = client.completeConfiguredModel(key,"system","脚本",List.of(),0.2);
+    assertEquals("完整脚本", result.content());
+    verify(http,times(2)).send(any(), org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<String>>any());
+  }
+
+  @Test void persistentEmptyResponseDoesNotRetryIndefinitelyOrExposeReasoning() throws Exception {
+    var client = new AgentChatClient(new ObjectMapper(), new AgentChatProperties());
+    var http = mock(HttpClient.class);
+    HttpResponse<String> empty = mock(HttpResponse.class);
+    when(empty.statusCode()).thenReturn(200);
+    when(empty.body()).thenReturn("{\"choices\":[{\"finish_reason\":\"length\",\"message\":{\"content\":null,\"reasoning_content\":\"private reasoning\"}}]}");
+    when(http.send(any(), org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<String>>any())).thenReturn(empty);
+    ReflectionTestUtils.setField(client, "httpClient", http);
+    var key = new ModelApiKeyService.ResolvedModelApiKey(5L,"gpt-5.6-luna","test","https://example.com","/chat","","test-key");
+    var error = assertThrows(IllegalStateException.class, () -> client.completeConfiguredModel(key,"system","脚本",List.of(),0.2));
+    assertTrue(error.getMessage().contains("额度"));
+    assertFalse(error.getMessage().contains("private reasoning"));
+    verify(http,times(2)).send(any(), org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<String>>any());
+  }
+
   @Test void configuredModelForwardsDefaultDataToItsConfiguredEndpoint() throws Exception {
     var mapper = new ObjectMapper();
     List<JsonNode> bodies = new ArrayList<>();

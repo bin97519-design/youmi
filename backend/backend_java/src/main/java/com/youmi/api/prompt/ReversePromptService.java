@@ -5,6 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.youmi.api.ai.AiChatDtos;
 import com.youmi.api.ai.DashScopeClient;
 import com.youmi.api.ai.XfyunVisionClient;
+import com.youmi.api.ai.AgentChatClient;
+import com.youmi.api.image.ModelApiKeyService;
+import com.youmi.api.common.ApiException;
+import org.springframework.beans.factory.annotation.Autowired;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -16,10 +20,17 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class ReversePromptService {
-  private static final Logger log = LoggerFactory.getLogger(ReversePromptService.class);
+  public static final String REVERSE_PROMPT_MODEL = "gpt-5.6-luna";
+  private AgentChatClient agentChatClient;
+  private ModelApiKeyService modelApiKeyService;
+
+  @Autowired
+  void setPromptModelClients(AgentChatClient agentChatClient, ModelApiKeyService modelApiKeyService) {
+    this.agentChatClient = agentChatClient;
+    this.modelApiKeyService = modelApiKeyService;
+  }
   private final ObjectMapper objectMapper;
   private final DashScopeClient dashScopeClient;
-  private final XfyunVisionClient xfyunVisionClient;
   private final ReversePromptTemplateService templateService;
 
   public ReversePromptService(
@@ -29,7 +40,6 @@ public class ReversePromptService {
       ReversePromptTemplateService templateService) {
     this.objectMapper = objectMapper;
     this.dashScopeClient = dashScopeClient;
-    this.xfyunVisionClient = xfyunVisionClient;
     this.templateService = templateService;
   }
 
@@ -52,7 +62,7 @@ public class ReversePromptService {
 
     String systemPrompt =
         "你是电商图片视觉解析与生图提示词专家。必须严格输出合法 JSON，不输出 Markdown，不解释过程。";
-    AiChatDtos.CompletionResult visionResult = analyzeWithFallback(
+    AiChatDtos.CompletionResult visionResult = analyzeWithConfiguredModel(
         systemPrompt,
         template.systemPrompt(),
         images.get(0));
@@ -216,74 +226,15 @@ public class ReversePromptService {
     return Math.max(0, Math.min(100, scoresNode.path(field).asInt(0)));
   }
 
-  private AiChatDtos.CompletionResult analyzeWithFallback(
-      String systemPrompt,
-      String prompt,
-      String imageUrl) throws Exception {
-    if (!xfyunVisionClient.isConfigured()) {
-      return analyzeWithDashScope(systemPrompt, prompt, imageUrl);
-    }
-
-    try {
-      String content = xfyunVisionClient.analyzeImage(systemPrompt, prompt, imageUrl);
-      return new AiChatDtos.CompletionResult("xfyun", xfyunVisionClient.model(), content);
-    } catch (InterruptedException exception) {
-      Thread.currentThread().interrupt();
-      throw exception;
-    } catch (Exception exception) {
-      if (!isTransientVisionFailure(exception)) throw exception;
-      if (!dashScopeClient.isConfigured()) {
-        throw new IllegalStateException("讯飞视觉服务繁忙，请稍后重试", exception);
-      }
-      log.warn(
-          "Xfyun vision is temporarily unavailable; falling back to DashScope model {}",
-          dashScopeClient.model());
-      try {
-        return analyzeWithDashScope(systemPrompt, prompt, imageUrl);
-      } catch (Exception fallbackException) {
-        fallbackException.addSuppressed(exception);
-        throw fallbackException;
-      }
-    }
-  }
-
-  private AiChatDtos.CompletionResult analyzeWithDashScope(
-      String systemPrompt,
-      String prompt,
-      String imageUrl) throws Exception {
-    return dashScopeClient.completeVision(
-        systemPrompt,
-        prompt,
-        List.of(imageUrl),
-        0.15,
-        4096);
-  }
-
-  private boolean isTransientVisionFailure(Exception exception) {
-    Throwable current = exception;
-    while (current != null) {
-      String message = String.valueOf(current.getMessage()).toLowerCase(Locale.ROOT);
-      if (message.contains("transient")
-          || message.contains("system is busy")
-          || message.contains("10310")
-          || message.contains("authorization failed")
-          || message.contains("authorizationfailed")
-          || message.contains("11200")
-          || message.contains("timeout")
-          || message.contains("timed out")
-          || message.contains("connection")
-          || message.contains(" 401")
-          || message.contains(" 403")
-          || message.contains(" 429")
-          || message.contains(" 500")
-          || message.contains(" 502")
-          || message.contains(" 503")
-          || message.contains(" 504")) {
-        return true;
-      }
-      current = current.getCause();
-    }
-    return false;
+  private AiChatDtos.CompletionResult analyzeWithConfiguredModel(
+      String systemPrompt, String prompt, String imageUrl) throws Exception {
+    if (modelApiKeyService == null || agentChatClient == null)
+      throw new ApiException(503, "获取提示词模型尚未配置，请启用 gpt-5.6-luna");
+    var credential = modelApiKeyService.resolve(REVERSE_PROMPT_MODEL,
+        ModelApiKeyService.MODEL_TYPE_VISION_REASONING)
+        .orElseThrow(() -> new ApiException(503, "获取提示词需要启用 gpt-5.6-luna 模型并配置密钥"));
+    return agentChatClient.completeConfiguredModel(credential, systemPrompt, prompt,
+        List.of(imageUrl), 0.15, "reverse-prompt", "fixed_model", 4096);
   }
 
   private String buildPromptText(JsonNode promptJson, Map<String, String> fieldLabels) {

@@ -48,6 +48,22 @@ class VideoTaskSubmissionsTest {
     assertEquals(409, assertThrows(ApiException.class,
         () -> restarted.create(7L, input, () -> { fail("duplicate provider submission"); return receipt(); })).getCode());
   }
+  @Test void connectionTimeoutIsDefinitelyFailedWithoutAutomaticReplay() throws Exception {
+    var service = new VideoTaskSubmissions(new ObjectMapper(), temp.toString());
+    var input = request("connect-timeout", "motion");
+    assertEquals(424, assertThrows(ApiException.class, () -> service.create(7L, input,
+        () -> { throw new java.net.http.HttpConnectTimeoutException("HTTP connect timed out"); })).getCode());
+    assertEquals("failed", service.lookup(7L, "connect-timeout").status());
+    assertThrows(ApiException.class, () -> service.create(7L, input,
+        () -> { fail("must not automatically replay"); return receipt(); }));
+  }
+  @Test void requestTimeoutRemainsUncertain() throws Exception {
+    var service = new VideoTaskSubmissions(new ObjectMapper(), temp.toString());
+    assertThrows(java.net.http.HttpTimeoutException.class, () -> service.create(7L,
+        request("read-timeout", "motion"),
+        () -> { throw new java.net.http.HttpTimeoutException("request timed out"); }));
+    assertEquals("unknown", service.lookup(7L, "read-timeout").status());
+  }
   @Test void definiteRejectionIsDiscoverableButReusesTheSameOutcome() throws Exception {
     var service = new VideoTaskSubmissions(new ObjectMapper(), temp.toString());
     var input = request("client-3", "motion");

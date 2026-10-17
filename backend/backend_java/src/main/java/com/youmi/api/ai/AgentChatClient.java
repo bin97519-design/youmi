@@ -212,8 +212,11 @@ public class AgentChatClient {
     Map<String, Object> body = new LinkedHashMap<>();
     body.putAll(credential.defaultData());
     body.put("model", credential.model());
-    body.put("max_tokens", maxTokens == null ? Math.max(200, properties.getMaxTokens())
-        : Math.max(200, Math.min(16000, maxTokens)));
+    int tokenBudget = maxTokens == null ? Math.max(200, properties.getMaxTokens())
+        : Math.max(200, Math.min(16000, maxTokens));
+    if (maxTokens == null && "canvas-agent".equals(source)
+        && userPrompt != null && userPrompt.length() > 8000) tokenBudget = Math.max(tokenBudget, 16000);
+    body.put("max_tokens", tokenBudget);
     body.put("temperature", temperature == null ? properties.getTemperature() : temperature);
     body.put("messages", messages);
     HttpRequest request = HttpRequest.newBuilder()
@@ -246,8 +249,22 @@ public class AgentChatClient {
       throw new IllegalStateException(
           "识图推理模型请求失败（HTTP " + response.statusCode() + "）: " + detail);
     }
-    String contentText = readContent(objectMapper.readTree(response.body()));
-    if (contentText.isBlank()) throw new IllegalStateException("识图推理模型返回内容为空");
+    JsonNode responseRoot = objectMapper.readTree(response.body());
+    String contentText = readContent(responseRoot);
+    if (contentText.isBlank()) {
+      String finishReason = responseRoot.path("choices").path(0).path("finish_reason").asText("unknown");
+      log.warn("Configured model returned no text: model={}, finishReason={}, completionTokens={}, budget={}",
+          credential.model(), finishReason, responseRoot.path("usage").path("completion_tokens").asInt(-1), tokenBudget);
+      if ("length".equals(finishReason) && tokenBudget < 16000) {
+        return completeConfiguredModel(credential, systemPrompt, userPrompt, imageUrls, temperature,
+            source, selectionMode, 16000, timeout);
+      }
+      if ("length".equals(finishReason))
+        throw new IllegalStateException("模型输出额度已耗尽但未返回正文，请分段策划或减少本轮参考图后重试");
+      if ("content_filter".equals(finishReason))
+        throw new IllegalStateException("模型通道过滤了本次内容，请调整输入后重试");
+      throw new IllegalStateException("模型通道未返回回复正文（结束原因：" + finishReason + "），请稍后重试");
+    }
     return new AiChatDtos.CompletionResult(credential.provider(), credential.model(), contentText);
   }
 

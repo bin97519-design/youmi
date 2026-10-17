@@ -27,6 +27,33 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 class VideoGenerationClientTest {
+  @Test
+  void slowPersistenceDoesNotBlockPollingOrStartDuplicateDownloads() throws Exception {
+    var client = new VideoGenerationClient(new ObjectMapper(), new VideoGenerationProperties(), mock(OssStorageService.class));
+    var started = new java.util.concurrent.CountDownLatch(1);
+    var release = new java.util.concurrent.CountDownLatch(1);
+    var calls = new java.util.concurrent.atomic.AtomicInteger();
+    java.util.concurrent.Callable<String> work = () -> {
+      calls.incrementAndGet(); started.countDown();
+      release.await(); return "https://oss.example/video.mp4";
+    };
+    try {
+      org.junit.jupiter.api.Assertions.assertNull(client.persistVideoAsync("slow-task", work));
+      assertTrue(started.await(2, java.util.concurrent.TimeUnit.SECONDS));
+      org.junit.jupiter.api.Assertions.assertNull(client.persistVideoAsync("slow-task", work));
+      assertEquals(1, calls.get());
+      release.countDown();
+      String result = null;
+      for (int i = 0; i < 100 && result == null; i++) {
+        result = client.persistVideoAsync("slow-task", work);
+        if (result == null) Thread.sleep(10);
+      }
+      assertEquals("https://oss.example/video.mp4", result);
+      assertEquals(result, client.persistVideoAsync("slow-task", work));
+      assertEquals(1, calls.get());
+    } finally { release.countDown(); client.stopPersistenceWorkers(); }
+  }
+
   private final ObjectMapper objectMapper = new ObjectMapper();
   private final OssStorageService ossStorageService = mock(OssStorageService.class);
   private HttpServer server;

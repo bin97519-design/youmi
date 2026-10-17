@@ -64,6 +64,13 @@ public class VideoTaskSubmissions {
           write(path, new Saved(request, "accepted", receipt, 0, ""));
           return response;
         } catch (Exception error) {
+          // A connection timeout occurs before the HTTP request reaches the provider.
+          // Read/request timeouts still have an uncertain outcome and must not be replayed.
+          if (error instanceof java.net.http.HttpConnectTimeoutException) {
+            var failure = new ApiException(424, "连接中转站超时，任务未提交，请重新提交");
+            write(path, new Saved(request, "failed", null, failure.getCode(), failure.getMessage()));
+            throw failure;
+          }
           boolean rejected = error instanceof ApiException api && api.getCode() >= 400
               && api.getCode() < 500 && api.getCode() != 408 && api.getCode() != 409;
           write(path, new Saved(request, rejected ? "failed" : "unknown", null,
