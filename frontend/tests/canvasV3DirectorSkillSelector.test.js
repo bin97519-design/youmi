@@ -493,8 +493,5 @@ test('Director panel serializes Skill markers and structured parts in send state
   assert.match(submitBody, /serializedSkills\.map\(\(skill\) => skill\.structuredPart\)/)
   assert.match(submitBody, /selectedSkills\.value = \[\]/)
   assert.match(submitBody, /selectedSkills\.value\.length/)
-  assert.match(
-    source,
-    /:disabled="!prompt\.trim\(\) && !selectedModels\.length && !selectedSkills\.length"/,
-  )
+  assert.match(source, /:disabled="[\s\S]*?attachmentUploadActive \|\|[\s\S]*?\(!prompt\.trim\(\)/)
 })

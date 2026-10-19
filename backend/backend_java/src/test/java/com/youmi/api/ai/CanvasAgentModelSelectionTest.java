@@ -38,7 +38,7 @@ class CanvasAgentModelSelectionTest {
     when(gem.complete(anyString(), anyString(), anyList(), anyDouble(), eq(true)))
         .thenReturn(new AiChatDtos.CompletionResult("lk888", GemAgentClient.MODEL, "invalid"))
         .thenReturn(new AiChatDtos.CompletionResult("lk888", GemAgentClient.MODEL, REPLY));
-    var request = mapper.readValue("{\"instruction\":\"hello\",\"agentModel\":\"gem-3.8-flash\"}", CanvasAgentDtos.ChatRequest.class);
+    var request = mapper.readValue("{\"instruction\":\"帮我分析窗帘的卖点\",\"agentModel\":\"gem-3.8-flash\"}", CanvasAgentDtos.ChatRequest.class);
     assertEquals("ok", service.chat(request).reply());
     verify(gem, times(2)).complete(anyString(), anyString(), anyList(), anyDouble(), eq(true));
     verifyNoInteractions(legacy);
@@ -97,7 +97,7 @@ class CanvasAgentModelSelectionTest {
     var databaseService = new CanvasAgentService(mapper, legacy, gem, keys);
 
     var response = databaseService.chat(mapper.readValue(
-        "{\"instruction\":\"hello\",\"agentModel\":\"default\"}",
+        "{\"instruction\":\"帮我分析窗帘的卖点\",\"agentModel\":\"default\"}",
         CanvasAgentDtos.ChatRequest.class));
     assertEquals("database-agent", response.model());
     assertEquals("enhanced", databaseService.enhancePrompt(
@@ -137,7 +137,7 @@ class CanvasAgentModelSelectionTest {
     List<String> thinkingDeltas = new java.util.ArrayList<>();
 
     var response = databaseService.chatStream(
-        mapper.readValue("{\"instruction\":\"hello\",\"agentModel\":\"default\"}",
+        mapper.readValue("{\"instruction\":\"帮我分析窗帘的卖点\",\"agentModel\":\"default\"}",
             CanvasAgentDtos.ChatRequest.class),
         thinkingDeltas::add,
         replyDeltas::add);

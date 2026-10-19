@@ -307,15 +307,20 @@ test('Canvas shell consumes Director submits through a two-stage plan and genera
   const handleSubmit = getFunction(shell, 'handleDirectorSubmit')
   const plan = getFunction(shell, 'planDirectorMessage')
   const submitDraft = getFunction(shell, 'submitDirectorDraft')
+  const prepareNode = getFunction(shell, 'ensureDirectorDraftNode')
   const confirm = getFunction(shell, 'confirmDirectorGeneration')
 
-  assert.match(directorTag, /:agent-runs="directorAgentRuns"/)
+  assert.match(directorTag, /:agent-runs="directorDisplayRuns"/)
+  assert.match(directorTag, /:image-models="tasks.imageModels"/)
   assert.match(directorTag, /@submit="handleDirectorSubmit"/)
   assert.match(directorTag, /@confirm-generation="confirmDirectorGeneration"/)
   assert.match(directorTag, /@retry-agent="retryDirectorAgent"/)
 
   assert.match(handleSubmit, /dryRun:\s*message\.dryRunIntent !== false/)
-  assert.match(handleSubmit, /const generationIntent = createDirectorGenerationIntent\(message\)/)
+  assert.match(
+    handleSubmit,
+    /const generationIntent = inheritedIntent \|\| createDirectorGenerationIntent\(message\)/,
+  )
   assert.match(handleSubmit, /generationIntent,/)
   assert.match(handleSubmit, /clientTaskId:\s*directorRequestId\(['"]director-image['"]\)/)
   assert.match(handleSubmit, /submissionStarted:\s*false/)
@@ -330,9 +335,10 @@ test('Canvas shell consumes Director submits through a two-stage plan and genera
   assert.match(shell, /event\.type === ['"]reply_delta['"]/)
   assert.match(shell, /phase:\s*['"]streaming['"]/)
   assert.match(panel, /['"]planning['"], ['"]streaming['"], ['"]submitting['"]/)
-  assert.match(panel, /cv3-director-caret-blink/)
+  assert.doesNotMatch(panel, /cv3-director-caret-blink|cv3-director-thinking-caret/)
   assert.match(shell, /if \(!requested\.length && !intent\.nodeModel\) return \[\]/)
-  assert.match(plan, /Agent 不会替你选择付费模型/)
+  assert.match(plan, /请在下方确认生图模型和参数/)
+  assert.match(plan, /if \(directorImagePlan\(nextRun\)\) await ensureDirectorDraftNode\(runId\)/)
   assert.match(shell, /if \(requestedKeys\.size > 1\)[\s\S]*?一次生成只能选择一个模型/)
   assert.match(plan, /canCreateAgentDraft\(response, prompts\)/)
   assert.match(
@@ -344,14 +350,17 @@ test('Canvas shell consumes Director submits through a two-stage plan and genera
   assert.match(submitDraft, /directorGenerationSubmissions\.has\(runId\)/)
   assert.match(submitDraft, /directorGenerationSubmissions\.add\(runId\)/)
   assert.match(submitDraft, /graph\.(?:createImageVariation|addNode)\(/)
-  assert.match(submitDraft, /graph\.connect\(/)
+  assert.match(submitDraft, /await ensureDirectorDraftNode\(runId\)/)
+  assert.match(prepareNode, /graph\.(?:createImageVariation|addNode)\(/)
+  assert.match(prepareNode, /graph\.connect\(/)
+  assert.doesNotMatch(prepareNode, /tasks\.runImage|fetch\(/)
   assert.match(
     submitDraft,
     /await tasks\.runImage\(target\.id, focusGenerated, \{[\s\S]*?clientTaskId:\s*run\.clientTaskId,[\s\S]*?onSubmitStart:/,
   )
   assert.match(
     submitDraft,
-    /run\.submissionStarted \|\| run\.submissionState === ['"]uncertain['"]/,
+    /directorSubmissionStarted\(run\) \|\| run\.submissionState === ['"]uncertain['"]/,
   )
   assert.match(submitDraft, /generation:\s*\{[\s\S]*?clientTaskId:\s*run\.clientTaskId/)
   assert.match(submitDraft, /await tasks\.resume\(resumed\.id\)/)
@@ -367,9 +376,9 @@ test('Canvas shell consumes Director submits through a two-stage plan and genera
   assert.doesNotMatch(submitDraft, /fetch\s*\(|\/api\/image-tasks|\/api\/video-tasks/)
   assert.match(shell, /tasks\.attach\(props\.projectId, \{ beforeImageSubmit: saveNow \}\)/)
 
-  assert.match(confirm, /run\.phase !== ['"]ready['"]/)
-  assert.match(confirm, /run\.draft\?\.generationType !== ['"]image['"]/)
-  assert.match(confirm, /void submitDirectorDraft\(runId\)/)
+  assert.match(confirm, /directorImagePlan\(run\)/)
+  assert.match(confirm, /createDirectorImageExecutionIntent\(/)
+  assert.match(confirm, /await submitDirectorDraft\(runId\)/)
 })
 
 test('Director task orchestration keeps mode selection inert and unsafe media out of auto-submit', async () => {

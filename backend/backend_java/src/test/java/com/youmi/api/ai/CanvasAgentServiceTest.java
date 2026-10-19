@@ -18,6 +18,45 @@ import org.junit.jupiter.api.Test;
 
 class CanvasAgentServiceTest {
   @Test
+  void returnsOneStableWelcomeForGreetingWithoutCallingThePaidModel() throws Exception {
+    AgentChatClient client = mock(AgentChatClient.class);
+    CanvasAgentService service = new CanvasAgentService(new ObjectMapper(), client);
+    StringBuilder thinking = new StringBuilder();
+    StringBuilder reply = new StringBuilder();
+
+    CanvasAgentDtos.ChatResponse response = service.chatStream(
+        new CanvasAgentDtos.ChatRequest(
+            "canvas-1", "你好呀", List.of(), List.of(), List.of(), List.of(),
+            "banana2", "auto", "2K", 1),
+        thinking::append,
+        reply::append);
+
+    assertTrue(thinking.toString().contains("中文问候"));
+    assertFalse(thinking.toString().matches(".*[A-Za-z]{4,}.*"));
+    assertEquals(response.reply(), reply.toString());
+    assertTrue(response.reply().contains("有米家居创作导演"));
+    assertTrue(response.reply().contains("窗帘、床垫、实木床和儿童床"));
+    assertFalse(response.readyToGenerate());
+    assertTrue(response.draftPrompts().isEmpty());
+    verify(client, never()).completeCanvasAgent(anyList(), anyDouble());
+  }
+
+  @Test
+  void greetingDuringAnExistingConversationDoesNotReplayTheWelcomeMenu() throws Exception {
+    AgentChatClient client = mock(AgentChatClient.class);
+    CanvasAgentService service = new CanvasAgentService(new ObjectMapper(), client);
+    var response = service.chat(new CanvasAgentDtos.ChatRequest(
+        "canvas-1", "你好", List.of(new CanvasAgentDtos.ChatMessage("user", "想做一款窗帘的主图")),
+        List.of(), List.of(), List.of(), "banana2", "auto", "2K", 1));
+
+    assertTrue(response.reply().length() < 80);
+    assertFalse(response.reply().contains("我可以帮你"));
+    assertFalse(response.readyToGenerate());
+    assertTrue(response.draftPrompts().isEmpty());
+    org.mockito.Mockito.verifyNoInteractions(client);
+  }
+
+  @Test
   void retainsFullScriptRulesAndDetailedVideoDraftAcrossProductInformationFollowup() throws Exception {
     AgentChatClient client = mock(AgentChatClient.class);
     when(client.isConfigured()).thenReturn(true);
@@ -40,6 +79,8 @@ class CanvasAgentServiceTest {
     String sent = messages.getValue().toString();
     assertTrue(sent.contains(rules));
     assertTrue(sent.contains(instruction));
+    assertTrue(sent.contains(HomeCommerceAgentProfile.CONTEXT));
+    assertTrue(sent.contains(HomeCommerceAgentProfile.CHAT_GUIDANCE));
     assertTrue(sent.contains("口播设计"));
     assertTrue(sent.contains("每秒3至4字"));
     assertTrue(sent.contains("分镜1（0秒-4秒）："));
@@ -212,7 +253,11 @@ class CanvasAgentServiceTest {
     assertEquals(
         "保留床垫主体结构，置于明亮自然的现代卧室中，柔和晨光从侧窗进入。",
         response.prompt());
-    verify(agentChatClient).completeCanvasAgent(anyList(), anyDouble());
+    var messages = org.mockito.ArgumentCaptor.forClass(List.class);
+    verify(agentChatClient).completeCanvasAgent(messages.capture(), anyDouble());
+    String system = ((AiChatDtos.Message) messages.getValue().get(0)).content();
+    assertTrue(system.startsWith(HomeCommerceAgentProfile.CONTEXT));
+    assertTrue(system.contains("只输出润色后的提示词正文"));
     verify(agentChatClient, never())
         .completeCanvasAgentVision(anyString(), anyString(), anyList(), anyDouble());
   }
@@ -401,6 +446,11 @@ class CanvasAgentServiceTest {
     assertEquals("2K", generate.resolution());
     assertEquals(List.of("image-1"), generate.referenceLayerIds());
     assertEquals("arrange", response.steps().get(1).action());
+    var system = org.mockito.ArgumentCaptor.forClass(String.class);
+    verify(agentChatClient).completeCanvasAgentVision(
+        system.capture(), anyString(), anyList(), anyDouble());
+    assertTrue(system.getValue().startsWith(HomeCommerceAgentProfile.CONTEXT));
+    assertTrue(system.getValue().contains("只能使用以下动作"));
   }
 
   @Test

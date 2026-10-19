@@ -87,7 +87,7 @@ const modelLabel = computed(
   () =>
     modelOptions.value.find((model) => model.value === props.node.data.model)?.label ||
     props.node.data.model ||
-    spec.value.model,
+    (props.node.data.directorRunId ? '请选择生图模型' : spec.value.model),
 )
 const cost = computed(() =>
   props.node.data.kind === 'image'

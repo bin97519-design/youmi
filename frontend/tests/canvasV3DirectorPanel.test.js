@@ -30,21 +30,27 @@ test('the shell uses the independent Director panel and hides its launcher while
   assert.match(utilityTag, /!\['nodes', 'assistant'\]\.includes\(activePanel\)/)
 })
 
-test('the floating Director panel keeps the captured LibTV geometry and welcome actions', async () => {
+test('the floating Director panel keeps its geometry and introduces the four home product workflows', async () => {
   const source = await readFile(componentUrl, 'utf8')
 
   assert.match(source, /const DEFAULT_RECT = \{ right: 16, bottom: 16, width: 400, height: 640 \}/)
   assert.match(source, /border-radius: 28px/)
 
   const welcomeActions = [
-    '感知画布开始创作',
-    '从爆款预设开始剧本原创',
-    '上传故事来改编',
-    '批量优化提示词',
+    '有米家居创作导演',
+    '专注窗帘、床垫、实木床与儿童床的电商内容创作',
+    '窗帘：场景与卖点策划',
+    '床垫：体验与视频策划',
+    '实木床：结构与质感表达',
+    '儿童床：空间与使用演示',
   ]
   for (const copy of welcomeActions) {
     assert.ok(source.includes(copy), `missing welcome copy: ${copy}`)
   }
+  const shortcutBody = source.match(/function activateShortcut\(shortcut\)[\s\S]*?\n\}/)?.[0] || ''
+  assert.match(shortcutBody, /prompt\.value = shortcut\.prompt/)
+  assert.match(shortcutBody, /composerInput\.value\?\.focus/)
+  assert.doesNotMatch(shortcutBody, /emit\(|submit|selectMode\(/)
 })
 
 test('the Director panel persists and exposes all eight resize hit areas', async () => {

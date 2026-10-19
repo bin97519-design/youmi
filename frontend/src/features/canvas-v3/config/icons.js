@@ -151,6 +151,14 @@ export const CANVAS_ICONS = {
     '0 0 20 20',
     '<g fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></g>',
   ),
+  filter: icon(
+    '0 0 20 20',
+    '<path d="M3 5h14M6 10h8m-5 5h2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/>',
+  ),
+  folder: icon(
+    '0 0 20 20',
+    '<path d="M2.5 5.5A1.5 1.5 0 0 1 4 4h4l1.6 1.75H16A1.5 1.5 0 0 1 17.5 7.25v7.25A1.5 1.5 0 0 1 16 16H4a1.5 1.5 0 0 1-1.5-1.5z" fill="currentColor"/><path d="M2.8 7h14.4" fill="none" stroke="rgba(255,255,255,.35)" stroke-width=".8"/>',
+  ),
   diamond: icon('0 0 20 20', path('M5 3h10l4 5-9 10L1 8z')),
   text: icon(
     '0 0 20 20',

@@ -29,6 +29,7 @@ class CanvasAgentTextNodeTest {
     verify(agent).completeCanvasAgent(messages.capture(), eq(0.3));
     String system = ((AiChatDtos.Message) messages.getValue().get(0)).content();
     String prompt = ((AiChatDtos.Message) messages.getValue().get(1)).content();
+    assertTrue(system.startsWith(HomeCommerceAgentProfile.CONTEXT));
     assertTrue(system.contains("不触发图片或视频生成"));
     assertTrue(prompt.contains("full original"));
     assertTrue(prompt.contains("keep caption"));

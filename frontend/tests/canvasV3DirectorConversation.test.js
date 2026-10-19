@@ -40,7 +40,7 @@ test('Director conversation matches the observed LibTV message hierarchy and act
   assert.match(source, /thinkingPreviewTimers/)
   assert.match(source, /aria-label="停止生成"/)
   assert.match(source, /emit\('cancel-agent', activeAgentRun\.value\.id\)/)
-  assert.match(source, /copyMessage\(item\.run\.id, item\.run\.reply\)/)
+  assert.match(source, /copyMessage\(item\.run\.id, directorRunDisplayText\(item\.run\)\)/)
 
   const messagesRule = source.match(/\.cv3-director-messages\s*\{([\s\S]*?)\n\}/)?.[1] || ''
   assert.match(messagesRule, /overflow-y:\s*scroll/)
@@ -74,6 +74,41 @@ test('Director conversation matches the observed LibTV message hierarchy and act
   assert.match(source, /class="cv3-director-thinking-copy"/)
 })
 
+test('clarification lives in a paged bottom dock and leaves its record in the Agent message', async () => {
+  const source = await readFile(panelUrl, 'utf8')
+  assert.match(source, /directorConversationItems\(sentMessages\.value, props\.agentRuns\)/)
+  assert.match(source, /mode="record"[\s\S]*?:answers="item\.run\.clarificationAnswers \|\| \[\]"/)
+  assert.match(source, /v-if="pendingClarificationRun" class="cv3-director-question-dock"/)
+  assert.match(
+    source,
+    /mode="form"[\s\S]*?@answer="submitClarification\(pendingClarificationRun, \$event\)"/,
+  )
+  assert.match(source, /v-else\s+class="cv3-director-composer"/)
+  assert.match(source, /run\.clarificationReplyRunId/)
+  assert.match(
+    source,
+    /isDirectorClarificationComplete\(run\.questions, run\.clarificationAnswers\)/,
+  )
+  assert.match(source, /<DirectorRichText[\s\S]*?:text="text"/)
+  assert.match(source, /<DirectorRichText :text="item\.run\.draft\.prompt"/)
+  assert.match(source, /本轮补充素材/)
+  assert.match(
+    source,
+    /parts: readyAttachments\.value\.map\(serializeDirectorAttachment\)\.filter\(Boolean\)/,
+  )
+  assert.match(source, /有附件上传失败，请重新上传或移除后再提交/)
+  assert.match(source, /aria-label="已补充的素材"/)
+  const shell = await readFile(shellUrl, 'utf8')
+  assert.match(
+    shell,
+    /directorClarificationInstruction\(directorAgentRuns\.value, sourceRunId, currentInstruction\)/,
+  )
+  assert.match(
+    shell,
+    /directorClarificationAssetsIntent\([\s\S]*?source\.generationIntent,[\s\S]*?createDirectorGenerationIntent\(message\)\.attachments/,
+  )
+})
+
 test('Director rich text safely supports long-form Markdown without HTML injection', async () => {
   const source = await readFile(richTextUrl, 'utf8')
 
@@ -85,9 +120,12 @@ test('Director rich text safely supports long-form Markdown without HTML injecti
   assert.match(source, /rel="noreferrer"/)
   assert.doesNotMatch(source, /v-html/)
   assert.doesNotMatch(source, /innerHTML/)
+  assert.match(source, /'is-wide': block\.header\.length >= 4/)
+  assert.match(source, /min-width:\s*780px/)
+  assert.match(source, /overflow-x:\s*auto/)
 })
 
-test('Director header controls create, restore, share and configure conversations', async () => {
+test('Director header controls create, restore, delete, share and configure conversations', async () => {
   const source = await readFile(panelUrl, 'utf8')
 
   assert.match(source, /@click\.stop="startNewConversation"/)
@@ -97,9 +135,13 @@ test('Director header controls create, restore, share and configure conversation
   assert.match(source, /@click\.stop="togglePlugin"/)
   assert.match(source, /v-for="conversation in conversations"/)
   assert.match(source, /@click="restoreConversation\(conversation\)"/)
+  assert.match(source, /class="cv3-director-history-delete"/)
+  assert.match(source, /:aria-label="`删除对话 \$\{conversation\.title \|\| '新对话'\}`"/)
+  assert.match(source, /@click\.stop="deleteConversation\(conversation\)"/)
   assert.match(source, /emit\('new-conversation'\)/)
   assert.match(source, /emit\('load-conversations'\)/)
   assert.match(source, /emit\('select-conversation', conversation\)/)
+  assert.match(source, /emit\('delete-conversation', conversation,/)
 })
 
 test('Canvas shell persists complete Director sessions and restores the selected run history', async () => {
@@ -112,13 +154,18 @@ test('Canvas shell persists complete Director sessions and restores the selected
   assert.match(source, /\/api\/ai\/canvas-agent\/conversations\?canvasId=/)
   assert.match(source, /function startDirectorConversation\(/)
   assert.match(source, /function selectDirectorConversation\(/)
+  assert.match(source, /async function deleteDirectorConversation\(conversation, complete\)/)
+  assert.match(source, /method:\s*'DELETE'/)
+  assert.match(source, /directorConversations\.value = directorConversations\.value\.filter/)
   assert.match(source, /conversationId:\s*directorConversationId\.value/)
   assert.match(source, /agentModel:\s*'default'/)
   assert.match(source, /thinking:\s*\[/)
   assert.match(directorTag, /:conversations="directorConversations"/)
   assert.match(directorTag, /:conversation-id="directorConversationId"/)
+  assert.match(directorTag, /:conversation-deleting-ids="directorConversationDeletingIds"/)
   assert.match(directorTag, /@new-conversation="startDirectorConversation"/)
   assert.match(directorTag, /@select-conversation="selectDirectorConversation"/)
+  assert.match(directorTag, /@delete-conversation="deleteDirectorConversation"/)
   assert.match(directorTag, /@cancel-agent="cancelDirectorAgent"/)
   assert.match(source, /function cancelDirectorAgent\(runId\)/)
   assert.match(source, /event\.type === 'thinking_delta'/)

@@ -173,8 +173,14 @@ const blocks = computed(() => parseMarkdown(props.text))
           </template>
         </li>
       </component>
-      <div v-else-if="block.type === 'table'" class="cv3-director-table-wrap">
-        <table>
+      <div
+        v-else-if="block.type === 'table'"
+        class="cv3-director-table-wrap"
+        role="region"
+        aria-label="表格，可左右滚动"
+        tabindex="0"
+      >
+        <table :class="{ 'is-wide': block.header.length >= 4 }">
           <thead>
             <tr>
               <th v-for="(cell, cellIndex) in block.header" :key="cellIndex">
@@ -291,6 +297,13 @@ const blocks = computed(() => parseMarkdown(props.text))
   overflow-x: auto;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 10px;
+  scrollbar-color: #666 #262626;
+  scrollbar-width: thin;
+}
+
+.cv3-director-table-wrap:focus-visible {
+  outline: 1px solid #9a9a9a;
+  outline-offset: 2px;
 }
 
 .cv3-director-rich-text table {
@@ -298,6 +311,23 @@ const blocks = computed(() => parseMarkdown(props.text))
   min-width: 320px;
   margin: 0;
   border-collapse: collapse;
+}
+
+.cv3-director-rich-text table.is-wide {
+  min-width: 780px;
+  table-layout: fixed;
+}
+
+.cv3-director-rich-text table.is-wide :where(th, td):first-child {
+  width: 42px;
+}
+
+.cv3-director-rich-text table.is-wide :where(th, td):nth-child(2) {
+  width: 68px;
+}
+
+.cv3-director-rich-text table.is-wide th {
+  white-space: nowrap;
 }
 
 .cv3-director-rich-text :where(th, td) {

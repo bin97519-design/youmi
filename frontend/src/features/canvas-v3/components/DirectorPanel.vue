@@ -11,10 +11,37 @@ import {
 } from '../config/directorModes.js'
 import { serializeDirectorModelChip } from '../config/directorModelCatalog.js'
 import { serializeDirectorSkillChip } from '../config/directorSkillCatalog.js'
+import {
+  directorConversationItems,
+  directorRunDisplayText,
+} from '../config/directorConversation.js'
+import {
+  DIRECTOR_REFERENCE_IMAGE_LIMIT,
+  directorImageSourceMode,
+  isDirectorClarificationComplete,
+  isDirectorClarificationReady,
+  normalizeDirectorClarificationAnswers,
+  serializeDirectorClarificationAnswers,
+} from '../config/directorClarifications.js'
+import {
+  DIRECTOR_ATTACHMENT_LIMIT,
+  directorAttachmentKind,
+  directorAttachmentMaxBytes,
+  directorAttachmentSizeLabel,
+  normalizeDirectorAsset,
+  serializeDirectorAttachment,
+} from '../config/directorAttachments.js'
 import { imageMiCost } from '../../../utils/imageMiPricing.js'
+import { uploadFileDirect } from '../../../utils/ossUpload.js'
 import AgentOrb from './AgentOrb.vue'
 import CanvasIcon from './CanvasIcon.vue'
+import DirectorAttachmentPicker from './DirectorAttachmentPicker.vue'
 import DirectorRichText from './DirectorRichText.vue'
+import DirectorClarificationCard from './DirectorClarificationCard.vue'
+import DirectorReferenceUpload from './DirectorReferenceUpload.vue'
+import DirectorImageExecutionCard from './DirectorImageExecutionCard.vue'
+import { directorMessagesFromRuns } from '../config/directorRecentConversation.js'
+import { directorReferenceImages } from '../config/directorImageSources.js'
 import DirectorGenerationModePicker from './DirectorGenerationModePicker.vue'
 import DirectorModelPicker from './DirectorModelPicker.vue'
 import DirectorSkillPicker from './DirectorSkillPicker.vue'
@@ -27,7 +54,14 @@ const props = defineProps({
   agentRuns: { type: Array, default: () => [] },
   conversations: { type: Array, default: () => [] },
   conversationId: { type: String, default: '' },
+  conversationMessages: { type: Array, default: () => [] },
+  restoring: { type: Boolean, default: false },
+  restoreError: { type: String, default: '' },
   conversationLoading: { type: Boolean, default: false },
+  conversationDeletingIds: { type: Array, default: () => [] },
+  availableAssets: { type: Array, default: () => [] },
+  imageModels: { type: Array, default: () => [] },
+  imageModelError: { type: String, default: '' },
 })
 const emit = defineEmits([
   'close',
@@ -36,12 +70,18 @@ const emit = defineEmits([
   'dock-width-commit',
   'generation-mode-change',
   'submit',
+  'answer-clarification',
   'cancel-agent',
   'confirm-generation',
+  'prepare-generation',
+  'locate-generation',
+  'refresh-image-models',
   'retry-agent',
   'new-conversation',
   'load-conversations',
+  'restore-recent',
   'select-conversation',
+  'delete-conversation',
 ])
 const STORAGE_KEY = 'libtv:chatAgentDrawer:floatRect'
 const GENERATION_MODE_KEY = 'libtv:director:generationMode'
@@ -63,7 +103,14 @@ const directorRoleInput = ref(null)
 const skillFileInput = ref(null)
 const composerInput = ref(null)
 const prompt = ref('')
-const sentMessages = ref([])
+const sentMessages = ref([
+  ...new Map(
+    [
+      ...directorUserMessages(props.conversationMessages),
+      ...directorMessagesFromRuns(props.agentRuns),
+    ].map((message) => [message.id, message]),
+  ).values(),
+])
 const thinkingOpen = ref(new Set())
 const thinkingPreviewText = ref({})
 const messageFeedback = ref({})
@@ -81,6 +128,7 @@ const rect = reactive({ ...DEFAULT_RECT })
 const drag = reactive({ active: false, kind: '', direction: '', cursor: '', start: null })
 const activeModeId = ref('omni')
 const modeMenuOpen = ref(false)
+const attachmentMenuOpen = ref(false)
 const modelMenuOpen = ref(false)
 const skillMenuOpen = ref(false)
 const generationModeMenuOpen = ref(false)
@@ -105,8 +153,24 @@ const activeSkillChipId = ref('')
 const draggedSkillChipIndex = ref(-1)
 const skillCreationOpen = ref(false)
 const skillCreationChoice = ref('blank')
+const attachments = ref([])
+const pendingImageSourceMode = ref('')
+const excludedReferenceIds = ref([])
+const referenceRoles = ref({})
+const draggedAttachmentIndex = ref(-1)
 
 const activeMode = computed(() => getDirectorMode(activeModeId.value))
+const readyAttachments = computed(() =>
+  attachments.value.filter((attachment) => attachment.status === 'ready' && attachment.url),
+)
+const attachmentUploadActive = computed(() =>
+  attachments.value.some((attachment) => attachment.status === 'uploading'),
+)
+const attachedLibraryIds = computed(() =>
+  attachments.value
+    .filter((attachment) => attachment.source === 'library')
+    .map((attachment) => String(attachment.id)),
+)
 const activeDirectorRole = computed(
   () => DIRECTOR_ROLES.find((role) => role.id === activeDirectorRoleId.value) || DIRECTOR_ROLES[0],
 )
@@ -118,24 +182,43 @@ const activeAgentRun = computed(() => {
   }
   return null
 })
-const conversationItems = computed(() => {
-  const items = []
-  const runsByMessageId = new Map(
-    props.agentRuns.filter((run) => run.clientMessageId).map((run) => [run.clientMessageId, run]),
+const pendingClarificationRun = computed(() => {
+  if (activeAgentRun.value) return null
+  const run = props.agentRuns.at(-1)
+  if (
+    !run?.questions?.length ||
+    run.clarificationReplyRunId ||
+    !['awaiting_input', 'complete'].includes(run.phase) ||
+    isDirectorClarificationComplete(run.questions, run.clarificationAnswers)
   )
-  const renderedRuns = new Set()
-  for (const [index, message] of sentMessages.value.entries()) {
-    items.push({ type: 'user', key: message?.id || `user-${index}`, message })
-    const run = message?.id ? runsByMessageId.get(message.id) : null
-    if (run) {
-      items.push({ type: 'agent', key: run.id, run })
-      renderedRuns.add(run.id)
-    }
-  }
-  for (const run of props.agentRuns)
-    if (!renderedRuns.has(run.id)) items.push({ type: 'agent', key: run.id, run })
-  return items
+    return null
+  return run
 })
+const pendingReferenceImages = computed(() =>
+  directorReferenceImages(
+    pendingClarificationRun.value?.generationIntent,
+    attachments.value,
+    excludedReferenceIds.value,
+    referenceRoles.value,
+  ),
+)
+const typedImageQuestions = computed(() =>
+  pendingClarificationRun.value?.questions?.some((question) =>
+    ['image_source', 'image_upload'].includes(question.kind),
+  ),
+)
+watch(
+  () => pendingClarificationRun.value?.id,
+  () => {
+    pendingImageSourceMode.value =
+      pendingClarificationRun.value?.generationIntent?.imageSourceMode || ''
+    excludedReferenceIds.value = []
+    referenceRoles.value = {}
+  },
+)
+const conversationItems = computed(() =>
+  directorConversationItems(sentMessages.value, props.agentRuns),
+)
 const conversationTitle = computed(() => {
   const first = sentMessages.value.find((message) =>
     String(message?.display || message?.content || '').trim(),
@@ -146,6 +229,7 @@ const conversationTitle = computed(() => {
 const hasInlinePopup = computed(
   () =>
     modeMenuOpen.value ||
+    attachmentMenuOpen.value ||
     modelMenuOpen.value ||
     skillMenuOpen.value ||
     generationModeMenuOpen.value ||
@@ -201,10 +285,34 @@ const panelStyle = computed(() =>
 )
 
 const shortcuts = [
-  { id: 'canvas', icon: 'workflow', label: '感知画布开始创作' },
-  { id: 'script', icon: 'storyboard', label: '从爆款预设开始剧本原创' },
-  { id: 'adapt', icon: 'smartEdit', label: '上传故事来改编' },
-  { id: 'optimize', icon: 'text', label: '批量优化提示词' },
+  {
+    id: 'curtains',
+    icon: 'workflow',
+    label: '窗帘：场景与卖点策划',
+    prompt:
+      '我想为窗帘策划电商内容。请结合已有素材，确认还缺的商品资料、投放位置和创作目标，再给出场景、卖点及图片或视频方案；材质、遮光率和功能以我确认的信息为准。先给方案，暂不生成媒体。',
+  },
+  {
+    id: 'mattresses',
+    icon: 'storyboard',
+    label: '床垫：体验与视频策划',
+    prompt:
+      '我想为床垫策划电商内容。请结合已有素材，确认还缺的商品资料、目标人群和投放目标，再给出体验展示与视频脚本方案；结构、软硬、材料和性能以我确认的信息为准，不推断健康效果。先给方案，暂不生成媒体。',
+  },
+  {
+    id: 'solid-wood-beds',
+    icon: 'smartEdit',
+    label: '实木床：结构与质感表达',
+    prompt:
+      '我想为实木床策划电商内容。请结合已有素材，确认还缺的商品资料、空间场景和投放目标，再给出结构、细节与质感表达方案；木种、用材范围、工艺和承重以我确认的信息为准。先给方案，暂不生成媒体。',
+  },
+  {
+    id: 'childrens-beds',
+    icon: 'text',
+    label: '儿童床：空间与使用演示',
+    prompt:
+      '我想为儿童床策划电商内容。请结合已有素材，确认还缺的商品资料、适用年龄和投放目标，再给出空间搭配与日常使用展示方案；尺寸、护栏、材质和认证以我确认的信息为准，不推断安全保证。先给方案，暂不生成媒体。',
+  },
 ]
 
 const resizeDirections = ['w', 'e', 'n', 's', 'nw', 'ne', 'sw', 'se']
@@ -420,6 +528,7 @@ function closeModeMenu({ restoreFocus = false } = {}) {
 
 function closeInlinePopups({ restoreFocus = false } = {}) {
   closeModeMenu({ restoreFocus })
+  attachmentMenuOpen.value = false
   modelMenuOpen.value = false
   skillMenuOpen.value = false
   generationModeMenuOpen.value = false
@@ -488,20 +597,7 @@ function selectMode(modeId, { openSetup = true } = {}) {
 }
 
 function activateShortcut(shortcut) {
-  if (shortcut.id === 'script') {
-    selectMode('script_original')
-    return
-  }
-  if (shortcut.id === 'adapt') {
-    selectMode('script_adaptation', { openSetup: false })
-    nextTick(() => storyFileInput.value?.click())
-    return
-  }
-  if (shortcut.id === 'canvas') {
-    prompt.value = '请感知当前画布内容并给出下一步创作建议'
-  } else if (shortcut.id === 'optimize') {
-    prompt.value = '请批量优化当前画布中的提示词'
-  }
+  prompt.value = shortcut.prompt
   nextTick(() => composerInput.value?.focus({ preventScroll: true }))
 }
 
@@ -557,6 +653,250 @@ function createDirectorRole() {
 
 function chooseDirectorSuggestion(text) {
   prompt.value = text
+  nextTick(() => composerInput.value?.focus({ preventScroll: true }))
+}
+
+function directorAttachmentId(prefix = 'attachment') {
+  return `${prefix}-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`
+}
+
+function attachmentTypeLabel(attachment) {
+  if (attachment.kind === 'image') return '图片'
+  if (attachment.kind === 'video') return '视频'
+  if (attachment.kind === 'audio') return '音频'
+  return '文件'
+}
+
+function messageAttachments(message) {
+  return (Array.isArray(message?.parts) ? message.parts : []).filter(
+    (part) => part?.type === 'attachment' && part.url,
+  )
+}
+
+function cleanupAttachment(attachment) {
+  attachment?.controller?.abort?.()
+  if (attachment?.previewUrl?.startsWith?.('blob:')) URL.revokeObjectURL(attachment.previewUrl)
+}
+
+function removeAttachment(attachmentId) {
+  const index = attachments.value.findIndex((attachment) => attachment.id === attachmentId)
+  if (index < 0) return
+  const [removed] = attachments.value.splice(index, 1)
+  cleanupAttachment(removed)
+  nextTick(() => composerInput.value?.focus({ preventScroll: true }))
+}
+
+function beginAttachmentDrag(event, index) {
+  draggedAttachmentIndex.value = index
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData('text/plain', attachments.value[index]?.id || '')
+}
+
+function dropAttachment(event, targetIndex) {
+  const sourceIndex = draggedAttachmentIndex.value
+  draggedAttachmentIndex.value = -1
+  if (sourceIndex < 0 || sourceIndex === targetIndex) return
+  const next = [...attachments.value]
+  const [moved] = next.splice(sourceIndex, 1)
+  next.splice(targetIndex, 0, moved)
+  attachments.value = next
+  nextTick(() => composerInput.value?.focus({ preventScroll: true }))
+}
+
+function positionAttachmentPreview(event) {
+  const chip = event.currentTarget
+  if (!(chip instanceof HTMLElement)) return
+  const chipRect = chip.getBoundingClientRect()
+  const panelRect = chip.closest('.cv3-director-panel')?.getBoundingClientRect()
+  const previewWidth = 290
+  const viewportInset = 8
+  const panelInset = 12
+  const leftBoundary = Math.max(viewportInset, (panelRect?.left ?? viewportInset) + panelInset)
+  const rightBoundary = Math.min(
+    window.innerWidth - viewportInset,
+    (panelRect?.right ?? window.innerWidth - viewportInset) - panelInset,
+  )
+  const naturalCenter = chipRect.left + chipRect.width / 2
+  const minimumCenter = leftBoundary + previewWidth / 2
+  const maximumCenter = rightBoundary - previewWidth / 2
+  const clampedCenter =
+    minimumCenter <= maximumCenter
+      ? Math.min(maximumCenter, Math.max(minimumCenter, naturalCenter))
+      : Math.min(
+          window.innerWidth - previewWidth / 2 - viewportInset,
+          Math.max(previewWidth / 2 + viewportInset, naturalCenter),
+        )
+  chip.style.setProperty('--cv3-attachment-preview-shift-x', `${clampedCenter - naturalCenter}px`)
+}
+
+async function uploadAttachment(attachment) {
+  if (!attachment?.file) return
+  attachment.controller?.abort?.()
+  const controller = new AbortController()
+  attachment.controller = controller
+  attachment.status = 'uploading'
+  attachment.error = ''
+  attachment.progress = 0
+  try {
+    attachment.url = await uploadFileDirect(attachment.file, {
+      dir: 'youmi-canvas/director-attachments',
+      signal: controller.signal,
+      onProgress: ({ percent }) => {
+        if (!controller.signal.aborted) attachment.progress = Math.max(0, Math.min(100, percent))
+      },
+    })
+    attachment.progress = 100
+    attachment.status = 'ready'
+  } catch (error) {
+    if (error?.name === 'AbortError') return
+    attachment.status = 'error'
+    attachment.error = error?.message || '上传失败，请重试'
+  } finally {
+    if (attachment.controller === controller) attachment.controller = null
+  }
+}
+
+function retryAttachment(attachment) {
+  const maxBytes = directorAttachmentMaxBytes(attachment)
+  if (attachment.size > maxBytes) {
+    showHeaderNotice(
+      `${attachmentTypeLabel(attachment)}不能超过 ${directorAttachmentSizeLabel(maxBytes)}`,
+    )
+    return
+  }
+  void uploadAttachment(attachment)
+}
+
+function handleAttachmentFiles(files) {
+  attachmentMenuOpen.value = false
+  const availableSlots = Math.max(0, DIRECTOR_ATTACHMENT_LIMIT - attachments.value.length)
+  if (!availableSlots) {
+    showHeaderNotice(`最多添加 ${DIRECTOR_ATTACHMENT_LIMIT} 个附件`)
+    return
+  }
+  const incoming = [...files].slice(0, availableSlots)
+  if (incoming.length < files.length)
+    showHeaderNotice(`最多添加 ${DIRECTOR_ATTACHMENT_LIMIT} 个附件`)
+  for (const file of incoming) {
+    const kind = directorAttachmentKind(file)
+    const maxBytes = directorAttachmentMaxBytes(file)
+    const duplicate = attachments.value.some(
+      (attachment) =>
+        attachment.source === 'upload' &&
+        attachment.name === file.name &&
+        attachment.size === file.size &&
+        attachment.lastModified === file.lastModified,
+    )
+    if (duplicate) {
+      showHeaderNotice(`${file.name} 已添加`)
+      continue
+    }
+    const attachment = reactive({
+      id: directorAttachmentId('local'),
+      layerId: '',
+      name: file.name || '未命名文件',
+      kind,
+      mimeType: file.type || '',
+      size: Number(file.size) || 0,
+      lastModified: Number(file.lastModified) || 0,
+      source: 'upload',
+      status: file.size > maxBytes ? 'error' : 'uploading',
+      retryable: file.size <= maxBytes,
+      progress: 0,
+      error:
+        file.size > maxBytes
+          ? `${attachmentTypeLabel({ kind })}不能超过 ${directorAttachmentSizeLabel(maxBytes)}`
+          : '',
+      url: '',
+      previewUrl: ['image', 'video'].includes(kind) ? URL.createObjectURL(file) : '',
+      file,
+      controller: null,
+    })
+    attachments.value.push(attachment)
+    if (attachment.status === 'uploading') void uploadAttachment(attachment)
+  }
+}
+
+function handleReferenceFiles(files) {
+  const images = [...files].filter((file) => directorAttachmentKind(file) === 'image')
+  if (images.length !== files.length) showHeaderNotice('参考图仅支持图片文件')
+  const available = Math.max(
+    0,
+    DIRECTOR_REFERENCE_IMAGE_LIMIT - pendingReferenceImages.value.length,
+  )
+  if (images.length > available)
+    showHeaderNotice(`本轮最多使用 ${DIRECTOR_REFERENCE_IMAGE_LIMIT} 张参考图片，请先移除多余图片`)
+  if (available && images.length) handleAttachmentFiles(images.slice(0, available))
+}
+
+function handleReferenceAssets(assets) {
+  const images = assets.filter((asset) => directorAttachmentKind(asset) === 'image')
+  const existing = new Set(
+    pendingReferenceImages.value.map((image) => image.layerId || image.id || image.url),
+  )
+  let available = Math.max(0, DIRECTOR_REFERENCE_IMAGE_LIMIT - existing.size)
+  const selected = images.filter((image) => {
+    const id = image.layerId || image.nodeId || image.id || image.url
+    if (existing.has(id)) return true
+    if (!available) return false
+    available -= 1
+    existing.add(id)
+    return true
+  })
+  if (selected.length < images.length)
+    showHeaderNotice(`本轮最多使用 ${DIRECTOR_REFERENCE_IMAGE_LIMIT} 张参考图片`)
+  const addedIds = new Set(
+    selected.map((image) => image.layerId || image.nodeId || image.id || image.url),
+  )
+  excludedReferenceIds.value = excludedReferenceIds.value.filter((id) => !addedIds.has(id))
+  handleLibraryAssets(selected)
+}
+
+function changeImageSource(mode) {
+  pendingImageSourceMode.value = mode
+  attachmentMenuOpen.value = false
+  if (mode === 'text') {
+    for (const attachment of attachments.value.filter((item) => item.kind === 'image'))
+      removeAttachment(attachment.id)
+  }
+}
+
+function removeReferenceImage(image) {
+  if (attachments.value.some((attachment) => attachment.id === image.id)) removeAttachment(image.id)
+  excludedReferenceIds.value = [
+    ...new Set([...excludedReferenceIds.value, image.layerId || image.id || image.url]),
+  ]
+}
+
+function setReferenceRole(image, role) {
+  if (!['', 'product', 'style', 'other'].includes(role)) return
+  referenceRoles.value = { ...referenceRoles.value, [image.layerId || image.id || image.url]: role }
+  const attachment = attachments.value.find((item) => item.id === image.id)
+  if (attachment) attachment.referenceRole = role
+}
+
+function retryReferenceImage(image) {
+  const attachment = attachments.value.find((item) => item.id === image.id)
+  if (attachment) retryAttachment(attachment)
+}
+
+function handleLibraryAssets(assets) {
+  const existing = new Set(
+    attachments.value.map((attachment) => attachment.layerId || attachment.url || attachment.id),
+  )
+  let added = 0
+  for (const candidate of assets) {
+    if (attachments.value.length >= DIRECTOR_ATTACHMENT_LIMIT) break
+    const asset = normalizeDirectorAsset(candidate)
+    if (!asset) continue
+    const identity = asset.layerId || asset.url || asset.id
+    if (existing.has(identity)) continue
+    attachments.value.push(asset)
+    existing.add(identity)
+    added += 1
+  }
+  if (attachments.value.length >= DIRECTOR_ATTACHMENT_LIMIT && added < assets.length)
+    showHeaderNotice(`最多添加 ${DIRECTOR_ATTACHMENT_LIMIT} 个附件`)
   nextTick(() => composerInput.value?.focus({ preventScroll: true }))
 }
 
@@ -931,17 +1271,21 @@ function togglePlugin() {
 }
 
 function startNewConversation() {
-  sentMessages.value = []
-  thinkingOpen.value = new Set()
-  messageFeedback.value = {}
+  resetConversationView()
   closeHeaderPopovers()
   emit('new-conversation')
   nextTick(() => composerInput.value?.focus({ preventScroll: true }))
 }
 
-function restoreConversation(conversation) {
-  const records = Array.isArray(conversation?.messages) ? conversation.messages : []
-  sentMessages.value = records
+function resetConversationView() {
+  sentMessages.value = []
+  thinkingOpen.value = new Set()
+  thinkingPreviewText.value = {}
+  messageFeedback.value = {}
+}
+
+function directorUserMessages(records) {
+  return (Array.isArray(records) ? records : [])
     .filter((message) => message?.role === 'user')
     .map((message, index) => ({
       id: message.id || `restored-message-${index}`,
@@ -952,9 +1296,30 @@ function restoreConversation(conversation) {
       dryRunIntent: message.dryRunIntent !== false,
       context: message.context || {},
     }))
+}
+
+function restoreConversation(conversation) {
+  sentMessages.value = directorUserMessages(conversation?.messages)
   closeHeaderPopovers()
   emit('select-conversation', conversation)
   void scrollToBottom('auto')
+}
+
+function isConversationDeleting(conversationId) {
+  return props.conversationDeletingIds.includes(String(conversationId || ''))
+}
+
+function deleteConversation(conversation) {
+  const conversationId = String(conversation?.id || '')
+  if (!conversationId || isConversationDeleting(conversationId)) return
+  emit('delete-conversation', conversation, (result = {}) => {
+    if (!result.ok) {
+      showHeaderNotice(result.message || '删除失败，请稍后重试')
+      return
+    }
+    if (result.deletedCurrent) resetConversationView()
+    showHeaderNotice('已删除对话')
+  })
 }
 
 function conversationTranscript() {
@@ -962,7 +1327,11 @@ function conversationTranscript() {
     .map((item) =>
       item.type === 'user'
         ? `我：${item.message?.display || item.message?.content || ''}`
-        : `TV Director：${item.run?.reply || item.run?.error || ''}`,
+        : `有米 Director：${directorRunDisplayText(item.run) || item.run?.error || ''}${
+            item.run?.clarificationAnswers?.length
+              ? `\n\n${item.run.clarificationAnswers.map(({ question, answer }) => `${question}\n${answer}`).join('\n\n')}`
+              : ''
+          }`,
     )
     .filter((line) => !line.endsWith('：'))
     .join('\n\n')
@@ -974,9 +1343,20 @@ async function shareConversation() {
 }
 
 function submitPrompt() {
+  if (props.restoring || props.restoreError) return
   if (activeAgentRun.value) return
+  if (attachmentUploadActive.value) {
+    showHeaderNotice('请等待附件上传完成')
+    return
+  }
   const content = prompt.value.trim()
-  if (!content && !selectedModels.value.length && !selectedSkills.value.length) return
+  if (
+    !content &&
+    !selectedModels.value.length &&
+    !selectedSkills.value.length &&
+    !readyAttachments.value.length
+  )
+    return
   const serializedModels = selectedModels.value.map(serializeDirectorModelChip).filter(Boolean)
   const serializedSkills = selectedSkills.value
     .map((skill) => {
@@ -989,6 +1369,9 @@ function submitPrompt() {
       return { marker: `{{ skill:${skill.id} }}`, structuredPart }
     })
     .filter(Boolean)
+  const serializedAttachments = readyAttachments.value
+    .map(serializeDirectorAttachment)
+    .filter(Boolean)
   const dryRunIntent = pendingDryRunIntent.value ?? directorDryRun.value
   const message = {
     id: `director-message-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`,
@@ -996,6 +1379,7 @@ function submitPrompt() {
     display: [
       ...selectedModels.value.map((model) => model.label),
       ...selectedSkills.value.map((skill) => skill.name || skill.label),
+      ...(!content ? serializedAttachments.map((attachment) => attachment.name) : []),
       content,
     ]
       .filter(Boolean)
@@ -1010,6 +1394,7 @@ function submitPrompt() {
     parts: [
       ...serializedModels.map((model) => model.structuredPart),
       ...serializedSkills.map((skill) => skill.structuredPart),
+      ...serializedAttachments,
     ],
     dryRunIntent,
     context: {
@@ -1025,10 +1410,76 @@ function submitPrompt() {
   prompt.value = ''
   selectedModels.value = []
   selectedSkills.value = []
+  for (const attachment of attachments.value) cleanupAttachment(attachment)
+  attachments.value = []
   activeModelChipId.value = ''
   activeSkillChipId.value = ''
   pendingDryRunIntent.value = undefined
   void scrollToBottom('smooth')
+}
+
+function submitClarification(run, submittedAnswers) {
+  if (activeAgentRun.value || run.clarificationReplyRunId) return
+  if (attachmentUploadActive.value) {
+    showHeaderNotice('请等待附件上传完成')
+    return
+  }
+  if (attachments.value.some((attachment) => ['error', 'failed'].includes(attachment.status))) {
+    showHeaderNotice('有附件上传失败，请重新上传或移除后再提交')
+    return
+  }
+  const answers = normalizeDirectorClarificationAnswers(run.questions, submittedAnswers)
+  if (!isDirectorClarificationComplete(run.questions, answers)) return
+  if (!isDirectorClarificationReady(run.questions, answers, pendingReferenceImages.value)) {
+    showHeaderNotice(`请上传或选择 1–${DIRECTOR_REFERENCE_IMAGE_LIMIT} 张可用的参考图片`)
+    return
+  }
+  const content = serializeDirectorClarificationAnswers(run.questions, answers)
+  const message = {
+    id: `director-message-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`,
+    content,
+    display: answers.map(({ question, answer }) => `${question}\n${answer}`).join('\n\n'),
+    raw: content,
+    parts: readyAttachments.value.map(serializeDirectorAttachment).filter(Boolean),
+    dryRunIntent: true,
+    context: {
+      sessionId: props.sessionId,
+      metadata: { dryRun: true, generationMode: 'manual' },
+      clarification: {
+        sourceRunId: run.id,
+        answers,
+        imageSourceMode:
+          directorImageSourceMode(run.questions, answers) ||
+          (run.questions.some((question) => question.kind === 'image_upload')
+            ? 'reference'
+            : pendingImageSourceMode.value),
+        referenceImageIds: pendingReferenceImages.value
+          .filter((image) => image.url && (!image.status || image.status === 'ready'))
+          .map((image) => image.layerId || image.id || image.url),
+        referenceRoles: Object.fromEntries(
+          pendingReferenceImages.value.map((image) => [
+            image.layerId || image.id || image.url,
+            image.referenceRole || '',
+          ]),
+        ),
+      },
+    },
+  }
+  emit('answer-clarification', run.id, message, (result = {}) => {
+    if (!result.ok) {
+      showHeaderNotice(result.message || '未能提交答案，请重试')
+      return
+    }
+    sentMessages.value.push(message)
+    for (const attachment of attachments.value) cleanupAttachment(attachment)
+    attachments.value = []
+    void scrollToBottom('smooth')
+  })
+}
+
+function clarificationAttachments(run) {
+  const continuation = props.agentRuns.find((item) => item.id === run.clarificationReplyRunId)
+  return messageAttachments(continuation?.message)
 }
 
 function cancelActiveAgent() {
@@ -1048,10 +1499,12 @@ onMounted(async () => {
   document.addEventListener('pointerdown', handleDocumentPointerDown, true)
   await nextTick()
   closeButton.value?.focus({ preventScroll: true })
+  if (conversationItems.value.length) await scrollToBottom('auto')
 })
 
 onBeforeUnmount(() => {
   endInteraction()
+  for (const attachment of attachments.value) cleanupAttachment(attachment)
   window.clearTimeout(noticeTimer)
   for (const timer of thinkingPreviewTimers.values()) window.clearTimeout(timer)
   thinkingPreviewTimers.clear()
@@ -1067,6 +1520,7 @@ watch(
 
 watch(modelMenuOpen, (open) => {
   if (!open) return
+  attachmentMenuOpen.value = false
   skillMenuOpen.value = false
   generationModeMenuOpen.value = false
   closeModeMenu()
@@ -1074,6 +1528,7 @@ watch(modelMenuOpen, (open) => {
 
 watch(skillMenuOpen, (open) => {
   if (!open) return
+  attachmentMenuOpen.value = false
   modelMenuOpen.value = false
   generationModeMenuOpen.value = false
   closeModeMenu()
@@ -1081,8 +1536,17 @@ watch(skillMenuOpen, (open) => {
 
 watch(generationModeMenuOpen, (open) => {
   if (!open) return
+  attachmentMenuOpen.value = false
   modelMenuOpen.value = false
   skillMenuOpen.value = false
+  closeModeMenu()
+})
+
+watch(attachmentMenuOpen, (open) => {
+  if (!open) return
+  modelMenuOpen.value = false
+  skillMenuOpen.value = false
+  generationModeMenuOpen.value = false
   closeModeMenu()
 })
 
@@ -1106,6 +1570,7 @@ watch(
     role="dialog"
     aria-modal="false"
     aria-labelledby="cv3-director-title"
+    :aria-busy="restoring"
     data-canvas-shortcuts-ignore
     :data-director-popup-open="hasInlinePopup || scriptSetupOpen ? 'true' : undefined"
     @pointerdown.stop
@@ -1216,16 +1681,33 @@ watch(
           <p v-if="conversationLoading" class="cv3-director-popover-empty">正在加载…</p>
           <p v-else-if="!conversations.length" class="cv3-director-popover-empty">暂无历史对话</p>
           <div v-else class="cv3-director-history-list">
-            <button
+            <div
               v-for="conversation in conversations"
               :key="conversation.id"
-              type="button"
+              class="cv3-director-history-item"
               :class="{ 'is-active': conversation.id === conversationId }"
-              @click="restoreConversation(conversation)"
             >
-              <span>{{ conversation.title || '新对话' }}</span>
-              <small>{{ new Date(conversation.updatedAt || Date.now()).toLocaleString() }}</small>
-            </button>
+              <button
+                type="button"
+                class="cv3-director-history-entry"
+                @click="restoreConversation(conversation)"
+              >
+                <span>{{ conversation.title || '新对话' }}</span>
+                <small>{{ new Date(conversation.updatedAt || Date.now()).toLocaleString() }}</small>
+              </button>
+              <button
+                type="button"
+                class="cv3-director-history-delete"
+                :disabled="isConversationDeleting(conversation.id)"
+                :aria-label="`删除对话 ${conversation.title || '新对话'}`"
+                title="删除"
+                @click.stop="deleteConversation(conversation)"
+              >
+                <span aria-hidden="true">
+                  {{ isConversationDeleting(conversation.id) ? '…' : '×' }}
+                </span>
+              </button>
+            </div>
           </div>
         </section>
         <section
@@ -1285,7 +1767,19 @@ watch(
         aria-live="polite"
         @scroll.passive="onMessagesScroll"
       >
-        <section v-if="skillCreationOpen" class="cv3-director-skill-question">
+        <section
+          v-if="(restoring || restoreError) && !conversationItems.length"
+          class="cv3-director-restore-state"
+          aria-label="恢复最近对话"
+        >
+          <p v-if="restoring" role="status">正在恢复当前画布最近一次对话…</p>
+          <template v-else>
+            <p role="alert">{{ restoreError }}</p>
+            <button type="button" @click="emit('restore-recent')">重试加载最近对话</button>
+            <button type="button" @click="startNewConversation">新建对话</button>
+          </template>
+        </section>
+        <section v-else-if="skillCreationOpen" class="cv3-director-skill-question">
           <div class="cv3-director-skill-question-icon" aria-hidden="true">
             <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
               <path
@@ -1331,7 +1825,10 @@ watch(
           class="cv3-director-welcome"
         >
           <AgentOrb decorative :size="40" />
-          <h3>让 TV Director 辅助你的无限创意</h3>
+          <h3>有米家居创作导演</h3>
+          <p class="cv3-director-welcome-description">
+            专注窗帘、床垫、实木床与儿童床的电商内容创作
+          </p>
           <div class="cv3-director-shortcuts">
             <button
               v-for="shortcut in shortcuts"
@@ -1491,7 +1988,40 @@ watch(
         <div v-else class="cv3-director-chat">
           <template v-for="item in conversationItems" :key="item.key">
             <div v-if="item.type === 'user'" class="cv3-director-user-turn">
-              <div class="cv3-director-user-message">
+              <div
+                v-if="messageAttachments(item.message).length"
+                class="cv3-director-user-attachments"
+                aria-label="消息附件"
+              >
+                <span
+                  v-for="attachment in messageAttachments(item.message)"
+                  :key="attachment.id || attachment.url"
+                  class="cv3-director-user-attachment"
+                  :title="attachment.name"
+                >
+                  <img
+                    v-if="attachment.kind === 'image'"
+                    :src="attachment.url"
+                    :alt="attachment.name"
+                  />
+                  <CanvasIcon
+                    v-else
+                    :name="
+                      attachment.kind === 'video'
+                        ? 'video'
+                        : attachment.kind === 'audio'
+                          ? 'audio'
+                          : 'assets'
+                    "
+                    :size="16"
+                  />
+                  <span>{{ attachment.name }}</span>
+                </span>
+              </div>
+              <div
+                v-if="typeof item.message === 'string' || item.message.display"
+                class="cv3-director-user-message"
+              >
                 {{ typeof item.message === 'string' ? item.message : item.message.display }}
               </div>
               <button
@@ -1531,7 +2061,6 @@ watch(
                     <span class="cv3-director-thinking-copy">
                       {{ directorThinkingPreview(item.run) }}
                     </span>
-                    <span class="cv3-director-thinking-caret" aria-hidden="true" />
                   </div>
                 </div>
               </template>
@@ -1573,6 +2102,46 @@ watch(
                 <span>思考中...</span>
               </div>
 
+              <DirectorClarificationCard
+                v-if="item.run.questions?.length"
+                mode="record"
+                :initially-expanded="true"
+                :questions="item.run.questions"
+                :answers="item.run.clarificationAnswers || []"
+              />
+              <div
+                v-if="clarificationAttachments(item.run).length"
+                class="cv3-director-question-attachments"
+                aria-label="已补充的素材"
+              >
+                <span
+                  v-for="attachment in clarificationAttachments(item.run)"
+                  :key="attachment.id || attachment.url"
+                  :title="attachment.name"
+                >
+                  <img v-if="attachment.kind === 'image'" :src="attachment.url" alt="" />
+                  <span>{{ attachment.name }}</span>
+                </span>
+              </div>
+
+              <section
+                v-if="item.run.proposal && !item.run.draft"
+                class="cv3-director-agent-draft"
+                :class="{ 'is-script': item.run.proposal.generationType === 'video' }"
+                aria-label="已保留的创作方案"
+              >
+                <header>
+                  <span>
+                    {{ item.run.proposal.generationType === 'video' ? '视频方案' : '图片方案' }}
+                  </span>
+                </header>
+                <DirectorRichText
+                  v-for="(text, index) in item.run.proposal.prompts"
+                  :key="index"
+                  :text="text"
+                />
+              </section>
+
               <div v-if="item.run.draft" class="cv3-director-agent-draft">
                 <header>
                   <span>
@@ -1580,7 +2149,7 @@ watch(
                   </span>
                   <small>{{ item.run.dryRun ? '生成前询问' : '自动生成' }}</small>
                 </header>
-                <p>{{ item.run.draft.prompt }}</p>
+                <DirectorRichText :text="item.run.draft.prompt" />
                 <div class="cv3-director-draft-summary" aria-label="生成参数与费用摘要">
                   <span :title="`模型：${item.run.draft.modelLabel || item.run.draft.model}`">
                     {{ item.run.draft.modelLabel || item.run.draft.model || '未选择模型' }}
@@ -1595,21 +2164,79 @@ watch(
                   </span>
                   <span v-else-if="item.run.phase === 'submitting'">正在安全提交图片任务…</span>
                   <span v-else-if="item.run.phase === 'submitted'">任务已提交到画布节点</span>
-                  <button
-                    v-else-if="item.run.phase === 'ready' && (item.run.dryRun || item.run.error)"
-                    type="button"
-                    @click="emit('confirm-generation', item.run.id)"
-                  >
-                    {{
-                      item.run.submissionState === 'uncertain'
-                        ? '继续查询'
-                        : item.run.error
-                          ? '重试生成'
-                          : '确认生成'
-                    }}
-                  </button>
                 </footer>
               </div>
+
+              <DirectorImageExecutionCard
+                v-if="
+                  item.run.contentReady !== false &&
+                  !item.run.questions?.length &&
+                  (item.run.draft || item.run.proposal)?.generationType === 'image'
+                "
+                :models="imageModels"
+                :model-error="imageModelError"
+                :configuration="{
+                  model: item.run.draft?.model || item.run.generationIntent?.nodeModel || '',
+                  ratio: item.run.draft?.ratio || item.run.generationIntent?.ratio || '16:9',
+                  resolution:
+                    item.run.draft?.resolution || item.run.generationIntent?.resolution || '2K',
+                  count: item.run.draft?.count || item.run.generationIntent?.count || 1,
+                }"
+                :node-id="item.run.nodeId || ''"
+                :phase="item.run.executionPhase || item.run.phase"
+                :disabled="Boolean(item.run.submissionStarted)"
+                @confirm="emit('confirm-generation', item.run.id, $event)"
+                @locate="emit('locate-generation', item.run.id)"
+                @refresh-models="emit('refresh-image-models')"
+              />
+              <div
+                v-if="item.run.outputUrls?.length"
+                class="cv3-director-generated-images"
+                aria-label="已生成的图片"
+              >
+                <button
+                  v-for="url in item.run.outputUrls"
+                  :key="url"
+                  type="button"
+                  aria-label="查看生成图片节点"
+                  @click="emit('locate-generation', item.run.id)"
+                >
+                  <img :src="url" alt="Agent 生成结果" />
+                </button>
+              </div>
+              <p v-if="item.run.submissionStarted && item.run.executionStatus" role="status">
+                {{ item.run.executionStatus }}
+              </p>
+              <button
+                v-if="
+                  (item.run.executionPhase === 'uncertain' ||
+                    item.run.submissionState === 'uncertain') &&
+                  item.run.phase !== 'submitting'
+                "
+                type="button"
+                @click="emit('confirm-generation', item.run.id)"
+              >
+                继续查询原任务（不会重复扣费）
+              </button>
+              <p
+                v-if="item.run.executionError && item.run.executionError !== item.run.error"
+                class="cv3-director-agent-error"
+                role="alert"
+              >
+                {{ item.run.executionError }}
+              </p>
+              <button
+                v-if="
+                  item.run.error &&
+                  !item.run.nodeId &&
+                  item.run.contentReady !== false &&
+                  (item.run.draft || item.run.proposal)?.generationType === 'image'
+                "
+                type="button"
+                @click="emit('prepare-generation', item.run.id)"
+              >
+                重试创建节点
+              </button>
 
               <div v-if="item.run.error" class="cv3-director-agent-error" role="alert">
                 <span>{{ item.run.error }}</span>
@@ -1622,14 +2249,16 @@ watch(
                 </button>
               </div>
               <footer
-                v-if="item.run.reply && item.run.phase !== 'streaming'"
+                v-if="
+                  item.run.reply && !item.run.questions?.length && item.run.phase !== 'streaming'
+                "
                 class="cv3-director-message-actions"
               >
                 <button
                   type="button"
                   :aria-label="copiedMessageKey === item.run.id ? '已复制' : '复制回复'"
                   :title="copiedMessageKey === item.run.id ? '已复制' : '复制'"
-                  @click="copyMessage(item.run.id, item.run.reply)"
+                  @click="copyMessage(item.run.id, directorRunDisplayText(item.run))"
                 >
                   <CanvasIcon
                     :name="copiedMessageKey === item.run.id ? 'check' : 'copy'"
@@ -1663,7 +2292,7 @@ watch(
       </div>
 
       <button
-        v-if="!scrollPinned && conversationItems.length"
+        v-if="!scrollPinned && conversationItems.length && !pendingClarificationRun"
         type="button"
         class="cv3-director-scroll-bottom"
         aria-label="回到底部"
@@ -1673,28 +2302,97 @@ watch(
         <CanvasIcon name="arrowUp" :size="17" />
       </button>
 
+      <div v-if="pendingClarificationRun" class="cv3-director-question-dock">
+        <div v-if="!typedImageQuestions" class="cv3-director-question-assets">
+          <DirectorAttachmentPicker
+            v-model:open="attachmentMenuOpen"
+            :available-assets="availableAssets"
+            :attached-ids="attachedLibraryIds"
+            @local-files="handleAttachmentFiles"
+            @select-assets="handleLibraryAssets"
+          />
+          <span v-if="!attachments.length">可补充商品图或资料</span>
+          <div v-else class="cv3-director-question-attachments" aria-label="本轮补充素材">
+            <span v-for="attachment in attachments" :key="attachment.id" :title="attachment.name">
+              <img
+                v-if="attachment.kind === 'image' && attachment.previewUrl"
+                :src="attachment.previewUrl"
+                alt=""
+              />
+              <span>{{ attachment.name }}</span>
+              <small v-if="attachment.status === 'uploading'">上传中</small>
+              <small v-else-if="['error', 'failed'].includes(attachment.status)">上传失败</small>
+              <button
+                type="button"
+                :aria-label="`移除附件 ${attachment.name}`"
+                @click="removeAttachment(attachment.id)"
+              >
+                ×
+              </button>
+            </span>
+          </div>
+        </div>
+        <DirectorClarificationCard
+          :key="pendingClarificationRun.id"
+          mode="form"
+          :questions="pendingClarificationRun.questions"
+          :disabled="Boolean(activeAgentRun)"
+          :reference-images="pendingReferenceImages"
+          :uploading="attachmentUploadActive"
+          @image-source-change="changeImageSource"
+          @answer="submitClarification(pendingClarificationRun, $event)"
+        >
+          <template #reference-upload>
+            <DirectorReferenceUpload
+              v-model:open="attachmentMenuOpen"
+              :images="pendingReferenceImages"
+              :available-assets="availableAssets"
+              :disabled="Boolean(activeAgentRun)"
+              @local-files="handleReferenceFiles"
+              @select-assets="handleReferenceAssets"
+              @remove="removeReferenceImage"
+              @retry="retryReferenceImage"
+              @update-role="setReferenceRole"
+            />
+          </template>
+        </DirectorClarificationCard>
+      </div>
       <div
+        v-else
         class="cv3-director-composer"
         :class="{
           'has-auxiliary':
             scriptModeActive && (scriptSetupSummary || activeModeId === 'script_adaptation'),
-          'has-model-chips': selectedModels.length || selectedSkills.length,
           'has-double-auxiliary':
+            ((selectedModels.length || selectedSkills.length) && attachments.length) ||
+            ((selectedModels.length || selectedSkills.length || attachments.length) &&
+              scriptModeActive &&
+              (scriptSetupSummary || activeModeId === 'script_adaptation')),
+          'has-triple-auxiliary':
+            attachments.length &&
             (selectedModels.length || selectedSkills.length) &&
             scriptModeActive &&
             (scriptSetupSummary || activeModeId === 'script_adaptation'),
+          'has-model-chips': selectedModels.length || selectedSkills.length || attachments.length,
         }"
       >
         <form
           :class="{
             'has-auxiliary':
               scriptModeActive && (scriptSetupSummary || activeModeId === 'script_adaptation'),
-            'has-model-chips': selectedModels.length || selectedSkills.length,
+            'has-model-chips': selectedModels.length || selectedSkills.length || attachments.length,
             'has-double-auxiliary':
+              ((selectedModels.length || selectedSkills.length) && attachments.length) ||
+              ((selectedModels.length || selectedSkills.length || attachments.length) &&
+                scriptModeActive &&
+                (scriptSetupSummary || activeModeId === 'script_adaptation')),
+            'has-triple-auxiliary':
+              attachments.length &&
               (selectedModels.length || selectedSkills.length) &&
               scriptModeActive &&
               (scriptSetupSummary || activeModeId === 'script_adaptation'),
           }"
+          :inert="restoring || Boolean(restoreError)"
           @submit.prevent="submitPrompt"
         >
           <div
@@ -1785,19 +2483,129 @@ watch(
               <span>{{ skill.name || skill.label }}</span>
             </button>
           </div>
+          <div
+            v-if="attachments.length"
+            class="cv3-director-attachment-chips"
+            aria-label="已添加附件"
+          >
+            <article
+              v-for="(attachment, index) in attachments"
+              :key="attachment.id"
+              class="cv3-director-attachment-chip"
+              :class="[`is-${attachment.status}`, `is-${attachment.kind}`]"
+              :title="attachment.name"
+              tabindex="0"
+              draggable="true"
+              role="button"
+              aria-haspopup="dialog"
+              :aria-label="`${attachment.name}，${attachmentTypeLabel(attachment)}附件`"
+              @keydown.delete.prevent="removeAttachment(attachment.id)"
+              @keydown.backspace.prevent="removeAttachment(attachment.id)"
+              @mouseenter="positionAttachmentPreview"
+              @focusin="positionAttachmentPreview"
+              @dragstart="beginAttachmentDrag($event, index)"
+              @dragover.prevent
+              @drop="dropAttachment($event, index)"
+              @dragend="draggedAttachmentIndex = -1"
+            >
+              <span class="cv3-director-attachment-thumb" aria-hidden="true">
+                <img
+                  v-if="attachment.kind === 'image' && attachment.previewUrl"
+                  :src="attachment.previewUrl"
+                  alt=""
+                />
+                <video
+                  v-else-if="attachment.kind === 'video' && attachment.previewUrl"
+                  :src="attachment.previewUrl"
+                  muted
+                />
+                <CanvasIcon
+                  v-else
+                  :name="attachment.kind === 'audio' ? 'audio' : 'assets'"
+                  :size="16"
+                />
+              </span>
+              <span class="cv3-director-attachment-name">
+                {{ attachment.name }}
+              </span>
+              <span
+                class="cv3-director-attachment-preview"
+                role="dialog"
+                :aria-label="`${attachment.name} 预览`"
+              >
+                <span class="cv3-director-attachment-preview-media">
+                  <img
+                    v-if="attachment.kind === 'image' && attachment.previewUrl"
+                    :src="attachment.previewUrl"
+                    :alt="attachment.name"
+                  />
+                  <video
+                    v-else-if="attachment.kind === 'video' && attachment.previewUrl"
+                    :src="attachment.previewUrl"
+                    muted
+                    loop
+                    playsinline
+                    autoplay
+                  />
+                  <CanvasIcon
+                    v-else
+                    :name="attachment.kind === 'audio' ? 'audio' : 'assets'"
+                    :size="38"
+                  />
+                </span>
+                <span
+                  v-if="attachment.status === 'error'"
+                  class="cv3-director-attachment-preview-error"
+                >
+                  <small>{{ attachment.error || '上传失败' }}</small>
+                  <span class="cv3-director-attachment-preview-actions">
+                    <button
+                      v-if="
+                        attachment.status === 'error' &&
+                        attachment.file &&
+                        attachment.retryable !== false
+                      "
+                      type="button"
+                      :aria-label="`重试上传 ${attachment.name}`"
+                      @click.stop="retryAttachment(attachment)"
+                    >
+                      重试
+                    </button>
+                    <button
+                      type="button"
+                      :aria-label="`移除附件 ${attachment.name}`"
+                      @click.stop="removeAttachment(attachment.id)"
+                    >
+                      移除
+                    </button>
+                  </span>
+                </span>
+              </span>
+              <span
+                v-if="attachment.status === 'uploading'"
+                class="cv3-director-attachment-progress"
+                :style="{ width: `${attachment.progress}%` }"
+              />
+            </article>
+          </div>
           <textarea
             ref="composerInput"
             v-model="prompt"
             rows="2"
             aria-label="发送给 TV Director"
+            :disabled="restoring || Boolean(restoreError)"
             :placeholder="activeMode.placeholder"
             @keydown.enter.exact.prevent="submitPrompt"
             @keydown.backspace.exact="handleComposerBackspace"
           />
           <div class="cv3-director-composer-controls">
-            <button type="button" title="添加附件" aria-label="添加附件">
-              <CanvasIcon name="plus" :size="18" />
-            </button>
+            <DirectorAttachmentPicker
+              v-model:open="attachmentMenuOpen"
+              :available-assets="availableAssets"
+              :attached-ids="attachedLibraryIds"
+              @local-files="handleAttachmentFiles"
+              @select-assets="handleLibraryAssets"
+            />
             <button
               ref="modeTrigger"
               type="button"
@@ -1859,7 +2667,15 @@ watch(
               class="cv3-director-send"
               type="submit"
               aria-label="发送"
-              :disabled="!prompt.trim() && !selectedModels.length && !selectedSkills.length"
+              :disabled="
+                restoring ||
+                Boolean(restoreError) ||
+                attachmentUploadActive ||
+                (!prompt.trim() &&
+                  !selectedModels.length &&
+                  !selectedSkills.length &&
+                  !readyAttachments.length)
+              "
             >
               <CanvasIcon name="arrowUp" :size="20" />
             </button>
@@ -2047,6 +2863,49 @@ watch(
 </template>
 
 <style scoped>
+.cv3-director-restore-state {
+  padding: 24px 4px;
+  color: #a4a4a4;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.cv3-director-restore-state button {
+  margin: 8px 8px 0 0;
+  padding: 7px 10px;
+  border: 1px solid #484848;
+  border-radius: 8px;
+  background: #292929;
+  color: #eee;
+  cursor: pointer;
+}
+.cv3-director-restore-state button:active {
+  background: #373737;
+}
+.cv3-director-restore-state button:focus-visible {
+  outline: 2px solid #70b9ef;
+  outline-offset: 2px;
+}
+.cv3-director-generated-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.cv3-director-generated-images button {
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid #444;
+  border-radius: 12px;
+  background: #252525;
+  cursor: pointer;
+}
+.cv3-director-generated-images img {
+  display: block;
+  width: 160px;
+  max-width: 100%;
+  height: 160px;
+  object-fit: contain;
+}
 .cv3-director-panel {
   position: fixed;
   z-index: 100;
@@ -2207,9 +3066,27 @@ watch(
   gap: 3px;
 }
 
-.cv3-director-header .cv3-director-history-list button {
+.cv3-director-history-item {
+  position: relative;
   display: flex;
-  width: 100%;
+  min-height: 50px;
+  align-items: stretch;
+  border-radius: 10px;
+  transition: background-color 150ms ease;
+}
+
+.cv3-director-history-item:hover,
+.cv3-director-history-item:focus-within {
+  background: rgba(255, 255, 255, 0.065);
+}
+
+.cv3-director-history-item.is-active {
+  background: rgba(73, 178, 255, 0.12);
+}
+
+.cv3-director-header .cv3-director-history-entry {
+  display: flex;
+  width: calc(100% - 34px);
   height: auto;
   min-height: 50px;
   flex-direction: column;
@@ -2217,20 +3094,45 @@ watch(
   gap: 3px;
   padding: 7px 9px;
   border-radius: 10px;
+  background: transparent;
   text-align: left;
 }
 
-.cv3-director-header .cv3-director-history-list button.is-active {
-  background: rgba(73, 178, 255, 0.12);
+.cv3-director-header .cv3-director-history-entry:hover:not(:disabled),
+.cv3-director-header .cv3-director-history-entry:focus-visible {
+  background: transparent;
+}
+
+.cv3-director-history-item.is-active .cv3-director-history-entry {
   color: #fff;
 }
 
-.cv3-director-history-list span {
+.cv3-director-history-entry span {
   width: 100%;
   overflow: hidden;
   font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.cv3-director-header .cv3-director-history-delete {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  color: rgba(255, 255, 255, 0.48);
+  font-size: 20px;
+  font-weight: 300;
+  line-height: 1;
+  transform: translateY(-50%);
+}
+
+.cv3-director-header .cv3-director-history-delete:hover:not(:disabled),
+.cv3-director-header .cv3-director-history-delete:focus-visible {
+  background: rgba(255, 92, 92, 0.14);
+  color: #ff8d8d;
 }
 
 .cv3-director-settings-popover label {
@@ -2348,11 +3250,18 @@ watch(
 }
 
 .cv3-director-welcome h3 {
-  margin: 12px 0 20px;
+  margin: 12px 0 6px;
   color: #f2f2f2;
   font-size: 16px;
   font-weight: 500;
   line-height: 24px;
+}
+
+.cv3-director-welcome-description {
+  margin: 0 0 16px;
+  color: #929292;
+  font-size: 12px;
+  line-height: 20px;
 }
 
 .cv3-director-skill-question {
@@ -2797,6 +3706,43 @@ watch(
   overflow-wrap: anywhere;
 }
 
+.cv3-director-user-attachments {
+  display: flex;
+  max-width: 100%;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.cv3-director-user-attachment {
+  display: inline-flex;
+  max-width: 190px;
+  height: 38px;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 9px 4px 4px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.055);
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 12px;
+}
+
+.cv3-director-user-attachment img {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  border-radius: 7px;
+  object-fit: cover;
+}
+
+.cv3-director-user-attachment > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .cv3-director-message-action,
 .cv3-director-message-actions button {
   display: inline-flex;
@@ -2941,17 +3887,6 @@ watch(
   white-space: pre-wrap;
 }
 
-.cv3-director-thinking-preview > .cv3-director-thinking-caret {
-  display: inline-block;
-  width: 1.5px;
-  height: 14px;
-  margin-left: 2px;
-  border-radius: 1px;
-  background: rgba(255, 255, 255, 0.42);
-  vertical-align: -2px;
-  animation: cv3-director-caret-blink 850ms steps(1, end) infinite;
-}
-
 .cv3-director-agent-spinner {
   width: 13px;
   height: 13px;
@@ -2971,29 +3906,6 @@ watch(
   width: 100%;
 }
 
-.cv3-director-agent-run.is-streaming :deep(.cv3-director-agent-reply > :last-child)::after {
-  content: '';
-  display: inline-block;
-  width: 2px;
-  height: 16px;
-  margin-left: 2px;
-  border-radius: 1px;
-  background: #62dff5;
-  vertical-align: -2px;
-  animation: cv3-director-caret-blink 850ms steps(1, end) infinite;
-}
-
-@keyframes cv3-director-caret-blink {
-  0%,
-  48% {
-    opacity: 1;
-  }
-  49%,
-  100% {
-    opacity: 0;
-  }
-}
-
 .cv3-director-message-actions {
   display: flex;
   min-height: 26px;
@@ -3006,6 +3918,74 @@ watch(
   padding: 9px;
   border-radius: 10px;
   background: rgba(0, 0, 0, 0.18);
+}
+
+.cv3-director-agent-draft.is-script {
+  padding: 0;
+  background: transparent;
+}
+
+.cv3-director-agent-draft.is-script > header {
+  display: none;
+}
+
+.cv3-director-question-dock {
+  min-height: 0;
+  max-height: 62%;
+  flex: 0 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px 8px 12px;
+  scrollbar-width: thin;
+  scrollbar-color: #686868 transparent;
+}
+
+.cv3-director-question-assets {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 6px;
+  margin: 0 8px 5px;
+  color: #919191;
+  font-size: 12px;
+}
+
+.cv3-director-question-attachments {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.cv3-director-question-attachments > span {
+  display: inline-flex;
+  max-width: 230px;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 4px;
+  border: 1px solid #484848;
+  border-radius: 6px;
+}
+
+.cv3-director-question-attachments img {
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  object-fit: cover;
+}
+
+.cv3-director-question-attachments > span > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cv3-director-question-attachments button {
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: #aaa;
+  cursor: pointer;
 }
 
 .cv3-director-agent-draft header {
@@ -3171,6 +4151,11 @@ watch(
   flex-basis: 206px;
 }
 
+.cv3-director-composer.has-triple-auxiliary {
+  height: 240px;
+  flex-basis: 240px;
+}
+
 .cv3-director-composer form {
   display: flex;
   height: 122px;
@@ -3193,6 +4178,10 @@ watch(
 
 .cv3-director-composer form.has-double-auxiliary {
   height: 190px;
+}
+
+.cv3-director-composer form.has-triple-auxiliary {
+  height: 224px;
 }
 
 .cv3-director-composer textarea {
@@ -3283,6 +4272,207 @@ watch(
 
 .cv3-director-model-chips::-webkit-scrollbar {
   display: none;
+}
+
+.cv3-director-attachment-chips {
+  display: flex;
+  min-height: 24px;
+  align-items: center;
+  align-content: flex-start;
+  flex-wrap: wrap;
+  gap: 2px 4px;
+  overflow: visible;
+}
+
+.cv3-director-attachment-chip {
+  position: relative;
+  display: inline-flex;
+  width: auto;
+  min-width: 0;
+  max-width: 135px;
+  height: 24px;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px 0 4px;
+  border: 0.5px solid #525252;
+  border-radius: 8px;
+  outline: none;
+  background: transparent;
+  color: #f7f7f7;
+  cursor: grab;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 16px;
+  transition:
+    border-color 150ms ease,
+    background-color 150ms ease,
+    opacity 150ms ease;
+}
+
+.cv3-director-attachment-chip:hover,
+.cv3-director-attachment-chip:focus-visible,
+.cv3-director-attachment-chip:focus-within {
+  z-index: 20;
+  border-color: #2dc9e7;
+  background: rgba(45, 201, 231, 0.045);
+  box-shadow: 0 0 0 1px rgba(45, 201, 231, 0.2);
+}
+
+.cv3-director-attachment-chip.is-error {
+  border-color: rgba(255, 125, 108, 0.42);
+}
+
+.cv3-director-attachment-thumb {
+  display: flex;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.54);
+}
+
+.cv3-director-attachment-thumb img,
+.cv3-director-attachment-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.cv3-director-attachment-name {
+  display: block;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cv3-director-attachment-preview {
+  position: absolute;
+  z-index: 100;
+  bottom: calc(100% + 5px);
+  left: 50%;
+  display: flex;
+  width: 290px;
+  flex-direction: column;
+  overflow: visible;
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 12px;
+  background: #2a2a2a;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.48);
+  color: #f5f5f5;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(calc(-50% + var(--cv3-attachment-preview-shift-x, 0px))) translateY(5px)
+    scale(0.985);
+  transform-origin: bottom center;
+  visibility: hidden;
+  transition:
+    opacity 140ms ease,
+    transform 160ms cubic-bezier(0.2, 0, 0, 1),
+    visibility 0s linear 160ms;
+}
+
+.cv3-director-attachment-preview::after {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  left: 0;
+  height: 9px;
+  content: '';
+}
+
+.cv3-director-attachment-chip:hover .cv3-director-attachment-preview,
+.cv3-director-attachment-chip:focus-within .cv3-director-attachment-preview,
+.cv3-director-attachment-chip:focus-visible .cv3-director-attachment-preview {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(calc(-50% + var(--cv3-attachment-preview-shift-x, 0px))) translateY(0)
+    scale(1);
+  visibility: visible;
+  transition-delay: 90ms, 90ms, 90ms;
+}
+
+.cv3-director-attachment-preview-media {
+  display: flex;
+  width: 100%;
+  aspect-ratio: 1;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 8px;
+  background:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.025) 25%, transparent 25%) 0 0 / 12px 12px,
+    linear-gradient(-45deg, rgba(255, 255, 255, 0.025) 25%, transparent 25%) 0 0 / 12px 12px,
+    #1b1b1b;
+  color: rgba(255, 255, 255, 0.36);
+}
+
+.cv3-director-attachment-preview-media img,
+.cv3-director-attachment-preview-media video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.cv3-director-attachment-preview-error {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 2px 2px;
+}
+
+.cv3-director-attachment-preview-error small {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: #ff9b8f;
+  font-size: 10px;
+  line-height: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cv3-director-attachment-preview-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+.cv3-director-attachment-preview-actions button {
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.72);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.cv3-director-attachment-preview-actions button:hover,
+.cv3-director-attachment-preview-actions button:focus-visible {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  outline: none;
+}
+
+.cv3-director-attachment-progress {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: #28c7ea;
+  transition: width 120ms linear;
 }
 
 .cv3-director-model-chip {
@@ -3714,8 +4904,7 @@ watch(
   .cv3-director-script-home,
   .cv3-director-directing,
   .cv3-director-skill-question,
-  .cv3-director-agent-spinner,
-  .cv3-director-agent-run.is-streaming :deep(.cv3-director-agent-reply > :last-child)::after {
+  .cv3-director-agent-spinner {
     animation: none;
   }
 
@@ -3725,6 +4914,9 @@ watch(
   .cv3-director-role-avatar,
   .cv3-director-skill-question-options button,
   .cv3-director-composer-controls .cv3-director-mode :deep(svg),
+  .cv3-director-attachment-chip,
+  .cv3-director-attachment-preview,
+  .cv3-director-attachment-progress,
   .cv3-director-popover-enter-active,
   .cv3-director-popover-leave-active,
   .cv3-director-thought-enter-active,

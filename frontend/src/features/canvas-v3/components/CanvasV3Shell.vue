@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ConnectionMode, VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background, BackgroundVariant } from '@vue-flow/background'
@@ -16,6 +16,30 @@ import {
   resolveConfiguredImageTaskModel,
   resolveDirectorImageTaskModel,
 } from '../config/directorModelCatalog'
+import {
+  dedupeDirectorAgentRuns,
+  directorClarificationAssetsIntent,
+  directorRequestContextLayers,
+  directorRunReplyContext,
+} from '../config/directorConversation'
+import {
+  directorImageSourceMode,
+  DIRECTOR_REFERENCE_IMAGE_LIMIT,
+  directorClarificationInstruction,
+  isDirectorClarificationComplete,
+  isDirectorClarificationReady,
+  normalizeDirectorClarificationAnswers,
+  normalizeDirectorQuestions,
+} from '../config/directorClarifications'
+import {
+  directorApplyImageSourceIntent,
+  directorReferenceImages,
+} from '../config/directorImageSources'
+import { createDirectorImageExecutionIntent } from '../config/directorImageExecution'
+import {
+  latestDirectorConversation,
+  mergeDirectorConversationMessages,
+} from '../config/directorRecentConversation'
 import CanvasV3Topbar from './CanvasV3Topbar.vue'
 import NodeLibraryPanel from './NodeLibraryPanel.vue'
 import GeneratorNode from './GeneratorNode.vue'
@@ -54,8 +78,20 @@ const directorAgentRuns = ref([])
 const directorConversationId = ref(directorRequestId('conversation'))
 const directorConversations = ref([])
 const directorConversationLoading = ref(false)
+const directorConversationDeletingIds = ref([])
+const directorConversationDeletedIds = new Set()
+const directorRestoredMessages = ref([])
+const directorRestoring = ref(false)
+const directorRestoreError = ref('')
+const directorConversationLoadError = ref('')
+let directorConversationInitialized = false
+let directorConversationRevision = 0
+let directorHistoryRequest = null
+let directorRecentRequest = null
+let directorDisposed = false
 const directorPlanningRequests = new Map()
 const directorGenerationSubmissions = new Set()
+const directorNodePreparations = new Map()
 let directorConversationSyncTimer = 0
 
 function defaultDirectorDockWidth() {
@@ -204,6 +240,22 @@ const showComposer = computed(
 const storyboardNodes = computed(() =>
   nodes.value.filter((node) => ['image', 'video', 'script'].includes(node.data.kind)),
 )
+const directorAvailableAssets = computed(() =>
+  nodes.value
+    .filter((node) => node.data.assetUrl && ['image', 'video', 'audio'].includes(node.data.kind))
+    .map((node) => ({
+      id: node.id,
+      layerId: node.id,
+      nodeId: node.id,
+      name: node.data.title || `${node.data.kind} 素材`,
+      title: node.data.title || `${node.data.kind} 素材`,
+      kind: node.data.kind,
+      mimeType: node.data.mimeType || '',
+      size: Number(node.data.fileSize) || 0,
+      url: node.data.assetUrl,
+      previewUrl: node.data.thumbnail || node.data.assetUrl,
+    })),
+)
 const imageToolbarPosition = computed(() => {
   const node = graph.activeNode
   if (!node) return { left: screenSize.value.width / 2, top: 56 }
@@ -248,8 +300,12 @@ function openPanel(panel) {
   menuPosition.value = null
   zoomMenu.value = false
   ui.togglePanel(panel)
+  if (panel === 'assistant' && activePanel.value === 'assistant')
+    void restoreLatestDirectorConversation()
 }
 async function closeDirector() {
+  window.clearTimeout(directorConversationSyncTimer)
+  void saveDirectorConversation().catch(() => {})
   activePanel.value = ''
   await nextTick()
   agentOrb.value?.focus()
@@ -459,16 +515,22 @@ function serializedDirectorRun(run) {
     reply: run.reply,
     thinking: run.thinking,
     thinkingText: run.thinkingText,
+    questions: run.questions,
+    clarificationAnswers: run.clarificationAnswers,
+    clarificationReplyRunId: run.clarificationReplyRunId,
     draft: run.draft,
+    proposal: run.proposal,
+    contentReady: run.contentReady,
     nodeId: run.nodeId,
     submissionStarted: run.submissionStarted,
+    submissionStartedAt: run.submissionStartedAt,
     submissionState: run.submissionState,
     error: run.error,
   }
 }
 
 function directorConversationMessages() {
-  return directorAgentRuns.value.flatMap((run) => [
+  const pairs = dedupeDirectorAgentRuns(directorAgentRuns.value).map((run) => [
     {
       role: 'user',
       id: run.message?.id || run.clientMessageId,
@@ -481,19 +543,28 @@ function directorConversationMessages() {
     },
     { role: 'assistant', run: serializedDirectorRun(run) },
   ])
+  return mergeDirectorConversationMessages(directorRestoredMessages.value, pairs)
 }
 
 function directorConversationTitle() {
-  const first = directorAgentRuns.value[0]
+  const first =
+    directorRestoredMessages.value.find((message) =>
+      String(message?.display || message?.content || '').trim(),
+    ) || directorAgentRuns.value[0]
   return (
-    String(first?.display || first?.instruction || '新对话')
+    String(first?.display || first?.content || first?.instruction || '新对话')
       .trim()
       .slice(0, 80) || '新对话'
   )
 }
 
 async function saveDirectorConversation() {
-  if (!user.token || !directorAgentRuns.value.length) return
+  if (
+    !user.token ||
+    !directorAgentRuns.value.length ||
+    directorConversationDeletedIds.has(directorConversationId.value)
+  )
+    return
   const response = await fetch(
     apiPath(
       `/api/ai/canvas-agent/conversations/${encodeURIComponent(directorConversationId.value)}`,
@@ -521,27 +592,116 @@ function scheduleDirectorConversationSync() {
 async function loadDirectorConversations() {
   if (!user.token) {
     directorConversations.value = []
-    return
+    return []
   }
+  const canvasId = props.projectId
+  const token = user.token
+  if (directorHistoryRequest?.canvasId === canvasId && directorHistoryRequest.token === token)
+    return directorHistoryRequest.promise
+  directorHistoryRequest?.controller.abort()
+  const request = { canvasId, token, controller: new AbortController(), promise: null }
+  directorHistoryRequest = request
   directorConversationLoading.value = true
-  const controller = new AbortController()
-  const timeout = window.setTimeout(() => controller.abort(), 5000)
-  try {
-    const response = await readDirectorApiResponse(
-      await fetch(
-        apiPath(
-          `/api/ai/canvas-agent/conversations?canvasId=${encodeURIComponent(props.projectId)}`,
+  directorConversationLoadError.value = ''
+  request.promise = (async () => {
+    const timeout = window.setTimeout(() => request.controller.abort(), 5000)
+    try {
+      const response = await readDirectorApiResponse(
+        await fetch(
+          apiPath(`/api/ai/canvas-agent/conversations?canvasId=${encodeURIComponent(canvasId)}`),
+          { headers: user.authHeaders(), signal: request.controller.signal },
         ),
-        { headers: user.authHeaders(), signal: controller.signal },
-      ),
-    )
-    directorConversations.value = Array.isArray(response) ? response : []
-  } catch {
-    directorConversations.value = []
-  } finally {
-    window.clearTimeout(timeout)
-    directorConversationLoading.value = false
+      )
+      if (
+        directorDisposed ||
+        directorHistoryRequest !== request ||
+        props.projectId !== canvasId ||
+        user.token !== token
+      )
+        return null
+      if (!Array.isArray(response)) throw new Error('最近对话数据格式异常，请重试')
+      directorConversations.value = response
+      return directorConversations.value
+    } catch (error) {
+      if (
+        directorHistoryRequest === request &&
+        props.projectId === canvasId &&
+        user.token === token
+      )
+        directorConversationLoadError.value =
+          error?.name === 'AbortError'
+            ? '最近对话加载超时，请重试'
+            : error?.message || '无法加载最近对话，请重试'
+      return null
+    } finally {
+      window.clearTimeout(timeout)
+      if (directorHistoryRequest === request) {
+        directorHistoryRequest = null
+        directorConversationLoading.value = false
+      }
+    }
+  })()
+  return request.promise
+}
+
+function markDirectorConversationActive() {
+  directorConversationRevision += 1
+  directorConversationInitialized = true
+  directorRestoring.value = false
+  directorRestoreError.value = ''
+}
+
+async function restoreLatestDirectorConversation() {
+  if (
+    directorDisposed ||
+    directorConversationInitialized ||
+    directorAgentRuns.value.length ||
+    !user.token
+  )
+    return
+  if (directorRecentRequest) return directorRecentRequest.promise
+  const request = {
+    revision: directorConversationRevision,
+    canvasId: props.projectId,
+    token: user.token,
+    promise: null,
   }
+  directorRecentRequest = request
+  directorRestoring.value = true
+  directorRestoreError.value = ''
+  request.promise = (async () => {
+    try {
+      const conversations = await loadDirectorConversations()
+      if (
+        directorDisposed ||
+        directorRecentRequest !== request ||
+        request.revision !== directorConversationRevision ||
+        props.projectId !== request.canvasId ||
+        user.token !== request.token ||
+        directorAgentRuns.value.length
+      )
+        return
+      if (!conversations) {
+        directorRestoreError.value =
+          directorConversationLoadError.value || '无法恢复最近对话，请重试或新建对话'
+        return
+      }
+      const latest = latestDirectorConversation(
+        conversations.filter(
+          (conversation) => !directorConversationDeletedIds.has(String(conversation?.id || '')),
+        ),
+        request.canvasId,
+      )
+      if (latest) selectDirectorConversation(latest)
+      else markDirectorConversationActive()
+    } finally {
+      if (directorRecentRequest === request) {
+        directorRecentRequest = null
+        directorRestoring.value = false
+      }
+    }
+  })()
+  return request.promise
 }
 
 function stopDirectorConversationWork() {
@@ -554,16 +714,92 @@ function startDirectorConversation() {
   window.clearTimeout(directorConversationSyncTimer)
   void saveDirectorConversation().catch(() => {})
   stopDirectorConversationWork()
+  markDirectorConversationActive()
+  directorRestoredMessages.value = []
   directorConversationId.value = directorRequestId('conversation')
   directorAgentRuns.value = []
 }
 
 function selectDirectorConversation(conversation) {
+  window.clearTimeout(directorConversationSyncTimer)
+  void saveDirectorConversation().catch(() => {})
   stopDirectorConversationWork()
+  markDirectorConversationActive()
+  const records = Array.isArray(conversation?.messages) ? conversation.messages : []
+  const restoredRuns = []
+  const restoredMessages = []
+  let previousUser = null
+  for (const record of records) {
+    if (record?.role === 'user') {
+      previousUser = { ...record, id: record.id || `restored-message-${restoredMessages.length}` }
+      restoredMessages.push(previousUser)
+    } else if (record?.role === 'assistant' && record.run?.id) {
+      const run = { ...record.run }
+      if (!run.message?.id && previousUser)
+        run.message = { ...previousUser, ...run.message, id: previousUser.id }
+      if (['planning', 'streaming'].includes(run.phase)) {
+        run.phase = 'failed'
+        run.error = '上次回复已中断，保留已收到的内容，可点击重试继续'
+      } else if (run.phase === 'submitting') {
+        // A restored in-flight submission is uncertain, never permission to POST again.
+        run.phase = 'ready'
+        run.submissionStarted = true
+        run.submissionState = 'uncertain'
+        run.error = '上次提交结果待确认，请继续查询原任务，不会重复扣费'
+      }
+      restoredRuns.push(run)
+    }
+  }
+  directorRestoredMessages.value = restoredMessages
   directorConversationId.value = String(conversation?.id || directorRequestId('conversation'))
-  directorAgentRuns.value = (Array.isArray(conversation?.messages) ? conversation.messages : [])
-    .filter((message) => message?.role === 'assistant' && message?.run?.id)
-    .map((message) => ({ ...message.run }))
+  directorAgentRuns.value = dedupeDirectorAgentRuns(restoredRuns)
+  // Migrate an older text-only image proposal without submitting a paid task.
+  const latest = directorAgentRuns.value.at(-1)
+  if (directorImagePlan(latest) && !directorSubmissionStarted(latest))
+    void ensureDirectorDraftNode(latest.id).catch((error) =>
+      updateDirectorRun(latest.id, { error: error.message }),
+    )
+}
+
+async function deleteDirectorConversation(conversation, complete) {
+  const conversationId = String(conversation?.id || '')
+  if (!conversationId || directorConversationDeletingIds.value.includes(conversationId)) return
+
+  const deletingCurrent = conversationId === directorConversationId.value
+  directorConversationDeletingIds.value = [...directorConversationDeletingIds.value, conversationId]
+  directorConversationDeletedIds.add(conversationId)
+  if (deletingCurrent) {
+    window.clearTimeout(directorConversationSyncTimer)
+    stopDirectorConversationWork()
+  }
+
+  try {
+    await readDirectorApiResponse(
+      await fetch(
+        apiPath(
+          `/api/ai/canvas-agent/conversations/${encodeURIComponent(conversationId)}?canvasId=${encodeURIComponent(props.projectId)}`,
+        ),
+        { method: 'DELETE', headers: user.authHeaders() },
+      ),
+    )
+    directorConversations.value = directorConversations.value.filter(
+      (item) => String(item?.id || '') !== conversationId,
+    )
+    if (deletingCurrent) {
+      markDirectorConversationActive()
+      directorRestoredMessages.value = []
+      directorConversationId.value = directorRequestId('conversation')
+      directorAgentRuns.value = []
+    }
+    complete?.({ ok: true, deletedCurrent: deletingCurrent })
+  } catch (error) {
+    directorConversationDeletedIds.delete(conversationId)
+    complete?.({ ok: false, message: error?.message || '删除失败，请稍后重试' })
+  } finally {
+    directorConversationDeletingIds.value = directorConversationDeletingIds.value.filter(
+      (id) => id !== conversationId,
+    )
+  }
 }
 
 function directorLayerContext(node) {
@@ -582,11 +818,11 @@ function directorLayerContext(node) {
 }
 
 function directorHistory(excludedRunId) {
-  return directorAgentRuns.value
+  return dedupeDirectorAgentRuns(directorAgentRuns.value)
     .filter((run) => run.id !== excludedRunId && run.instruction && run.reply)
     .flatMap((run) => [
       { role: 'user', content: run.instruction },
-      { role: 'assistant', content: run.reply },
+      { role: 'assistant', content: directorRunReplyContext(run) },
     ])
     .slice(-20)
 }
@@ -610,7 +846,39 @@ function directorInstruction(message) {
         ? `使用 Skill「${part.name || part.id}」：\n${part.prompt}`
         : `使用 Skill「${part.name || part.id}」`,
     )
-  return [String(message.content || message.display || '').trim(), ...skillContext]
+  const attachments = (message.parts || []).filter(
+    (part) => part?.type === 'attachment' && part.url,
+  )
+  const attachmentContext = attachments.length
+    ? `本轮附加了 ${attachments.length} 个素材：${attachments
+        .map(
+          (attachment) =>
+            `「${attachment.name || '未命名素材'}」${attachment.referenceRole === 'product' ? '（商品原图）' : attachment.referenceRole === 'style' ? '（仅参考风格，不作为商品外观事实）' : ''}`,
+        )
+        .join('、')}。请读取这些素材并结合用户需求回答。`
+    : ''
+  const userInstruction = String(message.content || '').trim()
+  const imageSourceMode = message?.context?.clarification?.imageSourceMode
+  const sourceContext =
+    imageSourceMode === 'text'
+      ? '用户本轮明确选择纯文字生图，不使用画布或此前上传图片作为本次生成参考。'
+      : imageSourceMode === 'reference'
+        ? '用户本轮明确选择参考图生图，只使用本轮确认的真实参考素材；风格参考图不能当作商品原图。'
+        : ''
+  const roles = message?.context?.clarification?.referenceRoles || {}
+  const roleContext = Object.entries(roles)
+    .filter(([, role]) => ['product', 'style', 'other'].includes(role))
+    .map(
+      ([id, role]) =>
+        `素材 ${id} 的用户指定用途：${role === 'product' ? '商品原图，校准商品外观' : role === 'style' ? '仅参考风格、构图和光线，不作为商品身份或性能依据' : '其他参考，不能推断商品性能'}`,
+    )
+  return [
+    userInstruction || (attachments.length ? '请分析我附加的素材。' : message.display || ''),
+    attachmentContext,
+    sourceContext,
+    ...roleContext,
+    ...skillContext,
+  ]
     .filter(Boolean)
     .join('\n\n')
 }
@@ -629,6 +897,24 @@ function createDirectorGenerationIntent(message) {
   const referenceNodes = selectedNodes.filter(
     (node) => node.data.kind === 'image' && node.data.assetUrl,
   )
+  const attachments = (message.parts || [])
+    .filter((part) => part?.type === 'attachment' && part.url)
+    .map((attachment) => {
+      const id = String(attachment.id || directorRequestId('attachment'))
+      return Object.freeze({
+        id,
+        layerId: String(attachment.layerId || id),
+        name: String(attachment.name || '未命名素材'),
+        kind: ['image', 'video', 'audio'].includes(attachment.kind) ? attachment.kind : 'file',
+        mimeType: String(attachment.mimeType || ''),
+        size: Math.max(0, Number(attachment.size) || 0),
+        url: String(attachment.url),
+        source: attachment.source === 'library' ? 'library' : 'upload',
+        ...(['product', 'style', 'other'].includes(attachment.referenceRole)
+          ? { referenceRole: attachment.referenceRole }
+          : {}),
+      })
+    })
   const requestedModels = (message.parts || [])
     .filter((part) => part?.type === 'model')
     .map((part) =>
@@ -642,14 +928,30 @@ function createDirectorGenerationIntent(message) {
   const primaryGenerationNode =
     selectedNodes.find((node) => node.data.kind === generationType) || null
   const params = primaryGenerationNode?.data.params || {}
+  const referenceAssets = [
+    ...referenceNodes.map((node) => ({
+      id: node.id,
+      layerId: node.id,
+      name: node.data.title || '参考图片',
+      kind: 'image',
+      url: node.data.assetUrl,
+      source: 'canvas',
+    })),
+    ...attachments.filter((attachment) => attachment.kind === 'image'),
+  ]
+  const referenceLayerIds = [
+    ...new Set([
+      ...referenceNodes.map((node) => node.id),
+      ...attachments.map((attachment) => attachment.layerId),
+    ]),
+  ]
   return Object.freeze({
     generationType,
     requestedModels: Object.freeze(requestedModels),
     selectedLayerIds: Object.freeze(selectedNodes.map((node) => node.id)),
-    referenceLayerIds: Object.freeze(referenceNodes.map((node) => node.id)),
-    referenceAssets: Object.freeze(
-      referenceNodes.map((node) => Object.freeze({ id: node.id, url: node.data.assetUrl })),
-    ),
+    referenceLayerIds: Object.freeze(referenceLayerIds),
+    referenceAssets: Object.freeze(referenceAssets.map((asset) => Object.freeze(asset))),
+    attachments: Object.freeze(attachments),
     nodeModel: String(primaryGenerationNode?.data.model || '').trim(),
     ratio: String(params.ratio || '16:9'),
     resolution: String(params.resolution || (generationType === 'video' ? '720P' : '2K')),
@@ -662,6 +964,10 @@ function createDirectorGenerationIntent(message) {
     width: positiveDirectorDimension(params.width),
     height: positiveDirectorDimension(params.height),
   })
+}
+
+function directorRequestLayers(intent) {
+  return directorRequestContextLayers(nodes.value.map(directorLayerContext), intent)
 }
 
 function resolveDirectorModels(intent) {
@@ -680,7 +986,11 @@ function resolveDirectorModels(intent) {
         .toLocaleLowerCase() === intent.nodeModel.toLocaleLowerCase(),
   )
   const matched = requested.length
-    ? requested.map((model) => resolveDirectorImageTaskModel(model.id, tasks.imageModels))
+    ? requested.map((model) =>
+        intent.executionConfirmed
+          ? resolveConfiguredImageTaskModel(model.id, tasks.imageModels)
+          : resolveDirectorImageTaskModel(model.id, tasks.imageModels),
+      )
     : [
         nodeModelIsConfigured
           ? resolveConfiguredImageTaskModel(intent.nodeModel, tasks.imageModels)
@@ -796,6 +1106,8 @@ async function planDirectorMessage(runId) {
     reply: '',
     thinkingText: '',
     draft: null,
+    proposal: null,
+    questions: [],
     thinking: [
       { id: 'context', label: '正在读取画布上下文与选中素材', state: 'active' },
       { id: 'model', label: '等待数据库推理模型开始响应', state: 'pending' },
@@ -824,7 +1136,7 @@ async function planDirectorMessage(runId) {
           canvasId: props.projectId,
           instruction: run.instruction,
           history: directorHistory(runId),
-          layers: nodes.value.map(directorLayerContext),
+          layers: directorRequestLayers(intent),
           selectedLayerIds: [...intent.selectedLayerIds],
           referenceLayerIds: [...intent.referenceLayerIds],
           model: models[0] || '',
@@ -839,8 +1151,9 @@ async function planDirectorMessage(runId) {
       runId,
     )
     if (controller.signal.aborted) return
+    const questions = normalizeDirectorQuestions(response?.questions)
     const prompts = normalizeDirectorPrompts(response)
-    const draftRequested = canCreateAgentDraft(response, prompts)
+    const draftRequested = !questions.length && canCreateAgentDraft(response, prompts)
     const responseGenerationType = ['image', 'video'].includes(response?.generationType)
       ? response.generationType
       : ''
@@ -849,9 +1162,11 @@ async function planDirectorMessage(runId) {
       : !responseGenerationType
         ? 'Agent 未明确生成类型，本次不会自动提交付费任务'
         : responseGenerationType !== intent.generationType
-          ? `Agent 建议生成${responseGenerationType === 'video' ? '视频' : '图片'}，与发送时选择的${intent.generationType === 'video' ? '视频' : '图片'}模式不一致；请确认模型后重新发送`
+          ? !intent.requestedModels.length && !intent.nodeModel
+            ? '创作方案已保留，请先选择对应的生成模型；本次未提交生成任务'
+            : `Agent 建议生成${responseGenerationType === 'video' ? '视频' : '图片'}，与发送时选择的${intent.generationType === 'video' ? '视频' : '图片'}模式不一致；请确认模型后重新发送`
           : intent.generationType === 'image' && !models.length
-            ? '请选择已配置的图片模型后重新发送，Agent 不会替你选择付费模型'
+            ? '请在下方确认生图模型和参数，无需重新发送或重新整理方案'
             : ''
     const draft =
       draftRequested && !paidConfigurationError
@@ -873,12 +1188,20 @@ async function planDirectorMessage(runId) {
             height: intent.height,
           }
         : null
+    const proposal =
+      !questions.length && !draft && responseGenerationType && prompts.length
+        ? { generationType: responseGenerationType, prompt: prompts[0], prompts }
+        : null
     const nextRun = updateDirectorRun(runId, {
-      phase: draft ? 'ready' : 'complete',
+      phase: questions.length ? 'awaiting_input' : draft ? 'ready' : 'complete',
       reply: String(response?.reply || 'TV Director 已完成分析。'),
+      questions,
       draft,
+      proposal,
+      contentReady: draftRequested,
       error: paidConfigurationError,
     })
+    if (directorImagePlan(nextRun)) await ensureDirectorDraftNode(runId)
     // The per-message dry-run intent is frozen when the user sends. Later mode changes never
     // affect this branch, and video drafts deliberately remain available without auto submission.
     if (draft?.generationType === 'image' && nextRun?.dryRun === false)
@@ -894,10 +1217,21 @@ async function planDirectorMessage(runId) {
   }
 }
 
-function handleDirectorSubmit(message) {
-  const instruction = directorInstruction(message)
+function handleDirectorSubmit(message, inheritedIntent = null) {
+  if (directorRestoring.value || directorRestoreError.value) return ''
+  const currentInstruction = directorInstruction(message)
+  const sourceRunId = message?.context?.clarification?.sourceRunId
+  const instruction = sourceRunId
+    ? directorClarificationInstruction(directorAgentRuns.value, sourceRunId, currentInstruction)
+    : currentInstruction
   if (!instruction) return
-  const generationIntent = createDirectorGenerationIntent(message)
+  if (
+    message.id &&
+    directorAgentRuns.value.some((existing) => existing.clientMessageId === message.id)
+  )
+    return
+  const generationIntent = inheritedIntent || createDirectorGenerationIntent(message)
+  markDirectorConversationActive()
   const run = {
     id: directorRequestId('director'),
     clientTaskId: directorRequestId('director-image'),
@@ -916,7 +1250,11 @@ function handleDirectorSubmit(message) {
     ],
     reply: '',
     thinkingText: '',
+    questions: [],
+    clarificationAnswers: [],
+    clarificationReplyRunId: '',
     draft: null,
+    proposal: null,
     nodeId: '',
     submissionStarted: false,
     error: '',
@@ -924,6 +1262,82 @@ function handleDirectorSubmit(message) {
   directorAgentRuns.value.push(run)
   scheduleDirectorConversationSync()
   void planDirectorMessage(run.id)
+  return run.id
+}
+
+function handleDirectorClarification(runId, message, complete) {
+  const source = directorRun(runId)
+  const latest = directorAgentRuns.value.at(-1)
+  const answers = normalizeDirectorClarificationAnswers(
+    source?.questions,
+    message?.context?.clarification?.answers,
+  )
+  if (
+    !source ||
+    source.id !== latest?.id ||
+    source.clarificationReplyRunId ||
+    !source.generationIntent ||
+    !['awaiting_input', 'complete'].includes(source.phase) ||
+    !isDirectorClarificationComplete(source.questions, answers) ||
+    directorPlanningRequests.size
+  ) {
+    complete?.({ ok: false, message: '这组问题已处理或当前有任务进行中，请继续使用输入框沟通' })
+    return
+  }
+
+  const addedIntent = directorClarificationAssetsIntent(
+    source.generationIntent,
+    createDirectorGenerationIntent(message).attachments,
+  )
+  const clarification = message.context.clarification
+  const sourceMode =
+    directorImageSourceMode(source.questions, answers) ||
+    (source.questions.some((question) => question.kind === 'image_upload')
+      ? 'reference'
+      : source.generationIntent.imageSourceMode || '')
+  const selectedIds = Array.isArray(clarification.referenceImageIds)
+    ? new Set(clarification.referenceImageIds)
+    : null
+  const referenceImages = directorReferenceImages(
+    addedIntent,
+    [],
+    [],
+    clarification.referenceRoles || {},
+  ).filter((image) => !selectedIds || selectedIds.has(image.layerId || image.id || image.url))
+  if (
+    !isDirectorClarificationReady(source.questions, answers, referenceImages) ||
+    (sourceMode === 'reference' &&
+      (!referenceImages.some((image) => image.url && (!image.status || image.status === 'ready')) ||
+        referenceImages.filter((image) => image.url && (!image.status || image.status === 'ready'))
+          .length > DIRECTOR_REFERENCE_IMAGE_LIMIT))
+  ) {
+    complete?.({ ok: false, message: '参考图尚未准备好，请先上传或选择图片后再继续' })
+    return
+  }
+  const generationIntent = directorApplyImageSourceIntent(addedIntent, sourceMode, referenceImages)
+
+  // Answers cannot grant paid approval. Only preserve this same task's earlier explicit
+  // automatic-mode authorization; later picker changes have no effect.
+  const nextRunId = handleDirectorSubmit(
+    {
+      ...message,
+      dryRunIntent: source.dryRun !== false,
+      context: {
+        ...message.context,
+        clarification: { ...clarification, imageSourceMode: sourceMode },
+      },
+    },
+    generationIntent,
+  )
+  if (!nextRunId) {
+    complete?.({ ok: false, message: '未能提交答案，请重试' })
+    return
+  }
+  updateDirectorRun(runId, {
+    clarificationAnswers: answers,
+    clarificationReplyRunId: nextRunId,
+  })
+  complete?.({ ok: true })
 }
 
 function directorDraftPosition(referenceNode) {
@@ -945,11 +1359,210 @@ function directorDraftPosition(referenceNode) {
   return { x: center.x - size.width / 2, y: center.y - size.height / 2 }
 }
 
+function directorImagePlan(run) {
+  if (!run || run.questions?.length || run.contentReady === false) return null
+  const plan = run.draft || run.proposal
+  return plan?.generationType === 'image' && plan.prompt?.trim() ? plan : null
+}
+
+function directorSubmissionStarted(run) {
+  const node = nodes.value.find(
+    (candidate) => candidate.id === run?.nodeId || candidate.data.directorRunId === run?.id,
+  )
+  return Boolean(
+    run?.submissionStarted ||
+    (run?.clientTaskId && node?.data.generation?.clientTaskId === run.clientTaskId),
+  )
+}
+
+function directorDraftFromIntent(plan, intent, model) {
+  return {
+    prompt: plan.prompt,
+    prompts: plan.prompts || [plan.prompt],
+    generationType: 'image',
+    referenceLayerIds: [...(intent.referenceLayerIds || [])],
+    referenceAssets: (intent.referenceAssets || []).map((reference) => ({ ...reference })),
+    models: [model.value],
+    model: model.value,
+    modelLabel: model.label || model.value,
+    ratio: intent.ratio,
+    resolution: intent.resolution,
+    count: intent.count,
+    quality: intent.quality || '标准画质',
+    background: intent.background || '自动',
+    width: intent.width,
+    height: intent.height,
+  }
+}
+
+// Preparing a node is free: no task key exists until runImage starts submission.
+function ensureDirectorDraftNode(runId) {
+  if (directorNodePreparations.has(runId)) return directorNodePreparations.get(runId)
+  const preparation = (async () => {
+    const run = directorRun(runId)
+    const plan = directorImagePlan(run)
+    if (!plan) throw new Error('图片方案尚未准备完整，请先补充创作需求')
+    if (directorSubmissionStarted(run)) {
+      const existing = nodes.value.find((node) => node.id === run.nodeId)
+      if (existing) return existing
+      throw new Error('原任务节点暂不可用，请继续查询原任务，不会创建新的生成任务')
+    }
+    const intent = run.generationIntent || {}
+    const expectedReferences = plan.referenceAssets || intent.referenceAssets || []
+    const attachmentBasePosition = directorDraftPosition(null)
+    const referenceNodes = expectedReferences.map((reference, index) => {
+      // Canvas references are identity snapshots, not any node with the same URL.
+      let node = nodes.value.find((candidate) =>
+        reference.source === 'canvas'
+          ? candidate.id === (reference.layerId || reference.id)
+          : candidate.id === reference.id ||
+            candidate.id === reference.layerId ||
+            candidate.data.assetUrl === reference.url,
+      )
+      if (
+        !node &&
+        ['upload', 'library'].includes(reference.source) &&
+        reference.kind === 'image' &&
+        reference.url
+      ) {
+        node = graph.addNode('image', {
+          x: attachmentBasePosition.x - 360,
+          y: attachmentBasePosition.y + index * 36,
+        })
+        if (!node) throw new Error('无法添加参考图片到画布')
+        graph.updateNodeData(node.id, {
+          title: reference.name || '对话参考图',
+          assetUrl: reference.url,
+          artifactStatus: 'ready',
+          mediaOrigin: 'upload',
+        })
+      }
+      if (!node?.data.assetUrl) throw new Error('部分参考素材已移除，请重新添加后重试')
+      if (node.data.assetUrl !== reference.url)
+        throw new Error('参考图片在发送后已发生变化，请确认新图片并重新发送')
+      return node
+    })
+    let target = nodes.value.find(
+      (node) => node.id === run.nodeId || node.data.directorRunId === runId,
+    )
+    if (!target) {
+      const source = referenceNodes.find((node) => node.data.kind === 'image')
+      target = source
+        ? graph.createImageVariation(source.id, { title: 'TV Director 生成', prompt: plan.prompt })
+        : graph.addNode('image', directorDraftPosition(null))
+      if (!target) throw new Error('无法创建图片生成节点')
+    }
+    if (target.data.generation?.clientTaskId)
+      throw new Error('此节点已从画布发起过生成，请查看节点中的原任务；不会覆盖或重复提交')
+    if (target.data.directorRunId === runId) {
+      const expected = new Set(referenceNodes.map((reference) => reference.id))
+      const connected = new Set(
+        (graph.edges || []).filter((edge) => edge.target === target.id).map((edge) => edge.source),
+      )
+      if (expected.size !== connected.size || [...connected].some((id) => !expected.has(id)))
+        throw new Error(
+          '待生成节点的参考连接已被修改，请恢复原连接或重新确认创作方案，未提交生图任务',
+        )
+    }
+    // Never overwrite a submitted task's frozen request on history restoration.
+    if (!run.submissionStarted && !target.data.generation?.clientTaskId) {
+      graph.updateNodeData(target.id, {
+        title: /^图片节点(?:\s|$)/.test(target.data.title || '')
+          ? 'TV Director 生成'
+          : target.data.title,
+        directorRunId: runId,
+        prompt: plan.prompt,
+        model: run.draft?.model || intent.nodeModel || '',
+        params: {
+          ...target.data.params,
+          ratio: intent.ratio,
+          resolution: intent.resolution,
+          count: `${intent.count || 1}张`,
+          quality: intent.quality || '标准画质',
+          background: intent.background || '自动',
+          width: intent.width ?? null,
+          height: intent.height ?? null,
+        },
+        error: '',
+        statusText: run.draft?.model
+          ? '节点已就绪，等待确认生图'
+          : '节点已就绪，请确认生图模型和参数',
+      })
+      for (const reference of referenceNodes)
+        graph.connect({
+          source: reference.id,
+          target: target.id,
+          sourceHandle: 'output',
+          targetHandle: 'input',
+        })
+    }
+    updateDirectorRun(runId, { nodeId: target.id })
+    await nextTick()
+    if (!(await saveNow())) throw new Error('节点尚未保存成功，请检查网络后重试，未提交生图任务')
+    return nodes.value.find((node) => node.id === target.id)
+  })()
+  directorNodePreparations.set(runId, preparation)
+  void preparation.finally(() => directorNodePreparations.delete(runId)).catch(() => {})
+  return preparation
+}
+
+async function prepareDirectorGeneration(runId) {
+  try {
+    await ensureDirectorDraftNode(runId)
+    updateDirectorRun(runId, { error: '' })
+  } catch (error) {
+    updateDirectorRun(runId, { error: error.message })
+  }
+}
+
+function locateDirectorGeneration(runId) {
+  const run = directorRun(runId)
+  const node = nodes.value.find((candidate) => candidate.id === run?.nodeId)
+  if (node) void focusStoryboard(node)
+}
+
+const directorDisplayRuns = computed(() =>
+  directorAgentRuns.value.map((run) => {
+    const node = nodes.value.find((candidate) => candidate.id === run.nodeId)
+    const started = directorSubmissionStarted(run)
+    const state = started ? node?.data.runState : ''
+    return {
+      ...run,
+      submissionStarted: started,
+      executionPhase:
+        state === 'succeeded'
+          ? 'succeeded'
+          : state === 'failed'
+            ? 'failed'
+            : ['queued', 'running', 'paused'].includes(state)
+              ? 'submitted'
+              : state === 'uncertain'
+                ? 'uncertain'
+                : run.phase,
+      executionStatus: node?.data.statusText || '',
+      executionError: node?.data.error || '',
+      outputUrls:
+        state === 'succeeded'
+          ? [
+              ...new Set(
+                [...(node.data.generation?.results || []), node.data.assetUrl].filter(Boolean),
+              ),
+            ]
+          : [],
+    }
+  }),
+)
+
 async function submitDirectorDraft(runId) {
   const run = directorRun(runId)
   const draft = run?.draft
   if (!run || !draft || draft.generationType !== 'image') return
-  if (directorGenerationSubmissions.has(runId) || ['submitting', 'submitted'].includes(run.phase))
+  const nodeState = nodes.value.find((node) => node.id === run.nodeId)?.data.runState
+  if (
+    directorGenerationSubmissions.has(runId) ||
+    run.phase === 'submitting' ||
+    (run.phase === 'submitted' && !['uncertain', 'failed', 'paused'].includes(nodeState))
+  )
     return
   if (!user.requireLogin()) {
     updateDirectorRun(runId, { phase: 'ready', error: '请先登录有米账号后确认生成' })
@@ -962,7 +1575,8 @@ async function submitDirectorDraft(runId) {
     // Once fetch is about to start, every retry is a read-only recovery of the same stable
     // client_task_id. If rendering/history temporarily lost the node, rebuild only a local
     // recovery holder and resolve the original key; never fall through to another POST.
-    if (run.submissionStarted || run.submissionState === 'uncertain') {
+    if (directorSubmissionStarted(run) || run.submissionState === 'uncertain') {
+      updateDirectorRun(runId, { submissionStarted: true })
       if (!run.clientTaskId) throw new Error('原任务标识缺失，已阻止重复提交')
       let resumed = run.nodeId ? nodes.value.find((node) => node.id === run.nodeId) : null
       if (resumed?.data.generation?.clientTaskId !== run.clientTaskId) resumed = null
@@ -1027,34 +1641,8 @@ async function submitDirectorDraft(runId) {
     )
     if (!model) throw new Error(tasks.modelError || '当前项目尚未配置可用的图片生成模型')
 
-    const expectedReferences = draft.referenceAssets || []
-    const referenceNodes = expectedReferences.map((reference) => {
-      const node = nodes.value.find((candidate) => candidate.id === reference.id)
-      if (!node?.data.assetUrl) throw new Error('部分参考节点已移除，请恢复参考节点后重试')
-      if (node.data.assetUrl !== reference.url)
-        throw new Error('参考图片在发送后已发生变化，请确认新图片并重新发送')
-      return node
-    })
-
-    let target = run.nodeId ? nodes.value.find((node) => node.id === run.nodeId) : null
-    if (!target) {
-      const source = referenceNodes.find((node) => node.data.kind === 'image')
-      target = source
-        ? graph.createImageVariation(source.id, {
-            title: 'TV Director 生成',
-            prompt: draft.prompt,
-            params: {
-              ratio: draft.ratio,
-              resolution: draft.resolution,
-              count: `${draft.count}张`,
-              quality: draft.quality,
-              background: draft.background,
-            },
-          })
-        : graph.addNode('image', directorDraftPosition(referenceNodes[0]))
-      if (!target) throw new Error('无法创建图片生成节点')
-      updateDirectorRun(runId, { nodeId: target.id })
-    }
+    const target = await ensureDirectorDraftNode(runId)
+    if (!target) throw new Error('图片生成节点暂不可用，请重试')
 
     graph.updateNodeData(target.id, {
       title: /^图片节点(?:\s|$)/.test(target.data.title || '')
@@ -1069,18 +1657,12 @@ async function submitDirectorDraft(runId) {
         count: `${draft.count}张`,
         quality: draft.quality,
         background: draft.background,
+        width: draft.width ?? null,
+        height: draft.height ?? null,
       },
       error: '',
       statusText: '',
     })
-    for (const reference of referenceNodes)
-      graph.connect({
-        source: reference.id,
-        target: target.id,
-        sourceHandle: 'output',
-        targetHandle: 'input',
-      })
-
     await nextTick()
     await focusStoryboard(target)
     await tasks.runImage(target.id, focusGenerated, {
@@ -1126,16 +1708,42 @@ async function submitDirectorDraft(runId) {
   }
 }
 
-function confirmDirectorGeneration(runId) {
+async function confirmDirectorGeneration(runId, settings) {
   const run = directorRun(runId)
+  const nodeState = nodes.value.find((node) => node.id === run?.nodeId)?.data.runState
   if (
     !run ||
-    run.phase !== 'ready' ||
-    run.draft?.generationType !== 'image' ||
-    (!run.dryRun && !run.error)
+    directorGenerationSubmissions.has(runId) ||
+    run.phase === 'submitting' ||
+    (run.phase === 'submitted' && !['uncertain', 'failed', 'paused'].includes(nodeState))
   )
     return
-  void submitDirectorDraft(runId)
+  // An uncertain request is always recovered with its original key, never reconfigured.
+  if (directorSubmissionStarted(run) || run.submissionState === 'uncertain') {
+    await submitDirectorDraft(runId)
+    return
+  }
+  const plan = directorImagePlan(run)
+  if (!plan || !settings) return
+  try {
+    if (tasks.modelError) throw new Error(tasks.modelError)
+    const intent = createDirectorImageExecutionIntent(
+      run.generationIntent,
+      settings,
+      tasks.imageModels,
+    )
+    const model = resolveConfiguredImageTaskModel(intent.nodeModel, tasks.imageModels)
+    updateDirectorRun(runId, {
+      generationIntent: intent,
+      draft: directorDraftFromIntent(plan, intent, model),
+      proposal: null,
+      phase: 'ready',
+      error: '',
+    })
+    await submitDirectorDraft(runId)
+  } catch (error) {
+    updateDirectorRun(runId, { error: error.message })
+  }
 }
 
 function retryDirectorAgent(runId) {
@@ -1250,6 +1858,28 @@ function resetSpace() {
 onNodesInitialized(() => {
   if (route.query.demo && nodes.value.length) fitView({ padding: 0.2, minZoom: 0.2, maxZoom: 0.6 })
 })
+watch(
+  () => String(user.profile?.id || ''),
+  () => {
+    directorConversationRevision += 1
+    directorHistoryRequest?.controller.abort()
+    directorHistoryRequest = null
+    directorRecentRequest = null
+    directorConversationInitialized = false
+    directorRestoring.value = false
+    directorRestoreError.value = ''
+    directorConversationLoading.value = false
+    directorConversationLoadError.value = ''
+    window.clearTimeout(directorConversationSyncTimer)
+    stopDirectorConversationWork()
+    directorConversations.value = []
+    directorRestoredMessages.value = []
+    directorAgentRuns.value = []
+    directorConversationDeletedIds.clear()
+    directorConversationId.value = directorRequestId('conversation')
+    if (activePanel.value === 'assistant') void restoreLatestDirectorConversation()
+  },
+)
 onMounted(async () => {
   activePanel.value = ''
   mode.value = 'workflow'
@@ -1270,6 +1900,9 @@ onMounted(async () => {
   }
 })
 onBeforeUnmount(() => {
+  directorDisposed = true
+  directorConversationRevision += 1
+  directorHistoryRequest?.controller.abort()
   window.clearTimeout(directorConversationSyncTimer)
   for (const controller of directorPlanningRequests.values()) controller.abort()
   directorPlanningRequests.clear()
@@ -1441,23 +2074,37 @@ onBeforeUnmount(() => {
       />
       <DirectorPanel
         v-if="activePanel === 'assistant'"
+        :key="directorConversationId"
         :docked="directorDocked"
         :dock-width="directorDockWidth"
         :session-id="projectId"
-        :agent-runs="directorAgentRuns"
+        :agent-runs="directorDisplayRuns"
+        :image-models="tasks.imageModels"
+        :image-model-error="tasks.modelError"
         :conversations="directorConversations"
         :conversation-id="directorConversationId"
+        :conversation-messages="directorRestoredMessages"
+        :restoring="directorRestoring"
+        :restore-error="directorRestoreError"
         :conversation-loading="directorConversationLoading"
+        :conversation-deleting-ids="directorConversationDeletingIds"
+        :available-assets="directorAvailableAssets"
         @update:docked="setDirectorDocked"
         @update:dock-width="setDirectorDockWidth"
         @dock-width-commit="commitDirectorDockWidth"
         @submit="handleDirectorSubmit"
+        @answer-clarification="handleDirectorClarification"
         @cancel-agent="cancelDirectorAgent"
         @confirm-generation="confirmDirectorGeneration"
+        @prepare-generation="prepareDirectorGeneration"
+        @locate-generation="locateDirectorGeneration"
+        @refresh-image-models="tasks.loadModels(true)"
         @retry-agent="retryDirectorAgent"
         @new-conversation="startDirectorConversation"
         @load-conversations="loadDirectorConversations"
+        @restore-recent="restoreLatestDirectorConversation"
         @select-conversation="selectDirectorConversation"
+        @delete-conversation="deleteDirectorConversation"
         @close="closeDirector"
       />
       <section v-if="mode === 'storyboard'" class="cv3-storyboard">

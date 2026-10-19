@@ -153,6 +153,25 @@ public final class CanvasAgentDtos {
 
   public record VideoFrame(String url, double time) {}
 
+  public record ClarificationQuestion(String id, String question, List<String> options, String kind) {
+    public ClarificationQuestion {
+      kind = switch (kind == null ? "" : kind.strip()) {
+        case "image_source" -> "image_source";
+        case "image_upload" -> "image_upload";
+        default -> "choice";
+      };
+      options = switch (kind) {
+        case "image_source" -> List.of("参考图生图", "纯文字生图");
+        case "image_upload" -> List.of();
+        default -> options == null ? List.of() : List.copyOf(options);
+      };
+    }
+
+    public ClarificationQuestion(String id, String question, List<String> options) {
+      this(id, question, options, "choice");
+    }
+  }
+
   public record ChatResponse(
       String provider,
       String model,
@@ -168,7 +187,26 @@ public final class CanvasAgentDtos {
       int count,
       boolean readyToGenerate,
       String generationType,
-      Integer durationSeconds) {}
+      Integer durationSeconds,
+      List<ClarificationQuestion> questions) {
+    public ChatResponse {
+      questions = questions == null ? List.of() : List.copyOf(questions);
+      if (!questions.isEmpty()) {
+        draftPrompt = "";
+        draftPrompts = List.of();
+        readyToGenerate = false;
+      }
+    }
+
+    public ChatResponse(String provider, String model, String reply, String visualAnalysis,
+        String draftPrompt, List<String> draftPrompts, List<String> referenceLayerIds,
+        String imageModel, List<String> imageModels, String ratio, String resolution,
+        int count, boolean readyToGenerate, String generationType, Integer durationSeconds) {
+      this(provider, model, reply, visualAnalysis, draftPrompt, draftPrompts, referenceLayerIds,
+          imageModel, imageModels, ratio, resolution, count, readyToGenerate, generationType,
+          durationSeconds, List.of());
+    }
+  }
 
   public record AgentModelOption(String value, String label, boolean configured) {}
 

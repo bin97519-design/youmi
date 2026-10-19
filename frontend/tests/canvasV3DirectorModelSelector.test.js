@@ -326,7 +326,7 @@ test('Director panel serializes model markers and structured parts while guardin
 
   assert.match(
     submitBody,
-    /if \(!content && !selectedModels\.value\.length && !selectedSkills\.value\.length\) return/,
+    /if \([\s\S]*?!content[\s\S]*?!selectedModels\.value\.length[\s\S]*?!selectedSkills\.value\.length[\s\S]*?!readyAttachments\.value\.length[\s\S]*?\)/,
   )
   assert.match(
     submitBody,
@@ -341,8 +341,5 @@ test('Director panel serializes model markers and structured parts while guardin
     /parts:\s*\[[\s\S]*?serializedModels\.map\(\(model\) => model\.structuredPart\)[\s\S]*?serializedSkills\.map\(\(skill\) => skill\.structuredPart\)/,
   )
   assert.match(submitBody, /selectedModels\.value = \[\]/)
-  assert.match(
-    source,
-    /:disabled="!prompt\.trim\(\) && !selectedModels\.length && !selectedSkills\.length"/,
-  )
+  assert.match(source, /:disabled="[\s\S]*?attachmentUploadActive \|\|[\s\S]*?\(!prompt\.trim\(\)/)
 })
