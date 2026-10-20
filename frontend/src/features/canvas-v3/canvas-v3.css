@@ -761,6 +761,15 @@
 .cv3-media-node.is-generating {
   background: #2e2e2e;
 }
+.cv3-media-node.is-image.is-generating {
+  --cv3-generation-surface: #242527;
+  border-color: #3a3d42;
+  border-radius: 16px;
+  background: var(--cv3-generation-surface);
+}
+.cv3-media-node.is-image.is-generating.selected {
+  border-color: #646970;
+}
 .cv3-media-node:not(.selected) .cv3-handle {
   opacity: 0;
   pointer-events: none;
@@ -801,6 +810,44 @@
 }
 .cv3-generation-center button:hover {
   color: #fff;
+}
+.cv3-generation-center.is-pixel-feedback {
+  z-index: 1;
+  top: auto;
+  right: 12px;
+  bottom: 12px;
+  left: 12px;
+  justify-content: space-between;
+  height: auto;
+  min-height: 32px;
+  box-sizing: border-box;
+  padding: 7px 0;
+  border: 0;
+  border-radius: 0;
+  color: #b0b3b8;
+  background: transparent;
+  transform: none;
+  font-size: 12px;
+  font-weight: 500;
+}
+.cv3-generation-center.is-pixel-feedback > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cv3-generation-center.is-pixel-feedback button {
+  flex-shrink: 0;
+  padding: 3px 7px;
+  border-radius: 5px;
+  color: #a8adb5;
+  font-size: 12px;
+}
+.cv3-generation-center.is-pixel-feedback button:hover {
+  color: #e0e3e7;
+  background: #ffffff0d;
+}
+.cv3-generation-center.is-pixel-feedback button:focus-visible {
+  outline: 2px solid #b0b3b8;
+  outline-offset: 2px;
 }
 .cv3-generation-retry {
   padding: 6px 14px;

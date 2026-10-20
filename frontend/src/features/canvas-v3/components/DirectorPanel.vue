@@ -18,6 +18,7 @@ import {
 import {
   DIRECTOR_REFERENCE_IMAGE_LIMIT,
   directorImageSourceMode,
+  directorScriptSourceMode,
   isDirectorClarificationComplete,
   isDirectorClarificationReady,
   normalizeDirectorClarificationAnswers,
@@ -39,9 +40,11 @@ import DirectorAttachmentPicker from './DirectorAttachmentPicker.vue'
 import DirectorRichText from './DirectorRichText.vue'
 import DirectorClarificationCard from './DirectorClarificationCard.vue'
 import DirectorReferenceUpload from './DirectorReferenceUpload.vue'
+import DirectorScriptReferencePicker from './DirectorScriptReferencePicker.vue'
 import DirectorImageExecutionCard from './DirectorImageExecutionCard.vue'
 import { directorMessagesFromRuns } from '../config/directorRecentConversation.js'
 import { directorReferenceImages } from '../config/directorImageSources.js'
+import { directorPendingClarificationRun } from '../config/directorRouting.js'
 import DirectorGenerationModePicker from './DirectorGenerationModePicker.vue'
 import DirectorModelPicker from './DirectorModelPicker.vue'
 import DirectorSkillPicker from './DirectorSkillPicker.vue'
@@ -155,6 +158,9 @@ const skillCreationOpen = ref(false)
 const skillCreationChoice = ref('blank')
 const attachments = ref([])
 const pendingImageSourceMode = ref('')
+const pendingScriptSourceMode = ref('')
+const clarificationChatOpen = ref(false)
+const selectedHistoricalReferenceIds = ref([])
 const excludedReferenceIds = ref([])
 const referenceRoles = ref({})
 const draggedAttachmentIndex = ref(-1)
@@ -183,35 +189,48 @@ const activeAgentRun = computed(() => {
   return null
 })
 const pendingClarificationRun = computed(() => {
-  if (activeAgentRun.value) return null
-  const run = props.agentRuns.at(-1)
-  if (
-    !run?.questions?.length ||
-    run.clarificationReplyRunId ||
-    !['awaiting_input', 'complete'].includes(run.phase) ||
-    isDirectorClarificationComplete(run.questions, run.clarificationAnswers)
-  )
-    return null
-  return run
+  // A side chat must not unmount the still-unanswered questionnaire or erase its choices.
+  if (activeAgentRun.value && !clarificationChatOpen.value) return null
+  return directorPendingClarificationRun(props.agentRuns)
 })
-const pendingReferenceImages = computed(() =>
-  directorReferenceImages(
+const historicalReferenceCandidates = computed(
+  () => pendingClarificationRun.value?.referenceCandidates || [],
+)
+const pendingReferenceImages = computed(() => {
+  if (pendingScriptSourceMode.value === 'text') return []
+  if (pendingScriptSourceMode.value === 'history') {
+    const selected = new Set(selectedHistoricalReferenceIds.value)
+    return historicalReferenceCandidates.value.filter((image) =>
+      selected.has(image.layerId || image.id),
+    )
+  }
+  if (pendingScriptSourceMode.value === 'upload')
+    return directorReferenceImages(
+      null,
+      attachments.value,
+      excludedReferenceIds.value,
+      referenceRoles.value,
+    )
+  return directorReferenceImages(
     pendingClarificationRun.value?.generationIntent,
     attachments.value,
     excludedReferenceIds.value,
     referenceRoles.value,
-  ),
-)
+  )
+})
 const typedImageQuestions = computed(() =>
   pendingClarificationRun.value?.questions?.some((question) =>
-    ['image_source', 'image_upload'].includes(question.kind),
+    ['image_source', 'image_upload', 'script_source'].includes(question.kind),
   ),
 )
 watch(
   () => pendingClarificationRun.value?.id,
   () => {
+    clarificationChatOpen.value = false
     pendingImageSourceMode.value =
       pendingClarificationRun.value?.generationIntent?.imageSourceMode || ''
+    pendingScriptSourceMode.value = ''
+    selectedHistoricalReferenceIds.value = []
     excludedReferenceIds.value = []
     referenceRoles.value = {}
   },
@@ -861,6 +880,17 @@ function changeImageSource(mode) {
   }
 }
 
+function changeScriptSource(mode) {
+  pendingScriptSourceMode.value = mode
+  attachmentMenuOpen.value = false
+  // Switching source never silently keeps a historical selection or reads stale uploads.
+  selectedHistoricalReferenceIds.value = []
+  if (mode === 'text' || mode === 'history') {
+    for (const attachment of attachments.value.filter((item) => item.kind === 'image'))
+      removeAttachment(attachment.id)
+  }
+}
+
 function removeReferenceImage(image) {
   if (attachments.value.some((attachment) => attachment.id === image.id)) removeAttachment(image.id)
   excludedReferenceIds.value = [
@@ -1418,6 +1448,21 @@ function submitPrompt() {
   void scrollToBottom('smooth')
 }
 
+async function toggleClarificationChat() {
+  if (
+    !pendingClarificationRun.value ||
+    activeAgentRun.value ||
+    props.restoring ||
+    props.restoreError
+  )
+    return
+  clarificationChatOpen.value = !clarificationChatOpen.value
+  if (clarificationChatOpen.value) {
+    await nextTick()
+    composerInput.value?.focus({ preventScroll: true })
+  }
+}
+
 function submitClarification(run, submittedAnswers) {
   if (activeAgentRun.value || run.clarificationReplyRunId) return
   if (attachmentUploadActive.value) {
@@ -1435,12 +1480,19 @@ function submitClarification(run, submittedAnswers) {
     return
   }
   const content = serializeDirectorClarificationAnswers(run.questions, answers)
+  const scriptSourceMode = directorScriptSourceMode(run.questions, answers)
+  const submittedAttachments =
+    scriptSourceMode === 'history'
+      ? pendingReferenceImages.value.map((image) => ({ ...image, status: 'ready' }))
+      : scriptSourceMode === 'text'
+        ? readyAttachments.value.filter((attachment) => attachment.kind !== 'image')
+        : readyAttachments.value
   const message = {
     id: `director-message-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`,
     content,
     display: answers.map(({ question, answer }) => `${question}\n${answer}`).join('\n\n'),
     raw: content,
-    parts: readyAttachments.value.map(serializeDirectorAttachment).filter(Boolean),
+    parts: submittedAttachments.map(serializeDirectorAttachment).filter(Boolean),
     dryRunIntent: true,
     context: {
       sessionId: props.sessionId,
@@ -1448,11 +1500,13 @@ function submitClarification(run, submittedAnswers) {
       clarification: {
         sourceRunId: run.id,
         answers,
-        imageSourceMode:
-          directorImageSourceMode(run.questions, answers) ||
-          (run.questions.some((question) => question.kind === 'image_upload')
-            ? 'reference'
-            : pendingImageSourceMode.value),
+        scriptSourceMode,
+        imageSourceMode: scriptSourceMode
+          ? ''
+          : directorImageSourceMode(run.questions, answers) ||
+            (run.questions.some((question) => question.kind === 'image_upload')
+              ? 'reference'
+              : pendingImageSourceMode.value),
         referenceImageIds: pendingReferenceImages.value
           .filter((image) => image.url && (!image.status || image.status === 'ready'))
           .map((image) => image.layerId || image.id || image.url),
@@ -2339,9 +2393,18 @@ watch(
           :disabled="Boolean(activeAgentRun)"
           :reference-images="pendingReferenceImages"
           :uploading="attachmentUploadActive"
+          :has-history-references="historicalReferenceCandidates.length > 0"
           @image-source-change="changeImageSource"
+          @script-source-change="changeScriptSource"
           @answer="submitClarification(pendingClarificationRun, $event)"
         >
+          <template #history-reference>
+            <DirectorScriptReferencePicker
+              v-model:selected-ids="selectedHistoricalReferenceIds"
+              :images="historicalReferenceCandidates"
+              :disabled="Boolean(activeAgentRun)"
+            />
+          </template>
           <template #reference-upload>
             <DirectorReferenceUpload
               v-model:open="attachmentMenuOpen"
@@ -2356,9 +2419,21 @@ watch(
             />
           </template>
         </DirectorClarificationCard>
+        <button
+          type="button"
+          class="cv3-director-clarification-chat-toggle"
+          aria-label="直接输入补充或新需求"
+          :aria-expanded="clarificationChatOpen"
+          aria-controls="cv3-director-composer"
+          :disabled="Boolean(activeAgentRun) || restoring || Boolean(restoreError)"
+          @click="toggleClarificationChat"
+        >
+          直接输入补充或新需求
+        </button>
       </div>
       <div
-        v-else
+        v-if="!pendingClarificationRun || clarificationChatOpen"
+        id="cv3-director-composer"
         class="cv3-director-composer"
         :class="{
           'has-auxiliary':
@@ -3948,6 +4023,32 @@ watch(
   margin: 0 8px 5px;
   color: #919191;
   font-size: 12px;
+}
+
+.cv3-director-clarification-chat-toggle {
+  margin: 8px 8px 0;
+  padding: 5px 8px;
+  border: 1px solid #444;
+  border-radius: 8px;
+  background: #2a2a2a;
+  color: #aaa;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cv3-director-clarification-chat-toggle:hover:not(:disabled) {
+  background: #333;
+  color: #eee;
+}
+
+.cv3-director-clarification-chat-toggle:focus-visible {
+  outline: 2px solid #888;
+  outline-offset: 2px;
+}
+
+.cv3-director-clarification-chat-toggle:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .cv3-director-question-attachments {

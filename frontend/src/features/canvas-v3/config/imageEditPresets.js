@@ -96,12 +96,28 @@ export function imageEditPreset(id) {
   }
 }
 
+// Before the nine-view layout was introduced, "restore default" persisted this
+// built-in text as though it were a user edit. Only this exact historical default
+// follows the current template; any user-authored changes remain authoritative.
+const LEGACY_CHARACTER_SHEET_PROMPT =
+  '以引用图中的角色为准，生成一张专业角色设定图。包含角色正面、侧面、背面的全身造型，以及脸部与服装配饰细节。严格统一人物身份、身材比例、发型、服装、材质和配色，使用干净背景与整洁的设定稿排版。不要引入其他角色，不要文字、标注或水印；仅输出一张完整设定图。'
+
+export function imageEditTemplatePrompt(data) {
+  const preset = data?.editTemplate
+  const template = imageEditTemplate(preset?.id)
+  if (!template) return ''
+  const instructions = preset.instructions?.trim()
+  if (preset.id === 'character-sheet' && instructions === LEGACY_CHARACTER_SHEET_PROMPT)
+    return template.prompt
+  return instructions || template.prompt
+}
+
 export function imageEditInstructions(data) {
   const preset = data.editTemplate
   if (preset?.id === 'multi-angle') return angleInstructions(preset.camera)
   const template = imageEditTemplate(preset?.id)
   if (!template) return ''
-  const prompt = preset.instructions?.trim() || template.prompt
+  const prompt = imageEditTemplatePrompt(data)
   if (preset.id === 'portrait-texture') {
     const settings = portraitSettings(preset.settings)
     return [

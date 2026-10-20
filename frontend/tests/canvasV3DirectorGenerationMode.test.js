@@ -397,7 +397,7 @@ test('Director task orchestration keeps mode selection inert and unsafe media ou
   assert.match(plan, /draftRequested && !paidConfigurationError/)
   assert.match(
     plan,
-    /if \(draft\?\.generationType === ['"]image['"] && nextRun\?\.dryRun === false\)/,
+    /if \(allowsDraft && draft\?\.generationType === ['"]image['"] && nextRun\?\.dryRun === false\)/,
   )
   assert.match(
     shell,

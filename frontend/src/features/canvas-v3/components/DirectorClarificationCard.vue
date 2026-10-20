@@ -2,6 +2,7 @@
 import { computed, nextTick, reactive, ref, useId, watch } from 'vue'
 import {
   directorQuestionNeedsImages,
+  directorScriptSourceMode,
   isDirectorClarificationReady,
   normalizeDirectorClarificationAnswers,
   normalizeDirectorQuestions,
@@ -13,6 +14,7 @@ const props = defineProps({
   answers: { type: Array, default: () => [] },
   disabled: { type: Boolean, default: false },
   referenceImages: { type: Array, default: () => [] },
+  hasHistoryReferences: { type: Boolean, default: false },
   uploading: { type: Boolean, default: false },
   initiallyExpanded: { type: Boolean, default: false },
   mode: {
@@ -21,7 +23,7 @@ const props = defineProps({
     validator: (value) => ['auto', 'record', 'form'].includes(value),
   },
 })
-const emit = defineEmits(['answer', 'image-source-change'])
+const emit = defineEmits(['answer', 'image-source-change', 'script-source-change'])
 const instanceId = useId()
 const expanded = ref(props.initiallyExpanded)
 const page = ref(0)
@@ -52,12 +54,30 @@ const draftAnswers = computed(() =>
           : drafts[question.id]?.option || '',
   })),
 )
-const currentAnswered = computed(() =>
-  isDirectorClarificationReady(
+const currentAnswered = computed(
+  () =>
+    scriptHistoryAvailable.value &&
+    isDirectorClarificationReady(
+      currentQuestion.value ? [currentQuestion.value] : [],
+      draftAnswers.value,
+      props.referenceImages,
+    ),
+)
+const currentScriptMode = computed(() =>
+  directorScriptSourceMode(
     currentQuestion.value ? [currentQuestion.value] : [],
     draftAnswers.value,
-    props.referenceImages,
   ),
+)
+const scriptHistoryAvailable = computed(
+  () =>
+    props.hasHistoryReferences ||
+    directorScriptSourceMode(questions.value, draftAnswers.value) !== 'history',
+)
+const missingImagesHint = computed(() =>
+  directorScriptSourceMode(questions.value, draftAnswers.value) === 'history'
+    ? '请选择要沿用的商品图'
+    : '请上传或选择至少一张参考图片',
 )
 const currentNeedsImages = computed(() =>
   directorQuestionNeedsImages(
@@ -80,6 +100,7 @@ const canSubmit = computed(
     !props.disabled &&
     !props.uploading &&
     !answered.value &&
+    scriptHistoryAvailable.value &&
     isDirectorClarificationReady(questions.value, draftAnswers.value, props.referenceImages),
 )
 const canContinue = computed(
@@ -108,11 +129,20 @@ function selectAnswer(questionId, option) {
   if (props.disabled || answered.value) return
   const question = questions.value.find((item) => item.id === questionId)
   if (!question || !question.options.includes(option)) return
+  if (
+    question.kind === 'script_source' &&
+    option === '沿用历史商品图' &&
+    !props.hasHistoryReferences
+  )
+    return
   const changed = drafts[questionId].option !== option || drafts[questionId].mode !== 'option'
   drafts[questionId].mode = 'option'
   drafts[questionId].option = option
   if (question.kind === 'image_source' && changed) {
     emit('image-source-change', option === '参考图生图' ? 'reference' : 'text')
+  }
+  if (question.kind === 'script_source' && changed) {
+    emit('script-source-change', directorScriptSourceMode([question], draftAnswers.value))
   }
 }
 
@@ -232,6 +262,10 @@ function submitAnswers() {
             :key="option"
             class="cv3-director-clarification-option"
             :class="{
+              'is-unavailable':
+                currentKind === 'script_source' &&
+                option === '沿用历史商品图' &&
+                !hasHistoryReferences,
               'is-selected':
                 drafts[currentQuestion.id].mode === 'option' &&
                 drafts[currentQuestion.id].option === option,
@@ -241,6 +275,11 @@ function submitAnswers() {
               type="radio"
               :name="`${instanceId}-${currentQuestion.id}`"
               :value="option"
+              :disabled="
+                currentKind === 'script_source' &&
+                option === '沿用历史商品图' &&
+                !hasHistoryReferences
+              "
               :aria-label="option"
               :checked="
                 drafts[currentQuestion.id].mode === 'option' &&
@@ -273,6 +312,12 @@ function submitAnswers() {
             <span>其他，请直接描述</span>
           </label>
         </div>
+        <p
+          v-if="currentKind === 'script_source' && !hasHistoryReferences"
+          class="cv3-director-clarification-image-hint"
+        >
+          暂无可沿用的历史商品图，可上传商品图或仅根据文字策划。
+        </p>
         <textarea
           v-if="currentKind === 'choice' && drafts[currentQuestion.id].mode === 'custom'"
           :aria-label="`${currentQuestion.question}，自行填写`"
@@ -283,10 +328,15 @@ function submitAnswers() {
           @input="setCustomAnswer(currentQuestion.id, $event.target.value)"
         />
         <div v-if="currentNeedsImages" class="cv3-director-clarification-reference-upload">
-          <slot name="reference-upload" :question="currentQuestion" />
+          <slot
+            v-if="currentKind === 'script_source' && currentScriptMode === 'history'"
+            name="history-reference"
+            :question="currentQuestion"
+          />
+          <slot v-else name="reference-upload" :question="currentQuestion" />
         </div>
         <p v-if="missingImages" class="cv3-director-clarification-image-hint" role="status">
-          请上传或选择至少一张参考图片
+          {{ missingImagesHint }}
         </p>
         <p v-else-if="uploading" class="cv3-director-clarification-image-hint" role="status">
           参考图片上传中，请稍候
@@ -435,6 +485,14 @@ button.cv3-director-clarification-heading {
 }
 .cv3-director-clarification-option.is-custom:not(.is-selected) {
   color: #777;
+}
+.cv3-director-clarification-option.is-unavailable {
+  color: #777;
+  cursor: not-allowed;
+}
+.cv3-director-clarification-option.is-unavailable:hover,
+.cv3-director-clarification-option.is-unavailable:active {
+  background: transparent;
 }
 .cv3-director-clarification-option input {
   position: absolute;

@@ -24,6 +24,7 @@ import {
 } from '../config/directorConversation'
 import {
   directorImageSourceMode,
+  directorScriptSourceMode,
   DIRECTOR_REFERENCE_IMAGE_LIMIT,
   directorClarificationInstruction,
   isDirectorClarificationComplete,
@@ -35,11 +36,23 @@ import {
   directorApplyImageSourceIntent,
   directorReferenceImages,
 } from '../config/directorImageSources'
+import {
+  directorApplyScriptSourceIntent,
+  directorScriptBrief,
+  directorScriptReferenceCandidates,
+} from '../config/directorScriptReferences'
 import { createDirectorImageExecutionIntent } from '../config/directorImageExecution'
 import {
   latestDirectorConversation,
   mergeDirectorConversationMessages,
 } from '../config/directorRecentConversation'
+import {
+  directorCurrentReferenceLayerIds,
+  directorPendingClarificationRun,
+  directorResponseRouting,
+  directorSwitchReferenceIntent,
+  directorTurnContext,
+} from '../config/directorRouting'
 import CanvasV3Topbar from './CanvasV3Topbar.vue'
 import NodeLibraryPanel from './NodeLibraryPanel.vue'
 import GeneratorNode from './GeneratorNode.vue'
@@ -50,6 +63,7 @@ import CanvasIcon from './CanvasIcon.vue'
 import AgentOrb from './AgentOrb.vue'
 import DirectorPanel from './DirectorPanel.vue'
 import CanvasUtilityPanel from './CanvasUtilityPanel.vue'
+import CharacterStudioDialog from './CharacterStudioDialog.vue'
 import { useCanvasV3TaskStore } from '../stores/tasks'
 import ImageActionToolbar from './ImageActionToolbar.vue'
 import FlowingEdge from './FlowingEdge.vue'
@@ -509,10 +523,13 @@ function serializedDirectorRun(run) {
     instruction: run.instruction,
     display: run.display,
     message: run.message,
+    turnContext: run.turnContext,
     generationIntent: run.generationIntent,
+    referenceCandidates: run.referenceCandidates,
     dryRun: run.dryRun,
     phase: run.phase,
     reply: run.reply,
+    routing: run.routing,
     thinking: run.thinking,
     thinkingText: run.thinkingText,
     questions: run.questions,
@@ -859,12 +876,17 @@ function directorInstruction(message) {
     : ''
   const userInstruction = String(message.content || '').trim()
   const imageSourceMode = message?.context?.clarification?.imageSourceMode
+  const scriptSourceMode = message?.context?.clarification?.scriptSourceMode
   const sourceContext =
-    imageSourceMode === 'text'
-      ? '用户本轮明确选择纯文字生图，不使用画布或此前上传图片作为本次生成参考。'
-      : imageSourceMode === 'reference'
-        ? '用户本轮明确选择参考图生图，只使用本轮确认的真实参考素材；风格参考图不能当作商品原图。'
-        : ''
+    scriptSourceMode === 'text'
+      ? '用户本轮明确选择仅根据文字策划视频脚本，不使用历史图片；商品外观、卖点和参数仅以用户确认的资料为准，缺失事实标记待核对。'
+      : ['history', 'upload'].includes(scriptSourceMode)
+        ? '用户已确认本次脚本使用所选商品图片。只读取本轮明确提交的素材；外观可据图核对，性能、材质及认证不能仅凭图片推断。'
+        : imageSourceMode === 'text'
+          ? '用户本轮明确选择纯文字生图，不使用画布或此前上传图片作为本次生成参考。'
+          : imageSourceMode === 'reference'
+            ? '用户本轮明确选择参考图生图，只使用本轮确认的真实参考素材；风格参考图不能当作商品原图。'
+            : ''
   const roles = message?.context?.clarification?.referenceRoles || {}
   const roleContext = Object.entries(roles)
     .filter(([, role]) => ['product', 'style', 'other'].includes(role))
@@ -1117,13 +1139,23 @@ async function planDirectorMessage(runId) {
   try {
     await tasks.loadModels()
     if (controller.signal.aborted) return
-    const intent = run.generationIntent
+    let intent = run.generationIntent
     const resolvedModels = resolveDirectorModels(intent)
     const models =
       intent.generationType === 'image'
         ? resolvedModels.map((option) => option.value)
         : intent.requestedModels.map((model) => model.id).filter(Boolean)
     const primaryModel = resolvedModels[0] || intent.requestedModels[0] || null
+    const turnContext = run.turnContext
+      ? {
+          ...run.turnContext,
+          currentReferenceLayerIds: directorCurrentReferenceLayerIds(run.message),
+        }
+      : directorTurnContext(
+          run.message || { content: run.instruction },
+          directorDisplayRuns.value.filter((item) => item.id !== runId),
+        )
+    updateDirectorRun(runId, { turnContext })
     const response = await readDirectorStream(
       await fetch(apiPath('/api/ai/canvas-agent/chat/stream'), {
         method: 'POST',
@@ -1134,7 +1166,9 @@ async function planDirectorMessage(runId) {
         signal: controller.signal,
         body: JSON.stringify({
           canvasId: props.projectId,
-          instruction: run.instruction,
+          // A clarification's synthesized chain is history, never the current user message.
+          instruction: run.message ? directorInstruction(run.message) : run.instruction,
+          turnContext,
           history: directorHistory(runId),
           layers: directorRequestLayers(intent),
           selectedLayerIds: [...intent.selectedLayerIds],
@@ -1146,17 +1180,29 @@ async function planDirectorMessage(runId) {
           count: intent.count,
           conversationId: directorConversationId.value,
           agentModel: 'default',
+          scriptBrief: directorScriptBrief(intent, run.referenceCandidates || []),
         }),
       }),
       runId,
     )
     if (controller.signal.aborted) return
-    const questions = normalizeDirectorQuestions(response?.questions)
-    const prompts = normalizeDirectorPrompts(response)
-    const draftRequested = !questions.length && canCreateAgentDraft(response, prompts)
+    const routingPolicy = directorResponseRouting(response)
+    const switched = routingPolicy.routing?.relation === 'switch'
+    if (switched) intent = directorSwitchReferenceIntent(intent, run.message, response)
+    const questions = routingPolicy.allowsQuestions
+      ? normalizeDirectorQuestions(response?.questions)
+      : []
     const responseGenerationType = ['image', 'video'].includes(response?.generationType)
       ? response.generationType
       : ''
+    const routingMediaType = routingPolicy.routing?.task === 'image_generation' ? 'image' : 'video'
+    const allowsDraft =
+      routingPolicy.allowsDraft &&
+      (routingPolicy.legacy || responseGenerationType === routingMediaType)
+    const prompts =
+      allowsDraft || routingPolicy.allowsProposal ? normalizeDirectorPrompts(response) : []
+    const draftRequested =
+      allowsDraft && !questions.length && canCreateAgentDraft(response, prompts)
     const paidConfigurationError = !draftRequested
       ? ''
       : !responseGenerationType
@@ -1195,16 +1241,22 @@ async function planDirectorMessage(runId) {
     const nextRun = updateDirectorRun(runId, {
       phase: questions.length ? 'awaiting_input' : draft ? 'ready' : 'complete',
       reply: String(response?.reply || 'TV Director 已完成分析。'),
+      // Keep an explicit invalid value so restoration cannot reinterpret it as a legacy response.
+      routing: routingPolicy.legacy ? undefined : routingPolicy.routing,
+      generationIntent: intent,
+      ...(switched ? { referenceCandidates: [] } : {}),
       questions,
       draft,
       proposal,
-      contentReady: draftRequested,
-      error: paidConfigurationError,
+      contentReady: draftRequested && allowsDraft,
+      error: !routingPolicy.valid
+        ? 'Agent 返回的语义路由无效，已阻止创建节点或付费执行，请重新发送'
+        : paidConfigurationError,
     })
     if (directorImagePlan(nextRun)) await ensureDirectorDraftNode(runId)
     // The per-message dry-run intent is frozen when the user sends. Later mode changes never
     // affect this branch, and video drafts deliberately remain available without auto submission.
-    if (draft?.generationType === 'image' && nextRun?.dryRun === false)
+    if (allowsDraft && draft?.generationType === 'image' && nextRun?.dryRun === false)
       await submitDirectorDraft(runId)
   } catch (error) {
     if (error?.name !== 'AbortError')
@@ -1239,7 +1291,13 @@ function handleDirectorSubmit(message, inheritedIntent = null) {
     instruction,
     display: message.display || instruction,
     message,
+    turnContext: directorTurnContext(message, directorDisplayRuns.value),
     generationIntent,
+    // Candidates are a same-conversation catalog, not bound model references. A later
+    // source answer must select their exact saved snapshots before they can be read.
+    referenceCandidates: sourceRunId
+      ? directorRun(sourceRunId)?.referenceCandidates || []
+      : directorScriptReferenceCandidates(directorAgentRuns.value),
     // Freeze approval policy at send time. Picker changes are inert until another message is sent.
     dryRun: message.dryRunIntent !== false,
     phase: 'planning',
@@ -1267,14 +1325,14 @@ function handleDirectorSubmit(message, inheritedIntent = null) {
 
 function handleDirectorClarification(runId, message, complete) {
   const source = directorRun(runId)
-  const latest = directorAgentRuns.value.at(-1)
+  const pending = directorPendingClarificationRun(directorAgentRuns.value)
   const answers = normalizeDirectorClarificationAnswers(
     source?.questions,
     message?.context?.clarification?.answers,
   )
   if (
     !source ||
-    source.id !== latest?.id ||
+    source.id !== pending?.id ||
     source.clarificationReplyRunId ||
     !source.generationIntent ||
     !['awaiting_input', 'complete'].includes(source.phase) ||
@@ -1290,20 +1348,27 @@ function handleDirectorClarification(runId, message, complete) {
     createDirectorGenerationIntent(message).attachments,
   )
   const clarification = message.context.clarification
-  const sourceMode =
-    directorImageSourceMode(source.questions, answers) ||
-    (source.questions.some((question) => question.kind === 'image_upload')
-      ? 'reference'
-      : source.generationIntent.imageSourceMode || '')
+  const scriptSourceMode = directorScriptSourceMode(source.questions, answers)
+  const sourceMode = scriptSourceMode
+    ? ''
+    : directorImageSourceMode(source.questions, answers) ||
+      (source.questions.some((question) => question.kind === 'image_upload')
+        ? 'reference'
+        : source.generationIntent.imageSourceMode || '')
   const selectedIds = Array.isArray(clarification.referenceImageIds)
     ? new Set(clarification.referenceImageIds)
     : null
-  const referenceImages = directorReferenceImages(
-    addedIntent,
-    [],
-    [],
-    clarification.referenceRoles || {},
-  ).filter((image) => !selectedIds || selectedIds.has(image.layerId || image.id || image.url))
+  const allowedImages =
+    scriptSourceMode === 'history'
+      ? source.referenceCandidates || []
+      : scriptSourceMode === 'upload'
+        ? createDirectorGenerationIntent(message).attachments.filter(
+            (asset) => asset.kind === 'image',
+          )
+        : directorReferenceImages(addedIntent, [], [], clarification.referenceRoles || {})
+  const referenceImages = allowedImages.filter((image) =>
+    selectedIds ? selectedIds.has(image.layerId || image.id || image.url) : !scriptSourceMode,
+  )
   if (
     !isDirectorClarificationReady(source.questions, answers, referenceImages) ||
     (sourceMode === 'reference' &&
@@ -1314,17 +1379,27 @@ function handleDirectorClarification(runId, message, complete) {
     complete?.({ ok: false, message: '参考图尚未准备好，请先上传或选择图片后再继续' })
     return
   }
-  const generationIntent = directorApplyImageSourceIntent(addedIntent, sourceMode, referenceImages)
+  const generationIntent = scriptSourceMode
+    ? directorApplyScriptSourceIntent(addedIntent, scriptSourceMode, referenceImages)
+    : directorApplyImageSourceIntent(addedIntent, sourceMode, referenceImages)
 
   // Answers cannot grant paid approval. Only preserve this same task's earlier explicit
   // automatic-mode authorization; later picker changes have no effect.
   const nextRunId = handleDirectorSubmit(
     {
       ...message,
+      parts:
+        scriptSourceMode === 'text'
+          ? (message.parts || []).filter((part) => part.kind !== 'image')
+          : message.parts,
       dryRunIntent: source.dryRun !== false,
       context: {
         ...message.context,
-        clarification: { ...clarification, imageSourceMode: sourceMode },
+        clarification: {
+          ...clarification,
+          imageSourceMode: scriptSourceMode ? '' : sourceMode,
+          scriptSourceMode: scriptSourceMode || source.generationIntent.scriptSourceMode || '',
+        },
       },
     },
     generationIntent,
@@ -1361,6 +1436,12 @@ function directorDraftPosition(referenceNode) {
 
 function directorImagePlan(run) {
   if (!run || run.questions?.length || run.contentReady === false) return null
+  const routingPolicy = directorResponseRouting(run)
+  if (
+    !routingPolicy.allowsDraft ||
+    (!routingPolicy.legacy && routingPolicy.routing.task !== 'image_generation')
+  )
+    return null
   const plan = run.draft || run.proposal
   return plan?.generationType === 'image' && plan.prompt?.trim() ? plan : null
 }
@@ -1557,6 +1638,12 @@ async function submitDirectorDraft(runId) {
   const run = directorRun(runId)
   const draft = run?.draft
   if (!run || !draft || draft.generationType !== 'image') return
+  const routingPolicy = directorResponseRouting(run)
+  if (
+    !routingPolicy.allowsDraft ||
+    (!routingPolicy.legacy && routingPolicy.routing.task !== 'image_generation')
+  )
+    return
   const nodeState = nodes.value.find((node) => node.id === run.nodeId)?.data.runState
   if (
     directorGenerationSubmissions.has(runId) ||
@@ -1799,6 +1886,9 @@ function exportGraph() {
   URL.revokeObjectURL(url)
 }
 function onKeydown(event) {
+  // The studio is teleported above the canvas and owns Escape/Tab/Delete itself.
+  // Never let its fields or buttons trigger canvas shortcuts or close the Director.
+  if (activePanel.value === 'characters') return
   const insideFloatingPanel = event.target?.closest?.('[data-canvas-shortcuts-ignore]')
   if (insideFloatingPanel) {
     if (event.key === 'Escape') {
@@ -2066,7 +2156,7 @@ onBeforeUnmount(() => {
         @panel="openPanel"
       />
       <CanvasUtilityPanel
-        v-if="activePanel && !['nodes', 'assistant'].includes(activePanel)"
+        v-if="activePanel && !['nodes', 'assistant', 'characters'].includes(activePanel)"
         :panel="activePanel"
         @close="activePanel = ''"
         @demo="openDemo"
@@ -2106,6 +2196,11 @@ onBeforeUnmount(() => {
         @select-conversation="selectDirectorConversation"
         @delete-conversation="deleteDirectorConversation"
         @close="closeDirector"
+      />
+      <CharacterStudioDialog
+        v-if="activePanel === 'characters'"
+        :project-id="projectId"
+        @close="activePanel = ''"
       />
       <section v-if="mode === 'storyboard'" class="cv3-storyboard">
         <header>

@@ -83,18 +83,18 @@ test('clarification lives in a paged bottom dock and leaves its record in the Ag
     source,
     /mode="form"[\s\S]*?@answer="submitClarification\(pendingClarificationRun, \$event\)"/,
   )
-  assert.match(source, /v-else\s+class="cv3-director-composer"/)
-  assert.match(source, /run\.clarificationReplyRunId/)
   assert.match(
     source,
-    /isDirectorClarificationComplete\(run\.questions, run\.clarificationAnswers\)/,
+    /v-if="!pendingClarificationRun \|\| clarificationChatOpen"\s+id="cv3-director-composer"/,
   )
+  assert.match(source, /run\.clarificationReplyRunId/)
+  assert.match(source, /directorPendingClarificationRun\(props\.agentRuns\)/)
   assert.match(source, /<DirectorRichText[\s\S]*?:text="text"/)
   assert.match(source, /<DirectorRichText :text="item\.run\.draft\.prompt"/)
   assert.match(source, /本轮补充素材/)
   assert.match(
     source,
-    /parts: readyAttachments\.value\.map\(serializeDirectorAttachment\)\.filter\(Boolean\)/,
+    /parts: submittedAttachments\.map\(serializeDirectorAttachment\)\.filter\(Boolean\)/,
   )
   assert.match(source, /有附件上传失败，请重新上传或移除后再提交/)
   assert.match(source, /aria-label="已补充的素材"/)

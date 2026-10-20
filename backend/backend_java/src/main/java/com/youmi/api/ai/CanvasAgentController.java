@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.youmi.api.admin.AdminAuthService;
 import com.youmi.api.common.ApiException;
 import com.youmi.api.common.ApiResponse;
+import jakarta.servlet.http.HttpServletRequest;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
@@ -11,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,6 +27,9 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.context.request.NativeWebRequest;
+import org.springframework.web.context.request.async.CallableProcessingInterceptor;
+import org.springframework.web.context.request.async.WebAsyncUtils;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 @RestController
@@ -130,9 +135,30 @@ public class CanvasAgentController {
   @PostMapping(value = "/chat/stream", produces = MediaType.APPLICATION_NDJSON_VALUE)
   public StreamingResponseBody chatStream(
       @RequestHeader(value = "Authorization", required = false) String authorization,
-      @RequestBody CanvasAgentDtos.ChatRequest request) {
+      @RequestBody CanvasAgentDtos.ChatRequest request,
+      HttpServletRequest servletRequest) {
     Long userId = adminAuthService.requireUserId(authorization);
     long startedAt = System.currentTimeMillis();
+    AtomicBoolean outcomeRecorded = new AtomicBoolean(false);
+    // Observe the Servlet deadline as well as write failures. A committed NDJSON response
+    // cannot be replaced by a JSON error; leave Spring's timeout/error handling intact.
+    WebAsyncUtils.getAsyncManager(servletRequest).registerCallableInterceptor(
+        "canvas-agent-stream-outcome", new CallableProcessingInterceptor() {
+          @Override
+          public <T> Object handleTimeout(NativeWebRequest webRequest, Callable<T> task) {
+            recordStreamInterruption(userId, request, startedAt, outcomeRecorded,
+                new IOException("画布 Agent 流式回复超过请求时限"), "timeout");
+            return RESULT_NONE;
+          }
+
+          @Override
+          public <T> Object handleError(
+              NativeWebRequest webRequest, Callable<T> task, Throwable error) {
+            recordStreamInterruption(userId, request, startedAt, outcomeRecorded,
+                new IOException("画布 Agent 流式连接中断", error), "connection-error");
+            return RESULT_NONE;
+          }
+        });
     return output -> {
       AtomicBoolean replyStarted = new AtomicBoolean(false);
       try {
@@ -142,17 +168,17 @@ public class CanvasAgentController {
         writeStreamEvent(output, Map.of(
             "type", "thinking",
             "id", "context",
-            "label", "正在读取画布中的 " + layerCount + " 个节点与 " + selectedCount + " 个选中素材",
+            "label", "正在整理本轮消息、会话状态与提交的素材信息",
             "state", "active"));
         writeStreamEvent(output, Map.of(
             "type", "thinking",
             "id", "context",
-            "label", "已读取画布中的 " + layerCount + " 个节点与 " + selectedCount + " 个选中素材",
+            "label", "已接收本轮消息及 " + layerCount + " 个节点、" + selectedCount + " 个选择项的信息",
             "state", "complete"));
         writeStreamEvent(output, Map.of(
             "type", "thinking",
             "id", "model",
-            "label", "正在使用数据库推理模型解析创作意图与生成约束",
+            "label", "正在判断对话关系、任务目标与下一步分支",
             "state", "active"));
 
         CanvasAgentDtos.ChatResponse response = canvasAgentService.chatStream(
@@ -162,17 +188,17 @@ public class CanvasAgentController {
               if (replyStarted.compareAndSet(false, true)) {
                 writeStreamEvent(output, Map.of(
                     "type", "thinking", "id", "model",
-                    "label", "已解析创作意图、模型偏好与生成约束", "state", "complete"));
+                    "label", "已确定本轮回应分支", "state", "complete"));
                 writeStreamEvent(output, Map.of(
                     "type", "thinking", "id", "answer",
-                    "label", "正在流式整理回答与下一步建议", "state", "active"));
+                    "label", "正在整理本轮答复与下一步", "state", "active"));
               }
               writeStreamEvent(output, Map.of("type", "reply_delta", "delta", delta));
             });
         if (!replyStarted.get()) {
           writeStreamEvent(output, Map.of(
               "type", "thinking", "id", "model",
-              "label", "已解析创作意图、模型偏好与生成约束", "state", "complete"));
+              "label", "已确定本轮回应分支", "state", "complete"));
         }
         writeStreamEvent(output, Map.of(
             "type", "thinking", "id", "answer",
@@ -184,7 +210,7 @@ public class CanvasAgentController {
 
         int outputChars = length(response.reply())
             + response.draftPrompts().stream().mapToInt(this::length).sum();
-        recordUsage(
+        if (outcomeRecorded.compareAndSet(false, true)) recordUsage(
             userId,
             request == null ? "" : request.canvasId(),
             request == null ? "" : request.conversationId(),
@@ -198,7 +224,8 @@ public class CanvasAgentController {
             0,
             "");
       } catch (UncheckedIOException disconnected) {
-        log.debug("Canvas Agent stream closed by client: {}", disconnected.getMessage());
+        recordStreamInterruption(userId, request, startedAt, outcomeRecorded,
+            new IOException("画布 Agent 流式连接写入失败", disconnected), "write-error");
       } catch (Exception error) {
         try {
           writeStreamEvent(output, Map.of(
@@ -207,9 +234,10 @@ public class CanvasAgentController {
                   ? "TV Director 暂时无法回复，请稍后重试"
                   : clean(error.getMessage(), 1000)));
         } catch (UncheckedIOException disconnected) {
-          log.debug("Canvas Agent stream closed while reporting an error: {}", disconnected.getMessage());
+          recordStreamInterruption(userId, request, startedAt, outcomeRecorded,
+              new IOException("画布 Agent 流式连接写入失败", disconnected), "write-error");
         }
-        recordFailure(
+        if (outcomeRecorded.compareAndSet(false, true)) recordFailure(
             userId,
             request == null ? "" : request.canvasId(),
             request == null ? "" : request.conversationId(),
@@ -220,6 +248,20 @@ public class CanvasAgentController {
             error);
       }
     };
+  }
+
+  private void recordStreamInterruption(Long userId, CanvasAgentDtos.ChatRequest request,
+      long startedAt, AtomicBoolean outcomeRecorded, Exception error, String reason) {
+    if (!outcomeRecorded.compareAndSet(false, true)) return;
+    // Log request identity and a stable reason, not prompts, credentials or provider payloads.
+    log.warn("Canvas Agent stream interrupted: reason={}, canvasId={}, conversationId={}, elapsedMs={}",
+        reason, request == null ? "" : clean(request.canvasId(), 160),
+        request == null ? "" : clean(request.conversationId(), 128),
+        System.currentTimeMillis() - startedAt);
+    recordFailure(userId, request == null ? "" : request.canvasId(),
+        request == null ? "" : request.conversationId(), "CHAT_STREAM",
+        request == null ? null : request.agentModel(), startedAt,
+        request == null ? "" : request.instruction(), error);
   }
 
   private void writeStreamEvent(OutputStream output, Map<String, ?> event) {

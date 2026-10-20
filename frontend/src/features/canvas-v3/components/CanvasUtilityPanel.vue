@@ -17,7 +17,7 @@ const message = ref('')
 const titles = {
   assets: '资产管理',
   history: '生成历史',
-  characters: '角色造型室',
+  characters: '模特造型室',
   shortcuts: '快捷键',
   help: '画布教程',
   assistant: '创作助手',

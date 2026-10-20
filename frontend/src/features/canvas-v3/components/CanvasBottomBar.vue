@@ -46,8 +46,8 @@ defineEmits(['open-library', 'tool', 'panel'])
       type="button"
       class="cv3-tool-button"
       :class="{ active: activePanel === 'characters' }"
-      title="角色造型室"
-      aria-label="角色造型室"
+      title="模特造型室"
+      aria-label="模特造型室"
       @click="$emit('panel', 'characters')"
     >
       <CanvasIcon name="character" />

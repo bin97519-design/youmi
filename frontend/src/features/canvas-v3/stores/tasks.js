@@ -304,7 +304,12 @@ export const useCanvasV3TaskStore = defineStore('canvas-v3-tasks', () => {
       return
     }
     const scope = project
-    const operation = { scope, phase: 'preparing', controller: new AbortController() }
+    const operation = {
+      scope,
+      phase: 'preparing',
+      createAttempted: false,
+      controller: new AbortController(),
+    }
     submissions.set(nodeId, operation)
     const isCurrent = () =>
       submissions.get(nodeId) === operation &&
@@ -388,6 +393,10 @@ export const useCanvasV3TaskStore = defineStore('canvas-v3-tasks', () => {
             throw new Error('无法安全保存任务标识，请检查网络后重试；本次尚未提交生成任务')
         }
         if (!isCurrent()) return
+        // The saved key protects a possibly dispatched request after a reload. Only this
+        // live operation can prove that persistence failed before create was attempted.
+        // Once this boundary is crossed, retain the key even if the response is unknown.
+        operation.createAttempted = true
         options.onSubmitStart?.({ nodeId, clientTaskId })
         const response = await client.create(request)
         if (!isCurrent()) return
@@ -422,6 +431,9 @@ export const useCanvasV3TaskStore = defineStore('canvas-v3-tasks', () => {
             statusText: error.deliveryUnknown
               ? '提交结果尚未确认，请继续查询原任务，避免重复扣费。'
               : '',
+            // A failed pre-submit save is not a paid request. Do not let its provisional
+            // key permanently lock Director confirmation or query a task that never ran.
+            ...(!operation.createAttempted ? { generation: undefined } : {}),
           },
           scope,
         )

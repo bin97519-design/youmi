@@ -4,6 +4,10 @@ const icon = (viewBox, body) => ({ viewBox, body })
 const path = (d, extra = '') => `<path d="${d}" fill="currentColor" ${extra}/>`
 
 export const CANVAS_ICONS = {
+  canvasInsert: icon(
+    '0 0 20 20',
+    '<g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M8 16H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v5M13.5 12v6M10.5 15h6"/></g>',
+  ),
   shortcutAdjust: icon(
     '0 0 16 16',
     path(

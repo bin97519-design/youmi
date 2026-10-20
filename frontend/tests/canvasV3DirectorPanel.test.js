@@ -27,7 +27,7 @@ test('the shell uses the independent Director panel and hides its launcher while
   assert.match(shellSource, /v-if="activePanel !== 'assistant'" class="cv3-agent-slot"/)
 
   const utilityTag = shellSource.match(/<CanvasUtilityPanel\b[\s\S]*?\/>/)?.[0] || ''
-  assert.match(utilityTag, /!\['nodes', 'assistant'\]\.includes\(activePanel\)/)
+  assert.match(utilityTag, /!\['nodes', 'assistant', 'characters'\]\.includes\(activePanel\)/)
 })
 
 test('the floating Director panel keeps its geometry and introduces the four home product workflows', async () => {

@@ -5,6 +5,7 @@ import { useCanvasV3GraphStore } from '../stores/graph'
 import { nodeSpec } from '../config/nodeSpecs'
 import { nodeSize } from '../config/nodeControls'
 import CanvasIcon from './CanvasIcon.vue'
+import GenerationPixelField from './GenerationPixelField.vue'
 import { useCanvasV3TaskStore } from '../stores/tasks'
 import { IMAGE_TASK_ACTIVE_STATES, imageTaskFeedback } from '../config/imageTaskState'
 import { magneticHandleHome, magneticHandleOffset } from '../config/magneticHandle'
@@ -127,7 +128,17 @@ function resetHandlePointer(event) {
         :style="{ transform: `rotate(${data.rotation || 0}deg)` }"
         @load="recordMediaSize"
       />
-      <div v-if="generating" class="cv3-generation-center nodrag" role="status" aria-live="polite">
+      <GenerationPixelField
+        v-if="generating && data.kind === 'image'"
+        :seed="data.generation?.clientTaskId || id"
+      />
+      <div
+        v-if="generating"
+        class="cv3-generation-center nodrag"
+        :class="{ 'is-pixel-feedback': data.kind === 'image' }"
+        role="status"
+        aria-live="polite"
+      >
         <span>
           {{ imageTaskFeedback(data) }}
         </span>

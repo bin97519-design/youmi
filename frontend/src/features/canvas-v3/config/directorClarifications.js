@@ -6,6 +6,11 @@ const ANSWER_TEXT_LIMIT = 1200
 const IMAGE_SOURCE_REFERENCE = '参考图生图'
 const IMAGE_SOURCE_TEXT = '纯文字生图'
 const IMAGE_UPLOAD_ANSWER = '已提供参考图片'
+const SCRIPT_SOURCE_MODES = new Map([
+  ['沿用历史商品图', 'history'],
+  ['上传或选择其他商品图', 'upload'],
+  ['仅根据文字策划', 'text'],
+])
 export const DIRECTOR_REFERENCE_IMAGE_LIMIT = 8
 
 function cleanText(value, limit) {
@@ -34,11 +39,13 @@ export function normalizeDirectorQuestions(questions) {
     const providedOptions =
       kind === 'image_source'
         ? [IMAGE_SOURCE_REFERENCE, IMAGE_SOURCE_TEXT]
-        : kind === 'image_upload'
-          ? []
-          : Array.isArray(item.options)
-            ? item.options
-            : []
+        : kind === 'script_source'
+          ? [...SCRIPT_SOURCE_MODES.keys()]
+          : kind === 'image_upload'
+            ? []
+            : Array.isArray(item.options)
+              ? item.options
+              : []
     for (const option of providedOptions) {
       const value = cleanText(option, OPTION_TEXT_LIMIT)
       const key = value.replace(/\s+/g, ' ').toLowerCase()
@@ -57,7 +64,7 @@ export function normalizeDirectorQuestions(questions) {
       id,
       question,
       options,
-      ...(['image_source', 'image_upload'].includes(kind) ? { kind } : {}),
+      ...(['image_source', 'image_upload', 'script_source'].includes(kind) ? { kind } : {}),
     })
     usedIds.add(id)
     usedQuestions.add(questionKey)
@@ -81,6 +88,7 @@ export function normalizeDirectorClarificationAnswers(questions, answers) {
     if (kind === 'image_source' && ![IMAGE_SOURCE_REFERENCE, IMAGE_SOURCE_TEXT].includes(answer))
       return []
     if (kind === 'image_upload' && answer !== IMAGE_UPLOAD_ANSWER) return []
+    if (kind === 'script_source' && !SCRIPT_SOURCE_MODES.has(answer)) return []
     return answer ? [{ questionId: id, question, answer }] : []
   })
 }
@@ -109,7 +117,20 @@ export function directorImageSourceMode(questions, answers) {
 export function directorQuestionNeedsImages(question, answer) {
   if (question?.kind === 'image_upload') return true
   const value = cleanText(typeof answer === 'object' ? answer?.answer : answer, ANSWER_TEXT_LIMIT)
+  if (question?.kind === 'script_source')
+    return ['history', 'upload'].includes(SCRIPT_SOURCE_MODES.get(value))
   return question?.kind === 'image_source' && value === IMAGE_SOURCE_REFERENCE
+}
+
+export function directorScriptSourceMode(questions, answers) {
+  const normalizedQuestions = normalizeDirectorQuestions(questions)
+  const normalizedAnswers = normalizeDirectorClarificationAnswers(normalizedQuestions, answers)
+  for (const question of normalizedQuestions) {
+    if (question.kind !== 'script_source') continue
+    const answer = normalizedAnswers.find((item) => item.questionId === question.id)?.answer
+    if (SCRIPT_SOURCE_MODES.has(answer)) return SCRIPT_SOURCE_MODES.get(answer)
+  }
+  return ''
 }
 
 export function isDirectorClarificationReady(questions, answers, images) {

@@ -15,6 +15,7 @@ import { isOutsidePopup } from '../config/popupDismissal'
 import {
   imageEditHint,
   imageEditTemplate,
+  imageEditTemplatePrompt,
   PORTRAIT_FIELDS,
   portraitSettings,
 } from '../config/imageEditPresets'
@@ -842,7 +843,7 @@ function run() {
           <textarea
             class="cv3-template-instructions"
             aria-label="模板提示词"
-            :value="node.data.editTemplate.instructions ?? editTemplate.prompt"
+            :value="imageEditTemplatePrompt(node.data)"
             maxlength="11000"
             @focus="graph.remember()"
             @input="
@@ -855,10 +856,7 @@ function run() {
             type="button"
             class="cv3-popup-row"
             @click="
-              patch(
-                { editTemplate: { ...node.data.editTemplate, instructions: editTemplate.prompt } },
-                true,
-              )
+              patch({ editTemplate: { ...node.data.editTemplate, instructions: undefined } }, true)
             "
           >
             恢复默认提示词

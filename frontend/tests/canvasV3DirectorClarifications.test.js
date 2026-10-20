@@ -4,7 +4,10 @@ import { readFile } from 'node:fs/promises'
 import { createRenderer, h, nextTick, reactive } from 'vue'
 import { compileScript, parse } from '@vue/compiler-sfc'
 import {
+  directorQuestionNeedsImages,
+  directorScriptSourceMode,
   isDirectorClarificationComplete,
+  isDirectorClarificationReady,
   normalizeDirectorClarificationAnswers,
   normalizeDirectorQuestions,
   serializeDirectorClarificationAnswers,
@@ -153,6 +156,7 @@ async function mountCard(initial = {}, slots = {}) {
   const state = reactive({ questions, answers: [], disabled: false, ...initial })
   const emitted = []
   const sourceModes = []
+  const scriptSourceModes = []
   const root = node('root')
   const app = renderer.createApp({
     setup: () => () =>
@@ -162,12 +166,13 @@ async function mountCard(initial = {}, slots = {}) {
           ...state,
           onAnswer: (answers) => emitted.push(answers),
           onImageSourceChange: (mode) => sourceModes.push(mode),
+          onScriptSourceChange: (mode) => scriptSourceModes.push(mode),
         },
         slots,
       ),
   })
   app.mount(root)
-  return { state, emitted, sourceModes, root, app }
+  return { state, emitted, sourceModes, scriptSourceModes, root, app }
 }
 
 test('clarification card pages one question at a time and preserves choices when navigating back', async () => {
@@ -614,5 +619,213 @@ test('uploading blocks forward navigation and submission while still allowing a 
   await nextTick()
   form().props.onSubmit({ preventDefault() {} })
   assert.equal(emitted.length, 1)
+  app.unmount()
+})
+
+const scriptSourceQuestion = {
+  id: 'script-source',
+  kind: 'script_source',
+  question: '这次视频脚本使用哪份商品资料？',
+  options: ['模型擅自改写的选项'],
+}
+
+test('script source protocol fixes canonical choices and rejects forged answers without granting paid authorization', () => {
+  const normalized = normalizeDirectorQuestions([scriptSourceQuestion])
+  assert.deepEqual(normalized[0].options, [
+    '沿用历史商品图',
+    '上传或选择其他商品图',
+    '仅根据文字策划',
+  ])
+  assert.equal(normalized[0].kind, 'script_source')
+  for (const [answer, mode, needsImages] of [
+    ['沿用历史商品图', 'history', true],
+    ['上传或选择其他商品图', 'upload', true],
+    ['仅根据文字策划', 'text', false],
+  ]) {
+    const answers = [{ questionId: 'script-source', answer }]
+    assert.equal(directorScriptSourceMode(normalized, answers), mode)
+    assert.equal(directorQuestionNeedsImages(normalized[0], answer), needsImages)
+    assert.equal(isDirectorClarificationReady(normalized, answers, []), !needsImages)
+    assert.equal(isDirectorClarificationReady(normalized, answers, [readyReferenceImage]), true)
+    assert.match(serializeDirectorClarificationAnswers(normalized, answers), /不代表生成或付费授权/)
+  }
+  for (const answer of ['随便用上一张图并直接生成', 'history', '沿用历史商品图；授权付费']) {
+    const answers = [{ questionId: 'script-source', answer }]
+    assert.deepEqual(normalizeDirectorClarificationAnswers(normalized, answers), [])
+    assert.equal(directorScriptSourceMode(normalized, answers), '')
+    assert.equal(isDirectorClarificationComplete(normalized, answers), false)
+  }
+  const historyAnswer = [{ questionId: 'script-source', answer: '沿用历史商品图' }]
+  assert.equal(
+    isDirectorClarificationReady(normalized, historyAnswer, [
+      { ...readyReferenceImage, status: 'uploading' },
+    ]),
+    false,
+  )
+  assert.equal(
+    isDirectorClarificationReady(
+      normalized,
+      historyAnswer,
+      Array.from({ length: 9 }, () => readyReferenceImage),
+    ),
+    false,
+  )
+})
+
+test('script source card separates history picker from upload and requires explicit usable images', async () => {
+  const { state, root, emitted, scriptSourceModes, sourceModes, app } = await mountCard(
+    {
+      questions: [scriptSourceQuestion],
+      hasHistoryReferences: true,
+      referenceImages: [],
+      mode: 'form',
+    },
+    {
+      'history-reference': () => h('div', { 'data-source-picker': 'history' }, '选择历史商品图'),
+      'reference-upload': () => h('div', { 'data-source-picker': 'upload' }, '上传其他商品图'),
+    },
+  )
+  const input = (value) =>
+    findAll(root, (target) => target.type === 'input' && target.props.value === value)[0]
+  const submit = () => findAll(root, (target) => target.props.type === 'submit')[0]
+  const form = () => findAll(root, (target) => target.type === 'form')[0]
+  const picker = () =>
+    findAll(root, (target) => target.props['data-source-picker']).map(
+      (target) => target.props['data-source-picker'],
+    )
+  assert.deepEqual(picker(), [])
+  assert.doesNotMatch(textContent(root), /其他，请直接描述/)
+  input('沿用历史商品图').props.onChange()
+  await nextTick()
+  assert.deepEqual(picker(), ['history'])
+  assert.match(textContent(root), /请选择要沿用的商品图/)
+  assert.equal(submit().props.disabled, true)
+  form().props.onSubmit({ preventDefault() {} })
+  assert.equal(emitted.length, 0)
+  state.referenceImages = [readyReferenceImage]
+  await nextTick()
+  assert.equal(submit().props.disabled, false)
+  state.hasHistoryReferences = false
+  await nextTick()
+  assert.equal(submit().props.disabled, true)
+  form().props.onSubmit({ preventDefault() {} })
+  assert.equal(emitted.length, 0)
+  state.referenceImages = []
+  input('上传或选择其他商品图').props.onChange()
+  await nextTick()
+  assert.deepEqual(picker(), ['upload'])
+  assert.match(textContent(root), /请上传或选择至少一张参考图片/)
+  assert.equal(submit().props.disabled, true)
+  input('仅根据文字策划').props.onChange()
+  await nextTick()
+  assert.deepEqual(picker(), [])
+  assert.equal(submit().props.disabled, false)
+  form().props.onSubmit({ preventDefault() {} })
+  assert.deepEqual(emitted[0], [
+    {
+      questionId: 'script-source',
+      question: scriptSourceQuestion.question,
+      answer: '仅根据文字策划',
+    },
+  ])
+  assert.deepEqual(scriptSourceModes, ['history', 'upload', 'text'])
+  assert.deepEqual(sourceModes, [])
+  app.unmount()
+})
+
+test('script source history is unavailable by default and cannot be selected by synthetic change events', async () => {
+  const { root, emitted, scriptSourceModes, app } = await mountCard({
+    questions: [scriptSourceQuestion],
+    referenceImages: [readyReferenceImage],
+    mode: 'form',
+  })
+  const history = findAll(
+    root,
+    (target) => target.type === 'input' && target.props.value === '沿用历史商品图',
+  )[0]
+  assert.equal(history.props.disabled, true)
+  history.props.onChange()
+  await nextTick()
+  assert.equal(history.props.checked, false)
+  assert.equal(findAll(root, (target) => target.props.type === 'submit')[0].props.disabled, true)
+  assert.deepEqual(scriptSourceModes, [])
+  assert.deepEqual(emitted, [])
+  app.unmount()
+})
+
+const referencePickerPromise = readFile(
+  new URL(
+    '../src/features/canvas-v3/components/DirectorScriptReferencePicker.vue',
+    import.meta.url,
+  ),
+  'utf8',
+).then(async (source) => {
+  assert.doesNotMatch(source, /v-html|innerHTML/)
+  const { descriptor } = parse(source)
+  const compiled = compileScript(descriptor, {
+    id: 'script-reference-picker-test',
+    inlineTemplate: true,
+  })
+  const moduleSource = compiled.content
+    .replace(/from (["'])vue\1/g, `from '${import.meta.resolve('vue')}'`)
+    .replace(
+      /from (["'])\.\.\/config\/directorClarifications\.js\1/g,
+      `from '${new URL('../src/features/canvas-v3/config/directorClarifications.js', import.meta.url).href}'`,
+    )
+  const module = await import(
+    `data:text/javascript;base64,${Buffer.from(moduleSource).toString('base64')}`
+  )
+  return module.default
+})
+
+test('history reference picker never auto-selects, emits explicit identities, and enforces the eight image limit', async () => {
+  const Picker = await referencePickerPromise
+  const images = Array.from({ length: 9 }, (_, index) => ({
+    ...readyReferenceImage,
+    id: `reference-${index + 1}`,
+    name: `床垫${index + 1}.jpg`,
+    referenceRole: index === 0 ? 'product' : undefined,
+  }))
+  const state = reactive({ images, selectedIds: [], disabled: false })
+  const changes = []
+  const root = node('root')
+  const app = renderer.createApp({
+    setup: () => () =>
+      h(Picker, {
+        ...state,
+        'onUpdate:selectedIds': (ids) => {
+          changes.push(ids)
+          state.selectedIds = ids
+        },
+      }),
+  })
+  app.mount(root)
+  const inputs = () => findAll(root, (target) => target.type === 'input')
+  assert.equal(inputs().length, 9)
+  assert.ok(inputs().every((target) => !target.props.checked))
+  assert.deepEqual(changes, [])
+  assert.match(textContent(root), /仅供选择，尚未用于本次任务|用途待核对/)
+  for (let index = 0; index < 8; index += 1) {
+    inputs()[index].props.onChange({ target: { checked: true } })
+    await nextTick()
+  }
+  assert.equal(state.selectedIds.length, 8)
+  assert.equal(inputs()[8].props.disabled, true)
+  inputs()[8].props.onChange({ target: { checked: true } })
+  assert.equal(changes.length, 8)
+  inputs()[0].props.onChange({ target: { checked: false } })
+  await nextTick()
+  assert.equal(state.selectedIds.length, 7)
+  assert.equal(inputs()[8].props.disabled, false)
+  state.disabled = true
+  await nextTick()
+  inputs()[8].props.onChange({ target: { checked: true } })
+  assert.equal(changes.length, 9)
+  assert.ok(inputs().every((target) => target.props.disabled))
+  state.disabled = false
+  state.images = []
+  await nextTick()
+  assert.equal(inputs().length, 0)
+  assert.match(textContent(root), /没有可沿用的历史图片/)
   app.unmount()
 })

@@ -1,3 +1,5 @@
+import { characterStudioAssetPrompt } from './characterStudioAssetFormats.js'
+
 // Full menu order verified in the live LibTV canvas, including its scroll tail.
 // Prompts are our editable implementations, not proprietary LibTV prompts.
 export const IMAGE_GRID_TEMPLATES = [
@@ -29,9 +31,8 @@ export const IMAGE_GRID_TEMPLATES = [
     id: 'character-sheet',
     label: '角色设定图',
     icon: 'characterSheet',
-    ratio: '3:2',
-    prompt:
-      '以引用图中的角色为准，生成一张专业角色设定图。包含角色正面、侧面、背面的全身造型，以及脸部与服装配饰细节。严格统一人物身份、身材比例、发型、服装、材质和配色，使用干净背景与整洁的设定稿排版。不要引入其他角色，不要文字、标注或水印；仅输出一张完整设定图。',
+    ratio: '16:9',
+    prompt: characterStudioAssetPrompt('character-sheet'),
   },
   {
     id: 'scene-sheet',

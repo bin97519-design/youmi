@@ -4,6 +4,11 @@ server:
 spring:
   application:
     name: youmi-api
+  mvc:
+    async:
+      # StreamingResponseBody otherwise inherits Tomcat's 30s absolute async limit.
+      # Allow the Agent's 90s upstream attempts and one JSON-format repair to finish.
+      request-timeout: ${YOUMI_AGENT_STREAM_TIMEOUT:10m}
   datasource:
     url: ${MYSQL_URL:jdbc:mysql://127.0.0.1:3306/youmi_ai?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
     username: ${MYSQL_USER:root}
