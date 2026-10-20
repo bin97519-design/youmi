@@ -1706,6 +1706,12 @@ async function loadImageModels() {
       }),
     )
     const creationConfigured = Array.isArray(creationConfig?.models) ? creationConfig.models : []
+    const creationApiOptions = Array.isArray(creationConfig?.options) ? creationConfig.options : []
+    creationApiOptions.forEach((option) => {
+      const value = String(option?.value || '').trim()
+      const label = String(option?.label || '').trim()
+      if (value && label) configuredImageModelLabels[value] = label
+    })
     const creationOptions = creationConfigured.flatMap((model) => {
       const normalized = String(model || '').trim().toLowerCase()
       if (normalized === 'banana-pro') return [MODEL_API_BANANA_PRO_OPTION]

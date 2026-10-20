@@ -69,7 +69,7 @@ public class ImageTaskController {
     if (!java.util.Set.of("canvas-image", "canvas-creation-image", "product-video-image").contains(featureCode)) {
       throw new ApiException(400, "不支持的画布生图功能映射");
     }
-    java.util.List<ModelApiKeyDtos.ModelOption> options = modelApiKeyService.enabledModelOptions(
+    java.util.List<ModelApiKeyDtos.ModelOption> options = modelApiKeyService.enabledRoutedModelOptions(
         ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, featureCode);
     return ApiResponse.ok(new CanvasModelsResponse(
         modelApiKeyService.isFeatureMappingConfigured(featureCode),
@@ -125,8 +125,10 @@ public class ImageTaskController {
     ImageMiValuePricingService.PriceQuote quote;
     var mappedModel = modelApiKeyService == null || request.model() == null
         ? java.util.Optional.<ModelApiKeyService.ResolvedModelApiKey>empty()
-        : modelApiKeyService.resolve(request.model(), ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION,
-            request.featureCode());
+        : modelApiKeyService.resolveFeatureRouteOption(request.model(),
+            ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, request.featureCode())
+            .or(() -> modelApiKeyService.resolve(request.model(),
+                ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, request.featureCode()));
     boolean modelMapped = mappedModel.isPresent();
     String billingModel = mappedModel.map(ModelApiKeyService.ResolvedModelApiKey::model).orElse(request.model());
     try {

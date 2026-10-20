@@ -400,12 +400,15 @@ public class AdminService {
     pageArgs.add(safePageSize);
     pageArgs.add(offset);
     String sql = """
-        SELECT t.id, t.task_id, t.user_id, u.nickname AS user_name, t.provider, t.prompt, t.model, t.requested_model,
+        SELECT t.id, t.task_id, t.user_id, u.nickname AS user_name, t.provider, t.prompt, t.model,
+               COALESCE(mapped_model.model, t.requested_model) AS requested_model,
                t.size, t.resolution, t.requested_count, t.status, t.progress, t.image_count, t.mi_cost,
                t.money_cost, t.error_message, t.created_at, t.updated_at, t.completed_at,
                t.image_urls, t.result_urls, t.persist_status
         FROM ym_image_task t
         LEFT JOIN ym_sys_user u ON u.id = t.user_id
+        LEFT JOIN ym_model_api_key mapped_model
+          ON t.requested_model = CONCAT('model-api-key:', mapped_model.id)
         """ + where + " ORDER BY t.created_at DESC, t.id DESC LIMIT ? OFFSET ?";
     List<AdminDtos.ImageTaskRow> tasks = jdbcTemplate.query(sql,
         (rs, rowNum) -> mapImageTask(rs), pageArgs.toArray());

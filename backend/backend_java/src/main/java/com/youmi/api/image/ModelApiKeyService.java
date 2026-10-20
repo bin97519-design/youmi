@@ -16,6 +16,7 @@ import com.youmi.api.admin.AiFeatureMappingRepository;
 
 @Service
 public class ModelApiKeyService {
+  public static final String FEATURE_ROUTE_OPTION_PREFIX = "model-api-key:";
   public static final String MODEL_TYPE_IMAGE_GENERATION = "image_generation";
   public static final String MODEL_TYPE_VIDEO_GENERATION = "video_generation";
   public static final String MODEL_TYPE_VISION_REASONING = "vision_reasoning";
@@ -68,6 +69,32 @@ public class ModelApiKeyService {
     return repository.list().stream().filter(row -> selected.contains(row.id())
         && row.enabled() && modelType.equals(row.modelType()))
         .map(row -> new ModelApiKeyDtos.ModelOption(row.model(), row.name(), row.provider())).toList();
+  }
+
+  public List<ModelApiKeyDtos.ModelOption> enabledRoutedModelOptions(String modelType, String featureCode) {
+    if (!isFeatureMappingConfigured(featureCode)) return enabledModelOptions(modelType, featureCode);
+    java.util.Set<Long> selected = java.util.Set.copyOf(featureMappings.selectedKeyIdsIfConfigured(featureCode));
+    return repository.list().stream().filter(row -> selected.contains(row.id())
+        && row.enabled() && modelType.equals(row.modelType()))
+        .map(row -> new ModelApiKeyDtos.ModelOption(
+            FEATURE_ROUTE_OPTION_PREFIX + row.id(), row.name(), row.provider()))
+        .toList();
+  }
+
+  public Optional<ResolvedModelApiKey> resolveFeatureRouteOption(
+      String option, String modelType, String featureCode) {
+    if (option == null || !option.startsWith(FEATURE_ROUTE_OPTION_PREFIX)
+        || !isFeatureMappingConfigured(featureCode)) return Optional.empty();
+    long id;
+    try {
+      id = Long.parseLong(option.substring(FEATURE_ROUTE_OPTION_PREFIX.length()));
+    } catch (NumberFormatException ignored) {
+      return Optional.empty();
+    }
+    if (!featureMappings.selectedKeyIdsIfConfigured(featureCode).contains(id)) return Optional.empty();
+    return repository.findById(id)
+        .filter(row -> row.enabled() && modelType.equals(row.modelType()))
+        .map(this::decrypt);
   }
 
   public List<String> enabledModels(String modelType, String featureCode) {

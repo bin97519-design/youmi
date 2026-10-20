@@ -1572,6 +1572,23 @@ const BUILT_IN_CHAT_MODEL_OPTIONS = [
 const chatModelOptions = reactive([...BUILT_IN_CHAT_MODEL_OPTIONS])
 const creationModelOptions = reactive([...BUILT_IN_CHAT_MODEL_OPTIONS])
 
+function modelOptionIdentity(model) {
+  return String(configuredImageModelLabels[model] || IMAGE_MODEL_LABELS[model] || model)
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, '')
+}
+
+function mergeConfiguredModelOptions(configuredOptions) {
+  const configuredIdentities = new Set(configuredOptions.map(modelOptionIdentity))
+  const builtIns = BUILT_IN_CHAT_MODEL_OPTIONS.filter(
+    (model) => !configuredIdentities.has(modelOptionIdentity(model)),
+  )
+  return [...new Set([...builtIns, ...configuredOptions])]
+    .map((model) => String(model || '').trim())
+    .filter((model) => model && !RETIRED_IMAGE_MODELS.has(model.toLowerCase()))
+}
+
 async function loadImageModels() {
   try {
     const modelConfig = await readApiResponse(
@@ -1615,9 +1632,7 @@ async function loadImageModels() {
         configuredImageModelLabels[displayModel] = alias
       })
     })
-    const nextModels = [...new Set([...BUILT_IN_CHAT_MODEL_OPTIONS, ...configuredOptions])]
-      .map((model) => String(model || '').trim())
-      .filter((model) => model && !RETIRED_IMAGE_MODELS.has(model.toLowerCase()))
+    const nextModels = mergeConfiguredModelOptions(configuredOptions)
     chatModelOptions.splice(0, chatModelOptions.length, ...nextModels)
     chatModels.value = normalizeChatModelSelection(chatModels.value)
 
@@ -1627,6 +1642,12 @@ async function loadImageModels() {
       }),
     )
     const creationConfigured = Array.isArray(creationConfig?.models) ? creationConfig.models : []
+    const creationApiOptions = Array.isArray(creationConfig?.options) ? creationConfig.options : []
+    creationApiOptions.forEach((option) => {
+      const value = String(option?.value || '').trim()
+      const label = String(option?.label || '').trim()
+      if (value && label) configuredImageModelLabels[value] = label
+    })
     const creationOptions = creationConfigured.flatMap((model) => {
       const normalized = String(model || '').trim().toLowerCase()
       if (normalized === 'banana-pro') return [MODEL_API_BANANA_PRO_OPTION]
@@ -1638,9 +1659,7 @@ async function loadImageModels() {
     creationModelOptions.splice(
       0,
       creationModelOptions.length,
-      ...new Set([...BUILT_IN_CHAT_MODEL_OPTIONS, ...creationOptions])
-        .map((model) => String(model || '').trim())
-        .filter((model) => model && !RETIRED_IMAGE_MODELS.has(model.toLowerCase())),
+      ...mergeConfiguredModelOptions(creationOptions),
     )
   } catch (error) {
     console.warn('[image] 模型配置暂时无法读取', error?.message || error)

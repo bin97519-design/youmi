@@ -1071,7 +1071,8 @@ public class ImageGenerationClient {
 
     return new ImageGenerationDtos.CreateTaskResponse(
         credential.provider(),
-        request.model(),
+        request.model() != null && request.model().startsWith(ModelApiKeyService.FEATURE_ROUTE_OPTION_PREFIX)
+            ? credential.model() : request.model(),
         upstreamModel,
         aspectRatio,
         resolution,
@@ -1089,6 +1090,13 @@ public class ImageGenerationClient {
       return Optional.empty();
     }
     String normalized = requestedModel.trim();
+    Optional<ModelApiKeyService.ResolvedModelApiKey> selectedRoute =
+        modelApiKeyService.resolveFeatureRouteOption(
+            normalized, ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, featureCode);
+    if (selectedRoute.isPresent()) return selectedRoute;
+    // Keep the legacy option on its configured GetToken/LK888 route even when
+    // feature-specific model-key mappings contain another banana-pro relay.
+    if (normalized.equalsIgnoreCase("banana-pro")) return Optional.empty();
     if ("canvas-image".equals(featureCode) || "canvas-creation-image".equals(featureCode)
         || "product-video-image".equals(featureCode)) {
       Optional<ModelApiKeyService.ResolvedModelApiKey> mapped = modelApiKeyService.resolve(
@@ -1111,8 +1119,6 @@ public class ImageGenerationClient {
     if (normalized.equalsIgnoreCase(MODEL_API_GPT_IMAGE_25_SUNBURST_REQUEST_MODEL)) {
       return modelApiKeyService.resolve("GPT-image2.5");
     }
-    // Keep the original banana-pro option on its existing GetToken/LK888 route.
-    if (normalized.equalsIgnoreCase("banana-pro")) return Optional.empty();
     return modelApiKeyService.resolve(normalized);
   }
 

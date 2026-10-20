@@ -183,6 +183,48 @@ class ImageGenerationClientModelApiTest {
     }
   }
 
+  @Test
+  void resolvesPersistedFeatureRouteOptionToItsMappedCredential() throws Exception {
+    ObjectMapper mapper = new ObjectMapper();
+    AtomicReference<JsonNode> requestBody = new AtomicReference<>();
+    HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext("/v1/media/generate", exchange -> {
+      requestBody.set(mapper.readTree(exchange.getRequestBody()));
+      respondJson(exchange, "{\"code\":200,\"data\":{\"task_id\":\"mapped-route-task\"}}");
+    });
+    server.start();
+
+    try {
+      String baseUrl = "http://127.0.0.1:" + server.getAddress().getPort();
+      ModelApiKeyService.ResolvedModelApiKey credential =
+          new ModelApiKeyService.ResolvedModelApiKey(
+              44L, "banana-pro", "youmi888", baseUrl,
+              "/v1/media/generate", "/v1/media/status", "test-key");
+      ModelApiKeyService keyService = mock(ModelApiKeyService.class);
+      when(keyService.resolveFeatureRouteOption("model-api-key:44",
+          ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, "canvas-creation-image"))
+          .thenReturn(Optional.of(credential));
+
+      ImageGenerationProperties properties = new ImageGenerationProperties();
+      properties.setPersistGeneratedImages(false);
+      ImageGenerationClient client = new ImageGenerationClient(mapper, properties);
+      client.setModelApiKeyService(keyService);
+      ImageGenerationDtos.CreateTaskRequest request = new ImageGenerationDtos.CreateTaskRequest(
+          "一张产品场景图", "model-api-key:44", "1:1", "1:1", "2K",
+          1, null, null, List.of(), null, "png", null, null, null, null,
+          "client-mapped-route-test", null, null, null, null, "canvas-creation-image");
+
+      ImageGenerationDtos.CreateTaskResponse created = client.createTask(request, 7L);
+
+      assertEquals("banana-pro", requestBody.get().path("model").asText());
+      assertEquals("youmi888", created.provider());
+      assertEquals("banana-pro", created.requestedModel());
+      assertEquals("model-api:44:mapped-route-task", created.tasks().get(0).taskId());
+    } finally {
+      server.stop(0);
+    }
+  }
+
   private void respondJson(com.sun.net.httpserver.HttpExchange exchange, String json)
       throws java.io.IOException {
     byte[] body = json.getBytes(StandardCharsets.UTF_8);
