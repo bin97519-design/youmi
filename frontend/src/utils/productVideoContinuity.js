@@ -1,7 +1,11 @@
+import { recreationSettings, recreationPrompt } from './productVideoRecreation.js'
+
+const referenceMode = (workflow, shot) => (shot?.planningSource ?? workflow.planningSource) === 'reference'
 const wholeVideo = (workflow, shot) =>
   ['single_video', 'single_video_30'].includes(shot ? shot.productionMode : workflow.productionMode)
 
 export function continuitySettings(workflow, shot) {
+  if (referenceMode(workflow, shot)) return recreationSettings(workflow)
   if (!wholeVideo(workflow, shot)) return workflow.continuity || {}
   // Preserve legacy reference uploads, but do not inherit the old default-on switch or anchor.
   return workflow.wholeContinuity || { ...workflow.continuity, enabled: false, anchor: null }
@@ -27,8 +31,12 @@ export function continuityAnchor(workflow, shot) {
 }
 
 export function setContinuitySetting(workflow, key, value, shot) {
-  const field = wholeVideo(workflow, shot) ? 'wholeContinuity' : 'continuity'
+  const field = referenceMode(workflow, shot) ? 'referenceRecreation'
+    : wholeVideo(workflow, shot) ? 'wholeContinuity' : 'continuity'
   workflow[field] = { ...continuitySettings(workflow, shot), [key]: value }
+  if (field === 'referenceRecreation' && workflow.planningSource === 'reference' &&
+      ['personMode', 'sceneMode', 'person', 'scene'].includes(key))
+    workflow.shots?.forEach(item => { item.approvedImageId = '' })
 }
 
 export const CONTINUITY_IMAGE_FIELDS = [
@@ -38,7 +46,15 @@ export const CONTINUITY_IMAGE_FIELDS = [
 ]
 
 export function continuityReferenceImages(workflow, shot) {
-  if (workflow.planningSource === 'reference') return []
+  if (referenceMode(workflow, shot)) {
+    const settings = recreationSettings(workflow)
+    return ['person', 'scene'].flatMap((role) => {
+      if ((role === 'person' && settings.personMode !== 'reference') ||
+          (role === 'scene' && settings.sceneMode !== 'custom')) return []
+      const image = settings.images?.[role]
+      return image?.url ? [{ ...image, role }] : []
+    })
+  }
   const settings = continuitySettings(workflow, shot)
   return CONTINUITY_IMAGE_FIELDS.flatMap(({ key }) => {
     if (!continuityEnabled(workflow, shot) && !(wholeVideo(workflow, shot) && key === 'product'))
@@ -67,12 +83,15 @@ export function setContinuityReference(workflow, role, image, shot) {
     throw new Error('不支持的固定参考图类型')
   const settings = continuitySettings(workflow, shot)
   const previous = settings.images?.[role]
-  const field = wholeVideo(workflow, shot) ? 'wholeContinuity' : 'continuity'
+  const field = referenceMode(workflow, shot) ? 'referenceRecreation'
+    : wholeVideo(workflow, shot) ? 'wholeContinuity' : 'continuity'
   workflow[field] = {
     ...settings,
     images: { ...settings.images, [role]: image ? { ...image } : null },
     anchor: previous?.url === image?.url ? settings.anchor || null : null,
   }
+  if (field === 'referenceRecreation' && workflow.planningSource === 'reference' && previous?.url !== image?.url)
+    workflow.shots?.forEach(item => { item.approvedImageId = '' })
 }
 
 function roleReferences(workflow, productUrls, anchor = null, shot) {
@@ -128,7 +147,7 @@ export function planningContinuityReferences(workflow, shot) {
 }
 
 export function continuityPrompt(workflow, shot) {
-  if (workflow.planningSource === 'reference') return ''
+  if (referenceMode(workflow, shot)) return recreationPrompt(workflow)
   const settings = continuitySettings(workflow, shot)
   if (wholeVideo(workflow, shot)) {
     const fixed = continuityEnabled(workflow, shot)
@@ -220,7 +239,9 @@ export function imageContinuityReferences(workflow, shot, productUrls) {
     : [
         continuity,
         shared.instruction,
-        wholeVideo(workflow, shot)
+        referenceMode(workflow, shot)
+          ? '本图只生成当前来源镜头或整片的开场画面，按用户复刻设定替换人物和场景；保留原片的构图与动作起始状态，不新增全片基准镜头。'
+          : wholeVideo(workflow, shot)
           ? '只生成本条整片的开场首帧；场景和人物按本条脚本及选填参考安排，不作为其他视频的共同基准。'
           : anchor
             ? `图${urls.indexOf(anchor.url) + 1}是全片已确认的场景、人物和商品基准。使用图中同一个空间和人物，不得重新选角或装修。根据当前分镜改变拍摄角度、景别与动作起始姿势，不复制基准图的构图。`

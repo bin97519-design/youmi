@@ -36,6 +36,10 @@ public class VideoTaskController {
   private ModelApiKeyService modelApiKeys;
   private final VideoTaskHistory history;
   private VideoTaskSubmissions submissions;
+  private SeedanceAnciVideoClient anciVideos;
+
+  @org.springframework.beans.factory.annotation.Autowired
+  void setAnciVideos(SeedanceAnciVideoClient client) { this.anciVideos = client; }
 
   public VideoTaskController(
       VideoGenerationClient videoGenerationClient,
@@ -92,18 +96,19 @@ public class VideoTaskController {
       history.created(userId, request, response, startedAt);
       return ApiResponse.ok(response);
     }
+    boolean anci = request != null && SeedanceAnciVideoClient.MODEL.equals(request.model());
     boolean minimax = request != null && MinimaxVideoClient.supportsModel(request.model());
-    boolean configuredModel = request != null && !minimax && (productVideoCall
+    boolean configuredModel = request != null && !minimax && !anci && (productVideoCall
         ? anmiaoVideos.supportsModel(request.model(), featureCode)
         : anmiaoVideos.supportsModel(request.model()));
-    if (request != null && !minimax && !configuredModel
+    if (request != null && !minimax && !anci && !configuredModel
         && anmiaoVideos.isConfiguredKeyExcluded(request.model()))
       throw new ApiException(400, "所选视频模型未映射到画布视频功能");
-    if (minimax || configuredModel) {
-      int price = minimax ? minimaxVideos.price(request) : anmiaoVideos.price(request);
+    if (minimax || configuredModel || anci) {
+      int price = anci ? anciVideos.price(request) : minimax ? minimaxVideos.price(request) : anmiaoVideos.price(request);
       MiValueDtos.DeductResult deduct = miValueService.checkAndDeduct(userId, MiBizType.VIDEO, price);
       try {
-        VideoGenerationDtos.CreateTaskResponse response = minimax
+        VideoGenerationDtos.CreateTaskResponse response = anci ? anciVideos.createTask(request) : minimax
             ? minimaxVideos.createTask(request) : anmiaoVideos.createTask(request);
         miValueService.linkTask(deduct.logId(), response.getTaskId());
         response.setConsumedMi(deduct.price());
@@ -173,6 +178,7 @@ public class VideoTaskController {
     }
     VideoGenerationDtos.TaskStatusResponse response = taskId.startsWith(ChatVideoJobs.PREFIX)
         ? chatVideos.get(userId, taskId)
+        : taskId.startsWith(SeedanceAnciVideoClient.PREFIX) ? anciVideos.getTask(taskId, userId)
         : taskId.startsWith(AnmiaoVideoClient.PREFIX)
             ? anmiaoVideos.getTask(taskId, userId)
         : taskId.startsWith(MinimaxVideoClient.PREFIX) || taskId.startsWith(MinimaxVideoClient.CONFIGURED_PREFIX)
@@ -211,7 +217,8 @@ public class VideoTaskController {
 
   private boolean usesProviderReportedCostTask(String taskId,
       VideoGenerationDtos.TaskStatusResponse response) {
-    return (taskId != null && (taskId.startsWith(MinimaxVideoClient.CONFIGURED_PREFIX + "key:")
+    return (taskId != null && (taskId.startsWith(SeedanceAnciVideoClient.PREFIX)
+        || taskId.startsWith(MinimaxVideoClient.CONFIGURED_PREFIX + "key:")
         || taskId.startsWith(MinimaxVideoClient.MAPPED_PREFIX)))
         || ModelApiKeyService.usesProviderReportedCost(response.getProvider());
   }

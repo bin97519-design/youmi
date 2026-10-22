@@ -24,6 +24,19 @@ class CanvasAgentRepositoryTest {
     jdbcTemplate = new JdbcTemplate(dataSource);
     jdbcTemplate.execute("DROP TABLE IF EXISTS ym_agent_conversation");
     jdbcTemplate.execute("DROP TABLE IF EXISTS ym_agent_usage");
+    jdbcTemplate.execute("DROP TABLE IF EXISTS ym_agent_context_memory");
+    jdbcTemplate.execute("""
+        CREATE TABLE ym_agent_context_memory (
+          user_id BIGINT NOT NULL,
+          canvas_id VARCHAR(64) NOT NULL,
+          conversation_id VARCHAR(128) NOT NULL,
+          source_count INT NOT NULL,
+          source_hash CHAR(64) NOT NULL,
+          summary_text CLOB NOT NULL,
+          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (user_id, canvas_id, conversation_id)
+        )
+        """);
     jdbcTemplate.execute("""
         CREATE TABLE ym_agent_conversation (
           id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -85,7 +98,15 @@ class CanvasAgentRepositoryTest {
     assertEquals("用户一内容", userOne.get(0).messages().get(0).get("text"));
     assertEquals("用户二内容", userTwo.get(0).messages().get(0).get("text"));
 
+    var memory = new CanvasAgentMemoryRepository(jdbcTemplate);
+    var summary = new CanvasAgentMemoryRepository.Memory(2, "test-source-hash", "已确认规则");
+    memory.save(1L, "canvas-a", "agent-shared", summary);
+    memory.save(1L, "canvas-b", "agent-shared", summary);
+    memory.save(2L, "canvas-a", "agent-shared", summary);
     repository.deleteConversation("agent-shared", 1L, "canvas-a");
+    assertEquals(false, memory.find(1L, "canvas-a", "agent-shared").isPresent());
+    assertEquals(true, memory.find(1L, "canvas-b", "agent-shared").isPresent());
+    assertEquals(true, memory.find(2L, "canvas-a", "agent-shared").isPresent());
     assertEquals(0, repository.findConversations(1L, "canvas-a").size());
     assertEquals(1, repository.findConversations(1L, "canvas-b").size());
     assertEquals(1, repository.findConversations(2L, "canvas-a").size());

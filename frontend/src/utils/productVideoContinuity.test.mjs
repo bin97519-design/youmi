@@ -110,6 +110,7 @@ test('scene, person and product settings reach initial planning, refinement and 
 
 test('whole-video prompts keep all timing text and use the confirmed shot frame without adding unsupported video references', () => {
   const { data, first } = fixture()
+  first.videoInputMode = 'first_frame'
   first.productionMode = 'single_video_30'
   first.motion = '画'.repeat(1800)
   approveProductVideoFrame(data, first)
@@ -122,7 +123,7 @@ test('whole-video prompts keep all timing text and use the confirmed shot frame 
   assert.ok(request.prompt.length <= 2400)
 })
 
-test('whole videos default to independent scenes and people while retaining product references and their own frame approval', () => {
+test('whole videos retain independent scenes and optional first-frame approval without changing product references', () => {
   for (const mode of ['single_video', 'single_video_30']) {
     const { data, first, next } = fixture()
     approveProductVideoFrame(data, first)
@@ -131,6 +132,7 @@ test('whole videos default to independent scenes and people while retaining prod
     setContinuityReference(data, 'person', { url: 'https://assets.example/fixed-person.png' })
     approveProductVideoFrame(data, first)
     next.productionMode = mode
+    next.videoInputMode = 'first_frame'
     next.images.push({
       id: 'whole-frame',
       url: 'https://assets.example/whole-frame.png',
@@ -229,7 +231,8 @@ test('reference-video workflows and explicitly disabled continuity retain origin
     assert.equal(continuityEnabled(data), false)
     approveProductVideoFrame(data, first)
     assert.equal(continuityAnchor(data), null)
-    assert.equal(buildPlanRequest(data, 3).continuity, undefined)
+    if (type === 'reference') assert.match(buildPlanRequest(data, 3).continuity, /用户复刻设定/)
+    else assert.equal(buildPlanRequest(data, 3).continuity, undefined)
     assert.deepEqual(buildImageRequest(data, next, 'independent').image_urls, [
       data.references[0].url,
     ])
@@ -242,7 +245,8 @@ test('product image roles survive disabled and reference modes without enabling 
     data.planningSource = type === 'reference' ? 'reference' : 'creative'
     data.continuity.enabled = false
     const request = buildPlanRequest(data, 3, null, { imageEvidenceRoles: true })
-    assert.equal(request.continuity, undefined)
+    if (type === 'reference') assert.match(request.continuity, /用户复刻设定/)
+    else assert.equal(request.continuity, undefined)
     assert.deepEqual(request.imageRoles, [{ imageIndex: 1, role: 'product' }])
     const image = buildImageRequest(data, next, 'image')
     assert.match(image.prompt, /图1是商品外观依据，只参考商品本身/)

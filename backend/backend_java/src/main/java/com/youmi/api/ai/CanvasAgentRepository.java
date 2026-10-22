@@ -84,6 +84,9 @@ public class CanvasAgentRepository {
 
   public void deleteConversation(String conversationId, Long userId, String canvasId) {
     jdbcTemplate.update(
+        "DELETE FROM ym_agent_context_memory WHERE conversation_id = ? AND user_id = ? AND canvas_id = ?",
+        conversationId, userId, canvasId);
+    jdbcTemplate.update(
         "DELETE FROM ym_agent_conversation WHERE conversation_id = ? AND user_id = ? AND canvas_id = ?",
         conversationId,
         userId,

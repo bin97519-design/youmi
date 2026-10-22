@@ -512,7 +512,7 @@ class CanvasAgentTurnRoutingIntegrationTest {
            {"url":"https://assets.example/frame1.jpg","time":14.96}]}
         """));
     when(client.completeCanvasAgentVision(anyString(), anyString(),
-        eq(List.of("https://assets.example/frame0.jpg", "https://assets.example/frame1.jpg")), eq(0.2), eq(8000)))
+        eq(List.of("https://assets.example/frame0.jpg", "https://assets.example/frame1.jpg")), eq(0.2), eq(16000)))
         .thenReturn(result(draft("video", completePrompt, "已按抽样关键帧整理只读还原提示词。")));
 
     var response = new CanvasAgentService(mapper, client).chat(mapper.treeToValue(body, CanvasAgentDtos.ChatRequest.class));

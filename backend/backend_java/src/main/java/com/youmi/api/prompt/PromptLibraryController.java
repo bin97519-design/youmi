@@ -23,7 +23,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class PromptLibraryController {
   private static final Set<String> VIEWS = Set.of("all", "mine", "public", "recent");
   private static final Set<String> CATEGORIES = Set.of(
-      "ALL", "GENERAL", "MAIN_IMAGE", "DETAIL", "SCENE", "SELLING_POINT", "EDIT", "OTHER");
+      "ALL", "GENERAL", "VIDEO", "MAIN_IMAGE", "DETAIL", "SCENE", "SELLING_POINT", "EDIT", "OTHER");
   private static final Set<String> SOURCES = Set.of(
       "MANUAL", "INPUT", "AGENT", "REVERSE", "HISTORY", "PUBLIC");
 

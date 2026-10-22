@@ -1,4 +1,6 @@
 <script setup>
+import { recoverAgentVideoDraft, recoverFailedAgentVideoDrafts } from '../utils/agentVideoRecovery.js'
+import { isSeedanceAnciModel, SEEDANCE_ANCI_RATIOS, SEEDANCE_ANCI_VERSIONS, seedanceAnciVersion, videoVersionPayload, seedanceAnciNotice } from '../utils/seedanceAnci.js'
 import {
   computed,
   nextTick,
@@ -14,8 +16,10 @@ import ImageViewer from '../components/ImageViewer.vue'
 import CameraAnglePanel from '../components/canvas/CameraAnglePanel.vue'
 import CanvasCreationPanel from '../components/canvas/CanvasCreationPanel.vue'
 import ProductVideoWorkspace from '../components/canvas/ProductVideoWorkspace.vue'
+import ProductVideo2Workspace from '../components/canvas/ProductVideo2Workspace.vue'
 import VideoEnhanceDialog from '../components/canvas/VideoEnhanceDialog.vue'
 import AgentVideoSettings from '../components/canvas/AgentVideoSettings.vue'
+import AgentImageSettings from '../components/canvas/AgentImageSettings.vue'
 import VideoNodeComposer from '../components/canvas/VideoNodeComposer.vue'
 import ImageNodeComposer from '../components/canvas/ImageNodeComposer.vue'
 import TextNodeComposer from '../components/canvas/TextNodeComposer.vue'
@@ -83,6 +87,9 @@ import { useUserStore } from '../stores/user'
 import { apiPath } from '../utils/apiBase'
 import { formatMiValue } from '../utils/miValue'
 import { resolveAgentReferenceImages } from '../utils/agentContext'
+import { readAgentStream, recoverInterruptedAgentMessage, AGENT_REQUEST_TIMEOUT_MS } from '../utils/agentStream'
+import { agentProviderRejection } from '../utils/agentProviderError'
+import { formatAgentContextUsage } from '../utils/agentContextUsage'
 import { agentVideoFrameLimit, prepareAgentReferenceVideo } from '../utils/agentReferenceVideo'
 import { MAX_REFERENCE_VIDEO_BYTES } from '../utils/referenceVideo'
 import {
@@ -268,6 +275,7 @@ const promptLibraryView = ref('mine')
 const promptLibraryCategory = ref('ALL')
 const promptLibraryQuery = ref('')
 const promptLibraryCategoryOpen = ref(false)
+const promptLibraryTarget = ref(null)
 const promptLibraryEditor = reactive({
   visible: false,
   id: null,
@@ -418,6 +426,7 @@ let clipboardPasteCount = 0
 const rightTab = ref('chat')
 const creationPanelOpen = ref(false)
 const productVideoOpen = ref(false)
+const productVideo2Open = ref(false)
 const creationRunning = ref(false)
 let activeCreationRuns = 0
 const cameraAnglePanelOpen = ref(false)
@@ -1256,6 +1265,12 @@ function selectChatOption(name, value) {
   if (name === 'resolution') chatResolution.value = value
   if (name === 'video-model') {
     videoModel.value = value
+    if (isSeedanceAnciModel(value)) {
+      videoResolution.value = '720p'
+      videoRatio.value = videoRatioForRequest(value, 0, videoRatio.value)
+      videoReferenceMode.value = 'cankaosheng'
+      videoGenerateAudio.value = true
+    }
     if (value === HAILUO_H3_VIDEO_MODEL) videoReferenceMode.value = 'shouweizhen'
   }
   if (name === 'video-ratio') videoRatio.value = value
@@ -1690,7 +1705,7 @@ function agentModelDisplayLabel(option) {
     .split('·')
     .map((name) => name.trim())
   const label =
-    names.length === 2 && names[0].toLowerCase() === names[1].toLowerCase()
+    names.length === 2 && names[0].toLowerCase().replace(/[\s_-]+/g, '') === names[1].toLowerCase().replace(/[\s_-]+/g, '')
       ? names[0]
       : names.join(' · ')
   return option.configured === false ? `${label} · 未配置密钥` : label
@@ -1701,6 +1716,13 @@ const agentModelOptions = computed(() =>
     label: agentModelDisplayLabel(option),
   })),
 )
+const agentContextUsageDisplay = computed(() => {
+  const usage = [...chatMessages.value].reverse().find(message => message.contextUsage &&
+    (agentModel.value === 'default' || message.contextUsage.model === agentModel.value))?.contextUsage
+  const budget = agentModelRecords.value.find(option => option.value === agentModel.value)?.contextBudgetTokens
+  return formatAgentContextUsage(usage && budget ? { ...usage, budgetTokens: budget } : usage,
+    agentPlanning.value ? '' : chatText.value)
+})
 const agentModelUnavailable = computed(
   () =>
     !agentModelRecords.value.some(
@@ -1868,6 +1890,7 @@ const videoDuration = ref(
     : 15,
 )
 const videoGenerateAudio = ref(initialVideoConfig.generateAudio !== false)
+const videoVersion = ref(seedanceAnciVersion(initialVideoConfig.version))
 const videoReferenceMode = ref(
   initialVideoConfig.referenceMode === 'cankaosheng' ? 'cankaosheng' : 'shouweizhen',
 )
@@ -1878,6 +1901,7 @@ const chatVideoGenerationSettings = computed(() => ({
   duration: videoDuration.value,
   generateAudio: videoGenerateAudio.value,
   referenceMode: videoReferenceMode.value,
+  ...videoVersionPayload(videoModel.value, videoVersion.value),
 }))
 const videoReferenceModes = [
   { value: 'shouweizhen', label: '首尾帧' },
@@ -1932,6 +1956,7 @@ const videoRatioLockedToAdaptive = computed(() =>
   ) === 'adaptive',
 )
 const videoRatioMenuOptions = computed(() => {
+  if (isSeedanceAnciModel(videoModel.value)) return SEEDANCE_ANCI_RATIOS
   return videoRatioLockedToAdaptive.value ? ['adaptive'] : videoRatioOptions
 })
 const videoRatioLabel = computed(() => {
@@ -1981,6 +2006,8 @@ const videoEstimatedMiCost = computed(() =>
 const videoCostHint = computed(() =>
   isRetiredVideoModel(videoModel.value)
     ? '原模型已移除，请重新选择'
+    : isSeedanceAnciModel(videoModel.value)
+      ? `${videoDuration.value} 秒 · 按条计费，完成后按实际费用结算`
     : isProviderReportedCostVideoModel(videoModel.value, videoModelOptions)
       ? `${videoDuration.value} 秒 · 生成成功后按实际用量结算`
       : videoEstimatedMiCost.value == null
@@ -2047,6 +2074,7 @@ watch(
     videoResolution,
     videoDuration,
     videoGenerateAudio,
+    videoVersion,
     videoReferenceMode,
   ],
   () => {
@@ -2095,6 +2123,7 @@ watch(
       ? Number(videoCfg.duration)
       : 15
     videoGenerateAudio.value = videoCfg.generateAudio !== false
+    videoVersion.value = seedanceAnciVersion(videoCfg.version)
     videoReferenceMode.value =
       videoCfg.referenceMode === 'cankaosheng' ? 'cankaosheng' : 'shouweizhen'
     activeAgentConversationId.value = resolveAgentConversationId(doc.value?.payload || {})
@@ -5965,6 +5994,7 @@ async function addEnhancedVideo(result) {
   }
   enhanceSource.value = null
   productVideoOpen.value = false
+  productVideo2Open.value = false
   closeVideoViewer()
   await nextTick()
   const layer = layers.value.find((item) => item.id === id)
@@ -8248,6 +8278,7 @@ function isLongChatPrompt(text) {
   return value.length > 300 || value.split('\n').length > 6
 }
 function renderMessageContent(message) {
+  message = recoverInterruptedAgentMessage(message)
   let html = escHtml(message.text || '').replace(/\n/g, '<br>')
   // 参考图缩略图（使用缓存，防签名 URL 过期裂图）
   if (message.referenceImages?.length && canvasMediaExpanded.value) {
@@ -8767,6 +8798,7 @@ function handleGenPreviewDblClick(e) {
 function formatMetaTime(ts) {
   if (!ts) return ''
   const d = new Date(ts)
+  if (Number.isNaN(d.getTime())) return ''
   const pad = (n) => String(n).padStart(2, '0')
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
@@ -9101,8 +9133,10 @@ async function loadPromptLibrary({ force = false, silent = false } = {}) {
   return promptLibraryLoadPromise
 }
 
-function openPromptLibrary() {
+function openPromptLibrary({ videoLayer = null } = {}) {
   if (!userStore.requireLogin()) return
+  promptLibraryTarget.value = videoLayer ? { canvasId: doc.value.id, layerId: videoLayer.id } : null
+  promptLibraryCategory.value = videoLayer || chatMode.value === 'video' ? 'VIDEO' : 'ALL'
   promptLibraryOpen.value = true
   promptLibraryInsert.visible = false
   promptLibraryInsert.item = null
@@ -9116,6 +9150,7 @@ function openPromptLibrary() {
 
 function closePromptLibrary() {
   promptLibraryOpen.value = false
+  promptLibraryTarget.value = null
   promptLibraryEditor.visible = false
   promptLibraryCategoryOpen.value = false
   promptLibraryInsert.visible = false
@@ -9126,7 +9161,8 @@ function openPromptLibraryEditor({
   item = null,
   content = '',
   source = 'MANUAL',
-  category = 'GENERAL',
+  category = promptLibraryTarget.value || chatMode.value === 'video' || promptLibraryCategory.value === 'VIDEO'
+    ? 'VIDEO' : 'GENERAL',
 } = {}) {
   const promptContent = String(item?.content ?? content ?? '').trim()
   promptLibraryEditor.id = item?.scope === 'PERSONAL' ? item.id : null
@@ -9139,8 +9175,15 @@ function openPromptLibraryEditor({
   promptLibraryEditor.visible = true
 }
 
+function promptLibraryInputText() {
+  if (!promptLibraryTarget.value) return extractChatEditorText({ includePills: true })
+  if (promptLibraryTarget.value.canvasId !== doc.value.id) return ''
+  const layer = layers.value.find((item) => item.id === promptLibraryTarget.value.layerId)
+  return layer?.type === 'video' ? videoNodeDraftFor(layer).prompt : ''
+}
+
 function saveCurrentComposerToPromptLibrary() {
-  const content = extractChatEditorText({ includePills: true }).trim()
+  const content = promptLibraryInputText().trim()
   if (!content) {
     showCopyPasteToast('请先在输入框中填写提示词')
     return
@@ -9157,14 +9200,29 @@ function saveAgentDraftToPromptLibrary(message) {
   const content = String(agentDraftActiveItem(message?.agentDraft)?.prompt || '').trim()
   if (!content) return
   promptLibraryOpen.value = true
-  openPromptLibraryEditor({ content, source: 'AGENT' })
+  openPromptLibraryEditor({ content, source: 'AGENT',
+    category: message.agentDraft.generationType === 'video' ? 'VIDEO' : 'GENERAL' })
+}
+
+function saveVideoNodePromptToPromptLibrary(layer) {
+  const content = videoNodeDraftFor(layer).prompt.trim()
+  if (!content) return
+  openPromptLibrary({ videoLayer: layer })
+  openPromptLibraryEditor({ content, source: 'INPUT', category: 'VIDEO' })
+}
+
+function saveVideoReversePromptToPromptLibrary(layer) {
+  const content = String(layer.text || '').trim()
+  if (!content) return
+  promptLibraryOpen.value = true
+  openPromptLibraryEditor({ content, source: 'REVERSE', category: 'VIDEO' })
 }
 
 function saveLayerPromptToPromptLibrary(layer) {
   const content = String(displayLayerReversePromptBody(layer) || '').trim()
   if (!content) return
   promptLibraryOpen.value = true
-  openPromptLibraryEditor({ content, source: 'REVERSE' })
+  openPromptLibraryEditor({ content, source: 'REVERSE', category: 'GENERAL' })
 }
 
 async function savePromptLibraryItem() {
@@ -9200,6 +9258,7 @@ async function savePromptLibraryItem() {
         : [saved, ...promptLibraryItems.value]
     promptLibraryEditor.visible = false
     promptLibraryView.value = 'mine'
+    promptLibraryCategory.value = saved.category
     showCopyPasteToast(id ? '提示词已更新' : '已收藏到提示词库')
   } catch (error) {
     showCopyPasteToast(error?.message || '提示词保存失败')
@@ -9243,11 +9302,20 @@ async function markPromptLibraryItemUsed(item) {
 }
 
 function applyPromptLibraryItem(item, mode = 'replace') {
-  const current = extractChatEditorText({ includePills: true })
-  replaceChatEditorText(mergePromptIntoComposer(current, item.content, mode))
-  promptLibraryInsert.visible = false
-  promptLibraryInsert.item = null
-  promptLibraryOpen.value = false
+  const current = promptLibraryInputText()
+  const content = mergePromptIntoComposer(current, item.content, mode)
+  if (promptLibraryTarget.value) {
+    const target = promptLibraryTarget.value
+    const layer = target.canvasId === doc.value.id
+      ? layers.value.find((entry) => entry.id === target.layerId) : null
+    if (!layer || layer.type !== 'video' || layer.locked || videoNodeBusy(layer)) {
+      showCopyPasteToast('视频节点已关闭或正在处理，请重新打开提示词库')
+      return
+    }
+    pushUndo()
+    updateVideoNodeDraft(layer, { ...videoNodeDraftFor(layer), prompt: content })
+  } else replaceChatEditorText(content)
+  closePromptLibrary()
   void markPromptLibraryItemUsed(item)
   showCopyPasteToast(mode === 'append' ? '提示词已追加到输入框' : '提示词已填入输入框')
 }
@@ -9264,7 +9332,7 @@ async function copyPromptLibraryItem(item) {
 }
 
 function choosePromptLibraryItem(item) {
-  if (!extractChatEditorText({ includePills: true }).trim()) {
+  if (!promptLibraryInputText().trim()) {
     applyPromptLibraryItem(item, 'replace')
     return
   }
@@ -10005,7 +10073,6 @@ function clearChatComposer() {
 
 function agentConversationMessages(conversationId) {
   return (agentConversationMessagesById.value[conversationId] || [])
-    .slice(-200)
     .map((message) => JSON.parse(JSON.stringify(message)))
 }
 
@@ -10151,13 +10218,14 @@ async function loadAgentConversationsFromServer() {
             ? remoteRecord.messages
             : []
       if (!sourceMessages.length) continue
-      const normalizedMessages = sourceMessages
+      const normalizedMessages = await recoverFailedAgentVideoDrafts(sourceMessages
+        .map((message) => recoverInterruptedAgentMessage(message))
         .map((message) => ({
           ...message,
           agent: true,
           agentConversationId: conversationId,
         }))
-        .sort((left, right) => (Number(left.createdAt) || 0) - (Number(right.createdAt) || 0))
+        .sort((left, right) => (Number(left.createdAt) || 0) - (Number(right.createdAt) || 0)), fetchVideoTask)
       mergedMessagesById[conversationId] = normalizedMessages
       const firstUserMessage = normalizedMessages.find((message) => message?.role === 'user')
       mergedRecords.push({
@@ -10374,8 +10442,8 @@ function buildCanvasAgentContext(instruction = '') {
 
 function buildCanvasAgentHistory() {
   return chatMessages.value
-    .filter((message) => message.agent && !message.generating)
-    .slice(-12)
+    .filter((message) => message.agent && !message.generating && !message.failed &&
+      (message.role !== 'assistant' || !agentProviderRejection(message)))
     .map((message) => {
       const draftPrompts = agentDraftItems(message.agentDraft)
         .map((item, index) => `方案${index + 1}：${item.prompt}`)
@@ -10553,12 +10621,29 @@ function agentDraftActiveItem(draft) {
   return items[agentDraftActiveIndex(draft)] || null
 }
 
-function agentDraftModels() {
-  return agentGenerationSettings.value.models
+function agentImageSettings(message) {
+  return normalizeImageNodeDraft({
+    config: agentDraftActiveItem(message?.agentDraft)?.image || agentGenerationSettings.value,
+  }, {}, imageNodeModelOptions.value).config
 }
 
-function agentDraftTotalCount() {
-  return agentGenerationSettings.value.totalCount
+function agentImageReferences(message) {
+  const itemReferences = agentDraftActiveItem(message?.agentDraft)?.referenceImages
+  const references = Array.isArray(itemReferences) ? itemReferences : message?.agentDraft?.referenceImages
+  return Array.isArray(references) ? references.filter((reference) => reference?.url) : []
+}
+
+function updateAgentImageSettings(message, settings, referenceImages = agentImageReferences(message)) {
+  if (['submitting', 'submitted', 'unknown'].includes(agentDraftActiveItem(message?.agentDraft)?.status)) return
+  const image = normalizeImageNodeDraft({ config: settings }, {}, imageNodeModelOptions.value).config
+  const activeIndex = agentDraftActiveIndex(message.agentDraft)
+  const items = agentDraftItems(message.agentDraft).map((item, index) =>
+    index === activeIndex ? { ...item, image, referenceImages } : item)
+  updateChatMessage(message.id, { agentDraft: { ...message.agentDraft, ...image, referenceImages, items } })
+  chatModels.value = [...image.models]
+  chatRatio.value = image.ratio
+  chatResolution.value = image.resolution
+  chatGenerationCount.value = image.count
 }
 
 function agentDraftPromptParagraphs(value) {
@@ -10697,6 +10782,7 @@ async function runCanvasAgent() {
     duration: videoDuration.value,
     generateAudio: videoGenerateAudio.value,
     referenceMode: videoReferenceMode.value,
+    ...videoVersionPayload(videoModel.value, videoVersion.value),
     ...videoContext?.video,
   }
   const createdAt = Date.now()
@@ -10742,9 +10828,10 @@ async function runCanvasAgent() {
   const requestController = new AbortController()
   if (agentRequestController) agentRequestController.abort()
   agentRequestController = requestController
-  const requestTimeout = attachedVideo
-    ? setTimeout(() => requestController.abort(new Error('视频识别等待超时，请稍后重新发送')), 480000)
-    : null
+  const requestTimeout = setTimeout(() => requestController.abort(
+    new Error('本次回复等待已超过30分钟，未收到完整方案')), AGENT_REQUEST_TIMEOUT_MS)
+  let streamedReply = ''
+  let planningStage = '正在准备参考素材'
 
   try {
     let referenceVideo = null
@@ -10758,8 +10845,8 @@ async function runCanvasAgent() {
       })
       updateChatMessage(assistantId, { text: 'Agent 正在识别视频并整理提示词...' })
     }
-    const response = await readApiResponse(
-      await fetch(apiPath('/api/ai/canvas-agent/chat'), {
+    const response = await readAgentStream(
+      await fetch(apiPath('/api/ai/canvas-agent/chat/stream'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -10784,6 +10871,28 @@ async function runCanvasAgent() {
           referenceVideo,
         }),
       }),
+      (event) => {
+        if (event.type === 'context_usage') {
+          updateChatMessage(assistantId, { contextUsage: event.data })
+          if (event.data?.estimated && !streamedReply) {
+            planningStage = '素材已准备好，正在等待模型回复'
+            updateChatMessage(assistantId, { text: planningStage })
+          }
+        } else if (event.type === 'context_memory') {
+          updateChatMessage(assistantId, { contextMemory: event.data })
+        } else if (event.type === 'reply_delta') {
+          streamedReply += String(event.delta || '')
+          updateChatMessage(assistantId, { text: streamedReply })
+        } else if (event.type === 'thinking' && !streamedReply) {
+          planningStage = String(event.label || 'Agent 正在整理方案...')
+          updateChatMessage(assistantId, { text: planningStage })
+        } else if (event.type === 'heartbeat' && !streamedReply) {
+          const seconds = Math.max(0, Number(event.elapsedSeconds) || 0)
+          const elapsed = seconds >= 60 ? `${Math.floor(seconds / 60)}分${seconds % 60}秒` : `${seconds}秒`
+          updateChatMessage(assistantId, { text: `${planningStage} · 已等待${elapsed}` })
+        }
+      },
+      readApiResponse,
     )
     const draftPrompts = normalizeAgentDraftPrompts(
       Array.isArray(response?.draftPrompts) && response.draftPrompts.length
@@ -10854,18 +10963,17 @@ async function runCanvasAgent() {
     })
   } catch (error) {
     if (error?.name === 'AbortError') {
-      if (attachedVideo) {
-        updateChatMessage(assistantId, {
-          text: '视频识别已中断，可重新添加视频后发送。',
-          generating: false,
-          failed: true,
-        })
-      }
+      updateChatMessage(assistantId, {
+        text: streamedReply ? `${streamedReply}\n\n回复连接已中断，方案未完整返回。` : '回复连接已中断，原输入和参考图已保留。',
+        generating: false, failed: true,
+      })
       return
     }
-    const message = error?.message || 'Agent 暂时无法回复，请稍后重试。'
+    const message = /request timed out|HttpTimeoutException/i.test(error?.message || '')
+      ? '模型通道响应超时，未收到完整回复。请稍后重试或切换模型。'
+      : error?.message || 'Agent 暂时无法回复，请稍后重试。'
     updateChatMessage(assistantId, {
-      text: `Agent 回复失败：${message}`,
+      text: streamedReply ? `${streamedReply}\n\nAgent 回复未完成：${message}` : `Agent 回复失败：${message}`,
       generating: false,
       failed: true,
     })
@@ -10897,15 +11005,13 @@ async function confirmAgentGeneration(message) {
   const items = agentDraftItems(draft)
   const activeIndex = agentDraftActiveIndex(draft)
   const activeItem = items[activeIndex]
-  if (!activeItem?.prompt || ['submitting', 'submitted'].includes(activeItem.status)) return
+  if (!activeItem?.prompt || ['submitting', 'submitted', 'unknown'].includes(activeItem.status)) return
   if (!userStore.requireLogin()) return
 
-  updateAgentDraftItemStatus(message.id, activeItem.id, 'submitting')
+  const generationSettings = agentImageSettings(message)
+  const referenceImages = agentImageReferences(message)
+  updateAgentDraftItemStatus(message.id, activeItem.id, 'submitting', { image: generationSettings, referenceImages })
   try {
-    const generationSettings = agentGenerationSettings.value
-    const referenceImages = Array.isArray(draft.referenceImages)
-      ? draft.referenceImages.filter((reference) => reference?.url)
-      : []
     await sendChat({
       displayText: '',
       fullPrompt: String(activeItem.prompt).trim(),
@@ -10964,6 +11070,7 @@ function updateAgentVideoSettings(
   videoResolution.value = video.resolution
   videoDuration.value = Number(video.duration)
   videoGenerateAudio.value = video.generateAudio !== false
+  videoVersion.value = seedanceAnciVersion(video.version)
   videoReferenceMode.value = video.referenceMode
   syncSelectedVideoNodeGenerationSettings()
   void loadVideoCapabilities()
@@ -10995,7 +11102,7 @@ async function confirmAgentVideoGeneration(message) {
   if (issue) return showCopyPasteToast(issue)
   if (!userStore.requireLogin()) return
   agentVideoSubmissions.add(item.id)
-  updateAgentDraftItemStatus(message.id, item.id, 'submitting')
+  updateAgentDraftItemStatus(message.id, item.id, 'submitting', { failureMessage: '' })
   let status = 'ready'
   try {
     await sendVideoChat({
@@ -11049,6 +11156,7 @@ async function submitVideoTask({
   resolution,
   duration,
   generateAudio,
+  version,
   referenceMode,
   clientTaskId,
 }) {
@@ -11065,6 +11173,7 @@ async function submitVideoTask({
         ratio,
         resolution,
         durationSeconds: duration,
+        ...videoVersionPayload(model, version),
         ...videoAudioPayload(model, generateAudio),
         ...videoReferencePayload(model, referenceMode, imageUrls, referenceVideos),
         client_task_id: clientTaskId,
@@ -11109,7 +11218,7 @@ function addGeneratingVideoLayer(prompt, config, assistantId, sourceLayerIds, op
       zIndex: maxZ + 1,
       visible: true,
       locked: false,
-      source: isPerSecondVideoModel(config.model) ? '按秒视频生成' : 'THQ 视频生成',
+      source: isSeedanceAnciModel(config.model) ? 'SD 2.0 按次视频生成' : isPerSecondVideoModel(config.model) ? '按秒视频生成' : 'THQ 视频生成',
       generating: true,
       progress: isPerSecondVideoModel(config.model) ? null : 1,
       status: 'queued',
@@ -11524,6 +11633,7 @@ function syncVideoChatFromSelectedNode() {
   videoResolution.value = config.resolution
   videoDuration.value = config.duration
   videoGenerateAudio.value = config.generateAudio
+  videoVersion.value = seedanceAnciVersion(config.version)
   videoReferenceMode.value = config.referenceMode === 'cankaosheng' ? 'cankaosheng' : 'shouweizhen'
 }
 
@@ -11873,7 +11983,7 @@ async function generateVideoNode(layer) {
   const activity = videoNodeActivity[layer.id]
   try {
     await sendVideoChat({
-      prompt: canvasReferenceTextPrompt(nodeDraft.prompt, nodeDraft.referenceTexts, 2500),
+      prompt: canvasReferenceTextPrompt(nodeDraft.prompt, nodeDraft.referenceTexts, Infinity),
       referenceTextLayerIds: nodeDraft.referenceTexts.map(reference => reference.layerId).filter(Boolean),
       references: nodeDraft.references,
       referenceVideos: nodeDraft.referenceVideos,
@@ -12015,6 +12125,10 @@ async function pollVideoTaskUntilDone(taskId, layerId, assistantId = '') {
       : Math.min(99, Math.max(1, Number.isFinite(providerProgress) ? providerProgress : 5 + index))
     if (status === 'failed' || status === 'canceled') {
       const failureMessage = task?.error || '视频生成失败'
+      for (const message of Object.values(agentConversationMessagesById.value).flat()) {
+        const recovered = recoverAgentVideoDraft(message, taskId, task)
+        if (recovered !== message) updateChatMessage(message.id, { agentDraft: recovered.agentDraft })
+      }
       updateLayer(layerId, {
         taskId,
         generating: false,
@@ -12123,10 +12237,6 @@ async function sendVideoChat(options = {}) {
   const prompt = String(options.prompt ?? getEditorPrompt()).trim()
   if (!prompt) return
   if (!userStore.requireLogin()) return
-  if (prompt.length > 2500) {
-    showCopyPasteToast('视频提示词不能超过 2500 个字符')
-    return
-  }
   if (!options.references && chatReferenceImages.value.some((image) => image.uploading)) {
     showCopyPasteToast('参考图仍在上传，请稍后再发送')
     return
@@ -12248,6 +12358,7 @@ async function sendVideoChat(options = {}) {
   }
   const config = {
     model: requestedModel,
+    ...videoVersionPayload(requestedModel, requestedConfig.version || videoVersion.value),
     ratio: videoRatioForRequest(
       requestedModel,
       imageUrls.length,
@@ -12377,6 +12488,7 @@ function getVideoChatReplay(messageId) {
       resolution:
         stored.resolution || legacyResolution.split('·')[0].trim() || videoResolution.value,
       duration: Number(stored.duration || assistantMessage.duration || durationMatch?.[1] || 15),
+      ...videoVersionPayload(stored.model || assistantMessage.model, stored.version),
       referenceMode: stored.referenceMode || 'shouweizhen',
       generateAudio:
         typeof stored.generateAudio === 'boolean' ? stored.generateAudio : videoGenerateAudio.value,
@@ -15865,6 +15977,10 @@ async function loadImageForCropUncached(layer) {
           <i class="ri-movie-2-line" aria-hidden="true"></i>
           <span>主图视频</span>
         </button>
+        <button type="button" class="uc-top-creation-btn" @click="productVideo2Open = true">
+          <i class="ri-movie-2-line" aria-hidden="true"></i>
+          <span>主图视频2</span>
+        </button>
         <div class="add-image">
           <input
             ref="fileInput"
@@ -16394,6 +16510,16 @@ async function loadImageForCropUncached(layer) {
                   </span>
                   <button
                     type="button"
+                    title="收藏视频提示词"
+                    aria-label="收藏视频提示词"
+                    :disabled="!layer.text || layer.videoReversePrompt.status === 'pending'"
+                    @click.stop="saveVideoReversePromptToPromptLibrary(layer)"
+                  >
+                    <i class="ri-bookmark-line" aria-hidden="true"></i>
+                    收藏
+                  </button>
+                  <button
+                    type="button"
                     title="复制视频提示词"
                     aria-label="复制视频提示词"
                     :disabled="!layer.text || layer.videoReversePrompt.status === 'pending'"
@@ -16649,6 +16775,8 @@ async function loadImageForCropUncached(layer) {
                   :error="videoNodeActivity[layer.id]?.error || layer.lastError || ''"
                   @update:draft="updateVideoNodeDraft(layer, $event)"
                   @upload-reference="uploadVideoNodeFile(layer, $event.file, true, $event.index)"
+                  @prompt-library="openPromptLibrary({ videoLayer: layer })"
+                  @save-prompt="saveVideoNodePromptToPromptLibrary(layer)"
                   @generate="generateVideoNode(layer)"
                 />
               </div>
@@ -17587,6 +17715,10 @@ async function loadImageForCropUncached(layer) {
                     </figcaption>
                   </figure>
                 </div>
+                <div v-if="message.contextMemory?.compacted" class="uc-agent-memory-note">
+                  <i class="ri-file-reduce-line" aria-hidden="true"></i>
+                  已压缩 {{ message.contextMemory.sourceMessages }} 条历史对话，保留 {{ message.contextMemory.recentMessages }} 条近期原文
+                </div>
                 <AgentMediaResult
                   v-if="
                     (message.videoUrl || message.imageUrl) &&
@@ -17599,7 +17731,7 @@ async function loadImageForCropUncached(layer) {
                   "
                   @adjust="message.videoUrl ? adjustAgentVideo(message) : adjustAgentImage(message)"
                 />
-                <section v-if="agentDraftItems(message.agentDraft).length" class="uc-agent-draft">
+                  <section v-if="agentDraftItems(message.agentDraft).length && !agentProviderRejection(message)" class="uc-agent-draft">
                   <header class="uc-agent-draft-head">
                     <span>
                       <i class="ri-draft-line" aria-hidden="true"></i>
@@ -17729,14 +17861,17 @@ async function loadImageForCropUncached(layer) {
                       )
                     "
                   />
-                  <div v-else-if="!message.agentDraft.promptOnly" class="uc-agent-draft-settings" aria-label="生图参数">
-                    <span :title="agentDraftModels().join('、')">
-                      {{ agentDraftModels().join(' + ') }}
-                    </span>
-                    <span>{{ agentGenerationSettings.ratio }}</span>
-                    <span>{{ agentGenerationSettings.resolution }}</span>
-                    <span>{{ agentDraftTotalCount() }} 张</span>
-                  </div>
+                  <AgentImageSettings
+                    v-else-if="!message.agentDraft.promptOnly"
+                    :model-value="agentImageSettings(message)"
+                    :model-options="imageNodeModelOptions"
+                    :ratio-options="chatRatioOptions"
+                    :resolution-options="chatResolutionOptions"
+                    :references="agentImageReferences(message)"
+                    :disabled="['submitting', 'submitted', 'unknown'].includes(agentDraftActiveItem(message.agentDraft)?.status)"
+                    @update:model-value="updateAgentImageSettings(message, $event)"
+                    @remove-reference="updateAgentImageSettings(message, agentImageSettings(message), agentImageReferences(message).filter((_, index) => index !== $event))"
+                  />
                   <footer v-if="!message.agentDraft.promptOnly" class="uc-agent-draft-actions">
                     <span v-if="agentDraftActiveItem(message.agentDraft)?.status === 'submitted'">
                       {{
@@ -17761,6 +17896,9 @@ async function loadImageForCropUncached(layer) {
                       "
                     >
                       {{ agentVideoError(message) }}
+                    </span>
+                    <span v-else-if="message.agentDraft.generationType === 'video' && agentDraftActiveItem(message.agentDraft)?.status === 'failed'">
+                      上次视频生成失败，可调整后手动重试
                     </span>
                     <span v-else>不满意可继续发消息修改</span>
                     <button
@@ -17792,12 +17930,17 @@ async function loadImageForCropUncached(layer) {
                             : agentDraftActiveItem(message.agentDraft)?.status === 'unknown'
                               ? '待核对'
                               : message.agentDraft.generationType === 'video'
-                                ? '确认生成视频'
+                                ? agentDraftActiveItem(message.agentDraft)?.status === 'failed' ? '重新生成视频' : '确认生成视频'
                                 : '确认生图'
                       }}
                     </button>
                   </footer>
                 </section>
+                <time
+                  v-if="message.role === 'user' && formatMetaTime(message.createdAt)"
+                  class="uc-chat-msg-meta uc-chat-msg-time"
+                  :aria-label="`发送时间 ${formatMetaTime(message.createdAt)}`"
+                >{{ formatMetaTime(message.createdAt) }}</time>
                 <div v-if="message.role === 'assistant' && message.model" class="uc-chat-msg-meta">
                   {{ imageModelLabel(message.model) }} · {{ message.ratio }} · {{ message.resolution }}
                   <template v-if="message.videoGeneration && message.duration">
@@ -18274,6 +18417,13 @@ async function loadImageForCropUncached(layer) {
                     </div>
                   </div>
                 </label>
+                <label v-if="isSeedanceAnciModel(videoModel)" class="uc-video-version-field">
+                  <span>速度版本</span>
+                  <ThemedSelect floating :model-value="videoVersion" :options="SEEDANCE_ANCI_VERSIONS"
+                    :disabled="videoComposerSettingsDisabled" aria-label="速度版本"
+                    @update:model-value="videoVersion = $event; syncSelectedVideoNodeGenerationSettings()" />
+                </label>
+                <p v-if="isSeedanceAnciModel(videoModel)" class="uc-video-model-notice" role="note">{{ seedanceAnciNotice(videoModel, videoVersion, videoDuration) }}固定生成有声视频。</p>
                 <label v-if="supportsVideoFrameMode(videoModel)">
                   <span>模式</span>
                   <div
@@ -18381,6 +18531,13 @@ async function loadImageForCropUncached(layer) {
                   </span>
                 </div>
                 <div class="uc-bottom-toolbar-actions">
+                  <span v-if="chatMode === 'agent'" class="uc-agent-context-meter"
+                    :title="`${agentContextUsageDisplay.label} 上下文预算\n${agentContextUsageDisplay.title}`"
+                    :aria-label="`${agentContextUsageDisplay.label} 上下文预算`" tabindex="0">
+                    <span class="uc-agent-context-ring" aria-hidden="true"
+                      :style="{ '--usage-degrees': `${agentContextUsageDisplay.percent * 3.6}deg` }"></span>
+                    <span class="uc-agent-context-label">{{ agentContextUsageDisplay.label }}</span>
+                  </span>
                   <button
                     type="button"
                     class="uc-prompt-library-button"
@@ -18962,7 +19119,7 @@ async function loadImageForCropUncached(layer) {
                     class="uc-history-act"
                     title="收藏到提示词库"
                     @click.stop="
-                      openPromptLibraryEditor({ content: record.prompt, source: 'HISTORY' })
+                      openPromptLibraryEditor({ content: record.prompt, source: 'HISTORY', category: 'GENERAL' })
                     "
                   >
                     <i class="ri-bookmark-line"></i>
@@ -19001,7 +19158,7 @@ async function loadImageForCropUncached(layer) {
             <i class="ri-book-shelf-line" aria-hidden="true"></i>
             <span>
               <strong>提示词库</strong>
-              <small>选择后填入当前画布输入框</small>
+              <small>{{ promptLibraryTarget ? '选择后填入当前视频节点' : '选择后填入当前画布输入框' }}</small>
             </span>
           </div>
           <button type="button" title="关闭" aria-label="关闭提示词库" @click="closePromptLibrary">
@@ -19075,7 +19232,7 @@ async function loadImageForCropUncached(layer) {
             <strong>
               {{ promptLibraryView === 'recent' ? '暂无最近使用' : '没有找到提示词' }}
             </strong>
-            <span>可以收藏输入框、Agent 或反推得到的提示词</span>
+            <span>可以收藏输入框、Agent 视频方案或反推得到的提示词</span>
           </div>
           <div v-else class="uc-prompt-library-list">
             <article
@@ -19290,6 +19447,7 @@ async function loadImageForCropUncached(layer) {
     @generate="generateFromCameraAngle"
   />
 
+  <ProductVideo2Workspace :key="`video2-${props.id}`" :open="productVideo2Open" :canvas-id="props.id" :layers="layers" @close="productVideo2Open = false" />
   <ProductVideoWorkspace
     :key="props.id"
     :open="productVideoOpen"
@@ -19987,6 +20145,41 @@ async function loadImageForCropUncached(layer) {
 .broken-icon {
   color: #64748b;
   font-size: 18px;
+}
+.uc-agent-memory-note {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 7px;
+  color: var(--text-muted, #92959f);
+  font-size: 11px;
+}
+.uc-agent-context-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted, #92959f);
+  font-size: 10px;
+  white-space: nowrap;
+  cursor: help;
+}
+.uc-agent-context-ring {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  border-radius: 50%;
+  background: conic-gradient(#18bdd5 var(--usage-degrees, 0deg), #55565d 0);
+  position: relative;
+}
+.uc-agent-context-ring::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--bg-panel, #232429);
+}
+.uc-agent-context-label {
+  display: none;
 }
 .uc-chat-msg-bubble.uc-prompt-collapsed {
   display: -webkit-box;

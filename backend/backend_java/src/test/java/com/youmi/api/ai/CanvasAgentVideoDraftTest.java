@@ -59,10 +59,17 @@ class CanvasAgentVideoDraftTest {
     for (String json : List.of(
         "{\"generationType\":\"video\",\"draftPrompts\":[\"draft\"],\"readyToGenerate\":false}",
         "{\"generationType\":\"execute\",\"draftPrompts\":[\"draft\"],\"readyToGenerate\":true}",
-        "{\"generationType\":\"video\",\"durationSeconds\":90,\"draftPrompts\":[\"draft\"],\"readyToGenerate\":true}",
-        mapper.writeValueAsString(java.util.Map.of("generationType", "video", "draftPrompts", List.of("x".repeat(2501)), "readyToGenerate", true)))) {
+        "{\"generationType\":\"video\",\"durationSeconds\":90,\"draftPrompts\":[\"draft\"],\"readyToGenerate\":true}")) {
       reply(json);
       assertFalse(service.chat(request()).readyToGenerate());
     }
+  }
+
+  @Test void completeLongVideoScriptsRemainConfirmableWithoutTheRemovedCharacterLimit() throws Exception {
+    String script = "x".repeat(2501);
+    reply(mapper.writeValueAsString(java.util.Map.of("generationType", "video", "draftPrompts", List.of(script), "readyToGenerate", true)));
+    var result = service.chat(request());
+    assertTrue(result.readyToGenerate());
+    assertEquals(script, result.draftPrompt());
   }
 }

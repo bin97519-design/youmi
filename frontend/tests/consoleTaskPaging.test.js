@@ -27,6 +27,7 @@ function context(kind = 'all', api = async () => ({ tasks: [], total: 0 })) {
     normalizeConsoleTaskStats,
     statsRequestSequence: 0,
     taskReloadSequence: 0,
+    activeTab: ref('stats'),
     statsKind: ref(kind),
     stats: ref(null),
     taskRows: ref([]),

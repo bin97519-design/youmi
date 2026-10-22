@@ -32,15 +32,24 @@ public class VideoGenerationDtos {
       @JsonProperty("negative_prompt") @JsonAlias("negativePrompt") String negativePrompt,
       @JsonProperty("generate_audio") @JsonAlias("generateAudio") Boolean generateAudio,
       @JsonProperty("seed") Long seed,
-      @JsonProperty("webhook_url") @JsonAlias("webhookUrl") String webhookUrl,
+      @JsonProperty("webhook_url") @JsonAlias({"webhookUrl", "notify_url"}) String webhookUrl,
       @JsonProperty("client_task_id") @JsonAlias("clientTaskId") String clientTaskId,
       @JsonProperty("feature_code") String featureCode,
       @JsonProperty("reference_videos") @JsonAlias("referenceVideos")
-      @JsonInclude(JsonInclude.Include.NON_EMPTY) List<ReferenceVideo> referenceVideos) {
+      @JsonInclude(JsonInclude.Include.NON_EMPTY) List<ReferenceVideo> referenceVideos,
+      @JsonProperty("version") @JsonInclude(JsonInclude.Include.NON_NULL) String version) {
 
     public CreateTaskRequest {
       referenceVideos = referenceVideos == null || referenceVideos.isEmpty() ? List.of()
           : java.util.Collections.unmodifiableList(new ArrayList<>(referenceVideos));
+    }
+
+    public CreateTaskRequest(String prompt, String model, String ratio, Integer durationSeconds,
+        String resolution, List<String> imageUrls, String firstFrameUrl, String lastFrameUrl,
+        String negativePrompt, Boolean generateAudio, Long seed, String webhookUrl, String clientTaskId,
+        String featureCode, List<ReferenceVideo> referenceVideos) {
+      this(prompt, model, ratio, durationSeconds, resolution, imageUrls, firstFrameUrl, lastFrameUrl,
+          negativePrompt, generateAudio, seed, webhookUrl, clientTaskId, featureCode, referenceVideos, null);
     }
 
     public CreateTaskRequest(String prompt, String model, String ratio, Integer durationSeconds,

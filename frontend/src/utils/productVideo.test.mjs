@@ -417,6 +417,7 @@ test('whole-video prompts remove duplicate time labels while retaining distinct 
     normalizePromptLineBreaks(raw),
   )
   const { data, shot: ready } = fixture()
+  ready.videoInputMode = 'first_frame'
   ready.productionMode = 'single_video_30'
   ready.motion = raw
   ready.images = [{ id: 'image', url: 'https://assets.example/frame.png' }]
@@ -704,6 +705,7 @@ test('appearance constraints use the correct image, preserve existing patterns, 
   for (const mode of ['storyboard', 'single_video', 'single_video_30']) {
     const { data, shot } = fixture()
     shot.productionMode = mode
+    shot.videoInputMode = 'first_frame'
     shot.imagePrompt = '保留产品已有的花纹，暖光场景'
     shot.motion = '移动镜头，从亮处走到暗处，展示已有纹理'
     shot.images = [{ id: 'frame', url: 'https://assets.example/approved.png' }]
@@ -842,7 +844,8 @@ test('whole-video planning is explicit, creates one full clip and survives check
   full.imageId = full.approvedImageId = 'frame'
   const body = buildVideoRequest(data, full, 'one-video')
   assert.equal(body.durationSeconds, 15)
-  assert.deepEqual(body.image_urls, ['https://assets.example/frame.png'])
+  assert.deepEqual(body.image_urls, ['https://assets.example/product.png'])
+  assert.equal(body.first_frame_url, undefined)
   assert.match(body.prompt, /整片时间轴/)
   assert.match(body.prompt, /11-15 秒：收尾/)
   assert.doesNotMatch(body.prompt, /单个连续镜头，不换场/)
@@ -874,6 +877,7 @@ test('internal shot counts are independent of video count and refinement retains
       assert.equal(request.timelineCount, timelineCount)
       assert.equal(buildPlanRequest(data, 1, old).timelineCount, undefined)
       const full = newShot({ productionMode, timelineCount })
+      full.referenceIds = ['product']
       data.timelineCount = timelineCount === 1 ? 8 : 1
       assert.equal(buildPlanRequest(data, 1, full).timelineCount, timelineCount)
       full.images = [{ id: 'frame', url: 'https://assets.example/frame.png' }]
@@ -910,6 +914,7 @@ test('30-second whole video uses its own model and full export duration without 
     motion: '0-10 秒开场\n10-25 秒展示\n25-30 秒收尾',
   })
   whole.imageId = whole.approvedImageId = 'first'
+  whole.videoInputMode = 'first_frame'
   whole.images = [{ id: 'first', url: 'https://assets.example/first.png' }]
   data.shots.push(whole)
   data.productionMode = 'storyboard'

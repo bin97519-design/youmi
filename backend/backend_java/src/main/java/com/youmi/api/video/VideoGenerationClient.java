@@ -172,7 +172,6 @@ public class VideoGenerationClient {
       throw new ApiException(400, "prompt is required");
     }
     String prompt = request.prompt().trim();
-    if (prompt.length() > 2500) throw new ApiException(400, "prompt must not exceed 2500 characters");
 
     String model = blankToDefault(request.model(), "seedance-2.0-fast-0826-720p");
     ModelSpec spec = MODELS.get(model);
@@ -265,11 +264,7 @@ public class VideoGenerationClient {
   private String promptWithReferenceBinding(NormalizedRequest request) {
     if (request.allReferenceUrls().isEmpty()) return request.prompt();
     String instruction = "必须以参考图中的主体为视频核心，保持其外观、颜色、材质和关键结构一致，不得替换或忽略参考主体。\n";
-    int available = Math.max(0, 2500 - instruction.length());
-    String prompt = request.prompt().length() > available
-        ? request.prompt().substring(0, available)
-        : request.prompt();
-    return instruction + prompt;
+    return instruction + request.prompt();
   }
 
   DownloadedAsset downloadReference(String sourceUrl) throws Exception {

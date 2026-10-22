@@ -89,7 +89,8 @@ class CanvasAgentModelSelectionTest {
         .thenReturn(List.of(new ModelApiKeyDtos.ModelOption(
             "database-agent", "数据库 Agent", "database-router")));
     when(legacy.completeConfiguredModel(
-        eq(credential), anyString(), anyString(), anyList(), eq(0.2)))
+        eq(credential), anyString(), anyString(), anyList(), eq(0.2),
+        eq("canvas-agent"), eq("dropdown"), isNull()))
         .thenReturn(new AiChatDtos.CompletionResult("database-router", "database-agent", REPLY));
     when(legacy.completeConfiguredModel(
         eq(credential), anyString(), anyString(), anyList(), eq(0.3)))

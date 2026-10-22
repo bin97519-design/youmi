@@ -293,11 +293,11 @@ public class MinimaxVideoClient {
 
   private java.util.Optional<ResolvedModelApiKey> resolveMappedMinimaxCredential(
       VideoGenerationDtos.CreateTaskRequest request) {
-    if (modelApiKeys == null || !MODEL.equals(request.model())
-        || !"canvas-video".equals(featureCode(request))) return java.util.Optional.empty();
-    var credential = modelApiKeys.resolve(MODEL, ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "canvas-video");
-    if (credential.isEmpty() && modelApiKeys.isFeatureMappingConfigured("canvas-video"))
-      throw new ApiException(400, "MiniMax H3 未绑定到画布视频功能，请检查模型映射");
+    if (modelApiKeys == null || !MODEL.equals(request.model())) return java.util.Optional.empty();
+    String feature = featureCode(request);
+    var credential = modelApiKeys.resolve(MODEL, ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, feature);
+    if (credential.isEmpty() && modelApiKeys.isFeatureMappingConfigured(feature))
+      throw new ApiException(400, "MiniMax H3 未绑定到当前视频生成功能，请检查模型映射");
     return credential;
   }
 
@@ -333,8 +333,12 @@ public class MinimaxVideoClient {
 
   private boolean usesConfiguredHailuo(VideoGenerationDtos.CreateTaskRequest request) {
     return isConfiguredModel(request.model())
-        || usesMappedHailuoAlias(request.model(), featureCode(request));
+        || (usesMappedHailuoAlias(request.model(), featureCode(request))
+            && (!blank(request.firstFrameUrl()) || !blank(request.lastFrameUrl())
+                || request.normalizedImageUrls().isEmpty()));
   }
+
+  private boolean blank(String value) { return value == null || value.isBlank(); }
 
   private void recordConfiguredCall(ResolvedModelApiKey credential, boolean success, long started, Exception error,
       String featureCode) {

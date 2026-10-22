@@ -16,6 +16,7 @@ import {
   isProviderReportedCostVideoModel,
 } from '../../utils/chatVideoSettings.js'
 import { normalizeVideoNodeDraft, videoNodeReferenceError } from '../../utils/videoNodeDraft.js'
+import { isSeedanceAnciModel, seedanceAnciVersion } from '../../utils/seedanceAnci.js'
 
 const props = defineProps({
   draft: { type: Object, required: true },
@@ -29,7 +30,7 @@ const props = defineProps({
   uploadProgress: { type: Number, default: 0 },
   error: { type: String, default: '' },
 })
-const emit = defineEmits(['update:draft', 'generate', 'upload-reference'])
+const emit = defineEmits(['update:draft', 'generate', 'upload-reference', 'prompt-library', 'save-prompt'])
 const settingsOpen = ref(false)
 const root = ref(null)
 let settingsTrigger
@@ -89,13 +90,13 @@ const summary = computed(
 )
 const modelLabel = computed(
   () =>
-    props.modelOptions.find((model) => model.value === props.draft.config.model)?.label ||
-    props.draft.config.model,
+    (props.modelOptions.find((model) => model.value === props.draft.config.model)?.label ||
+    props.draft.config.model) + (isSeedanceAnciModel(props.draft.config.model) ? ` · ${seedanceAnciVersion(props.draft.config.version)}版` : ''),
 )
 const priceLabel = computed(() =>
   price.value == null
     ? '费用待配置'
-    : providerReportedCost.value
+    : isSeedanceAnciModel(props.draft.config.model) ? '按条计费，完成后按实际费用结算' : providerReportedCost.value
       ? '生成成功后按实际用量结算'
       : `预计 ${formatMiValue(price.value)} 米值`,
 )
@@ -389,7 +390,6 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', closeSettingsO
       ref="promptInput"
       :value="draft.prompt"
       :disabled="disabled"
-      maxlength="2500"
       rows="3"
       aria-label="视频节点脚本"
       placeholder="描述视频画面、动作和镜头运动"
@@ -485,6 +485,26 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', closeSettingsO
           <i class="ri-equalizer-line" aria-hidden="true"></i>
         </button>
       </div>
+      <button
+        class="video-node-icon"
+        type="button"
+        :disabled="disabled"
+        title="视频提示词库"
+        aria-label="打开视频提示词库"
+        @click="emit('prompt-library')"
+      >
+        <i class="ri-book-shelf-line" aria-hidden="true"></i>
+      </button>
+      <button
+        class="video-node-icon"
+        type="button"
+        :disabled="!draft.prompt.trim()"
+        title="收藏视频提示词"
+        aria-label="收藏视频提示词"
+        @click="emit('save-prompt')"
+      >
+        <i class="ri-bookmark-line" aria-hidden="true"></i>
+      </button>
       <div class="video-node-toolbar-actions">
         <output class="video-node-cost" :title="priceLabel" :aria-label="priceLabel">
           <i class="ri-copper-coin-line" aria-hidden="true"></i>

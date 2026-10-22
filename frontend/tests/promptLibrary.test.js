@@ -6,6 +6,7 @@ import {
   filterPromptLibraryItems,
   mergePromptIntoComposer,
   normalizePromptLibraryTags,
+  PROMPT_LIBRARY_CATEGORIES,
 } from '../src/utils/promptLibrary.js'
 
 test('derives a compact title and normalizes tags', () => {
@@ -32,4 +33,18 @@ test('filters personal, public and recent prompts independently', () => {
       .map((item) => item.id),
     [1],
   )
+})
+
+test('video prompts can be found in personal, public and recent libraries', () => {
+  assert.ok(PROMPT_LIBRARY_CATEGORIES.some((category) => category.value === 'VIDEO'))
+  const items = [
+    { id: 1, scope: 'PERSONAL', category: 'VIDEO', content: '分镜一\n连续动作', lastUsedAt: 10 },
+    { id: 2, scope: 'PUBLIC', category: 'VIDEO', title: '生活种草' },
+    { id: 3, scope: 'PERSONAL', category: 'SCENE', title: '生活种草' },
+  ]
+  assert.deepEqual(filterPromptLibraryItems(items, { category: 'VIDEO' }).map((item) => item.id), [1])
+  assert.deepEqual(filterPromptLibraryItems(items, { category: 'VIDEO', view: 'public', query: '种草' })
+    .map((item) => item.id), [2])
+  assert.deepEqual(filterPromptLibraryItems(items, { category: 'VIDEO', view: 'recent' })
+    .map((item) => item.id), [1])
 })

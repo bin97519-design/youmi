@@ -28,12 +28,32 @@ import org.springframework.beans.factory.annotation.Autowired;
 public class AgentChatClient {
   private static final Logger log = LoggerFactory.getLogger(AgentChatClient.class);
   private static final int MAX_HANDSHAKE_ATTEMPTS = 3;
+  private static final java.util.concurrent.ScheduledExecutorService STREAM_DEADLINES =
+      java.util.concurrent.Executors.newSingleThreadScheduledExecutor(task -> {
+        Thread thread = new Thread(task, "agent-stream-deadline");
+        thread.setDaemon(true);
+        return thread;
+      });
 
   private final ObjectMapper objectMapper;
   private final AgentChatProperties properties;
   private final HttpClient httpClient;
   private AiCallLogService aiCallLogService;
   private final ThreadLocal<Boolean> canvasAgentDropdown = ThreadLocal.withInitial(() -> false);
+  private final ThreadLocal<Consumer<AgentContextUsage>> usageListener = new ThreadLocal<>();
+  private final ThreadLocal<AgentContextUsage> currentUsage = new ThreadLocal<>();
+
+  public <T> T withContextUsage(Consumer<AgentContextUsage> listener,
+      java.util.concurrent.Callable<T> work) throws Exception {
+    var previousListener = usageListener.get();
+    var previousUsage = currentUsage.get();
+    usageListener.set(listener);
+    try { return work.call(); }
+    finally {
+      if (previousListener == null) usageListener.remove(); else usageListener.set(previousListener);
+      if (previousUsage == null) currentUsage.remove(); else currentUsage.set(previousUsage);
+    }
+  }
 
   public AgentChatClient(ObjectMapper objectMapper, AgentChatProperties properties) {
     this.objectMapper = objectMapper;
@@ -189,6 +209,14 @@ public class AgentChatClient {
   public AiChatDtos.CompletionResult completeConfiguredModel(
       ResolvedModelApiKey credential, String systemPrompt, String userPrompt, List<String> imageUrls,
       Double temperature, String source, String selectionMode, Integer maxTokens, Duration timeout) throws Exception {
+    return completeConfiguredMedia(credential, systemPrompt, userPrompt, imageUrls, temperature,
+        source, selectionMode, maxTokens, timeout, null);
+  }
+
+  public AiChatDtos.CompletionResult completeConfiguredMedia(
+      ResolvedModelApiKey credential, String systemPrompt, String userPrompt, List<String> imageUrls,
+      Double temperature, String source, String selectionMode, Integer maxTokens, Duration timeout,
+      Map<String, Object> videoPart) throws Exception {
     if (credential == null || credential.apiKey() == null || credential.apiKey().isBlank()) {
       throw new IllegalStateException("识图推理模型 API Key 未配置");
     }
@@ -211,17 +239,34 @@ public class AgentChatClient {
 
     Map<String, Object> body = new LinkedHashMap<>();
     body.putAll(credential.defaultData());
+    body.remove("youmi_context_budget_tokens");
     body.put("model", credential.model());
-    int tokenBudget = maxTokens == null ? Math.max(200, properties.getMaxTokens())
+    int tokenBudget = maxTokens == null ? Math.max("canvas-agent".equals(source) ? 16000 : 200, properties.getMaxTokens())
         : Math.max(200, Math.min(16000, maxTokens));
     if (maxTokens == null && "canvas-agent".equals(source)
         && userPrompt != null && userPrompt.length() > 8000) tokenBudget = Math.max(tokenBudget, 16000);
     body.put("max_tokens", tokenBudget);
     body.put("temperature", temperature == null ? properties.getTemperature() : temperature);
     body.put("messages", messages);
+    boolean gemini = GeminiChatProtocol.supports(credential);
+    if (videoPart != null && !gemini)
+      throw new IllegalArgumentException("参考视频完整分析需要支持原生视频输入的 Gemini 策划模型，请选择 GEM 3 Pro");
+    if (gemini) body = GeminiChatProtocol.body(credential, systemPrompt, userPrompt, imageUrls,
+        body.get("temperature"), body.get("max_tokens"), videoPart);
+    if ("product-video2-planning".equals(source)) {
+      body.remove("response_format");
+      if (gemini && body.get("generationConfig") instanceof Map<?, ?> generation) {
+        var config = new LinkedHashMap<String, Object>();
+        generation.forEach((name, value) -> config.put(String.valueOf(name), value));
+        config.remove("responseSchema"); config.remove("responseJsonSchema");
+        config.put("responseMimeType", videoPart == null ? "text/plain" : "application/json");
+        body.put("generationConfig", config);
+      }
+    }
+    publishEstimatedUsage(credential, systemPrompt, userPrompt, imageUrls);
     HttpRequest request = HttpRequest.newBuilder()
-        .uri(URI.create(credential.generationEndpoint()))
-        .timeout(timeout == null ? Duration.ofSeconds(Math.max(8, properties.getTimeoutSeconds())) : timeout)
+        .uri(URI.create(gemini ? GeminiChatProtocol.endpoint(credential, false) : credential.generationEndpoint()))
+        .timeout(timeout == null ? configuredTimeout(source) : timeout)
         .header("Authorization", "Bearer " + credential.apiKey())
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
@@ -238,9 +283,6 @@ public class AgentChatClient {
     if (response.statusCode() < 200 || response.statusCode() >= 300) {
       recordCall(source, "chat", credential.provider(), credential.model(), credential.id(), selectionMode,
           false, response.statusCode(), started, null);
-    } else {
-      recordCall(source, "chat", credential.provider(), credential.model(), credential.id(), selectionMode,
-          true, response.statusCode(), started, null);
     }
     if (response.statusCode() < 200 || response.statusCode() >= 300) {
       String detail = compact(response.body())
@@ -250,14 +292,37 @@ public class AgentChatClient {
           "识图推理模型请求失败（HTTP " + response.statusCode() + "）: " + detail);
     }
     JsonNode responseRoot = objectMapper.readTree(response.body());
+    publishReportedUsage(responseRoot);
     String contentText = readContent(responseRoot);
+    try {
+      AgentReplyIntegrity.requireCompleteOutput(responseRoot);
+      AgentReplyIntegrity.requireNotBlocked(contentText);
+    } catch (AgentReplyIntegrity.BlockedReply error) {
+      recordCall(source, "chat", credential.provider(), credential.model(), credential.id(), selectionMode,
+          false, response.statusCode(), started, error);
+      throw error;
+    } catch (AgentReplyIntegrity.IncompleteReply error) {
+      // Empty length-limited replies retain the existing one-time budget retry below.
+      if (!contentText.isBlank()) {
+        recordCall(source, "chat", credential.provider(), credential.model(), credential.id(), selectionMode,
+            false, response.statusCode(), started, error);
+        throw error;
+      }
+    }
     if (contentText.isBlank()) {
       String finishReason = responseRoot.path("choices").path(0).path("finish_reason").asText("unknown");
+      if (gemini) {
+        String nativeReason = responseRoot.path("candidates").path(0).path("finishReason")
+            .asText(responseRoot.path("promptFeedback").path("blockReason").asText("unknown"));
+        finishReason = "MAX_TOKENS".equals(nativeReason) ? "length"
+            : List.of("SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "RECITATION").contains(nativeReason)
+                ? "content_filter" : nativeReason;
+      }
       log.warn("Configured model returned no text: model={}, finishReason={}, completionTokens={}, budget={}",
           credential.model(), finishReason, responseRoot.path("usage").path("completion_tokens").asInt(-1), tokenBudget);
       if ("length".equals(finishReason) && tokenBudget < 16000) {
-        return completeConfiguredModel(credential, systemPrompt, userPrompt, imageUrls, temperature,
-            source, selectionMode, 16000, timeout);
+        return completeConfiguredMedia(credential, systemPrompt, userPrompt, imageUrls, temperature,
+            source, selectionMode, 16000, timeout, videoPart);
       }
       if ("length".equals(finishReason))
         throw new IllegalStateException("模型输出额度已耗尽但未返回正文，请分段策划或减少本轮参考图后重试");
@@ -265,6 +330,8 @@ public class AgentChatClient {
         throw new IllegalStateException("模型通道过滤了本次内容，请调整输入后重试");
       throw new IllegalStateException("模型通道未返回回复正文（结束原因：" + finishReason + "），请稍后重试");
     }
+    recordCall(source, "chat", credential.provider(), credential.model(), credential.id(), selectionMode,
+        true, response.statusCode(), started, null);
     return new AiChatDtos.CompletionResult(credential.provider(), credential.model(), contentText);
   }
 
@@ -305,15 +372,24 @@ public class AgentChatClient {
 
     Map<String, Object> body = new LinkedHashMap<>();
     body.putAll(credential.defaultData());
+    body.remove("youmi_context_budget_tokens");
     body.put("model", credential.model());
-    body.put("max_tokens", maxTokens == null ? Math.max(200, properties.getMaxTokens())
+    body.put("max_tokens", maxTokens == null ? Math.max("canvas-agent".equals(source) ? 16000 : 200, properties.getMaxTokens())
         : Math.max(200, Math.min(16000, maxTokens)));
     body.put("temperature", temperature == null ? properties.getTemperature() : temperature);
     body.put("messages", messages);
     body.put("stream", true);
+    boolean gemini = GeminiChatProtocol.supports(credential);
+    if (gemini) {
+      body = GeminiChatProtocol.body(credential, systemPrompt, userPrompt, imageUrls,
+          body.get("temperature"), body.get("max_tokens"));
+      body.put("stream", true);
+    }
+    else if (usageListener.get() != null) body.putIfAbsent("stream_options", Map.of("include_usage", true));
+    publishEstimatedUsage(credential, systemPrompt, userPrompt, imageUrls);
     HttpRequest request = HttpRequest.newBuilder()
-        .uri(URI.create(credential.generationEndpoint()))
-        .timeout(Duration.ofSeconds(Math.max(8, properties.getTimeoutSeconds())))
+        .uri(URI.create(gemini ? GeminiChatProtocol.endpoint(credential, true) : credential.generationEndpoint()))
+        .timeout(configuredTimeout(source))
         .header("Authorization", "Bearer " + credential.apiKey())
         .header("Content-Type", "application/json")
         .header("Accept", "text/event-stream")
@@ -324,6 +400,8 @@ public class AgentChatClient {
     HttpResponse<InputStream> response;
     try {
       response = sendStreamWithHandshakeRetry(request);
+      log.info("Agent stream upstream headers received: model={}, elapsedMs={}, status={}",
+          credential.model(), (System.nanoTime() - started) / 1_000_000L, response.statusCode());
     } catch (Exception error) {
       recordCall(source, "chat", credential.provider(), credential.model(), credential.id(), selectionMode,
           false, null, started, error);
@@ -345,6 +423,13 @@ public class AgentChatClient {
 
     StringBuilder completed = new StringBuilder();
     Consumer<String> deltaConsumer = onDelta == null ? ignored -> { } : onDelta;
+    var timedOut = new java.util.concurrent.atomic.AtomicBoolean(false);
+    long remainingNanos = Math.max(1, request.timeout().orElse(configuredTimeout(source)).toNanos()
+        - (System.nanoTime() - started));
+    var deadline = STREAM_DEADLINES.schedule(() -> {
+      timedOut.set(true);
+      try { response.body().close(); } catch (IOException ignored) { }
+    }, remainingNanos, java.util.concurrent.TimeUnit.NANOSECONDS);
     try (InputStream input = response.body();
         BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
       String line;
@@ -362,17 +447,24 @@ public class AgentChatClient {
       }
       if (!regularResponse.isEmpty()) {
         JsonNode root = objectMapper.readTree(regularResponse.toString());
+        publishReportedUsage(root);
+        AgentReplyIntegrity.requireCompleteOutput(root);
         String value = readContent(root);
         if (!value.isBlank()) {
           completed.append(value);
           deltaConsumer.accept(value);
         }
       }
+      AgentReplyIntegrity.requireNotBlocked(completed.toString());
     } catch (Exception error) {
+      if (timedOut.get()) error = new java.net.http.HttpTimeoutException("模型回复等待超时");
       recordCall(source, "chat", credential.provider(), credential.model(), credential.id(), selectionMode,
           false, response.statusCode(), started, error);
       throw error;
+    } finally {
+      deadline.cancel(false);
     }
+    if (timedOut.get()) throw new java.net.http.HttpTimeoutException("模型回复等待超时");
     recordCall(source, "chat", credential.provider(), credential.model(), credential.id(), selectionMode,
         true, response.statusCode(), started, null);
     if (completed.isEmpty()) throw new IllegalStateException("识图推理模型返回内容为空");
@@ -383,6 +475,13 @@ public class AgentChatClient {
   private void emitStreamingPayload(
       String payload, StringBuilder completed, Consumer<String> onDelta) throws Exception {
     JsonNode root = objectMapper.readTree(payload);
+    publishReportedUsage(root);
+    AgentReplyIntegrity.requireCompleteOutput(root);
+    if (root.has("candidates")) {
+      String value = GeminiChatProtocol.text(root);
+      if (!value.isEmpty()) { completed.append(value); onDelta.accept(value); }
+      return;
+    }
     JsonNode choices = root.path("choices");
     if (!choices.isArray() || choices.isEmpty()) return;
     JsonNode choice = choices.get(0);
@@ -435,19 +534,30 @@ public class AgentChatClient {
           false, null, started, error);
       throw error;
     }
-    recordCall(canvasAgentDropdown.get() ? "canvas-agent" : "agent-chat", "chat", "teamorouter", model, null,
-        canvasAgentDropdown.get() ? "dropdown" : "system_default",
-        response.statusCode() >= 200 && response.statusCode() < 300, response.statusCode(), started, null);
     log.info("Agent model response status: {}", response.statusCode());
     if (response.statusCode() < 200 || response.statusCode() >= 300) {
+      recordCall(canvasAgentDropdown.get() ? "canvas-agent" : "agent-chat", "chat", "teamorouter", model, null,
+          canvasAgentDropdown.get() ? "dropdown" : "system_default", false, response.statusCode(), started, null);
       throw new IllegalStateException(
           "Agent model request failed: " + response.statusCode() + " " + compact(response.body()));
     }
 
-    String content = readContent(objectMapper.readTree(response.body()));
+    String content;
+    try {
+      JsonNode responseRoot = objectMapper.readTree(response.body());
+      AgentReplyIntegrity.requireCompleteOutput(responseRoot);
+      content = readContent(responseRoot);
+      AgentReplyIntegrity.requireNotBlocked(content);
+    } catch (Exception error) {
+      recordCall(canvasAgentDropdown.get() ? "canvas-agent" : "agent-chat", "chat", "teamorouter", model, null,
+          canvasAgentDropdown.get() ? "dropdown" : "system_default", false, response.statusCode(), started, error);
+      throw error;
+    }
     if (content.isBlank()) {
       throw new IllegalStateException("Agent model returned empty content");
     }
+    recordCall(canvasAgentDropdown.get() ? "canvas-agent" : "agent-chat", "chat", "teamorouter", model, null,
+        canvasAgentDropdown.get() ? "dropdown" : "system_default", true, response.statusCode(), started, null);
     return new AiChatDtos.CompletionResult("teamorouter", model, content);
   }
 
@@ -514,6 +624,7 @@ public class AgentChatClient {
   }
 
   private String readContent(JsonNode root) {
+    if (root.has("candidates")) return GeminiChatProtocol.text(root);
     JsonNode choices = root.path("choices");
     if (!choices.isArray() || choices.isEmpty()) return "";
     JsonNode content = choices.get(0).path("message").path("content");
@@ -529,6 +640,45 @@ public class AgentChatClient {
       }
     }
     return text.toString();
+  }
+
+  private Duration configuredTimeout(String source) {
+    return Duration.ofSeconds(Math.max("canvas-agent".equals(source) ? 1800 : 8,
+        properties.getTimeoutSeconds()));
+  }
+
+  private void publishEstimatedUsage(ResolvedModelApiKey key, String system, String prompt, List<String> images) {
+    if (usageListener.get() == null) return;
+    long budget = contextBudgetTokens(key);
+    long imageEstimate = images == null ? 0 : images.stream().filter(value -> value != null && !value.isBlank()).distinct().limit(8).count() * 1024;
+    publishUsage(new AgentContextUsage(key.model(), AgentContextUsage.estimate(system)
+        + AgentContextUsage.estimate(prompt) + imageEstimate, 0, budget, true));
+  }
+
+  public long contextBudgetTokens(ResolvedModelApiKey key) {
+    long budget = properties.getContextBudgetTokens();
+    Object override = key == null ? null : key.defaultData().get("youmi_context_budget_tokens");
+    if (override != null) {
+      try { budget = Long.parseLong(override.toString()); } catch (NumberFormatException ignored) { }
+    }
+    return budget < 1024 ? 100000 : budget;
+  }
+
+  private void publishReportedUsage(JsonNode root) {
+    var previous = currentUsage.get();
+    if (usageListener.get() == null || previous == null) return;
+    JsonNode usage = root.has("usageMetadata") ? root.path("usageMetadata") : root.path("usage");
+    if (!usage.isObject()) return;
+    long input = usage.path("promptTokenCount").asLong(usage.path("prompt_tokens").asLong(-1));
+    if (input < 0) return;
+    long output = usage.path("candidatesTokenCount").asLong(usage.path("completion_tokens").asLong(-1));
+    if (usage.has("thoughtsTokenCount")) output = Math.max(0, output) + usage.path("thoughtsTokenCount").asLong(0);
+    publishUsage(new AgentContextUsage(previous.model(), input, Math.max(0, output), previous.budgetTokens(), output < 0));
+  }
+
+  private void publishUsage(AgentContextUsage usage) {
+    currentUsage.set(usage);
+    if (usageListener.get() != null) usageListener.get().accept(usage);
   }
 
   private String readTextContent(JsonNode content) {

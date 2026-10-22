@@ -204,6 +204,17 @@ CREATE TABLE IF NOT EXISTS ym_agent_conversation (
   INDEX idx_ym_agent_conversation_canvas (user_id, canvas_id, updated_at DESC)
 );
 
+CREATE TABLE IF NOT EXISTS ym_agent_context_memory (
+  user_id BIGINT NOT NULL,
+  canvas_id VARCHAR(64) NOT NULL,
+  conversation_id VARCHAR(128) NOT NULL,
+  source_count INT NOT NULL,
+  source_hash CHAR(64) NOT NULL,
+  summary_text LONGTEXT NOT NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, canvas_id, conversation_id)
+);
+
 CREATE TABLE IF NOT EXISTS ym_agent_usage (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   user_id BIGINT NOT NULL,
@@ -271,6 +282,25 @@ VALUES
   (NULL, 'PUBLIC', 'official-image-edit', '参考图局部修改',
    '只修改我明确指定的内容，其余画面全部保持不变，包括产品、人物、构图、镜头、比例、材质、颜色、光线和背景。修改区域要与原图自然融合，边缘与透视准确。不要额外添加元素，不要改变未指定区域，不要出现文字、水印或Logo。',
    'EDIT', '["改图","局部修改"]', 'PUBLIC')
+ON DUPLICATE KEY UPDATE
+  title = VALUES(title),
+  content = VALUES(content),
+  category = VALUES(category),
+  tags_json = VALUES(tags_json),
+  source = VALUES(source);
+
+INSERT INTO ym_prompt_library
+  (user_id, scope, template_key, title, content, category, tags_json, source)
+VALUES
+  (NULL, 'PUBLIC', 'official-video-storyboard', '商品视频分镜策划',
+   '请结合本次参考图、商品信息和已确认的卖点，策划一段真实自然的商品短视频。优先沿用我已提供的脚本规格、风格和表达要求；总时长与当前视频参数保持一致。围绕具体生活事件设计起因、人物操作、商品响应和结果，避免只罗列空镜与形容词。根据动作复杂度、节奏和口播内容分配镜头时长，不要机械均分；每个镜头标出连续的起止秒数，所有镜头合计等于总时长。逐镜写清景别、机位、环境光、人物动作的开始与变化、商品或布料的动态过程、运镜、收尾和转场，以及对应参考图中需要保持的外观细节。需要结构剖面或虚拟演示时可结合创意表现。口播注明对应镜头和时间段，字数符合实际语速，给呼吸、动作声和结尾留白；环境音与音乐说明具体。使用自然连贯的分镜段落，除非我另有要求，不生成画面字幕。',
+   'VIDEO', '["分镜脚本","策划","口播"]', 'PUBLIC'),
+  (NULL, 'PUBLIC', 'official-video-lifestyle', '生活场景种草视频',
+   '以参考图中的商品为主体，生成一段真实居家生活种草短视频。保持商品外观、颜色、材质、比例与参考图一致。人物在与商品用途匹配的日常事件中自然入画，先出现一个具体生活需求，再通过伸手、拿取、拉动、触摸或使用商品完成连续动作，最后停留在使用后的舒适状态。动作有起势、受力、变化与停顿，人物、商品、布料和光影的运动相互连贯，手部接触和物理反馈自然。镜头从能交代人物与商品关系的中景过渡到关键操作近景，再用有生活气息的全景收尾；根据实际动作安排节奏，完整适配本次选择的总时长。保留对应动作的真实环境声，轻柔音乐低于人声；如提供了口播，按实际时长自然说完并留出换气和结尾纯画面。画面不出现字幕、水印或多余文字。',
+   'VIDEO', '["生活种草","人物互动","参考图"]', 'PUBLIC'),
+  (NULL, 'PUBLIC', 'official-video-product-detail', '商品动态特写视频',
+   '根据参考图生成真实商业摄影质感的商品展示视频。产品造型、色彩、结构和细节保持一致。开场通过空间关系明确主体，摄影机平稳靠近，再沿商品表面与边缘缓慢移动，光线随视角变化呈现真实纹理和体积。安排与商品用途相符的轻微动态，例如手部触摸、拿取或使用后的自然回弹与摆动，让材质表现来自具体动作；镜头跟随动作推进，在关键细节处短暂停留，最后平稳拉回完整商品并保留收尾画面。每段动作与转场适配当前选择的视频时长，避免镜头快速堆砌和无意义旋转。参考图中的细节在连续画面中保持稳定，运动流畅，接触阴影和光线方向一致。保留真实操作声与适度音乐，不生成字幕、水印或无关标识。',
+   'VIDEO', '["商品展示","材质特写","动态过程"]', 'PUBLIC')
 ON DUPLICATE KEY UPDATE
   title = VALUES(title),
   content = VALUES(content),

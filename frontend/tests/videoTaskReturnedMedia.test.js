@@ -4,7 +4,9 @@ import fs from 'node:fs'
 import vm from 'node:vm'
 import { createRequire } from 'node:module'
 import { parse as parseVue } from '@vue/compiler-sfc'
-import { returnedVideoTaskUrl, videoTaskStatusText, taskState } from '../src/utils/productVideo.js'
+import { returnedVideoTaskUrl, videoTaskStatusText, taskState, videoGenerationPending,
+  videoTaskPollDue, videoGenerationStatus, newProductVideoTask, newShot, productVideoTaskState } from '../src/utils/productVideo.js'
+import { batchVideoState } from '../src/utils/productVideoBatch.js'
 
 const require = createRequire(import.meta.url)
 const { parse } = createRequire(require.resolve('@vue/compiler-sfc'))('@babel/parser')
@@ -25,6 +27,51 @@ function functionSource(source, nodes, name) {
 const url = 'https://assets.example/completed.mp4'
 const pendingCost = { status: 'processing', progress: 100, stage: '生成已完成，等待灵科 AI 返回实际费用', videoUrls: [url] }
 
+test('delivered media unlocks generation and completes a main video 2 task while its bill is still pending', () => {
+  const entry = { id: 'delivered', taskId: 'original-task', status: 'processing', progress: 100, stage: pendingCost.stage, url, batchId: 'batch' }
+  assert.equal(videoGenerationPending(entry), false)
+  assert.equal(videoGenerationStatus(entry), '视频已完成 · 费用待结算')
+  assert.equal(videoGenerationStatus({ ...entry, status: 'completed' }), '视频已完成')
+  assert.match(videoGenerationStatus({ ...entry, pollError: '查询中断，自动重试' }), /视频已完成.*费用待结算.*查询中断/)
+  assert.equal(videoGenerationPending({ ...entry, url: '' }), true)
+  for (const status of ['submitting', 'unknown']) assert.equal(videoGenerationPending({ status, url: '' }), true)
+  const task = newProductVideoTask(), shot = newShot({ productionMode: 'single_video' })
+  task.planner = 'main_video_2'
+  task.shots = [shot]; shot.videos = [entry]; shot.videoId = entry.id
+  assert.equal(productVideoTaskState(task), 'completed')
+  assert.equal(batchVideoState(shot, 'batch'), 'completed')
+  shot.videos.push({ id: 'new-version', status: 'processing', url: '', batchId: 'new-batch' })
+  assert.equal(shot.videos.some(videoGenerationPending), true)
+  assert.equal(productVideoTaskState(task), 'generating')
+  assert.equal(batchVideoState(shot, 'new-batch'), 'processing')
+})
+
+test('billing checks continue on the original task at a slower interval and stop after settlement', () => {
+  const entry = { taskId: 'original-task', status: 'processing', url, lastSyncedAt: 100000 }
+  assert.equal(videoTaskPollDue(entry, 105000), false)
+  assert.equal(videoTaskPollDue(entry, 129999), false)
+  assert.equal(videoTaskPollDue(entry, 130000), true)
+  assert.equal(videoTaskPollDue({ ...entry, url: '' }, 105000), true)
+  assert.equal(videoTaskPollDue({ ...entry, lastSyncedAt: undefined }, 105000), true)
+  assert.equal(videoTaskPollDue({ ...entry, status: 'completed' }, 150000), false)
+  assert.equal(videoTaskPollDue({ ...entry, status: 'failed' }, 150000), false)
+})
+
+test('the actual generation guard permits a new version after media arrives but still blocks unresolved submissions', async () => {
+  for (const returned of [true, false]) {
+    const shot = { id: 'shot', videos: [{ status: 'processing', url: returned ? url : '' }] }
+    let validationEntered = 0
+    const context = vm.createContext({
+      getTask: () => ({ shots: [shot] }), uid: () => 'new-video-version', videoGenerationPending,
+      availableImageModelOption: () => { validationEntered++; throw new Error('reached generation validation') },
+      isCurrent: () => false,
+    })
+    vm.runInContext(functionSource(composable, composableAst, 'generate'), context)
+    await context.generate('shot', 'video', {})
+    assert.equal(validationEntered, returned ? 1 : 0)
+  }
+})
+
 test('returned media is available during billing confirmation, but failures and progress alone are not results', () => {
   assert.equal(returnedVideoTaskUrl(pendingCost), url)
   assert.equal(videoTaskStatusText(pendingCost, 100), pendingCost.stage)
@@ -36,7 +83,7 @@ test('returned media is available during billing confirmation, but failures and 
 })
 
 function canvasPoll(responses, beforeFetch = () => {}) {
-  const layer = { id: 'node', generating: true, status: 'processing', url: '' }
+  const layer = { id: 'node', taskId: 'anmiao-video:key:9:task', generating: true, status: 'processing', url: '' }
   const chat = {}, delays = [], flushes = [], revealed = []
   let fetched = 0
   const context = vm.createContext({

@@ -130,7 +130,7 @@ test('drafts remove transient references and normalize persistent fields', () =>
     references: [reference, reference, { url: 'blob:temporary' }, null],
     config: { ratio: 'invalid', generateAudio: false },
   })
-  assert.equal(draft.prompt.length, 2500)
+  assert.equal(draft.prompt.length, 2600)
   assert.equal(draft.config.ratio, '3:4')
   assert.equal(draft.config.generateAudio, false)
   assert.equal(draft.references.length, 1)

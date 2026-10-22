@@ -1,10 +1,15 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import ThemedSelect from '../common/ThemedSelect.vue'
+import { isSeedanceAnciModel, SEEDANCE_ANCI_RATIOS, SEEDANCE_ANCI_VERSIONS, seedanceAnciNotice } from '../../utils/seedanceAnci.js'
 import ProductVideoPromptField from './ProductVideoPromptField.vue'
 import ProductVideoTaskList from './ProductVideoTaskList.vue'
+import ProductVideoProductStudy from './ProductVideoProductStudy.vue'
+import { ensureProductStudy, productStudyIssue, confirmProductStudy, selectedSellingPoints } from '../../utils/productVideoProductAnalysis.js'
 import ProductVideoContinuityPanel from './ProductVideoContinuityPanel.vue'
 import ProductVideoWholeTimeline from './ProductVideoWholeTimeline.vue'
+import { recreationSettings, usesReferenceVideoGeneration, referenceGenerationIssue,
+  recreationMaterialIssue } from '../../utils/productVideoRecreation.js'
 import { wholeTimeline, wholeSeconds, wholeTimelineIssue, updateWholeTimeline, moveWholeBoundary, selectProductionMode } from '../../utils/productVideoWholeTimeline.js'
 import VideoEnhanceDialog from './VideoEnhanceDialog.vue'
 import { useProductVideo } from '../../composables/useProductVideo'
@@ -46,6 +51,7 @@ import {
 } from '../../utils/productVideoContinuity'
 import {
   productVideoShotLimit,
+  videoGenerationPending,
   ANMIAO_VIDEO_RESOLUTIONS,
   ANMIAO25_VIDEO_MODEL,
   isAnmiao25VideoModel,
@@ -62,6 +68,9 @@ import {
   isWholeVideo,
   generationDuration,
   canGenerateVideo,
+  usesWholeReferenceImages,
+  wholeVideoReferenceInputs,
+  wholeReferenceGenerationIssue,
   buildPlanRequest,
   buildCompositionRequest,
   compositionFingerprint,
@@ -148,6 +157,9 @@ const {
   error,
   notice,
   planning,
+  analyzingProduct,
+  analyzeProduct,
+  retryProductAnalysis,
   composing,
   capabilities,
   capabilitiesLoading,
@@ -197,6 +209,7 @@ const tab = ref('source'),
   activeId = ref(''),
   shotCount = ref(4),
   uploader = ref(null),
+  analysisUploader = ref(null),
   continuityUploader = ref(null),
   referenceVideoInput = ref(null),
   videoInput = ref(null),
@@ -214,6 +227,18 @@ const searching = ref(false),
   publishing = ref(false)
 const continuityUploading = ref('')
 const continuityCanvasTarget = ref(null)
+const materialPickerTarget = ref(null)
+const analysisUploading = ref(false)
+const study = computed(() => workflow.value.productStudy)
+const studyProblem = computed(() => productStudyIssue(workflow.value))
+const stageTabs = computed(() => workflow.value.planningSource === 'reference'
+  ? { source: '商品素材', shots: productionTabLabel.value, output: '成片导出' }
+  : { analysis: '① 商品卖点分析', source: '② 视频参考与要求', shots: '③ 脚本与制作', output: '④ 成片导出' })
+const pickerReferences = computed(() => {
+  const target = materialPickerTarget.value
+  const task = target ? getTask(target.context) : workflow.value
+  return target?.type === 'analysis' ? task?.productStudy?.materials || [] : task?.references || []
+})
 let continuityUploadTarget = null
 const confirmation = ref(null)
 const promptEdit = ref(null),
@@ -226,6 +251,7 @@ const boundaryVideo = ref(null)
 const manualPreviousState = ref('')
 const manualMotion = ref('')
 const wholeBeatIndex = ref(0)
+const wholeDetailsOpen = ref(false)
 let connectionController = null
 let refineSequence = 0
 const promptFields = computed(() => ({
@@ -238,7 +264,10 @@ let restoreFocus,
 const active = computed(
   () => workflow.value.shots.find((shot) => shot.id === activeId.value) || workflow.value.shots[0],
 )
-watch(activeId, () => { wholeBeatIndex.value = 0 })
+watch([activeTaskId, () => active.value?.id], () => {
+  wholeBeatIndex.value = 0
+  wholeDetailsOpen.value = false
+})
 const frame = computed(() => active.value && selectedImage(active.value))
 const nextShot = computed(() => {
   const index = workflow.value.shots.findIndex((shot) => shot.id === active.value?.id)
@@ -284,6 +313,15 @@ const needsAnchor = computed(
 const video = computed(() => active.value && selectedVideo(active.value))
 const videoNotices = computed(() => videoGenerationNotices(active.value?.videos))
 const referenceMode = computed(() => workflow.value.planningSource === 'reference')
+const recreation = computed(() => recreationSettings(workflow.value))
+const referenceVideoGeneration = computed(() => usesReferenceVideoGeneration(workflow.value))
+const referenceGenerationModel = computed(() => workflow.value.productionMode === 'single_video_30'
+  ? effectiveWholeVideo30Model.value : effectiveWholeVideo15Model.value)
+const referenceGenerationProblem = computed(() =>
+  referenceGenerationIssue(workflow.value, referenceGenerationModel.value))
+const recreationProblem = computed(() => recreationMaterialIssue(workflow.value))
+const activeReferenceProblem = computed(() => active.value
+  ? referenceGenerationIssue(workflow.value, videoModelForShot(active.value), active.value) : '')
 const longReference = computed(
   () => referenceMode.value && Number(workflow.value.referenceVideo?.duration) > 30.5,
 )
@@ -293,7 +331,15 @@ const highlightReference = computed(
 const shotLimit = computed(() => productVideoShotLimit(workflow.value))
 const singleVideoPlan = computed(() => isWholeVideo(workflow.value.productionMode))
 const continuityFields = computed(() =>
-  CONTINUITY_IMAGE_FIELDS.filter(
+  referenceMode.value ? CONTINUITY_IMAGE_FIELDS.filter(({ key }) =>
+    key === 'person' ? recreation.value.personMode !== 'source'
+      : key === 'scene' && recreation.value.sceneMode === 'custom')
+    .map(field => ({ ...field, label: field.key === 'person'
+      ? recreation.value.personMode === 'reference' ? '指定人物' : '新人物要求'
+      : '新场景', placeholder: field.key === 'person'
+        ? '可填写年龄范围、发型、服装和气质；无人镜头保持无人'
+        : '例如换成明亮的日式主卧，保留原片人物与商品的相对位置' }))
+    : CONTINUITY_IMAGE_FIELDS.filter(
     ({ key }) => fixedContinuity.value || (singleVideoPlan.value && key === 'product'),
   ).map((field) =>
     singleVideoPlan.value && field.key === 'product'
@@ -302,6 +348,16 @@ const continuityFields = computed(() =>
   ),
 )
 const activeWholeVideo = computed(() => active.value && isWholeVideo(active.value.productionMode))
+const activeDirectReferences = computed(() => usesWholeReferenceImages(workflow.value, active.value))
+const activeReferenceInputs = computed(() => {
+  if (!activeDirectReferences.value) return { urls: [] }
+  try { return wholeVideoReferenceInputs(workflow.value, active.value) }
+  catch { return { urls: [] } }
+})
+const activeDirectReferenceIssue = computed(() => active.value
+  ? wholeReferenceGenerationIssue(workflow.value, active.value, videoModelForShot(active.value)) : '')
+const activeFixedReferenceImages = computed(() => active.value
+  ? continuityReferenceImages(workflow.value, active.value).filter(item => !workflow.value.references.some(reference => reference.url === item.url)) : [])
 const adjacentShots = computed(() =>
   active.value ? adjacentProductVideoShots(workflow.value, active.value) : {},
 )
@@ -533,6 +589,7 @@ function previewWholeSegment(shot, result) {
 async function editWholeSegment(shot, segmentId) {
   openShot(shot, true)
   await nextTick()
+  wholeDetailsOpen.value = true
   const index = Number(String(segmentId).replace('segment-', ''))
   if (Number.isInteger(index) && index >= 0 && index < wholeTimeline(shot).length) wholeBeatIndex.value = index
 }
@@ -722,7 +779,7 @@ const canvasPickerTitle = computed(() => {
   return field ? `${field.label} · 画布图片` : '画布图片'
 })
 const modelOptions = imageModelOptions
-const ratioOptions = VIDEO_RATIOS.map((value) => ({ value, label: value }))
+const ratioOptions = computed(() => (isSeedanceAnciModel(effectiveVideoModel.value) ? SEEDANCE_ANCI_RATIOS : VIDEO_RATIOS).map((value) => ({ value, label: value })))
 const productImages = computed(() =>
   sourceProduct.value
     ? [
@@ -765,6 +822,7 @@ watch(
       return
     }
     restoreFocus = document.activeElement
+    wholeDetailsOpen.value = false
     showTasks()
     void loadCapabilities()
     await nextTick()
@@ -796,12 +854,15 @@ function showTasks() {
 }
 function openTask(id) {
   activeTaskId.value = id
+  wholeDetailsOpen.value = false
   activeId.value = ''
+  if (workflow.value.planningSource !== 'reference' && !workflow.value.productStudy && !workflow.value.shots.length)
+    change(data => { ensureProductStudy(data) })
   tab.value = workflow.value.composition?.url
     ? 'output'
     : workflow.value.shots.length
       ? 'shots'
-      : 'source'
+      : workflow.value.planningSource === 'reference' ? 'source' : 'analysis'
   showingTasks.value = false
   error.value = ''
   notice.value = ''
@@ -818,6 +879,19 @@ function set(key, value) {
   change((data) => {
     data[key] = value
   })
+  if (key === 'planningSource') {
+    if (value === 'reference') tab.value = 'source'
+    else { change(data => { ensureProductStudy(data) }); tab.value = 'analysis' }
+  }
+}
+function openStage(key) {
+  if (key === 'analysis' && !study.value) change(data => { ensureProductStudy(data) })
+  tab.value = key
+}
+function editStudy(fn) { change(data => fn(ensureProductStudy(data))) }
+function confirmStudy() {
+  try { change(data => confirmProductStudy(data)); tab.value = 'source'; notice.value = '卖点已确认，请添加视频画面参考图并填写视频要求' }
+  catch (e) { error.value = e.message }
 }
 function speedLabel(shot) {
   const speed = Number(selectedVideo(shot)?.duration || 15) / Number(shot.duration)
@@ -1088,9 +1162,35 @@ function addReference(url, name, layerId = '', context = captureTask()) {
     })
   }, context)
 }
-function openCanvasPicker(role = '') {
+function addAnalysisMaterial(url, name, layerId = '', context = captureTask()) {
+  const task = getTask(context)
+  if (!task || task.productStudy?.materials.some(item => item.url === url)) return
+  if ((task.productStudy?.materials.length || 0) >= 12) throw new Error('商品分析资料最多 12 张')
+  change(data => { ensureProductStudy(data).materials.push({ id: uid(), url, name, layerId }) }, context)
+}
+async function uploadAnalysisImages(event) {
+  const files = [...(event.target.files || [])]
+  event.target.value = ''
+  if (!files.length) return
+  const context = captureTask()
+  analysisUploading.value = true
+  error.value = ''
+  try {
+    for (const file of files) {
+      if (!file.type.startsWith('image/')) throw new Error('请选择图片文件')
+      const task = getTask(context)
+      if (!task) break
+      if ((task.productStudy?.materials.length || 0) >= 12) throw new Error('商品分析资料最多 12 张')
+      addAnalysisMaterial(await uploadFileDirect(file, { dir: 'product-video/product-study' }), file.name, '', context)
+    }
+  } catch (e) { if (isCurrent(context)) error.value = e.message }
+  finally { analysisUploading.value = false }
+}
+function openCanvasPicker(role = '', destination = 'video') {
+  materialPickerTarget.value = { type: destination, context: captureTask() }
   continuityCanvasTarget.value = role
-    ? { role, context: captureTask(), productionMode: workflow.value.productionMode }
+    ? { role, context: captureTask(), productionMode: workflow.value.productionMode,
+        planningSource: workflow.value.planningSource }
     : null
   error.value = ''
   picker.value = 'canvas'
@@ -1122,7 +1222,9 @@ function chooseCanvas(layer) {
       else apply()
       return
     }
-    addReference(layer.url, layer.name, layer.id)
+    const destination = materialPickerTarget.value
+    if (destination?.type === 'analysis') addAnalysisMaterial(layer.url, layer.name, layer.id, destination.context)
+    else addReference(layer.url, layer.name, layer.id, destination?.context || captureTask())
   } catch (e) {
     error.value = e.message
   }
@@ -1252,6 +1354,7 @@ function chooseContinuityImage(role) {
     role,
     context: captureTask(),
     productionMode: workflow.value.productionMode,
+    planningSource: workflow.value.planningSource,
   }
   continuityUploader.value?.click()
 }
@@ -1265,7 +1368,7 @@ async function uploadContinuityImage(event) {
     error.value = '请选择 JPG、PNG 或 WebP 图片'
     return
   }
-  const { role, context, productionMode } = target
+  const { role, context, productionMode, planningSource } = target
   const upload = async () => {
     if (!getTask(context)) return
     uploading.value = true
@@ -1279,7 +1382,7 @@ async function uploadContinuityImage(event) {
             data,
             role,
             { id: uid(), url, name: file.name },
-            { productionMode },
+            { productionMode, planningSource },
           ),
         context,
       )
@@ -1401,7 +1504,8 @@ function deleteImage(imageId) {
   )
 }
 function busy(shot, field) {
-  return shot[field].some((item) => ['submitting', 'processing', 'unknown'].includes(item.status))
+  return field === 'videos' ? shot.videos.some(videoGenerationPending)
+    : shot[field].some((item) => ['submitting', 'processing', 'unknown'].includes(item.status))
 }
 function retryUnknownVideo(item) {
   const context = captureTask(), shotId = active.value.id
@@ -1465,6 +1569,7 @@ function videoResolutionForShot(shot) {
   )
 }
 function resolutionOptionsForShot(shot) {
+  if (isSeedanceAnciModel(videoModelForShot(shot))) return [{ value: '720p', label: '720p' }]
   if ([MINIMAX_VIDEO_MODEL, HAILUO_H3_VIDEO_MODEL].includes(videoModelForShot(shot)))
     return MINIMAX_VIDEO_RESOLUTIONS
   if (isAnmiao20FastVideoModel(videoModelForShot(shot))) return ANMIAO20_FAST_VIDEO_RESOLUTIONS
@@ -1473,7 +1578,7 @@ function resolutionOptionsForShot(shot) {
     : ANMIAO_VIDEO_RESOLUTIONS
 }
 function invalidAnmiaoDuration(shot) {
-  if (!perSecondVideo(shot)) return false
+  if (!perSecondVideo(shot) && !isSeedanceAnciModel(videoModelForShot(shot))) return false
   const duration = generationDuration(shot, videoWorkflow.value)
   const maxDuration = isAnmiao25VideoModel(videoModelForShot(shot)) ? 30 : 15
   return !Number.isInteger(duration) || duration < 4 || duration > maxDuration
@@ -1519,6 +1624,7 @@ function generateShot(kind) {
   const shot = active.value
   const context = captureTask()
   if (kind === 'video') {
+    if (activeDirectReferenceIssue.value) { error.value = activeDirectReferenceIssue.value; return }
     if (!videoModelsForShot(shot).length) {
       error.value = shot.productionMode === 'single_video_30'
         ? '当前没有支持 30 秒整片的可用视频模型' : '当前没有可用的视频模型，请刷新模型列表'
@@ -1566,7 +1672,7 @@ function generateShot(kind) {
       : isWholeVideo(shot.productionMode)
         ? '生成整片视频'
         : '生成分镜视频',
-    `${shot.title}：本次 ${price == null ? '费用以生成成功后接口返回为准' : `${formatMiValue(price)} 米值`}${kind === 'video' ? (isWholeVideo(shot.productionMode) ? `，生成 1 条 ${generationDuration(shot, videoWorkflow.value)} 秒整片` : `，生成 ${generationDuration(shot, videoWorkflow.value)} 秒原片`) : '，生成 1 张 2K 图片'}。`,
+    `${shot.title}：本次 ${price == null ? '费用以生成成功后接口返回为准' : `${formatMiValue(price)} 米值`}${kind === 'video' ? (isWholeVideo(shot.productionMode) ? `，生成 1 条 ${generationDuration(shot, videoWorkflow.value)} 秒整片` : `，生成 ${generationDuration(shot, videoWorkflow.value)} 秒原片`) : '，生成 1 张 2K 图片'}。${kind === 'video' && activeDirectReferences.value ? `本次直接发送 ${activeReferenceInputs.value.urls.length} 张所选原始参考图和整片脚本${referenceVideoGeneration.value ? '，并带入原参考视频' : ''}。` : kind === 'video' && referenceMode.value ? referenceVideoGeneration.value ? '本次将发送开场参考图、商品图及原参考视频。' : '本次仅发送严格首帧和脚本，原视频不参与生成。' : ''}`,
     () => generate(shot.id, kind, context),
   )
 }
@@ -1647,7 +1753,9 @@ async function searchProducts(reset = false) {
     if (sequence === requestSequence) searching.value = false
   }
 }
-function openProducts(mode) {
+function openProducts(mode, destination = 'video') {
+  continuityCanvasTarget.value = null
+  materialPickerTarget.value = { type: destination, context: captureTask() }
   picker.value = mode
   sourceProduct.value = null
   products.value = []
@@ -1839,14 +1947,10 @@ function onKeydown(event) {
           </template>
           <nav v-if="!showingTasks" class="pv-tabs" aria-label="制作阶段">
             <button
-              v-for="(label, key) in {
-                source: '商品素材',
-                shots: productionTabLabel,
-                output: '成片导出',
-              }"
+              v-for="(label, key) in stageTabs"
               :key="key"
               :class="{ active: tab === key }"
-              @click="tab = key"
+              @click="openStage(key)"
             >
               {{ label }}
             </button>
@@ -1919,14 +2023,23 @@ function onKeydown(event) {
           @open="openTask"
           @create="startTask"
         />
-        <main v-if="!showingTasks && tab === 'source'" class="pv-source pv-scroll">
+        <ProductVideoProductStudy v-if="!showingTasks && tab === 'analysis' && study"
+          :study="study" :model="workflow.planningModel || 'default'" :models="planningModelOptions"
+          :running="analyzingProduct" :planning="planning" :uploading="analysisUploading"
+          :unavailable="planningModelUnavailable" :supported="capabilities?.productSellingPointAnalysis === true"
+          @edit="editStudy" @model="selectPlanningModel" @upload="analysisUploader.click()"
+          @canvas="openCanvasPicker('', 'analysis')" @products="openProducts('source', 'analysis')"
+          @analyze="analyzeProduct" @retry="retryProductAnalysis" @confirm="confirmStudy"
+          @reference="set('planningSource', 'reference')" />
+        <main v-else-if="!showingTasks && tab === 'source'" class="pv-source pv-scroll">
           <section class="pv-source-assets">
             <div class="pv-section-head">
               <h3>
-                商品参考图
+                {{ referenceMode ? '商品参考图' : '视频商品参考图' }}
                 <small>{{ workflow.references.length }}/6</small>
               </h3>
             </div>
+            <p v-if="!referenceMode" class="pv-task-status">添加用于视频画面的商品外观图。主图、详情页等卖点分析资料已单独保存，不会自动带入生成画面。</p>
             <div class="pv-actions">
               <button class="pv-primary" :disabled="uploading" @click="uploader.click()">
                 <i aria-hidden="true" class="ri-upload-2-line"></i>
@@ -1968,6 +2081,13 @@ function onKeydown(event) {
             </div>
           </section>
           <section class="pv-brief">
+            <section v-if="!referenceMode && study" class="pv-study-summary">
+              <div class="pv-section-head"><strong>本次视频卖点</strong><button @click="openStage('analysis')">查看与修改卖点</button></div>
+              <p v-if="studyProblem" class="pv-task-status">{{ studyProblem }}</p>
+              <template v-else><p v-if="study.result?.productName">{{ study.result.productName }}</p>
+                <p v-for="point in selectedSellingPoints(study)" :key="point.id"><strong>{{ point.title }}</strong> · {{ point.description }}</p>
+              </template>
+            </section>
             <div class="pv-plan-source">
               <span>策划依据</span>
               <div class="pv-production-modes" role="group" aria-label="策划依据">
@@ -1987,11 +2107,12 @@ function onKeydown(event) {
                   @click="set('planningSource', 'reference')"
                 >
                   <i aria-hidden="true" class="ri-movie-2-line"></i>
-                  参考视频反推
+                  参考视频复刻
                 </button>
               </div>
             </div>
             <div v-if="referenceMode" class="pv-reference-video-source">
+              <p class="pv-recreation-steps">① 商品与原片 → ② 人物与场景 → ③ 确认开场图 → ④ 生成视频</p>
               <div class="pv-section-head">
                 <div>
                   <h3>参考视频</h3>
@@ -2036,6 +2157,7 @@ function onKeydown(event) {
                   精华 30 秒
                 </button>
               </div>
+              <p class="pv-recreation-hint">按原片还原镜头、动作与节奏；人物和场景可在下方单独替换。</p>
               <div class="pv-actions">
                 <button :disabled="referencePreparing" @click="referenceVideoInput.click()">
                   <i class="ri-upload-2-line" aria-hidden="true"></i> 本地上传
@@ -2133,12 +2255,12 @@ function onKeydown(event) {
               </button>
             </div>
             <label>
-              商品信息与视频要求
+              {{ !referenceMode && study ? '本次视频要求（选填）' : '商品信息与视频要求' }}
               <textarea
                 :value="workflow.brief"
                 maxlength="5000"
                 rows="9"
-                placeholder="商品名称、已确认的卖点、使用场景和视频风格"
+                :placeholder="!referenceMode && study ? '填写使用场景、人物、视频风格、口播及其他创作要求；已确认的卖点会自动带入策划' : '商品名称、已确认的卖点、使用场景和视频风格'"
                 @input="set('brief', $event.target.value)"
               ></textarea>
             </label>
@@ -2220,8 +2342,62 @@ function onKeydown(event) {
                 @update:model-value="workflow.productionMode === 'single_video_30' ? set('wholeVideo30Model', $event) : selectVideoModel($event)"
               />
             </label>
-            <section v-if="!referenceMode" class="pv-continuity" aria-label="全片固定设定">
-              <label class="pv-audio-option">
+            <label v-if="singleVideoPlan && isSeedanceAnciModel(effectiveWholeVideo15Model)">
+              速度版本
+              <ThemedSelect :model-value="workflow.videoVersion || '快速'" :options="SEEDANCE_ANCI_VERSIONS"
+                aria-label="整片速度版本" @update:model-value="set('videoVersion', $event)" />
+            </label>
+            <section class="pv-continuity" :aria-label="referenceMode ? '复刻设定' : '全片固定设定'">
+              <template v-if="referenceMode">
+                <h3>复刻设定</h3>
+                <label>
+                  生成方式
+                  <ThemedSelect
+                    :model-value="recreation.generationMode"
+                    :options="[{ value: 'script', label: '仅反推脚本 · 首帧生成' },
+                      { value: 'video', label: '参考原片生成 · 整片' }]"
+                    :disabled="planning || refining || uploading"
+                    aria-label="复刻生成方式"
+                    @update:model-value="setContinuityField('generationMode', $event)"
+                  />
+                </label>
+                <p class="pv-recreation-hint">
+                  {{ referenceVideoGeneration
+                    ? '生成时会发送开场参考图、商品图和原参考视频。开场图用于外观参考，不作为严格首帧；动作与运镜参照原片。'
+                    : '参考视频只用于反推策划；生成时发送已确认的严格首帧和脚本，原视频不参与生成。' }}
+                </p>
+                <p v-if="referenceGenerationProblem" class="pv-task-status error" role="status">{{ referenceGenerationProblem }}</p>
+                <div class="pv-recreation-selects">
+                  <label>
+                    人物处理
+                    <ThemedSelect :model-value="recreation.personMode"
+                      :options="[{ value: 'new', label: '生成新人物' },
+                        { value: 'reference', label: '使用指定人物图' },
+                        { value: 'source', label: '沿用已授权原片人物' }]"
+                      :disabled="planning || refining || uploading" aria-label="复刻人物处理"
+                      @update:model-value="setContinuityField('personMode', $event)" />
+                  </label>
+                  <label>
+                    场景处理
+                    <ThemedSelect :model-value="recreation.sceneMode"
+                      :options="[{ value: 'source', label: '沿用原场景关系' },
+                        { value: 'custom', label: '更换场景' }]"
+                      :disabled="planning || refining || uploading" aria-label="复刻场景处理"
+                      @update:model-value="setContinuityField('sceneMode', $event)" />
+                  </label>
+                  <label>
+                    声音处理
+                    <ThemedSelect :model-value="recreation.audioMode"
+                      :options="[{ value: 'new', label: '重新策划口播与配乐' },
+                        { value: 'source', label: '参考已授权原片声音设计' }]"
+                      :disabled="planning || refining || uploading" aria-label="复刻声音处理"
+                      @update:model-value="setContinuityField('audioMode', $event)" />
+                  </label>
+                </div>
+                <p class="pv-recreation-hint">商品始终使用左侧商品图。人物按原片需要出镜；参考声音设计不等于直接复用原音轨。更换人物或场景后，请重新生成并确认开场图。</p>
+                <p v-if="recreationProblem" class="pv-task-status error" role="status">{{ recreationProblem }}</p>
+              </template>
+              <label v-else class="pv-audio-option">
                 <input
                   type="checkbox"
                   :checked="fixedContinuity"
@@ -2234,7 +2410,7 @@ function onKeydown(event) {
                 <div v-for="field in continuityFields" :key="field.key" class="pv-continuity-field">
                   <div class="pv-continuity-field-head">
                     <span>{{ field.label }}</span>
-                    <div class="pv-actions">
+                    <div v-if="!referenceMode || field.key !== 'person' || recreation.personMode === 'reference'" class="pv-actions">
                       <button
                         :aria-label="`上传${field.label}图`"
                         :disabled="planning || refining || uploading"
@@ -2266,7 +2442,7 @@ function onKeydown(event) {
                       </button>
                     </div>
                   </div>
-                  <div v-if="fixedSettings.images?.[field.key]?.url" class="pv-continuity-image">
+                  <div v-if="fixedSettings.images?.[field.key]?.url && (!referenceMode || field.key !== 'person' || recreation.personMode === 'reference')" class="pv-continuity-image">
                     <img :src="fixedSettings.images[field.key].url" :alt="`${field.label}参考图`" />
                     <span>
                       {{ fixedSettings.images[field.key].name || `${field.label}参考图` }}
@@ -2357,7 +2533,11 @@ function onKeydown(event) {
                   uploading ||
                   referencePreparing ||
                   planningModelUnavailable ||
-                  !workflow.brief.trim() ||
+                  analyzingProduct ||
+                  workflow.productStudy?.job?.status === 'unknown' ||
+                  !!studyProblem ||
+                  !!recreationProblem || !!referenceGenerationProblem ||
+                  (!workflow.brief.trim() && (referenceMode || !study)) ||
                   !productReferenceUrls(workflow).length ||
                   (referenceMode && !workflow.referenceVideo?.frames?.length) ||
                   (highlightReference &&
@@ -2382,7 +2562,7 @@ function onKeydown(event) {
                       ? '正在反推与策划'
                       : '正在分析与策划'
                     : referenceMode
-                      ? '反推并生成策划'
+                      ? '反推并生成复刻脚本'
                       : singleVideoPlan
                         ? '生成整片策划'
                         : '生成分镜策划'
@@ -2451,9 +2631,9 @@ function onKeydown(event) {
                       ? '已保留'
                       : selectedVideo(shot)
                         ? '待选片'
-                        : canGenerateVideo(shot)
-                          ? '首帧已确认'
-                          : '待确认首帧'
+                        : canGenerateVideo(shot, videoWorkflow)
+                          ? usesWholeReferenceImages(workflow, shot) ? '参考图已就绪' : '首帧已确认'
+                          : usesWholeReferenceImages(workflow, shot) ? '待选择参考图' : '待确认首帧'
                   }}
                 </small>
               </span>
@@ -2515,6 +2695,14 @@ function onKeydown(event) {
                 <i aria-hidden="true" class="ri-delete-bin-line"></i>
               </button>
             </div>
+            <button v-if="activeWholeVideo" class="pv-whole-edit-toggle"
+              :aria-expanded="wholeDetailsOpen" :aria-controls="`pv-whole-details-${active.id}`"
+              @click="wholeDetailsOpen = !wholeDetailsOpen">
+              <i :class="wholeDetailsOpen ? 'ri-arrow-down-s-line' : 'ri-arrow-right-s-line'" aria-hidden="true"></i>
+              <span>{{ wholeDetailsOpen ? '收起分镜编辑' : '展开分镜编辑' }}</span>
+              <small>{{ generationDuration(active) }} 秒 · {{ activeTimelineCount }} 个分镜</small>
+            </button>
+            <div :id="`pv-whole-details-${active.id}`" v-show="!activeWholeVideo || wholeDetailsOpen">
             <div class="pv-direction">
               <div class="pv-shot-intent">
                 <strong>{{ activeWholeVideo ? '整片目标' : '镜头目的' }}</strong>
@@ -2562,7 +2750,11 @@ function onKeydown(event) {
               :can-refine="capabilities?.wholeTimelineRefinement && !planningModelUnavailable && Boolean(productReferenceUrls(workflow, active).length)"
               @select="wholeBeatIndex = $event" @update="updateWholeBeat" @boundary="(index, end) => mutateWholeTimeline(shot => moveWholeBoundary(shot, index, end))"
               @initialize="initializeWholeTimeline" @refine="refineWholeBeat" @split="splitWholeBeat" @remove="removeWholeBeat" />
-            <p v-if="activeWholeVideo && wholeTimelineIssue(active)" class="pv-hint" role="status">{{ wholeTimelineIssue(active) }}</p>
+            </div>
+            <p v-if="activeWholeVideo && wholeTimelineIssue(active)" class="pv-hint" role="status">
+              {{ wholeTimelineIssue(active) }}
+              <button v-if="!wholeDetailsOpen" @click="wholeDetailsOpen = true">展开修改</button>
+            </p>
             <ProductVideoContinuityPanel v-if="activeWholeVideo && capabilities?.wholeTimelineReview && selectedVideo(active)?.url"
               :workflow="workflow" :model-options="planningModelOptions" :job-override="active.wholeReview"
               :current-override="currentWholeVideoReview(workflow, active)" :manual-approved="Boolean(active.wholeManualApproval && currentWholeVideoReview(workflow, active, active.wholeManualApproval))"
@@ -2715,11 +2907,38 @@ function onKeydown(event) {
                 <i aria-hidden="true" class="ri-settings-3-line"></i>
               </button>
             </div>
-            <div class="pv-editor-columns">
-              <section>
+            <div v-if="activeWholeVideo" class="pv-video-input-mode pv-actions" role="group" aria-label="视频生成依据">
+              <button :class="{ 'pv-primary': activeDirectReferences }" :aria-pressed="activeDirectReferences"
+                :disabled="busy(active, 'videos')" @click="shotChange(active.id, shot => { shot.videoInputMode = 'references' })">参考图生成</button>
+              <button :class="{ 'pv-primary': !activeDirectReferences }" :aria-pressed="!activeDirectReferences"
+                :disabled="busy(active, 'videos')" @click="shotChange(active.id, shot => { shot.videoInputMode = 'first_frame' })">首帧生成</button>
+            </div>
+            <div class="pv-editor-columns" :class="{ 'pv-reference-layout': activeDirectReferences }">
+              <section v-if="activeDirectReferences">
+                <div class="pv-shot-media">
+                  <h3>视频参考图 <small>本次发送 {{ activeReferenceInputs.urls.length }} 张</small></h3>
+                  <p class="pv-task-status">直接使用所选原始参考图与整片脚本生成视频，无需先生成或确认首帧。</p>
+                  <div class="pv-whole-reference-grid" role="group" aria-label="整片视频参考图">
+                    <label v-for="item in workflow.references" :key="item.id" :class="{ selected: active.referenceIds.includes(item.id) }">
+                      <img :src="item.url" :alt="item.name || '视频参考图'" />
+                      <span><input type="checkbox" :aria-label="`选择视频参考图 ${item.name || workflow.references.indexOf(item) + 1}`" :checked="active.referenceIds.includes(item.id)"
+                        @change="shotChange(active.id, shot => { shot.referenceIds = $event.target.checked ? [...new Set([...shot.referenceIds, item.id])] : shot.referenceIds.filter(id => id !== item.id) })" />
+                        {{ activeReferenceInputs.urls.includes(item.url) ? `图${activeReferenceInputs.urls.indexOf(item.url) + 1}` : '未选' }} · {{ item.name || '参考图' }}
+                      </span>
+                    </label>
+                    <figure v-for="item in activeFixedReferenceImages" :key="`${item.role}:${item.url}`">
+                      <img :src="item.url" :alt="item.name || item.role" />
+                      <figcaption>图{{ activeReferenceInputs.urls.indexOf(item.url) + 1 }} · {{ item.role === 'person' ? '指定人物' : item.role === 'scene' ? '固定场景' : '商品主参考' }}</figcaption>
+                    </figure>
+                  </div>
+                  <p v-if="activeDirectReferenceIssue" class="pv-task-status error" role="status">{{ activeDirectReferenceIssue }}</p>
+                  <button @click="tab = 'source'"><i class="ri-add-line" aria-hidden="true"></i>添加或调整参考图</button>
+                </div>
+              </section>
+              <section v-else>
                 <div class="pv-shot-media">
                   <h3>
-                    {{ activeWholeVideo ? '开场首帧' : '首帧图片' }}
+                    {{ referenceVideoGeneration ? '开场参考图' : activeWholeVideo ? '开场首帧' : '首帧图片' }}
                     <small>
                       {{ active.approvedImageId === frame?.id && frame ? '已确认' : '待确认' }}
                     </small>
@@ -2852,7 +3071,7 @@ function onKeydown(event) {
                       @click="generateShot('image')"
                     >
                       <i aria-hidden="true" class="ri-sparkling-line"></i>
-                      {{ busy(active, 'images') ? '生成中' : frame ? '重新生成' : '生成首帧' }}
+                      {{ busy(active, 'images') ? '生成中' : frame ? '重新生成' : referenceVideoGeneration ? '生成开场参考图' : '生成首帧' }}
                       <small v-if="imagePrice != null">{{ formatMiValue(imagePrice) }} 米值</small>
                     </button>
                     <button
@@ -2996,6 +3215,14 @@ function onKeydown(event) {
                       @update:model-value="selectVideoModel"
                     />
                   </label>
+                  <label v-if="isSeedanceAnciModel(videoModelForShot(active))">
+                    速度版本
+                    <ThemedSelect :model-value="workflow.videoVersion || '快速'" :options="SEEDANCE_ANCI_VERSIONS"
+                      aria-label="视频速度版本" @update:model-value="set('videoVersion', $event)" />
+                  </label>
+                  <p v-if="isSeedanceAnciModel(videoModelForShot(active))" class="pv-task-status" role="note">
+                    {{ seedanceAnciNotice(videoModelForShot(active), workflow.videoVersion, generationDuration(active, videoWorkflow)) }}固定生成有声视频。
+                  </p>
                   <p
                     v-if="!videoModelsForShot(active).length"
                     :class="['pv-task-status', { error: !capabilitiesLoading }]"
@@ -3056,11 +3283,14 @@ function onKeydown(event) {
                   >
                     所选画质尚未配置接口密钥和每秒米值单价
                   </p>
+                  <p v-if="referenceMode" class="pv-task-status" :class="{ error: !!activeReferenceProblem }" role="status">
+                    {{ activeReferenceProblem || (activeDirectReferences ? referenceVideoGeneration ? '本次生成会带入所选参考图、整片脚本和原视频。' : '本次生成会带入所选参考图与整片脚本。' : referenceVideoGeneration ? '本次生成会带入开场参考图、商品图和原视频。' : '本次生成使用严格首帧和脚本，不发送原视频。') }}
+                  </p>
                   <div class="pv-actions">
                     <button
                       class="pv-primary"
                       :disabled="
-                        !canGenerateVideo(active) || !motionReady || Boolean(wholeTimelineIssue(active)) ||
+                        !canGenerateVideo(active, videoWorkflow) || !motionReady || Boolean(wholeTimelineIssue(active)) || !!activeReferenceProblem || !!activeDirectReferenceIssue ||
                         !videoModelsForShot(active).length ||
                         isRetiredVideoModel(videoModelForShot(active)) ||
                         busy(active, 'videos') ||
@@ -3525,7 +3755,7 @@ function onKeydown(event) {
               已选择 {{ canvasReferenceImage?.url ? 1 : 0 }}/1 张
             </p>
             <p v-else-if="picker !== 'publish'" class="pv-picker-count">
-              已选择 {{ workflow.references.length }}/6 张
+              已选择 {{ pickerReferences.length }}/{{ materialPickerTarget?.type === 'analysis' ? 12 : 6 }} 张{{ materialPickerTarget?.type === 'analysis' ? '商品分析资料图' : '视频参考图' }}
             </p>
             <div v-if="picker === 'canvas'" class="pv-picker-grid pv-scroll">
               <button
@@ -3534,7 +3764,7 @@ function onKeydown(event) {
                 :class="{
                   active: continuityCanvasTarget
                     ? canvasReferenceImage?.url === layer.url
-                    : workflow.references.some((item) => item.url === layer.url),
+                    : pickerReferences.some((item) => item.url === layer.url),
                 }"
                 @click="chooseCanvas(layer)"
               >
@@ -3560,7 +3790,7 @@ function onKeydown(event) {
                   <button
                     v-for="url in productImages"
                     :key="url"
-                    :class="{ active: workflow.references.some((item) => item.url === url) }"
+                    :class="{ active: pickerReferences.some((item) => item.url === url) }"
                     @click="chooseCanvas({ url, name: sourceProduct.title })"
                   >
                     <img :src="url" alt="商品图片" />
@@ -3729,6 +3959,7 @@ function onKeydown(event) {
           </section>
         </div>
         <input ref="uploader" type="file" accept="image/*" multiple hidden @change="uploadImages" />
+        <input ref="analysisUploader" type="file" accept="image/*" multiple hidden @change="uploadAnalysisImages" />
         <input
           ref="continuityUploader"
           type="file"
@@ -4060,6 +4291,29 @@ function onKeydown(event) {
   border-top: 1px solid var(--canvas-border);
   border-bottom: 1px solid var(--canvas-border);
 }
+.pv-recreation-steps {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  color: var(--canvas-accent);
+  background: var(--canvas-accent-soft);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.pv-recreation-hint {
+  margin: 8px 0 14px;
+  color: var(--canvas-text-muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.pv-recreation-selects {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+@media (max-width: 600px) {
+  .pv-recreation-selects { grid-template-columns: minmax(0, 1fr); }
+}
 .pv-reference-video-source .pv-section-head {
   margin-bottom: 12px;
 }
@@ -4261,6 +4515,22 @@ function onKeydown(event) {
 .pv-source-assets {
   border-right: 1px solid var(--canvas-border);
 }
+.pv-video-input-mode { margin: 0 0 16px; }
+.pv-whole-reference-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 16px 0; }
+.pv-whole-reference-grid > label, .pv-whole-reference-grid > figure { display: flex; flex-direction: column; margin: 0; min-width: 0; border: 1px solid var(--canvas-border); border-radius: 6px; overflow: hidden; }
+.pv-whole-reference-grid > .selected { border-color: var(--canvas-accent); }
+.pv-whole-reference-grid img { width: 100%; height: 160px; object-fit: contain; background: var(--canvas-input); }
+.pv-whole-reference-grid span, .pv-whole-reference-grid figcaption { padding: 8px; font-size: 12px; overflow-wrap: anywhere; }
+.pv-whole-reference-grid input { width: auto; margin-right: 6px; accent-color: var(--canvas-accent); }
+.pv-study-summary {
+  border: 1px solid var(--canvas-accent-border);
+  background: var(--canvas-accent-soft);
+  border-radius: 8px;
+  padding: 14px;
+  margin-bottom: 20px;
+  font-size: 12px;
+  line-height: 1.7;
+}
 .pv-section-head {
   justify-content: space-between;
   min-height: 34px;
@@ -4387,6 +4657,20 @@ function onKeydown(event) {
 }
 .pv-whole-meta {
   margin-left: 10px;
+  color: var(--canvas-text-muted);
+  font-size: 12px;
+}
+.pv-whole-edit-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  text-align: left;
+}
+.pv-whole-edit-toggle small {
+  margin-left: auto;
   color: var(--canvas-text-muted);
   font-size: 12px;
 }
@@ -4597,6 +4881,17 @@ function onKeydown(event) {
   grid-template-rows: subgrid;
   grid-row: span 2;
   min-width: 0;
+}
+.pv-editor-columns.pv-reference-layout {
+  grid-template-rows: auto;
+  align-items: start;
+}
+.pv-editor-columns.pv-reference-layout > section {
+  display: block;
+  grid-row: auto;
+}
+.pv-reference-layout .pv-shot-controls {
+  margin-top: 16px;
 }
 .pv-shot-media,
 .pv-shot-controls {

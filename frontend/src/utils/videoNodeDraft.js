@@ -17,7 +17,9 @@ import {
   videoFrameModeValue,
   supportsVideoAudioToggle,
   videoReferenceVideosError,
+  videoRatioForRequest,
 } from './chatVideoSettings.js'
+import { isSeedanceAnciModel, seedanceAnciVersion } from './seedanceAnci.js'
 
 export function normalizeVideoNodeDraft(value = {}, defaults = {}, modelOptions = VIDEO_MODELS) {
   const requested = { ...defaults, ...value.config }
@@ -28,6 +30,7 @@ export function normalizeVideoNodeDraft(value = {}, defaults = {}, modelOptions 
     ? requested.model
     : VIDEO_MODELS[1].value
   let referenceMode = requested.referenceMode === 'cankaosheng' ? 'cankaosheng' : 'shouweizhen'
+  if (isSeedanceAnciModel(model)) referenceMode = 'cankaosheng'
   if (model === HAILUO_H3_VIDEO_MODEL) referenceMode = 'shouweizhen'
   else if (supportsVideoFrameMode(model) && model !== MINIMAX_VIDEO_MODEL) {
     // Older Seedance drafts used generic reference images, not explicit frame slots.
@@ -41,7 +44,8 @@ export function normalizeVideoNodeDraft(value = {}, defaults = {}, modelOptions 
   if (referenceVideos.length) referenceMode = 'cankaosheng'
   const config = {
     model,
-    ratio: ['adaptive', ...VIDEO_RATIOS].includes(requested.ratio) ? requested.ratio : DEFAULT_VIDEO_RATIO,
+    ratio: isSeedanceAnciModel(model) ? videoRatioForRequest(model, 0, requested.ratio)
+      : ['adaptive', ...VIDEO_RATIOS].includes(requested.ratio) ? requested.ratio : DEFAULT_VIDEO_RATIO,
     resolution: validVideoResolution(model, requested.resolution)
       ? requested.resolution
       : videoResolutionForModel(model),
@@ -50,6 +54,7 @@ export function normalizeVideoNodeDraft(value = {}, defaults = {}, modelOptions 
       : 15,
     referenceMode,
     generateAudio: !supportsVideoAudioToggle(model) || requested.generateAudio !== false,
+    ...(isSeedanceAnciModel(model) ? { version: seedanceAnciVersion(requested.version) } : {}),
   }
   const seen = new Set()
   const references = (Array.isArray(value.references) ? value.references : [])
@@ -65,7 +70,7 @@ export function normalizeVideoNodeDraft(value = {}, defaults = {}, modelOptions 
       layerId: String(reference.layerId || ''),
     }))
   return {
-    prompt: String(value.prompt || '').slice(0, 2500),
+    prompt: String(value.prompt || ''),
     config,
     references,
     referenceVideos,
@@ -171,6 +176,6 @@ export function videoNodeReferenceError(draft) {
   const limit = videoReferenceLimit(draft.config.model, draft.config.referenceMode)
   return videoReferenceVideosError(draft.config.model, draft.config.referenceMode, draft.referenceVideos) ||
     (draft.references.length > limit ? `所选模式最多支持 ${limit} 张参考图` : '') ||
-    canvasReferenceTextError(draft.prompt, draft.referenceTexts, 2500)
+    canvasReferenceTextError(draft.prompt, draft.referenceTexts, Infinity)
 }
 import { normalizeReferenceTexts, syncConnectedReferenceTexts, canvasReferenceTextError } from './canvasReferenceTexts.js'

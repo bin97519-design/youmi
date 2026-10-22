@@ -28,9 +28,13 @@ test('repeated model names are displayed once regardless of spacing or case', ()
   }
 })
 
+test('human readable and hyphenated GEM names are displayed once', () => {
+  assert.equal(label({ value: 'gem-3-pro', label: 'GEM 3 Pro · gem-3-pro' }), 'GEM 3 Pro')
+})
+
 test('distinct display names and identifiers remain distinguishable', () => {
   const name = 'GEM 3.8 flash · gem-3.8-flash'
-  assert.equal(label({ value: 'gem-3.8-flash', label: name, configured: true }), name)
+  assert.equal(label({ value: 'gem-3.8-flash', label: name, configured: true }), 'GEM 3.8 flash')
   assert.equal(label({ value: 'default', label: '默认 Agent', configured: null }), '默认 Agent')
   assert.equal(label({ value: 'luna' }), 'luna')
 })

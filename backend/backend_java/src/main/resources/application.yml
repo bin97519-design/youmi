@@ -7,8 +7,8 @@ spring:
   mvc:
     async:
       # StreamingResponseBody otherwise inherits Tomcat's 30s absolute async limit.
-      # Allow the Agent's 90s upstream attempts and one JSON-format repair to finish.
-      request-timeout: ${YOUMI_AGENT_STREAM_TIMEOUT:10m}
+      # Allow the 30-minute upstream deadline plus one minute to finish the response.
+      request-timeout: ${YOUMI_AGENT_STREAM_TIMEOUT:31m}
   datasource:
     url: ${MYSQL_URL:jdbc:mysql://127.0.0.1:3306/youmi_ai?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
     username: ${MYSQL_USER:root}
@@ -171,6 +171,7 @@ youmi:
     temperature: 0.2
     timeout-seconds: 60
   agent-chat:
+    context-budget-tokens: ${YOUMI_AGENT_CONTEXT_BUDGET_TOKENS:100000}
     base-url: ${YOUMI_AGENT_BASE_URL:https://api.teamorouter.com/v1}
     chat-path: ${YOUMI_AGENT_CHAT_PATH:/chat/completions}
     api-key: ${YOUMI_AGENT_API_KEY:}
