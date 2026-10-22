@@ -1,9 +1,9 @@
 // Anchor the menu to the actual trigger, never to the whole prompt panel.
-export function modelMenuPlacement(anchor, viewport, itemCount) {
+export function modelMenuPlacement(anchor, viewport, itemCount, size = {}) {
   const gap = 4
   const margin = 8
-  const width = Math.min(370, viewport.width - margin * 2)
-  const desiredHeight = Math.min(410, itemCount * 56 + 6)
+  const width = Math.min(size.width || 370, viewport.width - margin * 2)
+  const desiredHeight = Math.min(410, itemCount * (size.itemHeight || 56) + 6)
   const below = Math.max(0, viewport.height - anchor.bottom - gap - margin)
   const above = Math.max(0, anchor.top - gap - margin)
   const direction = below >= desiredHeight || below >= above ? 'below' : 'above'
@@ -60,5 +60,29 @@ export function imageGridMenuPlacement(anchor, viewport, size = {}) {
       : { bottom: viewport.height - anchor.top + gap }),
     width,
     maxHeight,
+  }
+}
+
+// This compact reference menu touches its trigger and opens below when it fits.
+// Keep its dimensions/direction isolated from all other composer popovers.
+export function klingModeMenuPlacement(anchor, viewport) {
+  const horizontalMargin = Math.min(8, Math.max(0, viewport.width / 2))
+  const verticalMargin = Math.min(8, Math.max(0, viewport.height / 2))
+  const width = Math.max(0, Math.min(162, viewport.width - horizontalMargin * 2))
+  const desiredHeight = Math.max(0, Math.min(156, viewport.height - verticalMargin * 2))
+  const below = Math.max(0, viewport.height - anchor.bottom - verticalMargin)
+  const above = Math.max(0, anchor.top - verticalMargin)
+  const direction = below >= desiredHeight || below >= above ? 'below' : 'above'
+  const height = Math.min(desiredHeight, direction === 'below' ? below : above)
+  const top = direction === 'below' ? anchor.bottom : anchor.top - height
+  return {
+    direction,
+    left: Math.max(
+      horizontalMargin,
+      Math.min(anchor.left, viewport.width - width - horizontalMargin),
+    ),
+    top: Math.max(verticalMargin, Math.min(top, viewport.height - height - verticalMargin)),
+    width,
+    height,
   }
 }

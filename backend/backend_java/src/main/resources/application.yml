@@ -116,6 +116,11 @@ youmi:
       1080p: ${MINIMAX_VIDEO_MI_PER_SECOND_1080P:10}
       2k: ${MINIMAX_VIDEO_MI_PER_SECOND_2K:15}
       4k: ${MINIMAX_VIDEO_MI_PER_SECOND_4K:30}
+      input-video-mi-per-second-by-resolution:
+        768p: ${MINIMAX_VIDEO_INPUT_MI_PER_SECOND_768P:0}
+        1080p: ${MINIMAX_VIDEO_INPUT_MI_PER_SECOND_1080P:0}
+        2k: ${MINIMAX_VIDEO_INPUT_MI_PER_SECOND_2K:0}
+        4k: ${MINIMAX_VIDEO_INPUT_MI_PER_SECOND_4K:0}
     persist-generated-videos: ${MINIMAX_VIDEO_PERSIST_GENERATED:true}
   anmiao-video:
     base-url: ${ANMIAO_VIDEO_BASE_URL:https://api.lk888.ai/api/v3/anmiao}
@@ -133,6 +138,15 @@ youmi:
       480p: ${ANMIAO_VIDEO_25_MI_PER_SECOND_480P:4}
       720p: ${ANMIAO_VIDEO_25_MI_PER_SECOND_720P:7}
       1080p: ${ANMIAO_VIDEO_25_MI_PER_SECOND_1080P:14}
+      # Video-reference rates vary by channel. Zero output / negative input means unconfigured.
+      mi-per-second-25-with-video-by-resolution:
+        480p: ${ANMIAO_VIDEO_25_WITH_VIDEO_MI_PER_SECOND_480P:0}
+        720p: ${ANMIAO_VIDEO_25_WITH_VIDEO_MI_PER_SECOND_720P:0}
+        1080p: ${ANMIAO_VIDEO_25_WITH_VIDEO_MI_PER_SECOND_1080P:0}
+      mi-per-reference-video-second-25-by-resolution:
+        480p: ${ANMIAO_VIDEO_25_INPUT_VIDEO_MI_PER_SECOND_480P:-1}
+        720p: ${ANMIAO_VIDEO_25_INPUT_VIDEO_MI_PER_SECOND_720P:-1}
+        1080p: ${ANMIAO_VIDEO_25_INPUT_VIDEO_MI_PER_SECOND_1080P:-1}
     persist-generated-videos: ${ANMIAO_VIDEO_PERSIST_GENERATED:true}
   credit:
     prices:

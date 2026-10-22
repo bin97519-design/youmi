@@ -138,6 +138,258 @@ test('persists a caller-provided client task key before the first generation POS
   await run
 })
 
+test('resolves a routed TT version after model loading and persists the submitted snapshot', async (t) => {
+  const h = await harness(t)
+  h.graph.updateNodeData(h.node.id, {
+    model: 'model-api-key:41',
+    prompt: '原始请求',
+    params: { ratio: '16:9', resolution: '2K', count: '1张' },
+  })
+  const run = h.tasks.runImage(h.node.id)
+  h.graph.updateNodeData(h.node.id, {
+    prompt: '准备期间的新编辑',
+    params: { ...h.node.data.params, version: 'flare' },
+  })
+  h.finishModels([
+    {
+      value: 'model-api-key:41',
+      label: '自定义图片服务',
+      model: 'tt-image-2.5',
+      defaultVersion: 'sunburst',
+    },
+  ])
+  await flush()
+
+  const request = JSON.parse(h.posts()[0].body)
+  assert.equal(request.model, 'model-api-key:41')
+  assert.equal(request.version, 'sunburst')
+  assert.match(request.prompt, /原始请求/)
+  assert.doesNotMatch(request.prompt, /准备期间的新编辑/)
+  assert.equal(h.node.data.generation.params.version, 'sunburst')
+  h.finishCreate()
+  await run
+})
+
+test('an explicit TT version overrides the configured default before the POST', async (t) => {
+  const h = await harness(t)
+  h.graph.updateNodeData(h.node.id, {
+    model: 'model-api-key:42',
+    params: { ...h.node.data.params, version: 'flare' },
+  })
+  const run = h.tasks.runImage(h.node.id)
+  h.finishModels([
+    {
+      value: 'model-api-key:42',
+      label: '图片高质',
+      model: 'tt-image-2.5',
+      defaultVersion: 'sunburst',
+    },
+  ])
+  await flush()
+
+  assert.equal(JSON.parse(h.posts()[0].body).version, 'flare')
+  assert.equal(h.node.data.generation.params.version, 'flare')
+  h.finishCreate()
+  await run
+})
+
+test('the output-panel screenshot selections reach the final image task POST unchanged', async (t) => {
+  const h = await harness(t)
+  h.graph.updateNodeData(h.node.id, {
+    model: 'model-api-key:42',
+    params: {
+      ratio: '3:4',
+      resolution: '4K',
+      quality: '极致画质',
+      background: '自动',
+      version: 'flare',
+      count: '1张',
+    },
+  })
+  const run = h.tasks.runImage(h.node.id)
+  h.finishModels([
+    {
+      value: 'model-api-key:42',
+      label: 'image-2.5',
+      model: 'tt-image-2.5',
+      defaultVersion: 'sunburst',
+    },
+  ])
+  await flush()
+  const body = JSON.parse(h.posts()[0].body)
+  assert.equal(body.parameter_profile, 'canvas-v3-image')
+  assert.deepEqual(
+    {
+      model: body.model,
+      version: body.version,
+      quality: body.quality,
+      background: body.background,
+      resolution: body.resolution,
+      size: body.size,
+      n: body.n,
+    },
+    {
+      model: 'model-api-key:42',
+      version: 'flare',
+      quality: 'max',
+      background: 'auto',
+      resolution: '4K',
+      size: '3:4',
+      n: 1,
+    },
+  )
+  h.finishCreate()
+  await run
+})
+
+test('opaque TT custom-size submission captures its switch and canonical value before model loading', async (t) => {
+  const h = await harness(t)
+  h.graph.updateNodeData(h.node.id, {
+    model: 'model-api-key:71',
+    prompt: '原始自定义尺寸请求',
+    params: {
+      customSize: ' 1536X864 ',
+      ratio: '3:4',
+      resolution: '4K',
+      quality: '极致画质',
+      background: '透明背景',
+      version: 'sunburst',
+      count: '1张',
+    },
+    switches: { 自定义尺寸: true },
+  })
+  const run = h.tasks.runImage(h.node.id)
+  assert.equal(h.node.data.runState, 'preparing')
+  h.graph.updateNodeData(h.node.id, {
+    prompt: '提交期间的新请求',
+    params: {
+      customSize: '2048x2048',
+      ratio: '1:1',
+      resolution: '1K',
+      quality: '低画质',
+      background: '自动',
+      version: 'flare',
+    },
+    switches: { 自定义尺寸: false },
+  })
+  h.finishModels([
+    {
+      value: 'model-api-key:71',
+      model: 'tt-image-2.5',
+      label: '配置中的图片服务',
+      defaultVersion: 'flare',
+    },
+  ])
+  await flush()
+  assert.equal(h.posts().length, 1)
+  const request = JSON.parse(h.posts()[0].body)
+  assert.equal(request.custom_size, '1536x864')
+  assert.equal(request.model, 'model-api-key:71')
+  assert.equal(request.parameter_profile, 'canvas-v3-image')
+  assert.equal(request.version, 'sunburst')
+  assert.equal(request.quality, 'max')
+  assert.equal(request.background, 'transparent')
+  assert.equal(request.output_format, 'png')
+  assert.equal(request.size, '3:4')
+  assert.equal(request.resolution, '4K')
+  assert.match(request.prompt, /原始自定义尺寸请求/)
+  assert.doesNotMatch(request.prompt, /提交期间的新请求/)
+  assert.equal(h.node.data.generation.params.customSize, '1536x864')
+  assert.equal(h.node.data.generation.params.quality, '极致画质')
+  assert.equal(h.node.data.params.customSize, '2048x2048')
+  assert.equal(h.node.data.switches.自定义尺寸, false)
+  h.finishCreate()
+  await run
+})
+
+test('invalid opaque TT custom size ends preparation before any reference upload or generation POST', async (t) => {
+  const h = await harness(t)
+  h.graph.updateNodeData(h.node.id, {
+    model: 'model-api-key:72',
+    params: { customSize: '1537x864', ratio: '16:9', resolution: '2K' },
+    switches: { 自定义尺寸: true },
+  })
+  const source = h.graph.addNode('image')
+  h.graph.updateNodeData(source.id, { assetUrl: 'data:image/png;base64,aGk=' })
+  h.graph.connect({ source: source.id, target: h.node.id })
+  const run = h.tasks.runImage(h.node.id)
+  assert.equal(h.node.data.runState, 'preparing')
+  h.finishModels([{ value: 'model-api-key:72', model: 'tt-image-2.5', label: 'image-2.5' }])
+  await run
+  assert.equal(h.posts().length, 0)
+  assert.equal(h.uploads.length, 0)
+  assert.equal(
+    h.calls.some((call) => call.url.endsWith('/oss-sign')),
+    false,
+  )
+  assert.equal(h.node.data.runState, 'failed')
+  assert.equal(h.node.data.statusText, '')
+  assert.match(h.node.data.error, /尺寸|16/)
+})
+
+test('Banana 2.1 submits its captured model-specific params and web-search switch after model loading', async (t) => {
+  const h = await harness(t)
+  h.graph.updateNodeData(h.node.id, {
+    model: 'model-api-key:61',
+    params: {
+      ratio: '1:8',
+      resolution: '4K',
+      count: '4张',
+      thinkingLevel: '深度',
+      version: 'sunburst',
+      quality: '极致画质',
+      background: '透明背景',
+    },
+    switches: { 联网搜索: false },
+  })
+  const run = h.tasks.runImage(h.node.id)
+  h.graph.updateNodeData(h.node.id, {
+    params: { ratio: '1:1', resolution: '1K', thinkingLevel: '快速' },
+    switches: { 联网搜索: true },
+  })
+  h.finishModels([{ value: 'model-api-key:61', model: 'banana-2.1', label: '图片服务' }])
+  await flush()
+  assert.equal(h.posts().length, 1)
+  const body = JSON.parse(h.posts()[0].body)
+  assert.equal(body.model, 'model-api-key:61')
+  assert.equal(body.parameter_profile, 'canvas-v3-image')
+  assert.equal(body.size, '1:8')
+  assert.equal(body.resolution, '4K')
+  assert.equal(body.n, 1)
+  assert.equal(body.thinking_level, 'high')
+  assert.equal(body.web_search, false)
+  for (const key of ['version', 'quality', 'background', 'output_format'])
+    assert.equal(Object.hasOwn(body, key), false)
+  assert.deepEqual(h.node.data.generation.params, {
+    ratio: '1:8',
+    resolution: '4K',
+    count: '1张',
+    thinkingLevel: '深度',
+  })
+  h.finishCreate()
+  await run
+})
+
+test('Banana Pro rejects a fifteenth reference before uploading or submitting', async (t) => {
+  const h = await harness(t)
+  h.graph.updateNodeData(h.node.id, { model: 'model-api-key:62' })
+  for (let index = 0; index < 15; index++) {
+    const reference = h.graph.addNode('image')
+    h.graph.updateNodeData(reference.id, { assetUrl: `data:image/png;base64,reference${index}` })
+    h.graph.edges.push({ id: `reference-${index}`, source: reference.id, target: h.node.id })
+  }
+  const run = h.tasks.runImage(h.node.id)
+  h.finishModels([{ value: 'model-api-key:62', model: 'banana-pro', label: '纳米香蕉 Pro' }])
+  await run
+  assert.equal(h.posts().length, 0)
+  assert.equal(h.uploads.length, 0)
+  assert.equal(
+    h.calls.some((call) => call.url.endsWith('/oss-sign')),
+    false,
+  )
+  assert.match(h.node.data.error, /最多支持 14 张参考图/)
+})
+
 test('does not POST when the client task key cannot be durably saved', async (t) => {
   const h = await harness(t)
   h.tasks.attach(h.graph.projectId, { beforeImageSubmit: async () => false })

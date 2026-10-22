@@ -3,6 +3,7 @@ package com.youmi.api.video;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 import java.util.Map;
+import java.math.BigDecimal;
 
 @Component
 @ConfigurationProperties(prefix = "youmi.anmiao-video")
@@ -15,6 +16,8 @@ public class AnmiaoVideoProperties {
   private int miPerSecond = 0;
   private Map<String, Integer> miPerSecondByResolution = Map.of();
   private Map<String, Integer> miPerSecond25ByResolution = Map.of();
+  private Map<String, BigDecimal> miPerSecond25WithVideoByResolution = Map.of();
+  private Map<String, BigDecimal> miPerReferenceVideoSecond25ByResolution = Map.of();
   private boolean persistGeneratedVideos = true;
 
   public String getBaseUrl() { return baseUrl; }
@@ -44,6 +47,18 @@ public class AnmiaoVideoProperties {
   public Map<String, Integer> getMiPerSecond25ByResolution() { return miPerSecond25ByResolution; }
   public void setMiPerSecond25ByResolution(Map<String, Integer> value) {
     miPerSecond25ByResolution = value == null ? Map.of() : value;
+  }
+  public Map<String, BigDecimal> getMiPerSecond25WithVideoByResolution() {
+    return miPerSecond25WithVideoByResolution;
+  }
+  public void setMiPerSecond25WithVideoByResolution(Map<String, BigDecimal> value) {
+    miPerSecond25WithVideoByResolution = value == null ? Map.of() : Map.copyOf(value);
+  }
+  public Map<String, BigDecimal> getMiPerReferenceVideoSecond25ByResolution() {
+    return miPerReferenceVideoSecond25ByResolution;
+  }
+  public void setMiPerReferenceVideoSecond25ByResolution(Map<String, BigDecimal> value) {
+    miPerReferenceVideoSecond25ByResolution = value == null ? Map.of() : Map.copyOf(value);
   }
   public boolean isPersistGeneratedVideos() { return persistGeneratedVideos; }
   public void setPersistGeneratedVideos(boolean persistGeneratedVideos) { this.persistGeneratedVideos = persistGeneratedVideos; }

@@ -35,6 +35,7 @@ function unresolved(node) {
 export function preserveLegacyImageTask(graph, nodeId) {
   const node = graph.nodes.find((item) => item.id === nodeId)
   if (
+    node?.data.kind !== 'image' ||
     !node?.data.assetUrl ||
     imageSourceId(node) ||
     !node.data.generation?.clientTaskId ||

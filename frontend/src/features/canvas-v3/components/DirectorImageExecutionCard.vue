@@ -7,6 +7,7 @@ import {
   validateDirectorImageExecution,
 } from '../config/directorImageExecution.js'
 import { imageMiCost } from '../../../utils/imageMiPricing.js'
+import { imageModelMenuOptions } from '../config/imageModelVersions.js'
 
 const props = defineProps({
   models: { type: Array, default: () => [] },
@@ -45,6 +46,9 @@ const availableModels = computed(() => [
       .map((model) => [model.value, model]),
   ).values(),
 ])
+const modelMenuOptions = computed(() =>
+  imageModelMenuOptions(availableModels.value, settings.model),
+)
 const complete = computed(() => props.phase === 'succeeded')
 const inProgress = computed(() =>
   ['preparing', 'submitting', 'submitted', 'queued', 'running', 'paused', 'uncertain'].includes(
@@ -103,7 +107,7 @@ function refreshModels() {
             @change="updateSetting('model', $event)"
           >
             <option value="" disabled>请选择生图模型</option>
-            <option v-for="model in availableModels" :key="model.value" :value="model.value">
+            <option v-for="model in modelMenuOptions" :key="model.value" :value="model.value">
               {{ model.label || model.value }}
             </option>
           </select>

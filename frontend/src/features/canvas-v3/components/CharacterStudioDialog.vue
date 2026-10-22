@@ -6,6 +6,7 @@ import { useUserStore } from '../../../stores/user'
 import { apiPath } from '../../../utils/apiBase'
 import { uploadFileDirect } from '../../../utils/ossUpload'
 import { imageMiCost } from '../../../utils/imageMiPricing'
+import { imageModelMenuOptions } from '../config/imageModelVersions'
 import {
   CHARACTER_STUDIO_TEMPLATES,
   characterStudioPortraitPreview,
@@ -86,6 +87,9 @@ const canvasImages = computed(() =>
   ),
 )
 const cost = computed(() => imageMiCost(selectedModel.value, selectedResolution.value, 1))
+const modelMenuOptions = computed(() =>
+  imageModelMenuOptions(tasks.imageModels, selectedModel.value),
+)
 const busy = computed(() => saving.value || submitting.value || uploading.value)
 const assetFormat = computed(() =>
   confirmation.value?.kind === 'assets'
@@ -956,7 +960,7 @@ onBeforeUnmount(() => {
               <select v-model="selectedModel" aria-label="模特生图模型" :disabled="busy">
                 <option value="" disabled>请选择已配置模型</option>
                 <option
-                  v-for="model in tasks.imageModels"
+                  v-for="model in modelMenuOptions"
                   :key="model.value"
                   :value="model.value"
                   :disabled="model.disabled"

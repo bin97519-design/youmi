@@ -4,6 +4,76 @@ const icon = (viewBox, body) => ({ viewBox, body })
 const path = (d, extra = '') => `<path d="${d}" fill="currentColor" ${extra}/>`
 
 export const CANVAS_ICONS = {
+  // Dedicated video-mode glyphs; keep shared text/image/node symbols unchanged.
+  klingModeVideoReference: icon(
+    '0 0 16 16',
+    '<g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 3H4a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V7.5M12 1.5v5M9.5 4h5m-8 2 3 2-3 2z"/></g>',
+  ),
+  klingModeText: icon(
+    '0 0 16 16',
+    '<g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5"/><path d="M5.25 5.25h5.5M8 5.25v5.5"/></g>',
+  ),
+  klingModeOmni: icon(
+    '0 0 16 16',
+    '<g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 3H4a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V7.5M12 1.5v5M9.5 4h5"/></g>',
+  ),
+  klingModeImage: icon(
+    '0 0 16 16',
+    '<g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="2.5" width="11" height="11" rx="1.4"/><circle cx="5.6" cy="5.7" r="1"/><path d="m3 11 4-4 6 6"/></g>',
+  ),
+  klingModeFrames: icon(
+    '0 0 16 16',
+    '<g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="m8 3 2.9-.8a1 1 0 0 1 1.2.7l2 7.5a1 1 0 0 1-.7 1.2l-3 .8"/><rect x="2.2" y="3.3" width="7.8" height="10" rx="1.2" transform="rotate(-9 6.1 8.3)"/></g>',
+  ),
+  klingModeReference: icon(
+    '0 0 16 16',
+    '<g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 3H4a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V7.5M12 1.5v5M9.5 4h5M3 11l4-4 6 6"/><circle cx="5.6" cy="5.7" r=".8"/></g>',
+  ),
+  // Remix Icon 4.5.0, Logos/openai-line.svg (Apache-2.0). No tile/background.
+  modelImage25: icon(
+    '0 0 24 24',
+    path(
+      'M11 4C11.6487 4 12.2498 4.20569 12.7411 4.55646C11.4486 5.22914 10.2602 6.07623 8.99996 6.80385L9.99996 8.5359C11.575 7.62654 13.0517 6.48541 14.7608 5.83037C16.1134 5.31198 17.681 5.83976 18.4282 7.13398C18.7526 7.69582 18.8749 8.31917 18.8168 8.92006C17.588 8.13708 16.2602 7.53146 15 6.80385L14 8.5359C15.575 9.44525 17.3016 10.1536 18.7234 11.3061C19.8487 12.2183 20.1754 13.8398 19.4282 15.134C19.1037 15.696 18.6249 16.1137 18.0752 16.3638C18.1385 14.9081 18 13.4553 18 12H16C16 13.8184 16.2498 15.6685 15.9626 17.4758C15.7353 18.9063 14.4944 20 13 20C12.351 20 11.7498 19.7942 11.2584 19.4432C12.5508 18.7701 13.7396 17.9238 15 17.1962L14 15.4641C12.4252 16.3733 10.9478 17.5147 9.23912 18.1696C7.88657 18.688 6.31898 18.1602 5.57176 16.866C5.24729 16.304 5.12493 15.6805 5.18316 15.0794C6.41224 15.8621 7.73964 16.4685 8.99997 17.1962L9.99997 15.4641C8.42517 14.5549 6.69801 13.8462 5.27649 12.6939C4.15128 11.7817 3.82455 10.1602 4.57176 8.86602C4.89624 8.30402 5.37506 7.88628 5.9247 7.63618C5.86145 9.09192 5.99997 10.5447 5.99997 12H7.99997C7.99997 10.1816 7.75013 8.33148 8.03733 6.52422C8.26467 5.09369 9.50554 4 11 4ZM14.7925 3.74171C13.8765 2.67659 12.5176 2 11 2C8.7782 2 6.89621 3.44833 6.24435 5.45243C4.86393 5.71314 3.59851 6.55175 2.83971 7.86602C1.72883 9.79013 2.04213 12.1442 3.4518 13.7107C2.98737 15.0366 3.08092 16.5518 3.83971 17.866C4.95059 19.7901 7.14589 20.6958 9.20742 20.2583C10.1234 21.3234 11.4824 22 13 22C15.2217 22 17.1037 20.5517 17.7556 18.5476C19.136 18.2869 20.4014 17.4482 21.1602 16.134C22.2711 14.2099 21.9578 11.8559 20.5481 10.2893C21.0126 8.96345 20.919 7.44825 20.1602 6.13398C19.0493 4.20987 16.854 3.30419 14.7925 3.74171Z',
+    ),
+  ),
+  // Reference banana silhouette, simplified for small UI sizes; no text or tile.
+  modelBanana: icon(
+    '0 0 24 24',
+    '<g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M16.7 2.6l1.6-.2.5.7c-.7.9-.4 2.3.5 3.5 2.4 2.6 1.8 6.2-.2 9.1-2.7 3.8-7.3 5.7-11.3 5.5-2-.1-3.6-.8-4.8-2.2v-1c1-1.1 2.4-1.8 4.3-2.3 4.7-1.2 7.6-3.9 9-7.5.4-1 .8-1.7 1.6-2.5.7-.9.4-1.9.2-2.4l-1.3.1z"/><path d="M3.5 18.4c6.5.4 13.8-3.7 14.5-9.7M3 18l.7.5-.4.8"/></g>',
+  ),
+  modelSeedanceMini: icon(
+    '0 0 24 24',
+    // User-supplied Jimeng mark: curved sail and separated lower fold.
+    // Preserve its silhouette while matching the monochrome, transparent UI set.
+    path(
+      'M7.3 2.5c-.4-.6-1.2-.2-1.1.4 1.6 6.9 1 10.3-3.1 14.6-.5.6-.1 1.2.6 1.2 5.8-.1 12.5-3.9 17.3-8.6.7-.7.2-1.4-.6-1.3-5.1.8-9.6-1-13.1-6.3Z',
+    ) +
+      path(
+        'M7.9 19.4c2.3.4 4.7 1.5 6.9 3.3.4.3.9.1.9-.4-.4-2.8.2-5.1 1.5-7.6-2.8 2.3-5.9 3.9-9.3 4.7Z',
+      ),
+  ),
+  modelHappyHorse: icon(
+    '0 0 24 24',
+    // User reference: rocking-horse silhouette, without the white image tile.
+    '<g fill="currentColor" transform="translate(.3 .2) scale(.078)"><path d="M88 24l11 3c23-10 46 3 58 23 12 22 15 47 18 75l34 10c12-21 36-18 44-2 6 12 7 29 18 39-20 7-30-1-34-15-4-12-10-18-21-15 9 12 9 21 0 36-7 13-9 23-4 38l10 28-30 7-17-46-44-24-28 16 10 46-23-7-11-34c-3-12 4-21 21-33l-27-10-6 22-24 13 12-45c2-9 9-14 18-10l15 3 23-65-31 14c-8 3-17-3-16-11 0-4 4-9 7-15l20-27z"/><path d="M45 225l11-11c46 50 146 50 196 0l11 12c-61 69-157 69-218-1z"/></g>',
+  ),
+  modelMinimax: icon(
+    '0 0 24 24',
+    // User reference: keep only the rounded waveform, without the wordmark.
+    '<path d="M2 12.6v1.3c0 1.9 2.5 1.9 2.5 0V9.1c0-1.9 2.5-1.9 2.5 0v10.2c0 1.9 2.5 1.9 2.5 0V4.7c0-1.9 2.5-1.9 2.5 0v12.2c0 1.9 2.5 1.9 2.5 0V4.7c0-1.9 2.5-1.9 2.5 0v14.6c0 1.9 2.5 1.9 2.5 0V9.1c0-1.9 2.5-1.9 2.5 0v4.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>',
+  ),
+  modelKling: icon(
+    '0 0 24 24',
+    // User reference: opposing arcs and tilted orbital loops, without the black tile.
+    '<g fill="none" stroke="currentColor" stroke-width="28" transform="translate(-3.87 -3.87) scale(.031)"><path d="M340 514 219 394C338 170 561 151 719 282M684 510l121 120C686 854 463 873 305 742"/><ellipse cx="512" cy="512" rx="318" ry="137" transform="rotate(-45 512 512)"/><ellipse cx="512" cy="512" rx="200" ry="137" transform="rotate(-45 512 512)"/></g>',
+  ),
+  modelWanxiang: icon(
+    '0 0 24 24',
+    // User-supplied qwen.svg: retain the interlocking six-arm silhouette.
+    // Simplified geometry and true transparent cutouts keep it clear at 14–20px;
+    // currentColor, 20px optical bounds and no tile match the other model marks.
+    '<path fill="currentColor" fill-rule="evenodd" transform="translate(2 2) scale(1.25)" d="M5.8.1H8l.3.2L9.3 2h4.1l.4.1L14.9 4v.4l-1 1.7L15 8l1 1.6v.4l-1.1 1.9-.3.2h-2l-2.1 3.6-.3.2H8l-.3-.2-1-1.7H2.6l-.4-.1L1.1 12v-.4l1-1.7-2-3.6v-.4L1.1 4l.3-.1h2L4.5 2l1-1.7z M6.9 13.7H2.6l1.1-1.9h2.2L1.5 4.3h2.2L8 11.8z M3.6 4.3 5.8.5l1.1 1.9-1.1 1.8h8.7l-1.1 1.9H4.7z M13.4 6.1l2.2 3.8h-2.2L12.3 8 8 15.5l-1.1-1.9 4.3-7.5z"/>',
+  ),
   canvasInsert: icon(
     '0 0 20 20',
     '<g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M8 16H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v5M13.5 12v6M10.5 15h6"/></g>',

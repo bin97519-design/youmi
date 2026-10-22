@@ -11,6 +11,8 @@ public class MinimaxVideoProperties {
   private String apiKey = "";
   private int timeoutSeconds = 120;
   private Map<String, Integer> miPerSecondByResolution = Map.of();
+  // Reference videos add input seconds; no default rate is assumed for direct-key calls.
+  private Map<String, Integer> inputVideoMiPerSecondByResolution = Map.of();
   private boolean persistGeneratedVideos = true;
 
   public String getBaseUrl() { return baseUrl; }
@@ -22,6 +24,14 @@ public class MinimaxVideoProperties {
   public Map<String, Integer> getMiPerSecondByResolution() { return miPerSecondByResolution; }
   public void setMiPerSecondByResolution(Map<String, Integer> value) {
     miPerSecondByResolution = value == null ? Map.of() : value;
+  }
+  public Map<String, Integer> getInputVideoMiPerSecondByResolution() { return inputVideoMiPerSecondByResolution; }
+  public void setInputVideoMiPerSecondByResolution(Map<String, Integer> value) {
+    inputVideoMiPerSecondByResolution = value == null ? Map.of() : value;
+  }
+  public int inputVideoRate(String resolution) {
+    Integer value = inputVideoMiPerSecondByResolution.get(resolution);
+    return value != null && value > 0 && value <= 10000 ? value : 0;
   }
   public boolean isPersistGeneratedVideos() { return persistGeneratedVideos; }
   public void setPersistGeneratedVideos(boolean value) { persistGeneratedVideos = value; }

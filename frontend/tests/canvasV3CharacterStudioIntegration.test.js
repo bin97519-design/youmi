@@ -10,6 +10,7 @@ import {
 } from '../src/features/canvas-v3/config/characterStudioRuntime.js'
 import { characterStudioAssetFormat } from '../src/features/canvas-v3/config/characterStudioAssetFormats.js'
 import { characterStudioVisualConfig } from '../src/features/canvas-v3/config/characterStudioControls.js'
+import { imageModelMenuOptions } from '../src/features/canvas-v3/config/imageModelVersions.js'
 import {
   CHARACTER_STUDIO_TEMPLATES,
   characterStudioPortraitPreview,
@@ -59,6 +60,7 @@ const exposedNames = [
   'selectedModel',
   'selectedRatio',
   'selectedResolution',
+  'modelMenuOptions',
   'ageCharacter',
   'ageTarget',
   'deleteItems',
@@ -208,6 +210,7 @@ function makeHarness(options = {}) {
       throw new Error('unexpected upload in generation integration test')
     },
     imageMiCost: () => 9,
+    imageModelMenuOptions,
     characterStudioGenerationSpec,
     characterStudioPayload,
     characterStudioPrompt,
@@ -276,6 +279,24 @@ test('opening, editing metadata, preparing a request and cancelling never submit
   h.api.keydown({ key: 'Escape', preventDefault() {}, stopPropagation() {} })
   assert.equal(h.api.confirmation.value, null)
   await h.api.submitGeneration()
+  assert.equal(paidCalls(h).length, 0)
+  h.dispose()
+})
+
+test('studio merges image-2.5 presentation without resetting the exact selected route', () => {
+  const h = makeHarness()
+  h.tasks.imageModels = [
+    { value: 'model-api-key:44', model: 'tt-image-2.5', label: '快速' },
+    { value: 'model-api-key:45', model: 'tt-image-2.5', label: '高质' },
+    models[0],
+  ]
+  h.api.selectedModel.value = 'model-api-key:45'
+  assert.deepEqual(plain(h.api.modelMenuOptions.value), [
+    { value: 'model-api-key:45', model: 'tt-image-2.5', label: 'image-2.5' },
+    models[0],
+  ])
+  assert.equal(h.api.selectedModel.value, 'model-api-key:45')
+  assert.equal(h.tasks.imageModels.length, 3)
   assert.equal(paidCalls(h).length, 0)
   h.dispose()
 })

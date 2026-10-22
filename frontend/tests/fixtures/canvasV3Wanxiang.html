@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>万相 3.0 全能 · 隔离联调</title>
+    <style>
+      body {
+        margin: 0;
+      }
+      .wanxiang-fixture-workspace {
+        background-image: radial-gradient(#353535 0.6px, transparent 0.6px);
+        background-size: 16px 16px;
+      }
+      .wanxiang-fixture-note {
+        position: absolute;
+        bottom: 20px;
+        left: 44px;
+        color: #929292;
+        font-size: 12px;
+      }
+      .wanxiang-fixture-request {
+        position: absolute;
+        right: 30px;
+        top: 50px;
+        width: min(400px, 32vw);
+        max-height: calc(100dvh - 150px);
+        overflow: auto;
+        color: #bbb;
+        font: 12px/1.6 monospace;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="cv3-app-shell"><div id="app" style="height: 100%"></div></main>
+    <script type="module" src="./canvasV3Wanxiang.js"></script>
+  </body>
+</html>

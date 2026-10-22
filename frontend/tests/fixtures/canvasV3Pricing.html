@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>米值预估 · 隔离验收</title>
+    <style>
+      body {
+        margin: 0;
+      }
+      .pricing-fixture {
+        background: radial-gradient(#353535 0.6px, transparent 0.6px) 0 0 / 16px 16px;
+      }
+      .pricing-fixture-tools {
+        position: absolute;
+        top: 20px;
+        left: 40px;
+        display: flex;
+        gap: 12px;
+      }
+      .pricing-fixture-tools button {
+        padding: 8px 14px;
+        border: 1px solid #424242;
+        border-radius: 8px;
+        background: #262626;
+        color: #ddd;
+      }
+      .pricing-fixture-note {
+        position: absolute;
+        bottom: 24px;
+        left: 40px;
+        font-size: 12px;
+        color: #999;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="cv3-app-shell"><div id="app" style="height: 100%"></div></main>
+    <script type="module" src="./canvasV3Pricing.js"></script>
+  </body>
+</html>

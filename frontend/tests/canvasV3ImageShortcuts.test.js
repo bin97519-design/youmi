@@ -90,7 +90,13 @@ test('every replacement uses its own prompt, keeps supplementary text, never cre
     assert.ok(!request.prompt.includes('旧模块自定义提示词'))
     assert.equal(request.n, 1)
     if (item.id === 'panorama-720') {
-      assert.equal(request.size, '2:1')
+      // The selected Banana model must never receive the preset's unsupported 2:1.
+      assert.equal(request.size, '16:9')
+      assert.equal(
+        imageTaskRequest({ data: { ...data, ...patch, model: 'tt-image-2.5' } }, [], 'tt-panorama')
+          .size,
+        '2:1',
+      )
       assert.equal(request.resolution, '2K')
     }
   }

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Kling 模式菜单 · 隔离视觉验收</title>
+    <style>
+      body {
+        margin: 0;
+      }
+      .kling-fixture-workspace {
+        background-image: radial-gradient(#353535 0.6px, transparent 0.6px);
+        background-size: 16px 16px;
+      }
+      .kling-fixture-note {
+        position: absolute;
+        bottom: 24px;
+        left: 44px;
+        margin: 0;
+        color: #929292;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="cv3-app-shell"><div id="app" style="height: 100%"></div></main>
+    <script type="module" src="./canvasV3KlingModes.js"></script>
+  </body>
+</html>

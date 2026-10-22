@@ -1,5 +1,6 @@
 package com.youmi.api.image;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -43,5 +44,15 @@ public final class ModelApiKeyDtos {
       LocalDateTime createdAt,
       LocalDateTime updatedAt) {}
 
-  public record ModelOption(String value, String label, String provider) {}
+  public record ModelOption(String value, String label, String provider,
+      @JsonInclude(JsonInclude.Include.NON_NULL) String model,
+      @JsonInclude(JsonInclude.Include.NON_NULL) String defaultVersion) {
+    public ModelOption(String value, String label, String provider) {
+      this(value, label, provider, null, null);
+    }
+
+    public ModelOption(String value, String label, String provider, String model) {
+      this(value, label, provider, model, null);
+    }
+  }
 }

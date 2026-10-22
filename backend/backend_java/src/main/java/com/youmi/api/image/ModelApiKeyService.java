@@ -68,17 +68,24 @@ public class ModelApiKeyService {
     java.util.Set<Long> selected = java.util.Set.copyOf(featureMappings.selectedKeyIdsIfConfigured(featureCode));
     return repository.list().stream().filter(row -> selected.contains(row.id())
         && row.enabled() && modelType.equals(row.modelType()))
-        .map(row -> new ModelApiKeyDtos.ModelOption(row.model(), row.name(), row.provider())).toList();
+        .map(row -> modelOption(row, row.model())).toList();
   }
 
   public List<ModelApiKeyDtos.ModelOption> enabledRoutedModelOptions(String modelType, String featureCode) {
-    if (!isFeatureMappingConfigured(featureCode)) return enabledModelOptions(modelType, featureCode);
+    if (!isFeatureMappingConfigured(featureCode)) return isProductVideoFeature(featureCode) ? List.of()
+        : enabledRows(modelType).stream().map(row -> routedModelOption(row, row.model())).toList();
     java.util.Set<Long> selected = java.util.Set.copyOf(featureMappings.selectedKeyIdsIfConfigured(featureCode));
     return repository.list().stream().filter(row -> selected.contains(row.id())
         && row.enabled() && modelType.equals(row.modelType()))
-        .map(row -> new ModelApiKeyDtos.ModelOption(
-            FEATURE_ROUTE_OPTION_PREFIX + row.id(), row.name(), row.provider()))
+        .map(row -> routedModelOption(row, FEATURE_ROUTE_OPTION_PREFIX + row.id()))
         .toList();
+  }
+
+  private ModelApiKeyDtos.ModelOption routedModelOption(
+      ModelApiKeyRepository.StoredModelApiKey row, String value) {
+    return MODEL_TYPE_VIDEO_GENERATION.equals(row.modelType())
+        ? new ModelApiKeyDtos.ModelOption(value, row.name(), row.provider(), row.model())
+        : modelOption(row, value);
   }
 
   public Optional<ResolvedModelApiKey> resolveFeatureRouteOption(
@@ -125,8 +132,28 @@ public class ModelApiKeyService {
 
   public List<ModelApiKeyDtos.ModelOption> enabledModelOptions(String modelType) {
     return enabledRows(modelType).stream()
-        .map(row -> new ModelApiKeyDtos.ModelOption(row.model(), row.name(), row.provider()))
+        .map(row -> modelOption(row, row.model()))
         .toList();
+  }
+
+  private ModelApiKeyDtos.ModelOption modelOption(
+      ModelApiKeyRepository.StoredModelApiKey row, String value) {
+    return MODEL_TYPE_IMAGE_GENERATION.equals(row.modelType())
+        ? new ModelApiKeyDtos.ModelOption(value, row.name(), row.provider(), row.model(),
+            defaultTtImage25Version(row))
+        : new ModelApiKeyDtos.ModelOption(value, row.name(), row.provider());
+  }
+
+  private String defaultTtImage25Version(ModelApiKeyRepository.StoredModelApiKey row) {
+    String model = row.model() == null ? "" : row.model().trim().toLowerCase(java.util.Locale.ROOT);
+    if (!java.util.Set.of("tt-image-2.5", "tt-image-2.5-flare", "tt-image-2.5-sunburst",
+        "gpt-image2.5", "gpt-image-2.5").contains(model)) return null;
+    Object configured = defaultDataMap(row.defaultData()).get("version");
+    if (configured instanceof String value) {
+      String version = value.trim().toLowerCase(java.util.Locale.ROOT);
+      if (version.equals("flare") || version.equals("sunburst")) return version;
+    }
+    return model.equals("tt-image-2.5-sunburst") ? "sunburst" : "flare";
   }
 
   private List<ModelApiKeyRepository.StoredModelApiKey> enabledRows(String modelType) {

@@ -64,7 +64,8 @@ test('angle task carries the original reference, deterministic camera instructio
   const request = imageTaskRequest(node, [source], 'angle-idempotency-test')
   assert.deepEqual(request.image_urls, [source.data.assetUrl])
   assert.equal(request.n, 1)
-  assert.equal(request.size, 'auto')
+  // Auto is not a vendor enum for Banana 2.1; use the same supported default shown in the UI.
+  assert.equal(request.size, '16:9')
   assert.equal(request.model, 'banana-2.1')
   assert.equal(request.client_task_id, 'angle-idempotency-test')
   assert.match(request.prompt, /45°/)

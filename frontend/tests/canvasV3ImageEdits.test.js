@@ -43,7 +43,7 @@ test('720 panorama builds a single 2:1 equirectangular request using original im
   const preset = imageEditPreset('panorama-720')
   assert.equal(preset.title, '720°全景图')
   const request = imageTaskRequest(
-    { data: { ...preset, model: 'banana-2.1' } },
+    { data: { ...preset, model: 'tt-image-2.5' } },
     [{ data: { kind: 'image', assetUrl: 'https://example.test/original.jpg' } }],
     'test',
   )
@@ -53,6 +53,13 @@ test('720 panorama builds a single 2:1 equirectangular request using original im
   assert.deepEqual(request.image_urls, ['https://example.test/original.jpg'])
   assert.match(request.prompt, /equirectangular/)
   assert.match(request.prompt, /左右边缘无缝/)
+  // Banana's documented enums do not support this preset's 2:1 ratio.
+  const bananaRequest = imageTaskRequest(
+    { data: { ...preset, model: 'banana-2.1' } },
+    [],
+    'banana-test',
+  )
+  assert.equal(bananaRequest.size, '16:9')
 })
 
 test('emotion generation requires selected face boxes and preserves independent role moods', () => {

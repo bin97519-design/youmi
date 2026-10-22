@@ -25,6 +25,7 @@ public class MinimaxVideoClient {
   public static final String MODEL = "minimax-h3";
   public static final String PREFIX = "minimax-h3:";
   public static final String MAPPED_PREFIX = PREFIX + "key:";
+  public static final String CANVAS_V3_PROFILE = "canvas-v3-minimax-h3";
   public static final String CONFIGURED_MODEL = "hailuo-h3-shouweizhen";
   public static final String CONFIGURED_PREFIX = "hailuo-h3:";
   public static final Set<String> RESOLUTIONS = Set.of("768p", "1080p", "2k", "4k");
@@ -67,6 +68,7 @@ public class MinimaxVideoClient {
   }
 
   public int price(VideoGenerationDtos.CreateTaskRequest request) {
+    if (usesCanvasV3H3(request)) return prepareCanvasV3H3(request).price();
     validate(request);
     int rate = properties.rate(resolution(request));
     boolean configuredModel = usesConfiguredHailuo(request);
@@ -91,7 +93,19 @@ public class MinimaxVideoClient {
     return CONFIGURED_MODEL.equals(model) && hasConfiguredHailuoModel();
   }
 
+  public boolean availableCanvasV3H3() { return properties.isAvailable(); }
+
+  /** Opaque route values must be resolved; editable names never identify an H3 model. */
+  public boolean supportsCanvasV3H3(String model, String featureCode) {
+    String feature = featureCode == null || featureCode.isBlank() ? "canvas-video" : featureCode;
+    if (!"canvas-video".equals(feature) || model == null || model.isBlank()) return false;
+    var credential = resolveCanvasV3H3Credential(model, feature);
+    if (credential.isPresent()) return isNativeH3(credential.get().model());
+    return isNativeH3(model) && (modelApiKeys == null || !modelApiKeys.isFeatureMappingConfigured(feature));
+  }
+
   public VideoGenerationDtos.CreateTaskResponse createTask(VideoGenerationDtos.CreateTaskRequest request) throws Exception {
+    if (usesCanvasV3H3(request)) return createCanvasV3H3Task(request);
     price(request);
     if (usesConfiguredHailuo(request)) return createConfiguredHailuoTask(request);
     Map<String, Object> params = new LinkedHashMap<>();
@@ -114,6 +128,181 @@ public class MinimaxVideoClient {
     result.setProvider(credential.map(ResolvedModelApiKey::provider).orElse("lk888-minimax"));
     result.setModel(request.model());
     result.setTaskId(credential.map(key -> MAPPED_PREFIX + key.id() + ":" + id).orElse(PREFIX + id));
+    result.setStatus("queued");
+    result.setRaw(root);
+    return result;
+  }
+
+  private boolean usesCanvasV3H3(VideoGenerationDtos.CreateTaskRequest request) {
+    return request != null && CANVAS_V3_PROFILE.equals(request.parameterProfile());
+  }
+
+  private boolean isNativeH3(String model) {
+    return model != null && MODEL.equalsIgnoreCase(model.trim());
+  }
+
+  private java.util.Optional<ResolvedModelApiKey> resolveCanvasV3H3Credential(String model, String feature) {
+    if (modelApiKeys == null || model == null) return java.util.Optional.empty();
+    var routed = modelApiKeys.resolveFeatureRouteOption(model,
+        ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, feature);
+    if (routed.isPresent() || model.startsWith(ModelApiKeyService.FEATURE_ROUTE_OPTION_PREFIX)) return routed;
+    if (!isNativeH3(model)) return java.util.Optional.empty();
+    return modelApiKeys.resolve(model.trim(), ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, feature);
+  }
+
+  private record CanvasV3H3Request(ResolvedModelApiKey credential, Map<String, Object> body, int price) {}
+
+  private CanvasV3H3Request prepareCanvasV3H3(VideoGenerationDtos.CreateTaskRequest request) {
+    String feature = request.featureCode() == null || request.featureCode().isBlank()
+        ? "canvas-video" : request.featureCode();
+    var credential = resolveCanvasV3H3Credential(request.model(), feature).orElse(null);
+    if (!"canvas-video".equals(feature) || (credential != null ? !isNativeH3(credential.model())
+        : !isNativeH3(request.model()) || modelApiKeys != null && modelApiKeys.isFeatureMappingConfigured(feature)))
+      throw new ApiException(400, "所选线路不是画布 V3 MiniMax H3 模型，或未绑定到画布视频功能");
+    if (request.prompt() == null || request.prompt().isBlank())
+      throw new ApiException(400, "视频提示词不能为空");
+    String prompt = request.prompt().trim();
+    if (prompt.codePointCount(0, prompt.length()) > 7000)
+      throw new ApiException(400, "MiniMax H3 提示词最多支持 7000 字");
+    if (request.durationSeconds() == null || request.durationSeconds() < 4 || request.durationSeconds() > 15)
+      throw new ApiException(400, "MiniMax H3 时长必须为 4 至 15 的整数秒");
+    String resolution = resolution(request);
+    if (!RESOLUTIONS.contains(resolution))
+      throw new ApiException(400, "MiniMax H3 分辨率仅支持 768P、1080P、2K 或 4K");
+    String ratio = request.ratio() == null || request.ratio().isBlank() ? "adaptive" : request.ratio().trim();
+    if (!RATIOS.contains(ratio)) throw new ApiException(400, "MiniMax H3 不支持该画面比例");
+    List<String> frames = frames(request);
+    List<String> genericImages = validatedMediaUrls(request.imageUrls(), 9, "图片");
+    List<String> referenceImages = validatedMediaUrls(request.referenceImageUrls(), 9, "参考图片");
+    List<String> audios = validatedMediaUrls(request.referenceAudios(), 3, "参考音频");
+    List<VideoGenerationDtos.ReferenceVideo> videos = request.referenceVideos() == null
+        ? List.of() : request.referenceVideos();
+    if (videos.size() > 3) throw new ApiException(400, "MiniMax H3 最多支持 3 个参考视频");
+    List<String> videoUrls = new ArrayList<>();
+    for (var video : videos) {
+      if (video == null || video.url() == null) throw new ApiException(400, "MiniMax H3 参考视频地址不能为空");
+      String url = video.url().trim();
+      requireUrl(url);
+      if (video.durationSeconds() != null && (!Double.isFinite(video.durationSeconds()) || video.durationSeconds() <= 0))
+        throw new ApiException(400, "MiniMax H3 参考视频时长须为正数");
+      videoUrls.add(url);
+    }
+    // Saved UI mode is no longer authoritative: actual media defines the wire mode.
+    // Explicit reference fields remain references, while unassigned 1-2 images
+    // are positional frames. Audio/video always uses multimodal reference mode.
+    boolean multimodal = !videos.isEmpty() || !audios.isEmpty();
+    boolean referenceMode = multimodal || !referenceImages.isEmpty()
+        || genericImages.size() > 2 || frames.isEmpty() && genericImages.isEmpty();
+    String mode = referenceMode ? "cankaosheng" : "shouweizhen";
+    if ("shouweizhen".equals(mode)) {
+      if (frames.isEmpty()) frames = genericImages;
+      else if (!genericImages.isEmpty())
+        throw new ApiException(400, "MiniMax H3 首尾帧不能同时使用未分配角色的图片字段");
+      if (frames.size() > 2) throw new ApiException(400, "MiniMax H3 首尾帧最多支持 2 张图片");
+    } else {
+      if (!multimodal && !frames.isEmpty())
+        throw new ApiException(400, "MiniMax H3 参考图片不能与首尾帧混用");
+      List<String> combined = new ArrayList<>(frames);
+      combined.addAll(referenceImages);
+      combined.addAll(genericImages);
+      // Do not silently drop positional duplicates or hide excess references.
+      referenceImages = validatedMediaUrls(combined, 9, "参考图片");
+      frames = List.of();
+    }
+    for (String url : frames) requireUrl(url);
+    if (credential != null) validateCanvasV3H3Endpoints(credential);
+    Map<String, Object> params = new LinkedHashMap<>();
+    params.put("mode", mode);
+    params.put("duration", String.valueOf(request.durationSeconds()));
+    params.put("resolution", resolution.toUpperCase(Locale.ROOT));
+    params.put("aspect_ratio", ratio);
+    if (!frames.isEmpty()) params.put("images", frames);
+    if (!referenceImages.isEmpty()) params.put("image_url", referenceImages);
+    if (!videoUrls.isEmpty()) params.put("video_url", videoUrls);
+    if (!audios.isEmpty()) params.put("audio_url", audios);
+    Map<String, Object> body = new LinkedHashMap<>();
+    body.put("model", MODEL);
+    body.put("prompt", prompt);
+    body.put("params", params);
+    if (request.webhookUrl() != null && !request.webhookUrl().isBlank()) {
+      String callback = request.webhookUrl().trim();
+      requireUrl(callback);
+      body.put("notify_url", callback);
+    }
+    if (credential != null) return new CanvasV3H3Request(credential, body, 0);
+    int rate = properties.rate(resolution);
+    if (!properties.hasKey() || rate == 0)
+      throw new ApiException(503, "MiniMax H3 所选分辨率尚未配置接口密钥和输出秒费率");
+    try {
+      int price = Math.multiplyExact(rate, request.durationSeconds());
+      if (!videos.isEmpty()) {
+        int inputRate = properties.inputVideoRate(resolution);
+        if (inputRate == 0) throw new ApiException(503, "MiniMax H3 参考视频输入秒费率尚未配置，不能忽略输入费用");
+        double seconds = 0;
+        for (var video : videos) {
+          if (video.durationSeconds() == null)
+            throw new ApiException(400, "MiniMax H3 参考视频需要提供准确时长以计算输入费用");
+          seconds += video.durationSeconds();
+        }
+        if (!Double.isFinite(seconds) || Math.ceil(seconds) > Integer.MAX_VALUE)
+          throw new ApiException(400, "MiniMax H3 参考视频总时长无效");
+        price = Math.addExact(price, Math.multiplyExact(inputRate, (int) Math.ceil(seconds)));
+      }
+      return new CanvasV3H3Request(null, body, price);
+    } catch (ArithmeticException error) {
+      throw new ApiException(400, "MiniMax H3 视频费用超出可支持范围");
+    }
+  }
+
+  private List<String> validatedMediaUrls(List<String> values, int maximum, String label) {
+    if (values == null) return List.of();
+    if (values.size() > maximum) throw new ApiException(400, "MiniMax H3 " + label + "最多支持 " + maximum + " 个");
+    List<String> result = new ArrayList<>();
+    for (String value : values) {
+      if (value == null || value.isBlank()) throw new ApiException(400, "MiniMax H3 " + label + "地址不能为空");
+      String url = value.trim();
+      requireUrl(url);
+      result.add(url);
+    }
+    return result;
+  }
+
+  private void validateCanvasV3H3Endpoints(ResolvedModelApiKey credential) {
+    try {
+      URI generation = URI.create(credential.generationEndpoint());
+      URI status = URI.create(credential.taskEndpoint().replace("{task_id}", "1").replace("{id}", "1"));
+      requireUrl(generation.toString());
+      requireUrl(status.toString());
+      if (generation.getPath().endsWith("/v1/media/generate") && generation.getQuery() == null
+          && status.getPath().endsWith("/v1/media/status")
+          && (status.getQuery() == null || status.getQuery().matches("(?:[^&]+&)*task_id=[0-9]*(?:&[^&]+)*"))
+          && (credential.taskEndpoint().contains("{task_id}") || credential.taskEndpoint().contains("{id}")
+              || status.getQuery() == null || status.getQuery().matches("(?:[^&]+&)*task_id=[0-9]*"))) return;
+    } catch (Exception ignored) { }
+    throw new ApiException(503, "MiniMax H3 画布 V3 线路必须配置开放 API /v1/media/generate 和 /v1/media/status，不能使用其他协议端点");
+  }
+
+  private VideoGenerationDtos.CreateTaskResponse createCanvasV3H3Task(
+      VideoGenerationDtos.CreateTaskRequest request) throws Exception {
+    var prepared = prepareCanvasV3H3(request);
+    var credential = prepared.credential();
+    JsonNode root;
+    try {
+      root = credential == null ? send("POST", "/v1/media/generate", prepared.body())
+          : sendMappedMinimax(credential, "POST", credential.generationEndpoint(), prepared.body());
+    } catch (ApiException error) {
+      String key = credential == null ? properties.getApiKey() : credential.apiKey();
+      if (key != null && !key.isBlank() && error.getMessage() != null && error.getMessage().contains(key.trim()))
+        throw new ApiException(error.getCode(), error.getMessage().replace(key.trim(), "[redacted]"));
+      throw error;
+    }
+    String id = text(root.path("data"), "task_id");
+    if (!id.matches("[0-9]+"))
+      throw new ApiException(502, "MiniMax H3 未返回有效任务编号，请核对中转站记录后再重试");
+    var result = new VideoGenerationDtos.CreateTaskResponse();
+    result.setProvider(credential == null ? "lk888-minimax" : credential.provider());
+    result.setModel(request.model());
+    result.setTaskId(credential == null ? PREFIX + id : MAPPED_PREFIX + credential.id() + ":" + id);
     result.setStatus("queued");
     result.setRaw(root);
     return result;

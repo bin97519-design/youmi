@@ -15,7 +15,10 @@ test('reference row uses LibTV thumbnail cards with ordered and at-sign overlays
   assert.match(source, /class="cv3-reference-chips"/)
   assert.match(source, /class="cv3-reference-card"/)
   assert.match(source, /class="cv3-reference-thumbnail"/)
-  assert.match(source, /class="cv3-reference-index"[\s\S]*?\{\{ index \+ 1 \}\}/)
+  assert.match(
+    source,
+    /class="cv3-reference-index"[\s\S]*?wanxiangVideo \? wanxiangReferenceLabels\[index\] : index \+ 1/,
+  )
   assert.match(source, /class="cv3-reference-mention"[\s\S]*?aria-label="@"/)
   assert.match(source, />\s*@\s*<\/button>/)
   assert.match(
@@ -109,5 +112,10 @@ test('the generated product never appears as its own reference thumbnail', async
 
   const composer = await readFile(composerUrl, 'utf8')
   assert.match(composer, /imageReferences\(props\.node, graph\.nodes, graph\.edges\)/)
-  assert.doesNotMatch(composer, /imageReferences\([^)]*draft:\s*true/)
+  // Visible chips must not repeat the current image. Pricing intentionally uses
+  // a separate draft:true view to include the source sent by edit generation.
+  assert.match(
+    composer,
+    /const references = computed\(\(\) => imageReferences\(props\.node, graph\.nodes, graph\.edges\)\)/,
+  )
 })

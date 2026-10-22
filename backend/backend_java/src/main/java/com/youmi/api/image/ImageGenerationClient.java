@@ -1026,17 +1026,50 @@ public class ImageGenerationClient {
     int count = request.requestedCount();
     List<String> imageUrls = request.normalizedImageUrls();
     if (imageUrls.size() > 14) imageUrls = imageUrls.subList(0, 14);
+    boolean ttImage25 = isTtImage25Model(upstreamModel);
+    // Old and V2 canvases share feature_code with V3, so new parameter semantics require
+    // an explicit V3 opt-in. Legacy callers must keep the original high / auto behavior.
+    boolean ttCanvasV3Parameters = ttImage25 && "canvas-v3-image".equals(request.parameterProfile());
+    String ttCustomSize = ttCanvasV3Parameters ? validateTtImage25CustomSize(request.customSize()) : null;
+    String ttImageVersion = ttCanvasV3Parameters
+        ? resolveTtImage25Version(request, credential)
+        : isModelApiSunburstRequest(request.model()) ? "sunburst" : "flare";
+    String ttImageQuality = ttCanvasV3Parameters
+        ? validateTtImage25Option(request.quality(), List.of("auto", "low", "medium", "high", "xhigh", "max"),
+            "high", "画质") : "high";
+    String ttImageBackground = ttCanvasV3Parameters
+        ? validateTtImage25Option(request.background(), List.of("auto", "opaque", "transparent"),
+            "auto", "背景") : "auto";
+    boolean banana21CanvasV3Parameters = "banana-2.1".equalsIgnoreCase(upstreamModel)
+        && "canvas-v3-image".equals(request.parameterProfile());
+    String banana21ThinkingLevel = "minimal";
+    boolean banana21WebSearch = true;
+    if (banana21CanvasV3Parameters) {
+      validateBanana21Option(aspectRatio,
+          List.of("1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9",
+              "1:4", "4:1", "1:8", "8:1"), "比例");
+      validateBanana21Option(resolution, List.of("1K", "2K", "4K"), "清晰度");
+      if (request.thinkingLevel() != null && !request.thinkingLevel().isBlank()) {
+        banana21ThinkingLevel = request.thinkingLevel().trim().toLowerCase(java.util.Locale.ROOT);
+        validateBanana21Option(banana21ThinkingLevel, List.of("minimal", "high"), "思考级别");
+      }
+      if (request.webSearch() != null) banana21WebSearch = request.webSearch();
+    }
 
     List<ImageGenerationDtos.TaskRef> tasks = new ArrayList<>();
     ArrayNode rawResponses = objectMapper.createArrayNode();
     for (int index = 0; index < count; index++) {
       Map<String, Object> params = new LinkedHashMap<>();
-      if (isTtImage25Model(upstreamModel)) {
-        params.put("version", isModelApiSunburstRequest(request.model()) ? "sunburst" : "flare");
-        params.put("aspect_ratio", aspectRatio);
-        params.put("resolution", resolution);
-        params.put("quality", "high");
-        params.put("background", "auto");
+      if (ttImage25) {
+        params.put("version", ttImageVersion);
+        if (ttCustomSize == null) {
+          params.put("aspect_ratio", aspectRatio);
+          params.put("resolution", resolution);
+        } else {
+          params.put("size", ttCustomSize);
+        }
+        params.put("quality", ttImageQuality);
+        params.put("background", ttImageBackground);
       } else if (isBananaProModel(upstreamModel)) {
         params.put("aspectRatio", aspectRatio);
         params.put("imageSize", resolution);
@@ -1044,10 +1077,16 @@ public class ImageGenerationClient {
       } else {
         params.put("aspectRatio", aspectRatio);
         params.put("imageSize", resolution);
-        params.put("web_search", true);
-        params.put("thinkingLevel", "minimal");
+        params.put("web_search", banana21WebSearch);
+        params.put("thinkingLevel", banana21ThinkingLevel);
       }
       credential.defaultData().forEach(params::putIfAbsent);
+      // A native custom size overrides both controls, including configured defaults.
+      // Keep the local resolution only as existing billing / task metadata, not upstream input.
+      if (ttCustomSize != null) {
+        params.remove("aspect_ratio");
+        params.remove("resolution");
+      }
       if (!imageUrls.isEmpty()) params.put("images", imageUrls);
 
       Map<String, Object> body = new LinkedHashMap<>();
@@ -1074,7 +1113,7 @@ public class ImageGenerationClient {
         request.model() != null && request.model().startsWith(ModelApiKeyService.FEATURE_ROUTE_OPTION_PREFIX)
             ? credential.model() : request.model(),
         upstreamModel,
-        aspectRatio,
+        ttCustomSize == null ? aspectRatio : ttCustomSize,
         resolution,
         count,
         tasks,
@@ -1135,7 +1174,9 @@ public class ImageGenerationClient {
   private String normalizeModelApiUpstreamModel(String model) {
     if (model == null) return "";
     String trimmed = model.trim();
-    if (trimmed.equalsIgnoreCase("GPT-image2.5")) return "tt-image-2.5";
+    if (trimmed.equalsIgnoreCase("GPT-image2.5") || trimmed.equalsIgnoreCase("gpt-image-2.5")
+        || trimmed.equalsIgnoreCase("tt-image-2.5-flare")
+        || trimmed.equalsIgnoreCase("tt-image-2.5-sunburst")) return "tt-image-2.5";
     return trimmed;
   }
 
@@ -1147,11 +1188,70 @@ public class ImageGenerationClient {
 
   private boolean isModelApiSunburstRequest(String model) {
     return model != null
-        && model.trim().equalsIgnoreCase(MODEL_API_GPT_IMAGE_25_SUNBURST_REQUEST_MODEL);
+        && (model.trim().equalsIgnoreCase(MODEL_API_GPT_IMAGE_25_SUNBURST_REQUEST_MODEL)
+            || model.trim().equalsIgnoreCase("tt-image-2.5-sunburst"));
+  }
+
+  private String resolveTtImage25Version(ImageGenerationDtos.CreateTaskRequest request,
+      ModelApiKeyService.ResolvedModelApiKey credential) {
+    if (request.version() != null && !request.version().isBlank()) {
+      String version = validTtImage25Version(request.version());
+      if (version == null) throw new ApiException(400, "TT Image 2.5 版本必须为 flare 或 sunburst");
+      return version;
+    }
+    String configured = validTtImage25Version(credential.defaultData().get("version"));
+    if (configured != null) return configured;
+    return isModelApiSunburstRequest(request.model()) || isModelApiSunburstRequest(credential.model())
+        ? "sunburst" : "flare";
+  }
+
+  private String validTtImage25Version(Object value) {
+    if (!(value instanceof String text)) return null;
+    String normalized = text.trim().toLowerCase(java.util.Locale.ROOT);
+    return normalized.equals("flare") || normalized.equals("sunburst") ? normalized : null;
+  }
+
+  private String validateTtImage25Option(String value, List<String> allowed, String fallback,
+      String label) {
+    if (value == null || value.isBlank()) return fallback;
+    String normalized = value.trim().toLowerCase(java.util.Locale.ROOT);
+    if (!allowed.contains(normalized)) {
+      throw new ApiException(400, "TT Image 2.5 " + label + "必须为 " + String.join("、", allowed));
+    }
+    return normalized;
+  }
+
+  private String validateTtImage25CustomSize(String value) {
+    if (value == null || value.isBlank()) return null;
+    String normalized = value.trim().toLowerCase(java.util.Locale.ROOT);
+    if (normalized.equals("auto")) return "auto";
+    String error = "TT Image 2.5 自定义尺寸必须为 auto 或宽x高；宽高为正的 16 倍数，比例在 1:3 到 3:1 之间，总像素在 655360 到 8294400 之间";
+    if (!normalized.matches("[0-9]+x[0-9]+")) throw new ApiException(400, error);
+    String[] dimensions = normalized.split("x", 2);
+    try {
+      long width = Long.parseLong(dimensions[0]);
+      long height = Long.parseLong(dimensions[1]);
+      // Bound edges first so all pixel and ratio arithmetic below remains overflow-safe.
+      if (width <= 0 || height <= 0 || width > 8_294_400L || height > 8_294_400L
+          || width % 16 != 0 || height % 16 != 0
+          || width > 3 * height || height > 3 * width
+          || width * height < 655_360L || width * height > 8_294_400L) {
+        throw new ApiException(400, error);
+      }
+      return width + "x" + height;
+    } catch (NumberFormatException invalidNumber) {
+      throw new ApiException(400, error);
+    }
   }
 
   private boolean isBananaProModel(String model) {
     return model != null && model.trim().equalsIgnoreCase("banana-pro");
+  }
+
+  private void validateBanana21Option(String value, List<String> allowed, String label) {
+    if (!allowed.contains(value)) {
+      throw new ApiException(400, "Banana 2.1 " + label + "必须为 " + String.join("、", allowed));
+    }
   }
 
   private String modelApiCreateError(String provider, JsonNode root) {

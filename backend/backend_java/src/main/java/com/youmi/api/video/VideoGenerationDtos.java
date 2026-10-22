@@ -7,9 +7,17 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.JsonDeserializer;
+import com.fasterxml.jackson.databind.DeserializationContext;
+import com.fasterxml.jackson.databind.JsonMappingException;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonToken;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * 视频生成模块的 DTO 集合。
@@ -19,12 +27,27 @@ public class VideoGenerationDtos {
   public record ReferenceVideo(String url,
       @JsonProperty("durationSeconds") @JsonAlias("duration") Double durationSeconds) {}
 
+  /** Never truncate a fractional output duration before model validation. */
+  public static final class DurationSecondsDeserializer extends JsonDeserializer<Integer> {
+    @Override public Integer deserialize(JsonParser parser, DeserializationContext context) throws IOException {
+      if (parser.currentToken() == JsonToken.VALUE_NUMBER_INT) return parser.getIntValue();
+      if (parser.currentToken() == JsonToken.VALUE_STRING) {
+        String value = parser.getText().trim();
+        if (value.matches("[+-]?[0-9]+")) {
+          try { return Integer.valueOf(value); } catch (NumberFormatException ignored) { }
+        }
+      }
+      throw JsonMappingException.from(parser, "视频时长必须为整数秒，不能包含小数");
+    }
+  }
+
   /** 视频创建请求体 */
   public record CreateTaskRequest(
       @JsonProperty("prompt") String prompt,
       @JsonProperty("model") String model,
       @JsonProperty("ratio") @JsonAlias("aspectRatio") String ratio,
-      @JsonProperty("durationSeconds") @JsonAlias("duration") Integer durationSeconds,
+      @JsonProperty("durationSeconds") @JsonAlias("duration")
+      @JsonDeserialize(using = DurationSecondsDeserializer.class) Integer durationSeconds,
       @JsonProperty("resolution") String resolution,
       @JsonProperty("image_urls") @JsonAlias({"imageUrls", "images"}) List<String> imageUrls,
       @JsonProperty("first_frame_url") @JsonAlias("firstFrameUrl") String firstFrameUrl,
@@ -32,15 +55,92 @@ public class VideoGenerationDtos {
       @JsonProperty("negative_prompt") @JsonAlias("negativePrompt") String negativePrompt,
       @JsonProperty("generate_audio") @JsonAlias("generateAudio") Boolean generateAudio,
       @JsonProperty("seed") Long seed,
-      @JsonProperty("webhook_url") @JsonAlias("webhookUrl") String webhookUrl,
+      @JsonProperty("webhook_url") @JsonAlias({"webhookUrl", "notify_url"}) String webhookUrl,
       @JsonProperty("client_task_id") @JsonAlias("clientTaskId") String clientTaskId,
       @JsonProperty("feature_code") String featureCode,
       @JsonProperty("reference_videos") @JsonAlias("referenceVideos")
-      @JsonInclude(JsonInclude.Include.NON_EMPTY) List<ReferenceVideo> referenceVideos) {
+      @JsonInclude(JsonInclude.Include.NON_EMPTY) List<ReferenceVideo> referenceVideos,
+      @JsonProperty("parameter_profile") @JsonInclude(JsonInclude.Include.NON_EMPTY) String parameterProfile,
+      @JsonProperty("reference_image_urls") @JsonAlias("referenceImageUrls")
+      @JsonInclude(JsonInclude.Include.NON_EMPTY) List<String> referenceImageUrls,
+      @JsonProperty("reference_audios") @JsonAlias("referenceAudios")
+      @JsonInclude(JsonInclude.Include.NON_EMPTY) List<String> referenceAudios,
+      @JsonProperty("web_search") @JsonInclude(JsonInclude.Include.NON_NULL) Boolean webSearch,
+      @JsonProperty("mode") @JsonInclude(JsonInclude.Include.NON_EMPTY) String mode,
+      @JsonProperty("version") @JsonInclude(JsonInclude.Include.NON_EMPTY) String version,
+      @JsonProperty("omni_params") @JsonAlias("omniParams")
+      @JsonInclude(JsonInclude.Include.NON_EMPTY) Map<String, Object> omniParams,
+      @JsonProperty("wanxiang_params") @JsonAlias("wanxiangParams")
+      @JsonInclude(JsonInclude.Include.NON_EMPTY) Map<String, Object> wanxiangParams,
+      @JsonProperty("reference_audio_media") @JsonAlias("referenceAudioMedia")
+      @JsonInclude(JsonInclude.Include.NON_EMPTY) List<ReferenceVideo> referenceAudioMedia) {
 
     public CreateTaskRequest {
       referenceVideos = referenceVideos == null || referenceVideos.isEmpty() ? List.of()
           : java.util.Collections.unmodifiableList(new ArrayList<>(referenceVideos));
+      referenceImageUrls = referenceImageUrls == null || referenceImageUrls.isEmpty() ? List.of()
+          : java.util.Collections.unmodifiableList(new ArrayList<>(referenceImageUrls));
+      referenceAudios = referenceAudios == null || referenceAudios.isEmpty() ? List.of()
+          : java.util.Collections.unmodifiableList(new ArrayList<>(referenceAudios));
+      omniParams = omniParams == null || omniParams.isEmpty() ? Map.of()
+          : java.util.Collections.unmodifiableMap(new LinkedHashMap<>(omniParams));
+      wanxiangParams = wanxiangParams == null || wanxiangParams.isEmpty() ? Map.of()
+          : java.util.Collections.unmodifiableMap(new LinkedHashMap<>(wanxiangParams));
+      referenceAudioMedia = referenceAudioMedia == null || referenceAudioMedia.isEmpty() ? List.of()
+          : java.util.Collections.unmodifiableList(new ArrayList<>(referenceAudioMedia));
+    }
+
+    /** Keep all existing video adapters and callers source compatible. */
+    public CreateTaskRequest(String prompt, String model, String ratio, Integer durationSeconds,
+        String resolution, List<String> imageUrls, String firstFrameUrl, String lastFrameUrl,
+        String negativePrompt, Boolean generateAudio, Long seed, String webhookUrl, String clientTaskId,
+        String featureCode, List<ReferenceVideo> referenceVideos, String parameterProfile,
+        List<String> referenceImageUrls, List<String> referenceAudios, Boolean webSearch, String mode,
+        String version, Map<String, Object> omniParams) {
+      this(prompt, model, ratio, durationSeconds, resolution, imageUrls, firstFrameUrl, lastFrameUrl,
+          negativePrompt, generateAudio, seed, webhookUrl, clientTaskId, featureCode, referenceVideos,
+          parameterProfile, referenceImageUrls, referenceAudios, webSearch, mode, version, omniParams,
+          Map.of(), List.of());
+    }
+
+    public CreateTaskRequest(String prompt, String model, String ratio, Integer durationSeconds,
+        String resolution, List<String> imageUrls, String firstFrameUrl, String lastFrameUrl,
+        String negativePrompt, Boolean generateAudio, Long seed, String webhookUrl, String clientTaskId,
+        String featureCode, List<ReferenceVideo> referenceVideos, String parameterProfile,
+        List<String> referenceImageUrls, List<String> referenceAudios, Boolean webSearch, String mode,
+        String version) {
+      this(prompt, model, ratio, durationSeconds, resolution, imageUrls, firstFrameUrl, lastFrameUrl,
+          negativePrompt, generateAudio, seed, webhookUrl, clientTaskId, featureCode, referenceVideos,
+          parameterProfile, referenceImageUrls, referenceAudios, webSearch, mode, version, Map.of());
+    }
+
+    public CreateTaskRequest(String prompt, String model, String ratio, Integer durationSeconds,
+        String resolution, List<String> imageUrls, String firstFrameUrl, String lastFrameUrl,
+        String negativePrompt, Boolean generateAudio, Long seed, String webhookUrl, String clientTaskId,
+        String featureCode, List<ReferenceVideo> referenceVideos, String parameterProfile,
+        List<String> referenceImageUrls, List<String> referenceAudios, Boolean webSearch, String mode) {
+      this(prompt, model, ratio, durationSeconds, resolution, imageUrls, firstFrameUrl, lastFrameUrl,
+          negativePrompt, generateAudio, seed, webhookUrl, clientTaskId, featureCode, referenceVideos,
+          parameterProfile, referenceImageUrls, referenceAudios, webSearch, mode, null);
+    }
+
+    public CreateTaskRequest(String prompt, String model, String ratio, Integer durationSeconds,
+        String resolution, List<String> imageUrls, String firstFrameUrl, String lastFrameUrl,
+        String negativePrompt, Boolean generateAudio, Long seed, String webhookUrl, String clientTaskId,
+        String featureCode, List<ReferenceVideo> referenceVideos, String parameterProfile,
+        List<String> referenceImageUrls, List<String> referenceAudios, Boolean webSearch) {
+      this(prompt, model, ratio, durationSeconds, resolution, imageUrls, firstFrameUrl, lastFrameUrl,
+          negativePrompt, generateAudio, seed, webhookUrl, clientTaskId, featureCode, referenceVideos,
+          parameterProfile, referenceImageUrls, referenceAudios, webSearch, null);
+    }
+
+    public CreateTaskRequest(String prompt, String model, String ratio, Integer durationSeconds,
+        String resolution, List<String> imageUrls, String firstFrameUrl, String lastFrameUrl,
+        String negativePrompt, Boolean generateAudio, Long seed, String webhookUrl, String clientTaskId,
+        String featureCode, List<ReferenceVideo> referenceVideos) {
+      this(prompt, model, ratio, durationSeconds, resolution, imageUrls, firstFrameUrl, lastFrameUrl,
+          negativePrompt, generateAudio, seed, webhookUrl, clientTaskId, featureCode, referenceVideos,
+          null, List.of(), List.of(), null);
     }
 
     public CreateTaskRequest(String prompt, String model, String ratio, Integer durationSeconds,

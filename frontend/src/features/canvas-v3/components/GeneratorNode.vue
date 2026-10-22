@@ -6,6 +6,7 @@ import { nodeSpec } from '../config/nodeSpecs'
 import { nodeSize } from '../config/nodeControls'
 import CanvasIcon from './CanvasIcon.vue'
 import GenerationPixelField from './GenerationPixelField.vue'
+import VideoNodePlayer from './VideoNodePlayer.vue'
 import { useCanvasV3TaskStore } from '../stores/tasks'
 import { IMAGE_TASK_ACTIVE_STATES, imageTaskFeedback } from '../config/imageTaskState'
 import { magneticHandleHome, magneticHandleOffset } from '../config/magneticHandle'
@@ -15,9 +16,11 @@ const props = defineProps({
   zoom: { type: Number, default: 1 },
   selected: Boolean,
 })
+const emit = defineEmits(['video-snapshot', 'video-expand', 'video-time'])
 const graph = useCanvasV3GraphStore()
 const tasks = useCanvasV3TaskStore()
 const generating = computed(() => IMAGE_TASK_ACTIVE_STATES.includes(props.data.runState))
+const pixelFeedback = computed(() => ['image', 'video'].includes(props.data.kind))
 const interrupted = computed(() => ['paused', 'uncertain'].includes(props.data.runState))
 const showImage = computed(
   () =>
@@ -33,6 +36,25 @@ function recordMediaSize(event) {
     (props.data.mediaWidth !== naturalWidth || props.data.mediaHeight !== naturalHeight)
   )
     graph.updateNodeData(props.id, { mediaWidth: naturalWidth, mediaHeight: naturalHeight })
+}
+function recordMediaDuration(event) {
+  const duration = event.target.duration
+  if (Number.isFinite(duration) && duration > 0 && props.data.mediaDuration !== duration)
+    graph.updateNodeData(props.id, { mediaDuration: duration })
+}
+function recordVideoMetadata({ width, height, duration }) {
+  const patch = {}
+  if (
+    width > 0 &&
+    height > 0 &&
+    (props.data.mediaWidth !== width || props.data.mediaHeight !== height)
+  ) {
+    patch.mediaWidth = width
+    patch.mediaHeight = height
+  }
+  if (Number.isFinite(duration) && duration > 0 && props.data.mediaDuration !== duration)
+    patch.mediaDuration = duration
+  if (Object.keys(patch).length) graph.updateNodeData(props.id, patch)
 }
 const spec = computed(() => nodeSpec(props.data.kind))
 const size = computed(() => nodeSize(props.data.kind, props.data))
@@ -70,7 +92,15 @@ function resetHandlePointer(event) {
 <template>
   <article
     class="cv3-media-node"
-    :class="[{ selected, 'is-text': isText, 'is-generating': generating }, 'is-' + data.kind]"
+    :class="[
+      {
+        selected,
+        'is-text': isText,
+        'is-generating': generating,
+        'is-grouped': Boolean(data.groupId),
+      },
+      'is-' + data.kind,
+    ]"
     :aria-busy="generating"
     :style="{
       width: size.width + 'px',
@@ -129,13 +159,13 @@ function resetHandlePointer(event) {
         @load="recordMediaSize"
       />
       <GenerationPixelField
-        v-if="generating && data.kind === 'image'"
+        v-if="generating && pixelFeedback"
         :seed="data.generation?.clientTaskId || id"
       />
       <div
         v-if="generating"
         class="cv3-generation-center nodrag"
-        :class="{ 'is-pixel-feedback': data.kind === 'image' }"
+        :class="{ 'is-pixel-feedback': pixelFeedback }"
         role="status"
         aria-live="polite"
       >
@@ -159,12 +189,16 @@ function resetHandlePointer(event) {
         <span>{{ data.runState === 'uncertain' ? '任务待确认' : '已停止等待' }}</span>
         <button type="button" @click.stop="tasks.resume(id)">继续查询</button>
       </div>
-      <video
+      <VideoNodePlayer
         v-else-if="data.assetUrl && data.kind === 'video'"
-        class="cv3-node-media nodrag"
-        :src="data.assetUrl"
-        controls
-        preload="metadata"
+        :source="data.assetUrl"
+        :title="data.title"
+        :poster="data.posterUrl || data.thumbnail || ''"
+        :selected="selected"
+        @metadata="recordVideoMetadata"
+        @snapshot="emit('video-snapshot', { nodeId: id, ...$event })"
+        @expand="emit('video-expand', id)"
+        @time="emit('video-time', { nodeId: id, time: $event })"
       />
       <audio
         v-else-if="data.assetUrl && data.kind === 'audio'"
@@ -172,6 +206,7 @@ function resetHandlePointer(event) {
         :src="data.assetUrl"
         controls
         preload="metadata"
+        @loadedmetadata="recordMediaDuration"
       />
       <div
         v-else-if="!showImage"
@@ -181,11 +216,11 @@ function resetHandlePointer(event) {
         <CanvasIcon :name="data.kind" :size="42" />
         <span v-if="data.kind === 'smartEdit'">空空如也，请连接视频节点后操作</span>
         <template v-if="data.runState === 'failed'">
-          <span>{{ data.error || '图片生成失败' }}</span>
+          <span>{{ data.error || (data.kind === 'video' ? '视频生成失败' : '图片生成失败') }}</span>
           <button
             type="button"
             class="cv3-generation-retry nodrag"
-            @click.stop="tasks.runImage(id)"
+            @click.stop="data.kind === 'video' ? tasks.runVideo(id) : tasks.runImage(id)"
           >
             重新生成
           </button>
@@ -237,3 +272,17 @@ function resetHandlePointer(event) {
     </Handle>
   </article>
 </template>
+
+<style scoped>
+/* A persistent container owns the screen-fixed title/toolbar. Its child labels
+   stay in canvas space, so narrow cards cannot spill across adjacent members. */
+.cv3-media-node.is-grouped > .cv3-media-node-label {
+  bottom: calc(100% + 8px);
+  width: 100%;
+  font-size: 16px;
+  transform: none;
+}
+.cv3-media-node.is-grouped:not(:hover) .cv3-handle {
+  opacity: 0;
+}
+</style>

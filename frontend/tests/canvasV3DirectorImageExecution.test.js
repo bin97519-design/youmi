@@ -103,6 +103,10 @@ const componentPromise = readFile(componentUrl, 'utf8').then(async (source) => {
       `from '${new URL('../src/features/canvas-v3/config/directorImageExecution.js', import.meta.url).href}'`,
     )
     .replace(
+      /from (["'])\.\.\/config\/imageModelVersions\.js\1/g,
+      `from '${new URL('../src/features/canvas-v3/config/imageModelVersions.js', import.meta.url).href}'`,
+    )
+    .replace(
       /from (["'])\.\.\/\.\.\/\.\.\/utils\/imageMiPricing\.js\1/g,
       `from '${new URL('../src/utils/imageMiPricing.js', import.meta.url).href}'`,
     )
@@ -206,6 +210,34 @@ test('execution card uses native labeled selects and confirms only explicit choi
   ])
   all(root, (target) => target.type === 'button' && text(target) === '定位节点')[0].props.onClick()
   assert.deepEqual(events.at(-1), ['locate'])
+  app.unmount()
+})
+
+test('one image-2.5 menu entry keeps an existing enhanced route through refresh and confirmation', async () => {
+  const ttModels = [
+    { value: 'model-api-key:44', model: 'tt-image-2.5', label: '快速', defaultVersion: 'flare' },
+    { value: 'model-api-key:45', model: 'tt-image-2.5', label: '高质', defaultVersion: 'sunburst' },
+  ]
+  const { root, events, state, app } = await mountCard({
+    models: [ttModels[0], configuredModels[0], ttModels[1]],
+    configuration: { ...settings, model: ttModels[1].value },
+  })
+  const select = () => all(root, (target) => target.type === 'select')[0]
+  const selectable = () => all(select(), (target) => target.type === 'option' && target.props.value)
+  assert.deepEqual(
+    selectable().map((option) => option.props.value),
+    [ttModels[1].value, configuredModels[0].value],
+  )
+  assert.equal(text(selectable()[0]), 'image-2.5')
+  assert.equal(select().props.value, ttModels[1].value)
+  state.models = [...ttModels].reverse()
+  await nextTick()
+  assert.equal(select().props.value, ttModels[1].value)
+  assert.equal(selectable().length, 1)
+  assert.deepEqual(events, [])
+  submit(root)
+  assert.deepEqual(events, [['confirm', { ...settings, model: ttModels[1].value }]])
+  assert.equal(ttModels[1].label, '高质')
   app.unmount()
 })
 

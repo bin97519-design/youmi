@@ -71,8 +71,61 @@ import EdgeFlowSegments from './EdgeFlowSegments.vue'
 import ConnectionPreview from './ConnectionPreview.vue'
 import PortraitEmotionPanel from './PortraitEmotionPanel.vue'
 import PanoramaViewer from './PanoramaViewer.vue'
+import ImageContextMenu from './ImageContextMenu.vue'
+import ImageSaveAssetDialog from './ImageSaveAssetDialog.vue'
+import ImageCreateSubjectDialog from './ImageCreateSubjectDialog.vue'
+import ImageComplianceDialog from './ImageComplianceDialog.vue'
+import VideoContextMenu from './VideoContextMenu.vue'
+import VideoActionToolbar from './VideoActionToolbar.vue'
+import VideoPreviewDialog from './VideoPreviewDialog.vue'
+import VideoSaveAssetDialog from './VideoSaveAssetDialog.vue'
+import VideoActionStatusDialog from './VideoActionStatusDialog.vue'
+import SelectionActionToolbar from './SelectionActionToolbar.vue'
+import SelectionSaveAssetDialog from './SelectionSaveAssetDialog.vue'
+import GroupActionToolbar from './GroupActionToolbar.vue'
+import GroupFrame from './GroupFrame.vue'
+import GroupWorkflowDialog from './GroupWorkflowDialog.vue'
+import { canvasSelectionBounds } from '../config/selectionGeometry.js'
+import { canvasGroupBounds } from '../config/groupGeometry.js'
+import { groupAtPointer } from '../config/groupHover.js'
+import { normalizedGroupColor } from '../config/groupAppearance.js'
+import { createGroupFrameResize } from '../sync/groupFrameResize.js'
+import { createGroupConnectionDrag } from '../sync/groupConnectionDrag.js'
+import {
+  groupExecutionPlan,
+  groupExecutionApprovalSignature,
+  createGroupExecutionRunner,
+} from '../config/groupExecution.js'
+import {
+  loadGroupToolbox,
+  saveGroupToolbox,
+  removeGroupToolbox,
+  groupToolboxSnapshot,
+} from '../config/groupToolbox.js'
+import { createSelectionFrameDrag, moveSelectedByKey } from '../sync/selectionFrameDrag.js'
+import {
+  createCanvasSelectionDownloadClient,
+  saveCanvasSelectionArchive,
+} from '../sync/canvasSelectionDownload.js'
+import VideoEnhanceDialog from '../../../components/canvas/VideoEnhanceDialog.vue'
+import { videoSavedAssetInfo } from '../sync/videoSavedAssetClient.js'
+import { createVideoNodeActions } from '../sync/videoNodeActions.js'
+import { copyCanvasImage } from '../sync/imageClipboard.js'
+import {
+  createNodeClipboard,
+  serializeNodeClipboard,
+  parseNodeClipboard,
+  isNodeClipboardCopyBlocked,
+} from '../config/nodeClipboard.js'
 import MultiAngleEditor from './MultiAngleEditor.vue'
 import { canvasGestures } from '../config/canvasGestures'
+import { MAX_IMAGE_UPLOAD_BYTES, uploadFileDirect } from '../../../utils/ossUpload.js'
+import {
+  canvasImageFiles,
+  canvasImageTargetIsEditable,
+  canvasTransferHasFiles,
+  createCanvasImageImporter,
+} from '../sync/canvasImageImport.js'
 
 const props = defineProps({ projectId: { type: String, required: true } })
 const router = useRouter()
@@ -86,6 +139,24 @@ const { activePanel, minimapVisible, snapToGrid, tool, mode } = storeToRefs(ui)
 const { saveStatus, saveNow } = useCanvasV3Persistence(props.projectId, graph)
 const canvasWrap = ref(null)
 const agentOrb = ref(null)
+const directorPanel = ref(null)
+const selectionDragging = ref(false)
+const selectionSaveNodes = ref(null)
+const selectionDownloading = ref(false)
+const selectionFrameDragging = ref(false)
+let selectionDownloadRequest = null
+const groupWorkflow = ref(null)
+const groupWorkflowError = ref('')
+const groupToolboxTemplates = ref([])
+const groupExecuting = ref(false)
+const groupExecutionProgress = ref('')
+const groupResizing = ref(false)
+const pendingGroupConnection = ref(null)
+const groupHoverPoint = ref(null)
+const groupConnectionPreview = ref(null)
+const groupConnectionResetKey = ref(0)
+let suppressGroupContextMenuUntil = 0
+let groupExecutionRequest = null
 const DIRECTOR_MODE_KEY = 'libtv:chatAgentDrawer:mode'
 const DIRECTOR_WIDTH_KEY = 'libtv:chatAgentDrawer:width'
 const directorAgentRuns = ref([])
@@ -154,6 +225,381 @@ let connectionMade = false
 let suppressPaneClick = false
 const previewImage = ref('')
 const previewPanorama = ref(false)
+const imageContext = ref(null)
+const imageDialog = ref(null)
+const videoContext = ref(null)
+const videoDialog = ref(null)
+const previewVideo = ref(null)
+const videoMediaBusy = ref(false)
+const videoTimes = new Map()
+const videoContextNode = computed(() =>
+  nodes.value.find((node) => node.id === videoContext.value?.nodeId),
+)
+const videoActions = createVideoNodeActions({
+  graph,
+  getScope: () => `${props.projectId}:${user.profile?.id || ''}`,
+  onBusy: (busy) => (videoMediaBusy.value = busy),
+})
+const assetRevision = ref(0)
+let imageClipboardRequest = null
+const imageContextNode = computed(() =>
+  nodes.value.find((node) => node.id === imageContext.value?.nodeId),
+)
+const imageContextLocked = computed(() => {
+  const selected = nodes.value.filter((node) => node.selected)
+  return selected.some((node) => isNodeClipboardCopyBlocked(JSON.parse(JSON.stringify(node))))
+})
+function imageActionNotice(message, error = false) {
+  imageImportStatus.value = { busy: false, message, error }
+}
+function openImageContextMenu({ event, node }) {
+  if (node.data.kind === 'video' && node.data.assetUrl) {
+    if (imageDialog.value || videoDialog.value || previewVideo.value) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (!node.selected) {
+      nodes.value.forEach((item) => (item.selected = item.id === node.id))
+      edges.value.forEach((edge) => (edge.selected = false))
+    }
+    clearPendingReference()
+    imageContext.value = null
+    videoContext.value = { nodeId: node.id, x: event.clientX, y: event.clientY }
+    return
+  }
+  if (
+    node.data.kind !== 'image' ||
+    !node.data.assetUrl ||
+    imageDialog.value ||
+    videoDialog.value ||
+    previewVideo.value
+  )
+    return
+  event.preventDefault()
+  event.stopPropagation()
+  if (!node.selected) {
+    nodes.value.forEach((item) => (item.selected = item.id === node.id))
+    edges.value.forEach((edge) => (edge.selected = false))
+  }
+  clearPendingReference()
+  videoContext.value = null
+  imageContext.value = { nodeId: node.id, x: event.clientX, y: event.clientY }
+}
+
+function videoTimeChanged({ nodeId, time }) {
+  if (Number.isFinite(time) && time >= 0) videoTimes.set(nodeId, time)
+}
+function closeVideoPreview() {
+  videoActions.cancel()
+  previewVideo.value = null
+}
+function openVideoPreview(nodeId) {
+  const node = nodes.value.find((item) => item.id === nodeId)
+  if (!node || node.data.kind !== 'video' || !node.data.assetUrl) return
+  previewVideo.value = {
+    nodeId,
+    source: node.data.assetUrl,
+    title: node.data.title || '视频预览',
+    poster: node.data.posterUrl || node.data.thumbnail || '',
+    time: videoTimes.get(nodeId) || 0,
+  }
+}
+async function handleVideoSnapshot({ nodeId, time, position = 'current' }) {
+  try {
+    await videoActions.frame(nodeId, {
+      time: time ?? videoTimes.get(nodeId) ?? 0,
+      position,
+      addToCanvas: true,
+    })
+    imageActionNotice('已截取真实视频帧并加入画布')
+  } catch (error) {
+    if (error.name !== 'AbortError') imageActionNotice(error.message || '视频截帧失败', true)
+  }
+}
+async function downloadCanvasVideo(nodeId) {
+  try {
+    const result = await videoActions.download(nodeId)
+    const url = URL.createObjectURL(result.blob)
+    const link = document.createElement('a')
+    try {
+      link.href = url
+      link.download = result.filename
+      link.style.display = 'none'
+      document.body.appendChild(link)
+      link.click()
+    } finally {
+      link.remove()
+      // Allow the browser's download consumer to acquire the Blob first.
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+    }
+    imageActionNotice('已发起原视频下载')
+  } catch (error) {
+    if (error.name !== 'AbortError') imageActionNotice(error.message || '视频下载失败', true)
+  }
+}
+async function handleVideoContextAction(action) {
+  const node = videoContextNode.value
+  const point = videoContext.value && { x: videoContext.value.x, y: videoContext.value.y }
+  videoContext.value = null
+  if (!node) return
+  try {
+    if (action === 'copy-node') await copySelectedNodes()
+    else if (action === 'paste') await pasteFromSystemClipboard(point)
+    else if (action === 'duplicate') graph.duplicateSelected()
+    else if (action === 'delete') graph.removeSelected()
+    else if (action === 'save-asset')
+      videoDialog.value = { kind: action, node: JSON.parse(JSON.stringify(node)) }
+    else if (action === 'compliance')
+      videoDialog.value = { kind: action, node: JSON.parse(JSON.stringify(node)) }
+    else if (action === 'create-subject') {
+      const result = await videoActions.frame(node.id, { time: videoTimes.get(node.id) || 0 })
+      imageDialog.value = { kind: 'create-subject', node: result.sourceNode }
+    } else if (action === 'copy-to-clipboard') {
+      if (!navigator.clipboard?.write || typeof ClipboardItem !== 'function')
+        throw new Error('当前浏览器不支持复制视频帧，请使用截取当前帧')
+      const frame = videoActions.frame(node.id, { time: videoTimes.get(node.id) || 0 })
+      const png = frame.then((result) => result.blob)
+      // Clipboard construction can throw before it starts consuming the promise.
+      // Keep that synchronous rejection path from leaving an unhandled capture.
+      void png.catch(() => {})
+      // Register the clipboard write within the original user activation.
+      await Promise.all([
+        navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]),
+        frame,
+      ])
+      imageActionNotice('当前视频帧已复制到系统剪贴板')
+    }
+  } catch (error) {
+    videoActions.cancel()
+    if (error.name !== 'AbortError') imageActionNotice(error.message || '视频操作失败', true)
+  }
+}
+function handleVideoToolbarAction(action, payload) {
+  const node = graph.activeNode
+  if (!node || node.data.kind !== 'video' || !node.data.assetUrl) return
+  if (action === 'snapshot')
+    return handleVideoSnapshot({ nodeId: node.id, position: payload?.position || 'current' })
+  if (action === 'download') return downloadCanvasVideo(node.id)
+  if (action === 'expand') return openVideoPreview(node.id)
+  videoDialog.value = { kind: action, node: JSON.parse(JSON.stringify(node)) }
+}
+function handleVideoAssetSaved() {
+  assetRevision.value += 1
+  videoDialog.value = null
+  imageActionNotice('视频已保存到个人资产库')
+}
+function importSavedVideo(record) {
+  if (!canImportCanvasImages()) return
+  const asset = videoSavedAssetInfo(record)
+  if (!asset) return imageActionNotice('视频资产地址无效', true)
+  const rect = canvasWrap.value.getBoundingClientRect()
+  const anchor = screenToFlowCoordinate({
+    x: rect.left + rect.width / 2,
+    y: rect.top + rect.height / 2,
+  })
+  const node = graph.addNode('video', anchor)
+  graph.updateNodeData(node.id, {
+    title: record.name || '我的视频资产',
+    assetUrl: asset.url,
+    posterUrl: asset.posterUrl,
+    mediaWidth: asset.width,
+    mediaHeight: asset.height,
+    mediaDuration: asset.duration,
+    mediaOrigin: 'upload',
+    artifactStatus: 'ready',
+    runState: 'idle',
+  })
+}
+function previewSavedVideo(record) {
+  const asset = videoSavedAssetInfo(record)
+  if (!asset) return imageActionNotice('视频资产地址无效', true)
+  const rect = canvasWrap.value.getBoundingClientRect()
+  const transient = {
+    id: `saved-video-${record.id}`,
+    position: screenToFlowCoordinate({
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    }),
+    data: {
+      kind: 'video',
+      title: record.name || '我的视频资产',
+      assetUrl: asset.url,
+      mediaWidth: asset.width,
+      mediaHeight: asset.height,
+      mediaDuration: asset.duration,
+    },
+  }
+  previewVideo.value = {
+    nodeId: transient,
+    source: asset.url,
+    poster: asset.posterUrl,
+    title: transient.data.title,
+    time: 0,
+  }
+}
+function previewVideoMetadata({ width, height, duration }) {
+  const preview = previewVideo.value
+  if (!preview) return
+  const transient = typeof preview.nodeId === 'object'
+  const node = transient ? preview.nodeId : nodes.value.find((item) => item.id === preview.nodeId)
+  if (!node || node.data.assetUrl !== preview.source) return
+  const patch = {}
+  if (width > 0 && height > 0) {
+    patch.mediaWidth = width
+    patch.mediaHeight = height
+  }
+  if (Number.isFinite(duration) && duration > 0) patch.mediaDuration = duration
+  if (transient) Object.assign(node.data, patch)
+  else if (Object.entries(patch).some(([key, value]) => node.data[key] !== value))
+    graph.updateNodeData(node.id, patch)
+}
+function saveEnhancedVideo(result) {
+  if (!result?.resultUrl) throw new Error('增强服务没有返回成品视频')
+  const source = videoDialog.value?.node
+  if (!source || videoDialog.value?.kind !== 'enhance') throw new Error('原视频操作已关闭')
+  const size = nodeSize('video', source.data)
+  const node = graph.addNode('video', {
+    x: source.position.x + size.width + 72,
+    y: source.position.y,
+  })
+  graph.updateNodeData(node.id, {
+    title: `${source.data.title || '视频'}-高清`,
+    assetUrl: result.resultUrl,
+    artifactStatus: 'ready',
+    runState: 'idle',
+    enhancementResultId: result.id,
+  })
+  imageActionNotice('增强视频已加入画布，原视频保持不变')
+}
+function resetVideoActions() {
+  videoActions.cancel()
+  videoContext.value = null
+  videoDialog.value = null
+  previewVideo.value = null
+  videoTimes.clear()
+}
+function selectedNodeClipboard() {
+  return createNodeClipboard(
+    JSON.parse(JSON.stringify(nodes.value.filter((node) => node.selected))),
+    JSON.parse(JSON.stringify(edges.value)),
+  )
+}
+async function copySelectedNodes() {
+  const text = serializeNodeClipboard(selectedNodeClipboard())
+  if (!navigator.clipboard?.writeText) throw new Error('浏览器不支持直接复制，请使用 Ctrl+C')
+  await navigator.clipboard.writeText(text)
+  imageActionNotice('节点已复制，可在画布中粘贴')
+}
+function handleCanvasNodeCopy(event) {
+  if (
+    event.defaultPrevented ||
+    !canImportCanvasImages() ||
+    canvasImageTargetIsEditable(event.target) ||
+    !nodes.value.some((node) => node.selected)
+  )
+    return
+  try {
+    const text = serializeNodeClipboard(selectedNodeClipboard())
+    event.clipboardData.setData('text/plain', text)
+    event.preventDefault()
+    imageActionNotice('节点已复制，可在画布中粘贴')
+  } catch (error) {
+    event.preventDefault()
+    imageActionNotice(error.message, true)
+  }
+}
+function pasteNodes(snapshot, point) {
+  const rect = canvasWrap.value.getBoundingClientRect()
+  const anchor = screenToFlowCoordinate(
+    point || { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 },
+  )
+  graph.pasteNodeClipboard(snapshot, anchor)
+  imageActionNotice(`已粘贴 ${snapshot.nodes.length} 个节点`)
+}
+async function pasteFromSystemClipboard(point) {
+  const scope = `${graph.projectId}:${user.profile?.id || ''}`
+  let snapshot = null
+  // Reading image clipboard formats needs the user's explicit menu click.
+  if (navigator.clipboard?.read) {
+    const items = await navigator.clipboard.read()
+    const files = []
+    for (const item of items) {
+      const type = item.types.find((value) => /^image\/(png|jpeg|webp|gif|avif|bmp)$/i.test(value))
+      if (type) files.push(new File([await item.getType(type)], 'clipboard.png', { type }))
+      else if (item.types.includes('text/plain'))
+        snapshot = parseNodeClipboard(await (await item.getType('text/plain')).text()) || snapshot
+    }
+    if (scope !== `${graph.projectId}:${user.profile?.id || ''}` || !canImportCanvasImages()) return
+    if (files.length) return importCanvasImages(files, point)
+  } else if (navigator.clipboard?.readText) {
+    snapshot = parseNodeClipboard(await navigator.clipboard.readText())
+  } else throw new Error('浏览器不支持菜单粘贴，请使用 Ctrl+V')
+  if (scope !== `${graph.projectId}:${user.profile?.id || ''}` || !canImportCanvasImages()) return
+  if (!snapshot) throw new Error('剪贴板中没有可粘贴的图片或画布节点，请使用 Ctrl+V 粘贴图片')
+  pasteNodes(snapshot, point)
+}
+async function handleImageContextAction(action) {
+  const node = imageContextNode.value
+  const point = imageContext.value && { x: imageContext.value.x, y: imageContext.value.y }
+  imageContext.value = null
+  if (!node) return
+  try {
+    if (action === 'copy-image' || action === 'copy-to-clipboard') {
+      // Invoke synchronously in this click before any awaits, retaining clipboard activation.
+      imageClipboardRequest?.abort()
+      const controller = new AbortController()
+      imageClipboardRequest = controller
+      const scope = `${props.projectId}:${user.profile?.id || ''}`
+      try {
+        await copyCanvasImage(node.data.assetUrl, {
+          path: apiPath,
+          headers: user.authHeaders(),
+          signal: controller.signal,
+        })
+        if (!controller.signal.aborted && scope === `${props.projectId}:${user.profile?.id || ''}`)
+          imageActionNotice('图片已复制到系统剪贴板')
+      } finally {
+        if (imageClipboardRequest === controller) imageClipboardRequest = null
+      }
+    } else if (action === 'copy-node') await copySelectedNodes()
+    else if (action === 'paste') await pasteFromSystemClipboard(point)
+    else if (action === 'duplicate') graph.duplicateSelected()
+    else if (action === 'delete') graph.removeSelected()
+    else if (action === 'layout') await layoutCanvas()
+    else if (action === 'panorama') {
+      previewPanorama.value = true
+      previewImage.value = node.data.assetUrl
+    } else if (['save-asset', 'create-subject', 'compliance'].includes(action))
+      imageDialog.value = { kind: action, node: JSON.parse(JSON.stringify(node)) }
+  } catch (error) {
+    if (error.name === 'AbortError') return
+    imageActionNotice(error.message || '操作失败，请重试', true)
+  }
+}
+function handleImageAssetSaved() {
+  assetRevision.value += 1
+  imageDialog.value = null
+  imageActionNotice('已保存到个人资产库')
+}
+function importSavedImage(record) {
+  if (!canImportCanvasImages()) return
+  const rect = canvasWrap.value.getBoundingClientRect()
+  const meta = record.config?.canvasAsset || {}
+  graph.addImageAssets(
+    [
+      {
+        title: record.name || '我的资产',
+        assetUrl: record.imageUrl,
+        mediaWidth: meta.width || 1024,
+        mediaHeight: meta.height || 1024,
+      },
+    ],
+    screenToFlowCoordinate({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }),
+  )
+}
+function previewSavedImage(record) {
+  previewPanorama.value = false
+  previewImage.value = record.imageUrl
+}
 function openImagePreview() {
   previewImage.value = graph.activeNode.data.assetUrl
   previewPanorama.value = graph.activeNode.data.editTemplate?.id === 'panorama-720'
@@ -206,8 +652,698 @@ const {
   setViewport,
   zoomTo,
   onNodesInitialized,
+  nodesSelectionActive,
 } = useVueFlow('youmi-canvas-v3')
+const multiSelection = computed(() => graph.selectedNodes.length >= 2)
+const selectionFrameDrag = createSelectionFrameDrag({
+  graph,
+  getScope: () => ({ projectId: props.projectId, token: user.token, userId: user.profile?.id }),
+  getZoom: () => liveViewport.value.zoom,
+})
+function beginSelectionFrameDrag(event) {
+  if (gestures.value.hand || !selectionFrameDrag.start(event)) return
+  event.preventDefault()
+  event.stopPropagation()
+  event.currentTarget.setPointerCapture?.(event.pointerId)
+  event.currentTarget
+    .closest?.('.cv3-group-frame, .cv3-selection-frame')
+    ?.focus?.({ preventScroll: true })
+  selectionFrameDragging.value = true
+}
+function endSelectionFrameDrag(event) {
+  selectionFrameDrag.end(event)
+  selectionFrameDragging.value = false
+}
+function cancelSelectionFrameDrag() {
+  selectionFrameDrag.cancel()
+  selectionFrameDragging.value = false
+}
+const groupFrameResize = createGroupFrameResize({
+  graph,
+  getScope: () => ({ projectId: props.projectId, token: user.token, userId: user.profile?.id }),
+  getZoom: () => liveViewport.value.zoom,
+})
+function beginGroupResize({ event, corner }) {
+  if (gestures.value.hand || !groupFrameResize.start(event, corner)) return
+  groupResizing.value = true
+}
+function endGroupResize(event) {
+  groupFrameResize.end(event)
+  groupResizing.value = false
+}
+function cancelGroupResize() {
+  groupFrameResize.cancel()
+  groupResizing.value = false
+}
+const selectionBounds = computed(() =>
+  multiSelection.value ? canvasSelectionBounds(graph.selectedNodes, liveViewport.value) : null,
+)
+const selectionGroups = computed(() => {
+  const groups = new Map()
+  for (const node of nodes.value) {
+    if (!node.data.groupId) continue
+    if (!groups.has(node.data.groupId)) groups.set(node.data.groupId, [])
+    groups.get(node.data.groupId).push(node)
+  }
+  return [...groups.entries()]
+    .filter(([, members]) => members.length >= 2)
+    .map(([id, members]) => {
+      const bounds = canvasGroupBounds(members, liveViewport.value)
+      const view = liveViewport.value
+      return {
+        id,
+        nodeId: members[0].id,
+        name: members[0].data.groupName || '分组',
+        type: members[0].data.groupType || 'normal',
+        color: normalizedGroupColor(members[0].data.groupColor),
+        mutable:
+          !members.some((node) => isNodeClipboardCopyBlocked(JSON.parse(JSON.stringify(node)))) &&
+          !groupExecuting.value,
+        bounds,
+        selected: graph.selectedGroup?.id === id,
+        members: members.map((node) => {
+          const size = nodeSize(node.data.kind, node.data)
+          return {
+            id: node.id,
+            rect: bounds && {
+              left: node.position.x * view.zoom + view.x - bounds.left - 12,
+              top: node.position.y * view.zoom + view.y - bounds.top - 26,
+              right: (node.position.x + size.width) * view.zoom + view.x - bounds.left + 12,
+              bottom: (node.position.y + size.height) * view.zoom + view.y - bounds.top + 10,
+            },
+          }
+        }),
+      }
+    })
+    .filter((group) => group.bounds)
+})
+const activePersistentGroup = computed(() =>
+  selectionGroups.value.find((group) => group.id === graph.selectedGroup?.id),
+)
+const groupConnectionDrag = createGroupConnectionDrag({
+  graph,
+  getScope: groupScope,
+  getCanvasRect: () => canvasWrap.value?.getBoundingClientRect(),
+  onPreview: (preview) => {
+    groupConnectionPreview.value = preview
+  },
+  onRelease: finishGroupConnection,
+  onCancel: () => {
+    groupConnectionPreview.value = null
+    groupConnectionResetKey.value += 1
+    suppressGroupContextMenuUntil = Date.now() + 400
+  },
+})
+const groupConnectionPath = computed(() => {
+  const pending = groupConnectionPreview.value || pendingGroupConnection.value
+  if (!pending?.screen) return ''
+  const group = selectionGroups.value.find((item) => item.id === pending.groupId)
+  if (!group) return ''
+  const sx = group.bounds.right + 20
+  const sy = group.bounds.centerY
+  const { x: tx, y: ty } = pending.screen
+  const bend = Math.max(72, Math.abs(tx - sx) * 0.45)
+  return `M ${sx} ${sy} C ${sx + bend} ${sy}, ${tx - bend} ${ty}, ${tx} ${ty}`
+})
+const hoveredGroupId = computed(() => groupAtPointer(selectionGroups.value, groupHoverPoint.value))
+function handleGroupPointerMove(event) {
+  const rect = canvasWrap.value?.getBoundingClientRect()
+  if (!rect || event.pointerType === 'touch') return
+  // Observe in capture phase instead of placing a hit surface above media.
+  // Images, video controls, native selection and dragging keep their own events.
+  groupHoverPoint.value = { x: event.clientX - rect.left, y: event.clientY - rect.top }
+}
+const selectionVisible = computed(
+  () =>
+    mode.value === 'workflow' &&
+    multiSelection.value &&
+    !selectionDragging.value &&
+    !emotionSource.value &&
+    !angleSource.value &&
+    !previewImage.value &&
+    !previewVideo.value &&
+    !imageDialog.value &&
+    !videoDialog.value &&
+    !selectionSaveNodes.value &&
+    !groupWorkflow.value,
+)
+const canSaveSelection = computed(
+  () =>
+    graph.selectedNodes.length > 0 &&
+    graph.selectedNodes.every(
+      (node) => ['image', 'video'].includes(node.data.kind) && Boolean(node.data.assetUrl),
+    ),
+)
+const canChatSelection = computed(
+  () =>
+    graph.selectedNodes.length > 0 &&
+    graph.selectedNodes.length <= 10 &&
+    graph.selectedNodes.every((node) =>
+      ['image', 'video'].includes(node.data.kind)
+        ? Boolean(node.data.assetUrl)
+        : ['text', 'reference', 'script'].includes(node.data.kind) &&
+          Boolean(node.data.prompt?.trim()),
+    ),
+)
+function selectionRectStyle(bounds) {
+  return {
+    left: `${bounds.left}px`,
+    top: `${bounds.top}px`,
+    width: `${bounds.width}px`,
+    height: `${bounds.height}px`,
+  }
+}
+function selectionSnapshot() {
+  return graph.selectedNodes.map((node) => ({
+    id: node.id,
+    position: { ...node.position },
+    data: Object.fromEntries(
+      [
+        'kind',
+        'title',
+        'prompt',
+        'assetUrl',
+        'thumbnail',
+        'posterUrl',
+        'mediaWidth',
+        'mediaHeight',
+        'mediaDuration',
+        'durationSeconds',
+        'mimeType',
+        'fileSize',
+        'fileName',
+      ]
+        .filter((key) => node.data[key] != null)
+        .map((key) => [key, node.data[key]]),
+    ),
+  }))
+}
+function selectionMutation(action, type) {
+  if (!graph.selectionMutable)
+    return imageActionNotice('所选内容含进行中或待确认的任务，暂不能修改或创建副本', true)
+  try {
+    if (action === 'arrange') graph.arrangeSelected(type)
+    else if (action === 'duplicate') graph.duplicateSelected()
+    else if (action === 'ungroup') graph.ungroupSelected()
+    else graph.groupSelected(undefined, type || 'normal')
+  } catch (error) {
+    imageActionNotice(error.message || '选区操作失败', true)
+  }
+}
+function openSelectionSave() {
+  if (!canSaveSelection.value) return imageActionNotice('请选择已有产物的图片或视频节点', true)
+  selectionSaveNodes.value = selectionSnapshot()
+}
+function selectionAssetsSaved(records) {
+  assetRevision.value += 1
+  imageActionNotice(`已保存 ${records.length} 项素材到个人资产库`)
+}
+async function downloadSelection() {
+  if (selectionDownloading.value) return
+  const snapshot = selectionSnapshot()
+  if (!snapshot.length) return
+  const request = {
+    controller: new AbortController(),
+    projectId: props.projectId,
+    token: user.token,
+    userId: user.profile?.id,
+  }
+  selectionDownloadRequest = request
+  selectionDownloading.value = true
+  const current = () =>
+    selectionDownloadRequest === request &&
+    props.projectId === request.projectId &&
+    user.token === request.token &&
+    user.profile?.id === request.userId
+  try {
+    const downloader = createCanvasSelectionDownloadClient({
+      path: apiPath,
+      headers: () => user.authHeaders(),
+      save: (blob, filename) => {
+        if (!current() || request.controller.signal.aborted)
+          throw new DOMException('下载已取消', 'AbortError')
+        saveCanvasSelectionArchive(blob, filename)
+      },
+    })
+    const result = await downloader.download(snapshot, {
+      signal: request.controller.signal,
+      filename: `${title.value || '画布'}-选中素材.zip`,
+      onProgress: (progress) => {
+        if (current())
+          imageActionNotice(`正在打包选中素材 ${progress.completed}/${progress.total}…`)
+      },
+    })
+    if (!current()) return
+    imageActionNotice(
+      result.complete
+        ? `已下载 ${result.successCount} 项素材`
+        : result.successCount
+          ? `已下载 ${result.successCount} 项，${result.failedCount} 项失败；详见压缩包内失败清单`
+          : '选中素材均未能下载，请检查素材地址或访问权限',
+      !result.complete,
+    )
+  } catch (error) {
+    if (current())
+      imageActionNotice(
+        error.name === 'AbortError'
+          ? '已取消本次打包，未下载压缩包'
+          : error.message || '批量下载失败',
+        error.name !== 'AbortError',
+      )
+  } finally {
+    if (selectionDownloadRequest === request) {
+      selectionDownloadRequest = null
+      selectionDownloading.value = false
+    }
+  }
+}
+async function selectionToDirector(createSkill = false) {
+  if (!canChatSelection.value) return imageActionNotice('请选择不超过10个可用素材或文字节点', true)
+  const snapshot = selectionSnapshot()
+  const scope = {
+    projectId: props.projectId,
+    token: user.token,
+    userId: user.profile?.id,
+  }
+  activePanel.value = 'assistant'
+  menuPosition.value = null
+  await restoreLatestDirectorConversation()
+  if (
+    scope.projectId !== props.projectId ||
+    scope.token !== user.token ||
+    scope.userId !== user.profile?.id
+  )
+    return
+  if (directorRestoring.value || directorRestoreError.value)
+    return imageActionNotice(directorRestoreError.value || '正在恢复对话，请稍后重新添加素材', true)
+  scope.conversationId = directorConversationId.value
+  await nextTick()
+  if (
+    scope.projectId !== props.projectId ||
+    scope.conversationId !== directorConversationId.value ||
+    scope.token !== user.token ||
+    scope.userId !== user.profile?.id
+  )
+    return
+  const result = directorPanel.value?.addCanvasSelection(snapshot, { ...scope, createSkill })
+  if (!result || result.stale) return imageActionNotice('当前对话已切换，请重新添加选中素材', true)
+  if (result.blocked) return imageActionNotice('当前对话尚未恢复，请稍后重新添加素材', true)
+  if (createSkill && !result.skillCreationOpened)
+    return imageActionNotice(
+      result.rejections?.[0]?.reason || '选中素材未能加入，尚未打开 Skill 创建引导',
+      true,
+    )
+  if (!createSkill && !result.acceptedCount)
+    return imageActionNotice(
+      result.duplicateCount
+        ? '选中素材已在当前 Chat 草稿中，未重复添加或发送'
+        : result.rejections?.[0]?.reason || '选中内容未能加入 Chat',
+      !result.duplicateCount,
+    )
+  const message = createSkill
+    ? '已带入所选素材，打开 Skill 创建引导；尚未发送或创建 Skill'
+    : `已将 ${result.acceptedCount} 项内容加入 Chat 草稿，尚未发送`
+  imageActionNotice(
+    result.rejectedCount ? `${message}；${result.rejectedCount} 项未能加入` : message,
+    result.rejectedCount > 0,
+  )
+}
+function selectPersistentGroup(group) {
+  graph.selectGroup(group.nodeId)
+}
+function handleSelectionNodeClick({ event, node }) {
+  if (!event.ctrlKey && !event.metaKey && !event.shiftKey && node.data.groupId)
+    graph.selectGroup(node.id)
+}
+function groupScope() {
+  return { projectId: props.projectId, token: user.token, userId: user.profile?.id }
+}
+function groupScopeCurrent(scope) {
+  return Boolean(
+    scope &&
+    scope.projectId === props.projectId &&
+    scope.token === user.token &&
+    scope.userId === user.profile?.id,
+  )
+}
+function changeGroupAppearance(action, value) {
+  if (!graph.selectedGroup || !graph.selectionMutable) return
+  try {
+    if (action === 'color') graph.setSelectedGroupColor(value)
+    else if (action === 'rename') graph.renameSelectedGroup(value)
+    else graph.convertSelectedGroup(value)
+  } catch (error) {
+    imageActionNotice(error.message || '分组修改失败', true)
+  }
+}
+function renamePersistentGroup(group, name) {
+  // Blurring A's editor while selecting B must never rename B.
+  try {
+    graph.renameGroup(group.id, name)
+  } catch (error) {
+    imageActionNotice(error.message || '分组名称修改失败', true)
+  }
+}
+function openGroupWorkflow(type) {
+  if (!graph.selectedGroup || !graph.selectionMutable || groupExecuting.value) return
+  groupWorkflowError.value = ''
+  try {
+    const group = { ...graph.selectedGroup }
+    const scope = groupScope()
+    if (type === 'execute-confirm') {
+      const plan = groupExecutionPlan(nodes.value, edges.value, group.id)
+      if (!plan.generationCount)
+        return imageActionNotice('组内没有待生成节点；已有图片和视频素材不会重复生成或扣费')
+      groupWorkflow.value = {
+        type,
+        group,
+        scope,
+        plan,
+        approval: groupExecutionApprovalSignature(nodes.value, edges.value, group.id),
+      }
+    } else {
+      if (!user.profile?.id) return imageActionNotice('请先登录后使用本机工具箱', true)
+      groupToolboxTemplates.value = loadGroupToolbox(localStorage, user.profile.id)
+      groupWorkflow.value = {
+        type: 'toolbox',
+        group,
+        scope,
+        snapshot: createNodeClipboard(graph.selectedNodes, edges.value),
+      }
+    }
+  } catch (error) {
+    imageActionNotice(error.message || '无法打开分组操作', true)
+  }
+}
+const groupRunner = createGroupExecutionRunner({
+  getNodes: () => nodes.value,
+  getEdges: () => edges.value,
+  getScope: groupScope,
+  runImage: (nodeId) => {
+    groupExecutionRequest?.nodes?.push(nodes.value.find((node) => node.id === nodeId))
+    return tasks.runImage(nodeId)
+  },
+  runVideo: (nodeId) => {
+    groupExecutionRequest?.nodes?.push(nodes.value.find((node) => node.id === nodeId))
+    return tasks.runVideo(nodeId)
+  },
+  onProgress: ({ completed, total, phase }) => {
+    if (!groupScopeCurrent(groupExecutionRequest?.scope)) return
+    groupExecutionProgress.value = `已完成 ${completed} / ${total} 个生成节点${phase === 'submitting' ? '，正在执行下一节点' : ''}`
+  },
+})
+async function confirmGroupWorkflow(name) {
+  const dialog = groupWorkflow.value
+  if (!dialog || !groupScopeCurrent(dialog.scope) || groupExecuting.value) return
+  groupWorkflowError.value = ''
+  if (dialog.type === 'toolbox') {
+    try {
+      const record = saveGroupToolbox(localStorage, dialog.scope.userId, {
+        nodes: dialog.snapshot.nodes,
+        edges: dialog.snapshot.edges,
+        groupId: dialog.group.id,
+        name,
+      })
+      groupToolboxTemplates.value = loadGroupToolbox(localStorage, dialog.scope.userId)
+      groupWorkflow.value = null
+      imageActionNotice(`已将「${record.name}」保存到本机工具箱，可从分组工具栏再次打开复用`)
+    } catch (error) {
+      groupWorkflowError.value = error.message || '本机工具箱保存失败'
+    }
+    return
+  }
+  const request = { controller: new AbortController(), scope: dialog.scope, nodes: [] }
+  try {
+    if (
+      graph.selectedGroup?.id !== dialog.group.id ||
+      dialog.approval !== groupExecutionApprovalSignature(nodes.value, edges.value, dialog.group.id)
+    )
+      throw new Error('分组内容或参数已改变，请关闭弹框后重新确认整组执行；尚未提交任务')
+    groupExecutionRequest = request
+    groupExecuting.value = true
+    groupExecutionProgress.value = `准备执行 ${dialog.plan.generationCount} 个生成节点`
+    const result = await groupRunner.run(dialog.group.id, { signal: request.controller.signal })
+    if (!groupScopeCurrent(request.scope)) return
+    groupWorkflow.value = null
+    imageActionNotice(`整组执行完成，已生成 ${result.completedCount} 个节点`)
+  } catch (error) {
+    if (!groupScopeCurrent(request.scope)) return
+    const message = error.message || '整组执行未完成'
+    if (groupWorkflow.value === dialog) groupWorkflowError.value = message
+    imageActionNotice(message, error.name !== 'AbortError')
+  } finally {
+    if (groupExecutionRequest === request) {
+      groupExecutionRequest = null
+      groupExecuting.value = false
+      groupExecutionProgress.value = ''
+    }
+  }
+}
+function cancelGroupWorkflow() {
+  stopGroupPreparation()
+  groupExecutionRequest?.controller.abort()
+  groupWorkflow.value = null
+  groupWorkflowError.value = ''
+}
+function stopGroupPreparation() {
+  // Only abort still-unsubmitted preparations owned by this batch, never cancel
+  // a paid/submitting task or touch an identically named node in another graph.
+  for (const node of groupExecutionRequest?.nodes || [])
+    if (node && nodes.value.includes(node) && node.data.runState === 'preparing')
+      tasks.stopWaiting(node.id)
+}
+function loadGroupTemplate(recordId) {
+  const dialog = groupWorkflow.value
+  if (dialog?.type !== 'toolbox' || !groupScopeCurrent(dialog.scope)) return
+  try {
+    const record = loadGroupToolbox(localStorage, dialog.scope.userId).find(
+      (item) => item.id === recordId,
+    )
+    const snapshot = groupToolboxSnapshot(record)
+    const rect = canvasWrap.value.getBoundingClientRect()
+    const center = screenToFlowCoordinate({
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    })
+    graph.pasteNodeClipboard(snapshot, center)
+    groupWorkflow.value = null
+    imageActionNotice(`已从本机工具箱添加「${record.name}」，未提交生成任务`)
+  } catch (error) {
+    groupWorkflowError.value = error.message || '模板载入失败'
+  }
+}
+function removeGroupTemplate(recordId) {
+  const dialog = groupWorkflow.value
+  if (dialog?.type !== 'toolbox' || !groupScopeCurrent(dialog.scope)) return
+  try {
+    removeGroupToolbox(localStorage, dialog.scope.userId, recordId)
+    groupToolboxTemplates.value = loadGroupToolbox(localStorage, dialog.scope.userId)
+  } catch (error) {
+    groupWorkflowError.value = error.message || '模板移除失败'
+  }
+}
+function openGroupConnection(group, event) {
+  if (gestures.value.hand || !graph.selectGroup(group.nodeId) || !graph.selectionMutable) return
+  const rect = canvasWrap.value.getBoundingClientRect()
+  const x = group.bounds.right + 28
+  const y = group.bounds.centerY
+  clearPendingReference()
+  pendingGroupConnection.value = groupConnectionSnapshot(group.id)
+  menuPosition.value = {
+    x: Math.max(8, Math.min(rect.width - 228, x + 8)),
+    y: Math.max(48, Math.min(rect.height - 390, y)),
+  }
+  menuFlowPosition.value = screenToFlowCoordinate({ x: rect.left + x, y: rect.top + y })
+  activePanel.value = 'nodes'
+  event?.stopPropagation?.()
+}
+function groupConnectionSnapshot(groupId, screen = null) {
+  return {
+    groupId,
+    scope: groupScope(),
+    members: nodes.value.filter((node) => node.data.groupId === groupId),
+    screen,
+  }
+}
+function groupConnectionCurrent(pending) {
+  if (
+    !groupScopeCurrent(pending?.scope) ||
+    !Array.isArray(pending.members) ||
+    pending.members.length < 2
+  )
+    return false
+  const members = nodes.value.filter((node) => node.data.groupId === pending.groupId)
+  return (
+    members.length === pending.members.length &&
+    pending.members.every((node) => members.includes(node))
+  )
+}
+function beginGroupConnection(group, event) {
+  if (gestures.value.hand || mode.value !== 'workflow' || !graph.selectGroup(group.nodeId)) {
+    groupConnectionResetKey.value += 1
+    return
+  }
+  clearPendingReference()
+  activePanel.value = ''
+  imageContext.value = null
+  videoContext.value = null
+  if (!groupConnectionDrag.start(group.id, event)) {
+    groupConnectionResetKey.value += 1
+    return
+  }
+  suppressGroupContextMenuUntil = Infinity
+}
+function endGroupConnection(event) {
+  groupConnectionDrag.end(event)
+  suppressGroupContextMenuUntil = Date.now() + 400
+}
+function finishGroupConnection({ groupId, screen }) {
+  const wrapper = canvasWrap.value
+  const rect = wrapper?.getBoundingClientRect()
+  if (
+    !rect ||
+    screen.x < 0 ||
+    screen.y < 0 ||
+    screen.x > rect.width ||
+    screen.y > rect.height ||
+    mode.value !== 'workflow'
+  )
+    return
+  if (typeof document.elementFromPoint === 'function') {
+    const target = document.elementFromPoint(rect.left + screen.x, rect.top + screen.y)
+    if (!target || !wrapper.contains(target)) return
+  }
+  pendingGroupConnection.value = groupConnectionSnapshot(groupId, { ...screen })
+  menuPosition.value = {
+    x: Math.max(8, Math.min(rect.width - 228, screen.x + 12)),
+    y: Math.max(48, Math.min(rect.height - 390, screen.y + 12)),
+  }
+  menuFlowPosition.value = screenToFlowCoordinate({
+    x: rect.left + screen.x,
+    y: rect.top + screen.y,
+  })
+  activePanel.value = 'nodes'
+  suppressPaneClick = true
+  setTimeout(() => {
+    suppressPaneClick = false
+  })
+}
+watch(
+  [() => props.projectId, () => user.token, () => user.profile?.id],
+  () => {
+    selectionDownloadRequest?.controller.abort()
+    cancelSelectionFrameDrag()
+    selectionDragging.value = false
+    selectionSaveNodes.value = null
+    cancelGroupResize()
+    stopGroupPreparation()
+    groupExecutionRequest?.controller.abort()
+    groupWorkflow.value = null
+    groupWorkflowError.value = ''
+    groupToolboxTemplates.value = []
+    pendingGroupConnection.value = null
+    groupHoverPoint.value = null
+    groupConnectionDrag.cancel()
+  },
+  { flush: 'sync' },
+)
+watch(
+  () => graph.selectedNodes.map((node) => node.id).join(','),
+  async () => {
+    if (!multiSelection.value || selectionDragging.value) return
+    await nextTick()
+    if (multiSelection.value && !selectionDragging.value) nodesSelectionActive.value = true
+  },
+)
 const zoomPercent = computed(() => Math.round(liveViewport.value.zoom * 100))
+const imageDragActive = ref(false)
+const imageImportStatus = ref(null)
+const imageImporter = createCanvasImageImporter({
+  graph,
+  upload: uploadFileDirect,
+  maxBytes: MAX_IMAGE_UPLOAD_BYTES,
+  canUpload: () => user.isAuthenticated,
+  getScope: () => `${graph.projectId}:${user.profile?.id || ''}`,
+  onStatus: (status) => (imageImportStatus.value = status),
+})
+
+function canImportCanvasImages() {
+  return (
+    mode.value === 'workflow' &&
+    activePanel.value !== 'characters' &&
+    !previewImage.value &&
+    !previewVideo.value &&
+    !videoDialog.value &&
+    !emotionSource.value &&
+    !angleSource.value &&
+    !imageDialog.value &&
+    !selectionSaveNodes.value &&
+    graph.hydrated &&
+    !groupWorkflow.value
+  )
+}
+function importCanvasImages(files, point) {
+  if (!files.length || !canImportCanvasImages()) return
+  const rect = canvasWrap.value.getBoundingClientRect()
+  const anchor = screenToFlowCoordinate(
+    point || { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 },
+  )
+  clearPendingReference()
+  void imageImporter.importFiles(files, anchor).catch((error) => {
+    imageImportStatus.value = { busy: false, error: true, message: error.message || '图片导入失败' }
+  })
+}
+function handleCanvasImagePaste(event) {
+  if (
+    event.defaultPrevented ||
+    selectionSaveNodes.value ||
+    event.target?.closest?.('[data-cv3-selection-ui]') ||
+    !canImportCanvasImages() ||
+    canvasImageTargetIsEditable(event.target)
+  )
+    return
+  const files = canvasImageFiles(event.clipboardData)
+  if (files.length) {
+    event.preventDefault()
+    imageContext.value = null
+    importCanvasImages(files)
+    return
+  }
+  const snapshot = parseNodeClipboard(event.clipboardData?.getData?.('text/plain') || '')
+  if (!snapshot) return
+  event.preventDefault()
+  imageContext.value = null
+  try {
+    pasteNodes(snapshot)
+  } catch (error) {
+    imageActionNotice(error.message || '节点粘贴失败', true)
+  }
+}
+function handleCanvasImageDragOver(event) {
+  if (!canImportCanvasImages() || !canvasTransferHasFiles(event.dataTransfer)) return
+  event.preventDefault()
+  event.dataTransfer.dropEffect = 'copy'
+  imageDragActive.value = true
+}
+function handleCanvasImageDragLeave(event) {
+  if (!event.currentTarget.contains(event.relatedTarget)) imageDragActive.value = false
+}
+function handleCanvasImageDrop(event) {
+  imageDragActive.value = false
+  if (!canImportCanvasImages() || !canvasTransferHasFiles(event.dataTransfer)) return
+  event.preventDefault()
+  event.stopPropagation()
+  const files = canvasImageFiles(event.dataTransfer)
+  if (!files.length) {
+    imageImportStatus.value = {
+      busy: false,
+      error: true,
+      message: '请拖入 PNG、JPG、WebP 等图片文件',
+    }
+    return
+  }
+  importCanvasImages(files, { x: event.clientX, y: event.clientY })
+}
 const composerPosition = computed(() => {
   const node = graph.activeNode
   if (!node) return { x: 0, y: 0 }
@@ -249,6 +1385,7 @@ const showComposer = computed(
     !angleSource.value &&
     graph.activeNode &&
     !['text', 'reference'].includes(graph.activeNode.data.kind) &&
+    !(graph.activeNode.data.kind === 'video' && graph.activeNode.data.assetUrl) &&
     !isStandaloneUploadedImage(graph.activeNode.data),
 )
 const storyboardNodes = computed(() =>
@@ -280,6 +1417,10 @@ const imageToolbarPosition = computed(() => {
     top: node.position.y * view.zoom + view.y - 84,
   }
 })
+const videoToolbarPosition = computed(() => ({
+  left: imageToolbarPosition.value.left,
+  top: imageToolbarPosition.value.top + 10,
+}))
 const pendingReferencePath = computed(() => {
   const pending = pendingReference.value
   if (!pending) return ''
@@ -299,6 +1440,9 @@ const pendingReferencePath = computed(() => {
 let resizeObserver
 
 function clearPendingReference() {
+  groupConnectionDrag.cancel()
+  groupConnectionPreview.value = null
+  pendingGroupConnection.value = null
   pendingReference.value = null
   connectionStart.value = null
   menuFlowPosition.value = null
@@ -356,13 +1500,25 @@ async function addNode(kind) {
     menuFlowPosition.value ||
     screenToFlowCoordinate({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 - 70 })
   const pending = pendingReference.value
-  const node = pending
-    ? graph.createConnectedNode(
+  const pendingGroup = pendingGroupConnection.value
+  if (pendingGroup && !groupConnectionCurrent(pendingGroup)) {
+    clearPendingReference()
+    imageActionNotice('原分组或画布已改变，请重新从分组加号连接；尚未创建节点', true)
+    return
+  }
+  const node = pendingGroup
+    ? graph.createGroupConnectedNode(
         kind,
         { x: center.x + 100, y: center.y - size.height / 2 },
-        pending.start,
+        pendingGroup.groupId,
       )
-    : graph.addNode(kind, { x: center.x - size.width / 2, y: center.y - size.height / 2 })
+    : pending
+      ? graph.createConnectedNode(
+          kind,
+          { x: center.x + 100, y: center.y - size.height / 2 },
+          pending.start,
+        )
+      : graph.addNode(kind, { x: center.x - size.width / 2, y: center.y - size.height / 2 })
   if (!node) return
   if (kind === 'image' && tasks.imageModels.length)
     graph.updateNodeData(node.id, { model: tasks.imageModels[0].value })
@@ -382,6 +1538,7 @@ function handleViewportChange(view) {
 }
 function handlePaneClick() {
   if (suppressPaneClick) return
+  imageContext.value = null
   clearPendingReference()
   angleSource.value = null
   if (activePanel.value !== 'assistant') activePanel.value = ''
@@ -434,8 +1591,14 @@ function handleConnectEnd(event) {
   })
 }
 function openCanvasMenu(event) {
+  if (groupConnectionDrag.active || Date.now() <= suppressGroupContextMenuUntil) {
+    event.preventDefault()
+    event.stopPropagation()
+    return
+  }
   if (!event.target?.closest?.('.vue-flow__pane')) return
   event.preventDefault()
+  imageContext.value = null
   clearPendingReference()
   const rect = canvasWrap.value.getBoundingClientRect()
   menuPosition.value = {
@@ -1886,6 +3049,60 @@ function exportGraph() {
   URL.revokeObjectURL(url)
 }
 function onKeydown(event) {
+  if (
+    event.key === 'Escape' &&
+    (groupConnectionDrag.active || (pendingGroupConnection.value && activePanel.value === 'nodes'))
+  ) {
+    event.preventDefault()
+    clearPendingReference()
+    activePanel.value = ''
+    return
+  }
+  if (
+    !groupWorkflow.value &&
+    !selectionSaveNodes.value &&
+    event.target?.matches?.('.cv3-group-frame') &&
+    ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)
+  ) {
+    event.preventDefault()
+    event.stopImmediatePropagation?.()
+    moveSelectedByKey(graph, event.key, { shiftKey: event.shiftKey })
+    return
+  }
+  const selectionHistoryKey =
+    event.target?.closest?.('[data-cv3-selection-ui]') &&
+    !selectionSaveNodes.value &&
+    !groupWorkflow.value &&
+    !event.target?.closest?.('[role="menu"], input, textarea, select, [contenteditable="true"]') &&
+    (event.ctrlKey || event.metaKey) &&
+    event.key.toLowerCase() === 'z'
+  if (selectionHistoryKey) {
+    event.preventDefault()
+    event.shiftKey ? graph.redo() : graph.undo()
+    return
+  }
+  // Native media controls and video dialogs own Space, seek, Tab and Delete.
+  // This listener runs in capture phase, before child stopPropagation handlers.
+  if (
+    event.defaultPrevented ||
+    selectionSaveNodes.value ||
+    groupWorkflow.value ||
+    event.target?.closest?.('[data-cv3-selection-ui]') ||
+    videoDialog.value ||
+    previewVideo.value ||
+    event.target?.closest?.(
+      '.cv3-video-node-player, .cv3-video-toolbar, [data-video-context-menu], [data-cv3-video-dialog]',
+    )
+  )
+    return
+  // Image menus and teleported forms own their keyboard/focus, including Escape.
+  if (
+    imageDialog.value ||
+    event.target?.closest?.(
+      '[data-image-context-menu], [data-image-context-dialog], [data-cv3-image-dialog]',
+    )
+  )
+    return
   // The studio is teleported above the canvas and owns Escape/Tab/Delete itself.
   // Never let its fields or buttons trigger canvas shortcuts or close the Director.
   if (activePanel.value === 'characters') return
@@ -1911,12 +3128,25 @@ function onKeydown(event) {
     return
   }
   if (angleSource.value || emotionSource.value) return
+  if (
+    multiSelection.value &&
+    ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)
+  ) {
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    moveSelectedByKey(graph, event.key, { shiftKey: event.shiftKey })
+    return
+  }
   if (mod && event.key.toLowerCase() === 'z') {
     event.preventDefault()
     event.shiftKey ? graph.redo() : graph.undo()
   } else if (mod && event.key.toLowerCase() === 'd') {
     event.preventDefault()
-    graph.duplicateSelected()
+    try {
+      graph.duplicateSelected()
+    } catch (error) {
+      imageActionNotice(error.message || '创建副本失败', true)
+    }
   } else if (mod && event.key === '0') {
     event.preventDefault()
     fitCanvas()
@@ -1924,6 +3154,8 @@ function onKeydown(event) {
     event.preventDefault()
     layoutCanvas()
   } else if (event.key === 'Escape') {
+    videoContext.value = null
+    imageContext.value = null
     previewImage.value = ''
     clearPendingReference()
     if (activePanel.value === 'assistant') closeDirector()
@@ -1943,14 +3175,34 @@ function onKeyup(event) {
   if (event.code === 'Space') spaceHeld.value = false
 }
 function resetSpace() {
+  groupConnectionDrag.cancel()
+  groupHoverPoint.value = null
+  cancelGroupResize()
   spaceHeld.value = false
+  imageDragActive.value = false
+  selectionDragging.value = false
+  cancelSelectionFrameDrag()
 }
 onNodesInitialized(() => {
   if (route.query.demo && nodes.value.length) fitView({ padding: 0.2, minZoom: 0.2, maxZoom: 0.6 })
 })
 watch(
+  () => props.projectId,
+  () => {
+    resetVideoActions()
+    imageClipboardRequest?.abort()
+    imageContext.value = null
+    imageDialog.value = null
+  },
+)
+watch(
   () => String(user.profile?.id || ''),
   () => {
+    resetVideoActions()
+    imageImporter.cancel()
+    imageClipboardRequest?.abort()
+    imageContext.value = null
+    imageDialog.value = null
     directorConversationRevision += 1
     directorHistoryRequest?.controller.abort()
     directorHistoryRequest = null
@@ -1975,6 +3227,8 @@ onMounted(async () => {
   mode.value = 'workflow'
   tasks.attach(props.projectId, { beforeImageSubmit: saveNow })
   window.addEventListener('keydown', onKeydown, true)
+  window.addEventListener('paste', handleCanvasImagePaste)
+  window.addEventListener('copy', handleCanvasNodeCopy)
   window.addEventListener('keyup', onKeyup, true)
   window.addEventListener('blur', resetSpace)
   window.addEventListener('resize', handleDirectorViewportResize)
@@ -1990,6 +3244,14 @@ onMounted(async () => {
   }
 })
 onBeforeUnmount(() => {
+  groupConnectionDrag.cancel()
+  stopGroupPreparation()
+  groupExecutionRequest?.controller.abort()
+  cancelGroupResize()
+  cancelSelectionFrameDrag()
+  selectionDownloadRequest?.controller.abort()
+  videoActions.dispose()
+  imageClipboardRequest?.abort()
   directorDisposed = true
   directorConversationRevision += 1
   directorHistoryRequest?.controller.abort()
@@ -1999,6 +3261,9 @@ onBeforeUnmount(() => {
   directorGenerationSubmissions.clear()
   tasks.detach(props.projectId)
   window.removeEventListener('keydown', onKeydown, true)
+  window.removeEventListener('paste', handleCanvasImagePaste)
+  window.removeEventListener('copy', handleCanvasNodeCopy)
+  imageImporter.dispose()
   window.removeEventListener('keyup', onKeyup, true)
   window.removeEventListener('blur', resetSpace)
   window.removeEventListener('resize', handleDirectorViewportResize)
@@ -2020,10 +3285,26 @@ onBeforeUnmount(() => {
           'cv3-hide-edges': !edgeVisible,
           'is-hand': gestures.hand,
           'is-connecting': connecting,
+          'has-multi-selection': multiSelection,
+          'has-persistent-groups': selectionGroups.length > 0,
+          'has-active-group': Boolean(activePersistentGroup),
         }"
         @dblclick="openCanvasMenu"
         @contextmenu="openCanvasMenu"
+        @dragover="handleCanvasImageDragOver"
+        @dragleave="handleCanvasImageDragLeave"
+        @drop="handleCanvasImageDrop"
+        @pointercancel="resetSpace"
+        @pointermove.capture="handleGroupPointerMove"
+        @pointerleave="groupHoverPoint = null"
       >
+        <div
+          v-for="group in selectionGroups"
+          :key="`bg-${group.id}`"
+          class="cv3-group-background"
+          :style="{ ...selectionRectStyle(group.bounds), backgroundColor: `${group.color}26` }"
+          aria-hidden="true"
+        />
         <VueFlow
           id="youmi-canvas-v3"
           v-model:nodes="nodes"
@@ -2036,7 +3317,7 @@ onBeforeUnmount(() => {
           :snap-to-grid="snapToGrid"
           :snap-grid="[16, 16]"
           :pan-on-drag="gestures.panOnDrag"
-          :selection-on-drag="gestures.selectionOnDrag"
+          :selection-key-code="gestures.selectionOnDrag"
           :nodes-draggable="gestures.nodesDraggable"
           :pan-activation-key-code="null"
           :zoom-on-double-click="false"
@@ -2048,8 +3329,14 @@ onBeforeUnmount(() => {
           @move-end="handleMoveEnd"
           @viewport-change="handleViewportChange"
           @pane-click="handlePaneClick"
+          @selection-start="selectionDragging = true"
+          @selection-end="selectionDragging = false"
+          @selection-drag-start="selectionDragging = true"
+          @selection-drag-stop="selectionDragging = false"
+          @node-click="handleSelectionNodeClick"
           @node-drag-start="graph.remember"
           @node-drag-stop="graph.markChanged"
+          @node-context-menu="openImageContextMenu"
         >
           <Background
             :variant="BackgroundVariant.Dots"
@@ -2066,7 +3353,13 @@ onBeforeUnmount(() => {
             mask-color="rgba(18,18,18,.72)"
           />
           <template #node-generator="nodeProps">
-            <GeneratorNode v-bind="nodeProps" :zoom="liveViewport.zoom" />
+            <GeneratorNode
+              v-bind="nodeProps"
+              :zoom="liveViewport.zoom"
+              @video-snapshot="handleVideoSnapshot"
+              @video-expand="openVideoPreview"
+              @video-time="videoTimeChanged"
+            />
           </template>
           <template #edge-smoothstep="edgeProps"><FlowingEdge v-bind="edgeProps" /></template>
           <template #edge-default="edgeProps"><FlowingEdge v-bind="edgeProps" /></template>
@@ -2074,10 +3367,84 @@ onBeforeUnmount(() => {
             <ConnectionPreview v-bind="lineProps" />
           </template>
         </VueFlow>
+        <GroupFrame
+          v-for="group in selectionGroups"
+          :key="group.id"
+          :group="group"
+          :mutable="group.mutable"
+          :hand="gestures.hand"
+          :pointer-inside="hoveredGroupId === group.id"
+          :connection-reset-key="groupConnectionResetKey"
+          @select="selectPersistentGroup(group)"
+          @rename="renamePersistentGroup(group, $event)"
+          @move-start="beginSelectionFrameDrag"
+          @move="selectionFrameDrag.move"
+          @move-end="endSelectionFrameDrag"
+          @move-cancel="cancelSelectionFrameDrag"
+          @resize-start="beginGroupResize"
+          @resize="groupFrameResize.move"
+          @resize-end="endGroupResize"
+          @resize-cancel="cancelGroupResize"
+          @add="openGroupConnection(group, $event)"
+          @connect-start="beginGroupConnection(group, $event)"
+          @connect-move="groupConnectionDrag.move"
+          @connect-end="endGroupConnection"
+          @connect-cancel="groupConnectionDrag.cancel()"
+        />
+        <div
+          v-if="selectionVisible && selectionBounds && !activePersistentGroup"
+          class="cv3-selection-frame"
+          :style="selectionRectStyle(selectionBounds)"
+          role="group"
+          :aria-label="`已框选 ${graph.selectedNodes.length} 个节点`"
+          tabindex="0"
+        >
+          <span
+            v-for="edge in ['top', 'right', 'bottom', 'left']"
+            :key="edge"
+            :class="['cv3-selection-frame-edge', `is-${edge}`]"
+            aria-hidden="true"
+            @pointerdown="beginSelectionFrameDrag"
+            @pointermove="selectionFrameDrag.move"
+            @pointerup="endSelectionFrameDrag"
+            @pointercancel="cancelSelectionFrameDrag"
+          />
+        </div>
+        <div v-if="imageDragActive" class="cv3-image-drop-hint" aria-hidden="true">
+          松开即可将图片加入画布
+        </div>
         <svg v-if="pendingReferencePath" class="cv3-pending-reference-line" aria-hidden="true">
           <path :d="pendingReferencePath" class="cv3-connection-base" />
           <EdgeFlowSegments :path="pendingReferencePath" />
         </svg>
+        <svg
+          v-if="groupConnectionPath"
+          class="cv3-pending-reference-line cv3-group-connection-preview"
+          aria-hidden="true"
+        >
+          <path :d="groupConnectionPath" class="cv3-connection-base" />
+          <EdgeFlowSegments :path="groupConnectionPath" />
+        </svg>
+      </div>
+      <div
+        v-if="imageImportStatus?.message"
+        class="cv3-image-import-status"
+        :class="{ 'is-error': imageImportStatus.error }"
+        role="status"
+        aria-live="polite"
+      >
+        <span>{{ imageImportStatus.message }}</span>
+        <button
+          v-if="selectionDownloading"
+          type="button"
+          data-cv3-selection-ui
+          @click="selectionDownloadRequest?.controller.abort()"
+        >
+          取消打包
+        </button>
+        <button type="button" aria-label="关闭图片导入提示" @click="imageImportStatus = null">
+          ×
+        </button>
       </div>
       <CanvasV3Topbar
         :title="title"
@@ -2091,6 +3458,69 @@ onBeforeUnmount(() => {
         @mode="mode = $event"
         @panel="openPanel"
         @emotion="openEmotion"
+      />
+      <SelectionActionToolbar
+        v-if="
+          selectionVisible && selectionBounds && !activePersistentGroup && !selectionFrameDragging
+        "
+        :count="graph.selectedNodes.length"
+        :bounds="selectionBounds"
+        :viewport="screenSize"
+        :mutable="graph.selectionMutable"
+        :group="graph.selectedGroup"
+        :can-save="canSaveSelection"
+        :can-download="canSaveSelection"
+        :can-chat="canChatSelection"
+        :downloading="selectionDownloading"
+        @arrange="selectionMutation('arrange', $event)"
+        @save="openSelectionSave"
+        @duplicate="selectionMutation('duplicate')"
+        @group="selectionMutation('group', $event)"
+        @ungroup="selectionMutation('ungroup')"
+        @download="downloadSelection"
+        @chat="selectionToDirector(false)"
+        @skill="selectionToDirector(true)"
+      />
+      <GroupActionToolbar
+        v-if="
+          selectionVisible && activePersistentGroup && !selectionFrameDragging && !groupResizing
+        "
+        :group="activePersistentGroup"
+        :bounds="activePersistentGroup.bounds"
+        :viewport="screenSize"
+        :mutable="graph.selectionMutable && !groupExecuting"
+        :can-execute="graph.selectionMutable"
+        :can-download="canSaveSelection"
+        :executing="groupExecuting"
+        :downloading="selectionDownloading"
+        @color="changeGroupAppearance('color', $event)"
+        @arrange="selectionMutation('arrange', $event)"
+        @execute="openGroupWorkflow('execute-confirm')"
+        @toolbox="openGroupWorkflow('toolbox')"
+        @convert="changeGroupAppearance('convert', $event)"
+        @ungroup="selectionMutation('ungroup')"
+        @download="downloadSelection"
+      />
+      <GroupWorkflowDialog
+        :open="Boolean(groupWorkflow)"
+        :type="groupWorkflow?.type || 'execute-confirm'"
+        :group-name="groupWorkflow?.group.name || ''"
+        :generation-count="groupWorkflow?.plan?.generationCount || 0"
+        :templates="groupToolboxTemplates"
+        :busy="groupExecuting"
+        :error="groupWorkflowError"
+        :progress="groupExecutionProgress"
+        @confirm="confirmGroupWorkflow"
+        @cancel="cancelGroupWorkflow"
+        @load="loadGroupTemplate"
+        @remove="removeGroupTemplate"
+      />
+      <SelectionSaveAssetDialog
+        :open="Boolean(selectionSaveNodes)"
+        :nodes="selectionSaveNodes || []"
+        :project-id="projectId"
+        @close="selectionSaveNodes = null"
+        @saved="selectionAssetsSaved"
       />
       <EmptyCanvasLauncher
         v-if="nodes.length === 0 && activePanel !== 'nodes' && mode === 'workflow'"
@@ -2123,6 +3553,35 @@ onBeforeUnmount(() => {
         @emotion="openEmotion"
         @angles="openAngles"
       />
+      <VideoActionToolbar
+        v-if="
+          mode === 'workflow' &&
+          !emotionSource &&
+          !angleSource &&
+          graph.activeNode?.data.kind === 'video' &&
+          graph.activeNode.data.assetUrl &&
+          !['preparing', 'submitting', 'queued', 'running', 'paused', 'uncertain'].includes(
+            graph.activeNode.data.runState,
+          )
+        "
+        :left="videoToolbarPosition.left"
+        :top="videoToolbarPosition.top"
+        :busy="videoMediaBusy"
+        @action="handleVideoToolbarAction"
+      />
+      <VideoPreviewDialog
+        v-if="previewVideo"
+        :source="previewVideo.source"
+        :title="previewVideo.title"
+        :poster="previewVideo.poster"
+        :current-time="previewVideo.time"
+        :busy="videoMediaBusy"
+        @close="closeVideoPreview"
+        @snapshot="handleVideoSnapshot({ nodeId: previewVideo.nodeId, ...$event })"
+        @download="downloadCanvasVideo(previewVideo.nodeId)"
+        @timeupdate="previewVideo.time = $event"
+        @metadata="previewVideoMetadata"
+      />
       <MultiAngleEditor
         v-if="angleSource"
         :key="angleSource.id"
@@ -2151,19 +3610,84 @@ onBeforeUnmount(() => {
       <NodeLibraryPanel
         v-if="activePanel === 'nodes'"
         :position="menuPosition"
-        :reference-mode="Boolean(pendingReference)"
+        :reference-mode="Boolean(pendingReference || pendingGroupConnection)"
         @add="addNode"
         @panel="openPanel"
       />
       <CanvasUtilityPanel
         v-if="activePanel && !['nodes', 'assistant', 'characters'].includes(activePanel)"
         :panel="activePanel"
+        :asset-revision="assetRevision"
         @close="activePanel = ''"
         @demo="openDemo"
         @export="exportGraph"
+        @import-images="importCanvasImages"
+        @import-saved-asset="importSavedImage"
+        @preview-image="previewSavedImage"
+        @preview-video="previewSavedVideo"
+        @import-saved-video="importSavedVideo"
+      />
+      <ImageContextMenu
+        v-if="imageContext && imageContextNode"
+        :position="imageContext"
+        :rating="imageContextNode.data.rating || 0"
+        :locked="imageContextLocked"
+        @rate="graph.rateNode(imageContextNode.id, $event)"
+        @action="handleImageContextAction"
+        @close="imageContext = null"
+      />
+      <ImageSaveAssetDialog
+        v-if="imageDialog?.kind === 'save-asset'"
+        :open="true"
+        :node="imageDialog.node"
+        @close="imageDialog = null"
+        @saved="handleImageAssetSaved"
+      />
+      <VideoContextMenu
+        v-if="videoContext && videoContextNode"
+        :position="videoContext"
+        :rating="videoContextNode.data.rating || 0"
+        :locked="imageContextLocked || videoMediaBusy"
+        @rate="graph.rateNode(videoContextNode.id, $event)"
+        @action="handleVideoContextAction"
+        @close="videoContext = null"
+      />
+      <VideoSaveAssetDialog
+        v-if="videoDialog?.kind === 'save-asset'"
+        :open="true"
+        :node="videoDialog.node"
+        @close="videoDialog = null"
+        @saved="handleVideoAssetSaved"
+      />
+      <VideoEnhanceDialog
+        v-if="videoDialog?.kind === 'enhance'"
+        :key="videoDialog.node.id"
+        :source-url="videoDialog.node.data.assetUrl"
+        :name="videoDialog.node.data.title"
+        :save-result="saveEnhancedVideo"
+        @close="videoDialog = null"
+      />
+      <VideoActionStatusDialog
+        v-if="videoDialog && !['save-asset', 'enhance'].includes(videoDialog.kind)"
+        :node="videoDialog.node"
+        :action="videoDialog.kind"
+        @close="videoDialog = null"
+      />
+      <ImageCreateSubjectDialog
+        v-if="imageDialog?.kind === 'create-subject'"
+        :source-node="imageDialog.node"
+        @close="imageDialog = null"
+        @saved="handleImageAssetSaved"
+        @error="imageActionNotice($event, true)"
+      />
+      <ImageComplianceDialog
+        v-if="imageDialog?.kind === 'compliance'"
+        :source-node="imageDialog.node"
+        @close="imageDialog = null"
       />
       <DirectorPanel
         v-if="activePanel === 'assistant'"
+        ref="directorPanel"
         :key="directorConversationId"
         :docked="directorDocked"
         :dock-width="directorDockWidth"
@@ -2327,3 +3851,70 @@ onBeforeUnmount(() => {
     </section>
   </main>
 </template>
+
+<style scoped>
+.cv3-selection-frame {
+  position: absolute;
+  z-index: 6;
+  box-sizing: border-box;
+  border: 1px dashed rgb(234 234 234 / 70%);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 3%);
+  pointer-events: none;
+}
+.cv3-group-background {
+  position: absolute;
+  z-index: 0;
+  border-radius: 24px;
+  pointer-events: none;
+}
+.has-persistent-groups {
+  background: var(--cv3-bg);
+}
+.has-persistent-groups .cv3-flow {
+  background: transparent;
+}
+.has-multi-selection :deep(.vue-flow__nodesselection-rect) {
+  border: 0;
+  background: transparent;
+}
+.has-active-group :deep(.vue-flow__nodesselection-rect) {
+  pointer-events: none;
+}
+.cv3-image-import-status {
+  pointer-events: none;
+}
+.cv3-image-import-status button {
+  pointer-events: auto;
+}
+.cv3-selection-frame-edge {
+  position: absolute;
+  pointer-events: auto;
+  cursor: move;
+  touch-action: none;
+}
+.cv3-selection-frame-edge.is-top {
+  top: -4px;
+  left: -4px;
+  right: -4px;
+  height: 8px;
+}
+.cv3-selection-frame-edge.is-bottom {
+  bottom: -4px;
+  left: -4px;
+  right: -4px;
+  height: 8px;
+}
+.cv3-selection-frame-edge.is-left {
+  left: -4px;
+  top: 4px;
+  bottom: 4px;
+  width: 8px;
+}
+.cv3-selection-frame-edge.is-right {
+  right: -4px;
+  top: 4px;
+  bottom: 4px;
+  width: 8px;
+}
+</style>

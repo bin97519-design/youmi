@@ -14,6 +14,7 @@ import { createMultiAngleOutput } from '../sync/multiAngleCommand'
 import { useCanvasV3GraphStore } from '../stores/graph'
 import { useCanvasV3TaskStore } from '../stores/tasks'
 import { imageMiCost } from '../../../utils/imageMiPricing'
+import { imageModelLabel } from '../config/imageModelVersions'
 
 const props = defineProps({
   node: { type: Object, required: true },
@@ -38,8 +39,11 @@ const model = computed(() => {
     ? chosen
     : tasks.imageModels[0]?.value || chosen
 })
-const modelLabel = computed(
-  () => tasks.imageModels.find((m) => m.value === model.value)?.label || model.value,
+const modelLabel = computed(() =>
+  imageModelLabel(
+    tasks.imageModels.find((m) => m.value === model.value),
+    model.value,
+  ),
 )
 const cost = computed(
   () =>

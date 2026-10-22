@@ -11,6 +11,7 @@ import {
 } from '../config/directorModes.js'
 import { serializeDirectorModelChip } from '../config/directorModelCatalog.js'
 import { serializeDirectorSkillChip } from '../config/directorSkillCatalog.js'
+import { directorCanvasSelectionIntent } from '../config/directorCanvasSelection.js'
 import {
   directorConversationItems,
   directorRunDisplayText,
@@ -156,6 +157,7 @@ const activeSkillChipId = ref('')
 const draggedSkillChipIndex = ref(-1)
 const skillCreationOpen = ref(false)
 const skillCreationChoice = ref('blank')
+const skillSelectionDraft = ref(false)
 const attachments = ref([])
 const pendingImageSourceMode = ref('')
 const pendingScriptSourceMode = ref('')
@@ -930,6 +932,44 @@ function handleLibraryAssets(assets) {
   nextTick(() => composerInput.value?.focus({ preventScroll: true }))
 }
 
+// The shell opens this real panel first, then appends a captured selection.
+// Scope checks are synchronous; no submit, paid generation or upload occurs.
+function addCanvasSelection(nodes, options = {}) {
+  const {
+    assets,
+    prompt: nextPrompt,
+    ...feedback
+  } = directorCanvasSelectionIntent(nodes, {
+    existingAttachments: attachments.value,
+    prompt: prompt.value,
+    currentScope: {
+      projectId: props.sessionId,
+      sessionId: props.sessionId,
+      conversationId: props.conversationId,
+    },
+    expectedScope: options,
+    blockedReason: props.restoring || props.restoreError ? '当前对话尚未恢复，请稍后重试' : '',
+  })
+  if (feedback.stale || feedback.blocked) return { ...feedback, skillCreationOpened: false }
+  if (assets.length) handleLibraryAssets(assets)
+  if (nextPrompt !== prompt.value) prompt.value = nextPrompt
+  if (pendingClarificationRun.value && (feedback.acceptedCount || feedback.duplicateCount))
+    clarificationChatOpen.value = true
+  const skillCreationOpened = Boolean(
+    options.createSkill && (feedback.acceptedCount || feedback.duplicateCount),
+  )
+  if (skillCreationOpened) {
+    closeInlinePopups()
+    skillCreationChoice.value = 'canvas'
+    skillSelectionDraft.value = true
+    skillCreationOpen.value = true
+  }
+  nextTick(() => composerInput.value?.focus({ preventScroll: true }))
+  return { ...feedback, skillCreationOpened }
+}
+
+defineExpose({ addCanvasSelection })
+
 function insertDirectorModel(model) {
   selectedModels.value.push({
     ...model,
@@ -986,11 +1026,13 @@ function dropSkillChip(event, targetIndex) {
 function startSkillCreation() {
   skillMenuOpen.value = false
   skillCreationChoice.value = 'blank'
+  skillSelectionDraft.value = false
   skillCreationOpen.value = true
 }
 
 function dismissSkillCreation() {
   skillCreationOpen.value = false
+  skillSelectionDraft.value = false
   nextTick(() => composerInput.value?.focus({ preventScroll: true }))
 }
 
@@ -1001,9 +1043,13 @@ function confirmSkillCreation() {
     raw: fromCanvas ? '基于当前画布创建 Skill' : '从零聊出一个 Skill',
     parts: [{ type: 'skill_creation', source: fromCanvas ? 'canvas' : 'blank' }],
   })
-  prompt.value = fromCanvas
+  const instruction = fromCanvas
     ? '请分析当前画布，并把这套创作流程整理成一个可复用的 Skill：'
     : '请帮我从零创建一个 Skill，我想实现：'
+  prompt.value = skillSelectionDraft.value
+    ? [prompt.value, instruction].filter(Boolean).join('\n\n')
+    : instruction
+  skillSelectionDraft.value = false
   skillCreationOpen.value = false
   nextTick(() => composerInput.value?.focus({ preventScroll: true }))
 }

@@ -58,6 +58,25 @@ class ModelApiKeyServiceTest {
   }
 
   @Test
+  void routedVideoOptionsExposeNativeIdentityWithoutChangingLegacyDropdownValues() {
+    var stored = service.create(new ModelApiKeyDtos.SaveRequest(
+        "SD 线路", "doubao-seedance-2-5-260628", ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION,
+        "lk888", "https://api.example.com", "/api/v3/anmiao/contents/generations/tasks",
+        "/api/v3/anmiao/contents/generations/tasks/{id}", "sk-test-video", true, 100), 1L);
+    new AiFeatureMappingService(service, new AiFeatureMappingRepository(jdbcTemplate)).save(
+        "canvas-video", new com.youmi.api.admin.AiFeatureMappingDtos.SaveRequest(List.of(stored.id()), null));
+    var routed = service.enabledRoutedModelOptions(ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION,
+        "canvas-video").get(0);
+    assertEquals("model-api-key:" + stored.id(), routed.value());
+    assertEquals("doubao-seedance-2-5-260628", routed.model());
+    assertEquals("SD 线路", routed.label());
+    assertEquals(stored.id(), service.resolveFeatureRouteOption(routed.value(),
+        ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "canvas-video").orElseThrow().id());
+    assertEquals("doubao-seedance-2-5-260628", service.enabledModelOptions(
+        ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "canvas-video").get(0).value());
+  }
+
+  @Test
   void encryptsSecretAndResolvesHighestPriorityEnabledKey() {
     ModelApiKeyDtos.Row first = service.create(new ModelApiKeyDtos.SaveRequest(
         "主线路", "banana-2.1", ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION,
@@ -370,5 +389,59 @@ class ModelApiKeyServiceTest {
 
     assertEquals(stored.id(), service.resolve("banana-pro-api",
         ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, "canvas-image").orElseThrow().id());
+  }
+
+  @Test
+  void imageOptionsExposeUnderlyingModelWithoutCredentialDefaultsOrEndpoints() throws Exception {
+    ModelApiKeyDtos.Row stored = service.create(new ModelApiKeyDtos.SaveRequest(
+        "自定义显示名称", "tt-image-2.5", ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION,
+        "灵科AI", "https://private-provider.example.com", null, null, "sk-private", true, 100,
+        List.of(new ModelApiKeyDtos.DefaultParameter("version", "sunburst"),
+            new ModelApiKeyDtos.DefaultParameter("private_parameter", "private-value"))), 1L);
+    new AiFeatureMappingService(service, new AiFeatureMappingRepository(jdbcTemplate)).save(
+        "canvas-image", new com.youmi.api.admin.AiFeatureMappingDtos.SaveRequest(List.of(stored.id()), null));
+
+    ModelApiKeyDtos.ModelOption option = service.enabledRoutedModelOptions(
+        ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, "canvas-image").get(0);
+    assertEquals("model-api-key:" + stored.id(), option.value());
+    assertEquals("自定义显示名称", option.label());
+    assertEquals("tt-image-2.5", option.model());
+    assertEquals("sunburst", option.defaultVersion());
+    assertEquals("tt-image-2.5", service.enabledModelOptions(
+        ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION).get(0).model());
+    String json = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(option);
+    assertFalse(json.contains("private"));
+    assertFalse(json.contains("defaultData"));
+  }
+
+  @Test
+  void nonImageOptionsRetainLegacyShapeAndThreeArgumentConstructor() throws Exception {
+    service.create(new ModelApiKeyDtos.SaveRequest("视频", "video-model",
+        ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "youmi888", "https://api.example.com",
+        null, null, "sk-video", true, 100), 1L);
+    ModelApiKeyDtos.ModelOption option = service.enabledModelOptions(
+        ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION).get(0);
+    assertEquals(new ModelApiKeyDtos.ModelOption("video-model", "视频", "youmi888"), option);
+    var json = new com.fasterxml.jackson.databind.ObjectMapper().valueToTree(option);
+    assertEquals(3, json.size());
+    assertFalse(json.has("model"));
+    assertFalse(json.has("defaultVersion"));
+  }
+
+  @Test
+  void imageOptionVersionUsesOnlyValidDefaultsOrExplicitUnderlyingModelAlias() {
+    service.create(new ModelApiKeyDtos.SaveRequest("任意名称", "tt-image-2.5-sunburst",
+        ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, "youmi888", "https://api.example.com",
+        null, null, "sk-image", true, 100,
+        List.of(new ModelApiKeyDtos.DefaultParameter("version", "invalid"))), 1L);
+    service.create(new ModelApiKeyDtos.SaveRequest("增强版并非模型身份", "banana-2.1",
+        ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION, "youmi888", "https://api.example.com",
+        null, null, "sk-other", true, 100,
+        List.of(new ModelApiKeyDtos.DefaultParameter("version", "sunburst"))), 1L);
+    var options = service.enabledModelOptions(ModelApiKeyService.MODEL_TYPE_IMAGE_GENERATION);
+    assertEquals("sunburst", options.stream().filter(option -> option.model().equals("tt-image-2.5-sunburst"))
+        .findFirst().orElseThrow().defaultVersion());
+    assertEquals(null, options.stream().filter(option -> option.model().equals("banana-2.1"))
+        .findFirst().orElseThrow().defaultVersion());
   }
 }

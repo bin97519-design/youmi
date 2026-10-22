@@ -61,6 +61,30 @@ const Handle = { setup: (_, { slots }) => () => testH('div', { 'data-handle': tr
   }),
 }`,
   )
+  .replace(
+    /import VideoNodePlayer from ['"]\.\/VideoNodePlayer\.vue['"]/,
+    `const VideoNodePlayer = {
+  props: ['source', 'title', 'poster', 'selected'],
+  emits: ['metadata', 'snapshot', 'expand', 'time'],
+  setup: (props, { emit }) => () => testH('video', {
+    'data-video-player': true,
+    'data-selected': props.selected,
+    src: props.source,
+    title: props.title,
+    poster: props.poster,
+    controls: '',
+    preload: 'metadata',
+    onLoadedmetadata: ({ target }) => emit('metadata', {
+      width: target.videoWidth,
+      height: target.videoHeight,
+      duration: target.duration,
+    }),
+    onSnapshot: (value) => emit('snapshot', value),
+    onExpand: () => emit('expand'),
+    onTime: (value) => emit('time', value),
+  }),
+}`,
+  )
   .replace(/from (['"])\.\.\/config\/imageTaskState\1/g, `from '${configUrl('imageTaskState')}'`)
   .replace(/from (['"])\.\.\/config\/magneticHandle\1/g, `from '${configUrl('magneticHandle')}'`)
 const Component = (
@@ -115,12 +139,14 @@ const all = (target, predicate) => [
 ]
 const textContent = (target) =>
   `${target.type === '#comment' ? '' : target.text}${target.children.map(textContent).join('')}`
-async function mount(data = {}) {
+async function mount(data = {}, props = {}) {
   const state = reactive({
-    id: 'image-node-1',
+    id: `${data.kind || 'image'}-node-1`,
     data: { kind: 'image', title: '商品主图', runState: 'running', progress: null, ...data },
+    ...props,
   })
   const calls = []
+  const emits = []
   const record =
     (name) =>
     (...args) =>
@@ -136,17 +162,27 @@ async function mount(data = {}) {
       stopWaiting: record('stopWaiting'),
       resume: record('resume'),
       runImage: record('runImage'),
+      runVideo: record('runVideo'),
     },
   }
   globalThis[Symbol.for(registryKey)] = registry
   const root = node('root')
-  const app = renderer.createApp({ setup: () => () => h(Component, state) })
+  const app = renderer.createApp({
+    setup: () => () =>
+      h(Component, {
+        ...state,
+        onVideoSnapshot: (value) => emits.push(['snapshot', value]),
+        onVideoExpand: (value) => emits.push(['expand', value]),
+        onVideoTime: (value) => emits.push(['time', value]),
+      }),
+  })
   app.mount(root)
   await nextTick()
   return {
     state,
     root,
     calls,
+    emits,
     find: (predicate) => all(root, predicate),
     field: () => all(root, (target) => target.props['data-pixel-field'])[0],
     status: () => all(root, (target) => target.props.role === 'status')[0],
@@ -166,28 +202,34 @@ async function mount(data = {}) {
 }
 const click = (button) => button.props.onClick({ stopPropagation() {} })
 
-test('every real active image state mounts a decorative field and accurate accessible feedback', async () => {
+test('every real active image and video state mounts the same decorative field and accessible feedback', async () => {
   assert.deepEqual(IMAGE_TASK_ACTIVE_STATES, ['preparing', 'submitting', 'queued', 'running'])
-  for (const runState of IMAGE_TASK_ACTIVE_STATES) {
-    const harness = await mount({ runState, generation: { clientTaskId: 'paid-task-identity' } })
-    try {
-      assert.equal(harness.field().props['aria-hidden'], 'true')
-      assert.equal(harness.field().props['data-seed'], 'paid-task-identity')
-      const status = harness.status()
-      assert.equal(status.props['aria-live'], 'polite')
-      assert.match(status.props.class, /is-pixel-feedback/)
-      assert.equal(
-        textContent(status)
-          .replace(/\s*取消\s*$/, '')
-          .trim(),
-        imageTaskFeedback(harness.state.data),
-      )
-      assert.doesNotMatch(textContent(status), /\d+%/)
-      assert.equal(harness.find((entry) => entry.type === 'article')[0].props['aria-busy'], true)
-      assert.ok(harness.button('取消等待'))
-      assert.deepEqual(harness.calls, [])
-    } finally {
-      harness.dispose()
+  for (const kind of ['image', 'video']) {
+    for (const runState of IMAGE_TASK_ACTIVE_STATES) {
+      const harness = await mount({
+        kind,
+        runState,
+        generation: { clientTaskId: 'paid-task-identity' },
+      })
+      try {
+        assert.equal(harness.field().props['aria-hidden'], 'true', `${kind}: ${runState}`)
+        assert.equal(harness.field().props['data-seed'], 'paid-task-identity')
+        const status = harness.status()
+        assert.equal(status.props['aria-live'], 'polite')
+        assert.match(status.props.class, /is-pixel-feedback/)
+        assert.equal(
+          textContent(status)
+            .replace(/\s*取消\s*$/, '')
+            .trim(),
+          imageTaskFeedback(harness.state.data),
+        )
+        assert.doesNotMatch(textContent(status), /\d+%/)
+        assert.equal(harness.find((entry) => entry.type === 'article')[0].props['aria-busy'], true)
+        assert.ok(harness.button('取消等待'))
+        assert.deepEqual(harness.calls, [])
+      } finally {
+        harness.dispose()
+      }
     }
   }
 })
@@ -219,8 +261,8 @@ test('progress comes only from the task, including zero, and preparation preserv
   }
 })
 
-test('non-image media keeps its original status presentation without mounting an image pixel field', async () => {
-  for (const kind of ['video', 'audio', 'script', 'smartEdit']) {
+test('other media keeps its original status presentation without mounting an image or video pixel field', async () => {
+  for (const kind of ['audio', 'script', 'smartEdit']) {
     const harness = await mount({ kind })
     try {
       assert.equal(harness.field(), undefined)
@@ -236,37 +278,51 @@ test('non-image media keeps its original status presentation without mounting an
 })
 
 test('cancel only stops waiting on the current node and never initiates another paid generation', async () => {
-  for (const runState of IMAGE_TASK_ACTIVE_STATES) {
-    const harness = await mount({ runState })
-    try {
-      const button = harness.button('取消等待')
-      if (runState === 'preparing') assert.match(button.props.title, /不提交生成任务/)
-      else assert.match(button.props.title, /后台任务可能继续执行/)
-      click(button)
-      assert.deepEqual(harness.calls, [['stopWaiting', 'image-node-1']])
-      assert.equal(harness.button('重新生成'), undefined)
-    } finally {
-      harness.dispose()
+  for (const kind of ['image', 'video']) {
+    for (const runState of IMAGE_TASK_ACTIVE_STATES) {
+      const harness = await mount({ kind, runState })
+      try {
+        const button = harness.button('取消等待')
+        if (runState === 'preparing') assert.match(button.props.title, /不提交生成任务/)
+        else assert.match(button.props.title, /后台任务可能继续执行/)
+        click(button)
+        assert.deepEqual(harness.calls, [['stopWaiting', `${kind}-node-1`]])
+        assert.equal(harness.button('重新生成'), undefined)
+      } finally {
+        harness.dispose()
+      }
     }
   }
 })
 
 test('paused and uncertain states remove animation and keep explicit query-only recovery', async () => {
-  for (const [runState, label] of [
-    ['paused', '已停止等待'],
-    ['uncertain', '任务待确认'],
-  ]) {
-    const harness = await mount({ runState })
-    try {
-      assert.equal(harness.field(), undefined)
-      assert.equal(harness.status(), undefined)
-      assert.match(textContent(harness.root), new RegExp(label))
-      assert.equal(harness.button('取消等待'), undefined)
-      assert.equal(harness.button('重新生成'), undefined)
-      click(harness.button('继续查询'))
-      assert.deepEqual(harness.calls, [['resume', 'image-node-1']])
-    } finally {
-      harness.dispose()
+  for (const kind of ['image', 'video']) {
+    for (const [runState, label] of [
+      ['paused', '已停止等待'],
+      ['uncertain', '任务待确认'],
+    ]) {
+      const harness = await mount({ kind })
+      try {
+        assert.ok(harness.field())
+        harness.state.data.runState = runState
+        await nextTick()
+        assert.equal(harness.field(), undefined)
+        assert.equal(harness.status(), undefined)
+        assert.match(textContent(harness.root), new RegExp(label))
+        assert.equal(harness.button('取消等待'), undefined)
+        assert.equal(harness.button('重新生成'), undefined)
+        assert.equal(harness.find((entry) => entry.type === 'article')[0].props['aria-busy'], false)
+        assert.deepEqual(harness.calls, [])
+        click(harness.button('继续查询'))
+        assert.deepEqual(harness.calls, [['resume', `${kind}-node-1`]])
+        harness.state.data.runState = 'running'
+        await nextTick()
+        assert.ok(harness.field())
+        assert.ok(harness.status())
+        assert.equal(harness.button('继续查询'), undefined)
+      } finally {
+        harness.dispose()
+      }
     }
   }
 })
@@ -278,6 +334,37 @@ test('failed image state shows its actual error and does not regenerate until re
     assert.equal(harness.status(), undefined)
     assert.match(textContent(harness.root), /生成服务返回测试错误/)
     assert.equal(harness.button('取消等待'), undefined)
+    assert.deepEqual(harness.calls, [])
+    click(harness.button('重新生成'))
+    assert.deepEqual(harness.calls, [['runImage', 'image-node-1']])
+  } finally {
+    harness.dispose()
+  }
+})
+
+test('failed video retries only its video task and never starts image generation', async () => {
+  for (const error of ['', '视频生成服务返回测试错误']) {
+    const harness = await mount({ kind: 'video', runState: 'failed', error })
+    try {
+      assert.equal(harness.field(), undefined)
+      assert.equal(harness.status(), undefined)
+      assert.ok(textContent(harness.root).includes(error || '视频生成失败'))
+      assert.doesNotMatch(textContent(harness.root), /图片生成失败/)
+      assert.equal(harness.button('取消等待'), undefined)
+      assert.equal(harness.find((entry) => entry.type === 'video').length, 0)
+      assert.deepEqual(harness.calls, [])
+      click(harness.button('重新生成'))
+      assert.deepEqual(harness.calls, [['runVideo', 'video-node-1']])
+    } finally {
+      harness.dispose()
+    }
+  }
+})
+
+test('failed image retains its image-specific fallback and retry route', async () => {
+  const harness = await mount({ runState: 'failed', error: '' })
+  try {
+    assert.match(textContent(harness.root), /图片生成失败/)
     assert.deepEqual(harness.calls, [])
     click(harness.button('重新生成'))
     assert.deepEqual(harness.calls, [['runImage', 'image-node-1']])
@@ -321,6 +408,125 @@ test('completion reactively removes busy overlay and displays the result without
   }
 })
 
+test('video completion removes the shared busy effect and restores the playable result without resubmitting', async () => {
+  const harness = await mount({
+    kind: 'video',
+    assetUrl: 'https://assets.example.com/old.mp4',
+    generation: { clientTaskId: 'same-paid-video-task', taskId: 'provider-video-task' },
+  })
+  try {
+    assert.ok(harness.field())
+    assert.equal(harness.find((entry) => entry.type === 'video').length, 0)
+    harness.state.data.progress = 37
+    await nextTick()
+    assert.match(textContent(harness.status()), /生成中 37%/)
+    harness.state.data.runState = 'completed'
+    harness.state.data.assetUrl = 'https://assets.example.com/result.mp4'
+    harness.state.data.progress = 100
+    await nextTick()
+    assert.equal(harness.field(), undefined)
+    assert.equal(harness.status(), undefined)
+    const videos = harness.find((entry) => entry.type === 'video')
+    assert.equal(videos.length, 1)
+    assert.equal(videos[0].props.src, 'https://assets.example.com/result.mp4')
+    assert.equal(videos[0].props.controls, '')
+    assert.equal(videos[0].props.preload, 'metadata')
+    assert.equal(harness.find((entry) => entry.type === 'article')[0].props['aria-busy'], false)
+    assert.equal(harness.button('取消等待'), undefined)
+    assert.equal(harness.button('重新生成'), undefined)
+    assert.equal(harness.state.data.generation.clientTaskId, 'same-paid-video-task')
+    assert.equal(harness.state.data.generation.taskId, 'provider-video-task')
+    assert.deepEqual(harness.calls, [])
+  } finally {
+    harness.dispose()
+  }
+})
+
+test('completed video forwards source, poster, selection and native metadata through the shared player', async () => {
+  const harness = await mount(
+    {
+      kind: 'video',
+      title: '镜头 7',
+      runState: 'completed',
+      assetUrl: 'https://assets.example.com/video.mp4',
+      posterUrl: 'https://assets.example.com/poster.png',
+      thumbnail: 'https://assets.example.com/fallback.png',
+    },
+    { selected: true },
+  )
+  try {
+    const video = harness.find((entry) => entry.props['data-video-player'])[0]
+    assert.equal(video.props.src, 'https://assets.example.com/video.mp4')
+    assert.equal(video.props.title, '镜头 7')
+    assert.equal(video.props.poster, 'https://assets.example.com/poster.png')
+    assert.equal(video.props['data-selected'], true)
+    assert.deepEqual(harness.calls, [])
+    video.props.onLoadedmetadata({
+      target: { videoWidth: 1080, videoHeight: 1920, duration: 8.25 },
+    })
+    assert.deepEqual(harness.calls, [
+      [
+        'updateNodeData',
+        'video-node-1',
+        {
+          mediaWidth: 1080,
+          mediaHeight: 1920,
+          mediaDuration: 8.25,
+        },
+      ],
+    ])
+    Object.assign(harness.state.data, { mediaWidth: 1080, mediaHeight: 1920, mediaDuration: 8.25 })
+    harness.calls.length = 0
+    await nextTick()
+    video.props.onLoadedmetadata({
+      target: { videoWidth: 1080, videoHeight: 1920, duration: 8.25 },
+    })
+    video.props.onLoadedmetadata({
+      target: { videoWidth: 0, videoHeight: 0, duration: Number.NaN },
+    })
+    assert.deepEqual(harness.calls, [])
+    harness.state.data.posterUrl = ''
+    harness.state.selected = false
+    await nextTick()
+    assert.equal(video.props.poster, 'https://assets.example.com/fallback.png')
+    assert.equal(video.props['data-selected'], false)
+  } finally {
+    harness.dispose()
+  }
+})
+
+test('completed video forwards snapshot, expand and time to the owning node without writing task or graph data', async () => {
+  const harness = await mount({
+    kind: 'video',
+    runState: 'completed',
+    assetUrl: 'https://assets.example.com/video.mp4',
+    generation: { clientTaskId: 'keep-video-identity', taskId: 'keep-provider-identity' },
+  })
+  try {
+    const video = harness.find((entry) => entry.props['data-video-player'])[0]
+    video.props.onSnapshot({ time: 4.25, position: 'current' })
+    video.props.onSnapshot({ time: 0, position: 'first' })
+    video.props.onSnapshot({ time: 8.21, position: 'last' })
+    video.props.onExpand()
+    video.props.onTime(4.25)
+    assert.deepEqual(harness.emits, [
+      ['snapshot', { nodeId: 'video-node-1', time: 4.25, position: 'current' }],
+      ['snapshot', { nodeId: 'video-node-1', time: 0, position: 'first' }],
+      ['snapshot', { nodeId: 'video-node-1', time: 8.21, position: 'last' }],
+      ['expand', 'video-node-1'],
+      ['time', { nodeId: 'video-node-1', time: 4.25 }],
+    ])
+    assert.deepEqual(harness.calls, [])
+    assert.deepEqual(harness.state.data.generation, {
+      clientTaskId: 'keep-video-identity',
+      taskId: 'keep-provider-identity',
+    })
+    assert.equal(harness.state.data.assetUrl, 'https://assets.example.com/video.mp4')
+  } finally {
+    harness.dispose()
+  }
+})
+
 test('pixel decoration cannot intercept pointer actions and status controls remain above it', async () => {
   const pixelSource = await readFile(new URL('./GenerationPixelField.vue', componentUrl), 'utf8')
   const styles = await readFile(new URL('../canvas-v3.css', componentUrl), 'utf8')
@@ -333,7 +539,7 @@ test('pixel decoration cannot intercept pointer actions and status controls rema
   assert.doesNotMatch(source, /Math\.random|setInterval|setTimeout/)
 })
 
-test('image generation blends into the dark canvas with subtle dots and no heavy status block', async () => {
+test('image and video generation share a dark surface with subtle dots and no heavy status block', async () => {
   const pixelSource = await readFile(new URL('./GenerationPixelField.vue', componentUrl), 'utf8')
   const styles = await readFile(new URL('../canvas-v3.css', componentUrl), 'utf8')
   const imageSurface = styles.match(/\.cv3-media-node\.is-image\.is-generating\s*\{([^}]*)\}/s)?.[1]
@@ -347,7 +553,15 @@ test('image generation blends into the dark canvas with subtle dots and no heavy
   const cancelHover = styles.match(
     /\.cv3-generation-center\.is-pixel-feedback button:hover\s*\{([^}]*)\}/s,
   )?.[1]
-  assert.ok(imageSurface, 'image-only generating surface must match its dot field background')
+  assert.ok(imageSurface, 'the generating surface must match its dot field background')
+  assert.match(
+    styles,
+    /\.cv3-media-node\.is-video\.is-generating,\s*\.cv3-media-node\.is-image\.is-generating\s*\{/s,
+  )
+  assert.match(
+    styles,
+    /\.cv3-media-node\.is-video\.is-generating\.selected,\s*\.cv3-media-node\.is-image\.is-generating\.selected\s*\{/s,
+  )
   assert.match(imageSurface, /--cv3-generation-surface:\s*#242527\s*;/)
   assert.match(imageSurface, /background:\s*var\(--cv3-generation-surface\)\s*;/)
   assert.match(imageSurface, /border-color:\s*#3a3d42\s*;/)

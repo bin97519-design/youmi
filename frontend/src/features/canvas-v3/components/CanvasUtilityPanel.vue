@@ -1,10 +1,91 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useCanvasV3GraphStore } from '../stores/graph'
+import { useUserStore } from '../../../stores/user'
+import { apiPath } from '../../../utils/apiBase'
+import {
+  createVideoSavedAssetClient,
+  savedAssetMediaKind,
+  videoSavedAssetInfo,
+} from '../sync/videoSavedAssetClient.js'
+import { imageAssetSourceUrl } from '../config/imageAssetCollections.js'
+import { personalAssetImageUrl } from '../config/personalAssetLibrary.js'
 import CanvasIcon from './CanvasIcon.vue'
-defineProps({ panel: { type: String, required: true } })
-const emit = defineEmits(['close', 'demo', 'export'])
+const props = defineProps({
+  panel: { type: String, required: true },
+  assetRevision: { type: Number, default: 0 },
+})
+const emit = defineEmits([
+  'close',
+  'demo',
+  'export',
+  'import-images',
+  'import-saved-asset',
+  'preview-image',
+  'preview-video',
+  'import-saved-video',
+])
 const graph = useCanvasV3GraphStore()
+const user = useUserStore()
+const savedAssetClient = createVideoSavedAssetClient({
+  path: apiPath,
+  headers: () => user.authHeaders(),
+})
+const savedAssets = ref([])
+const assetsLoading = ref(false)
+const assetsError = ref('')
+const assetAccount = computed(() =>
+  user.isAuthenticated ? String(user.profile?.id || user.profile?.userId || '') : '',
+)
+let assetsController
+let assetsRequest = 0
+let lastAccount = ''
+
+function abortAssetRead() {
+  assetsRequest += 1
+  assetsController?.abort()
+  assetsController = null
+  assetsLoading.value = false
+}
+async function refreshSavedAssets() {
+  abortAssetRead()
+  if (props.panel !== 'assets') return
+  if (lastAccount !== assetAccount.value) savedAssets.value = []
+  lastAccount = assetAccount.value
+  assetsError.value = ''
+  if (!assetAccount.value) return
+  const current = ++assetsRequest
+  const account = assetAccount.value
+  const controller = new AbortController()
+  assetsController = controller
+  assetsLoading.value = true
+  try {
+    const records = await savedAssetClient.list({ signal: controller.signal, includeImages: true })
+    if (
+      controller.signal.aborted ||
+      current !== assetsRequest ||
+      account !== assetAccount.value ||
+      props.panel !== 'assets'
+    )
+      return
+    savedAssets.value = records.filter((record) => savedAssetMediaKind(record))
+  } catch (error) {
+    if (!controller.signal.aborted && current === assetsRequest && account === assetAccount.value)
+      assetsError.value = error.message?.replace(/模特/g, '资产') || '个人资产加载失败，请重试'
+  } finally {
+    if (current === assetsRequest) {
+      assetsLoading.value = false
+      assetsController = null
+    }
+  }
+}
+function loginForAssets() {
+  if (user.requireLogin()) refreshSavedAssets()
+}
+watch(() => [props.panel, props.assetRevision, assetAccount.value], refreshSavedAssets, {
+  immediate: true,
+})
+onBeforeUnmount(abortAssetRead)
 function selectAsset(node) {
   graph.nodes.forEach((item) => {
     item.selected = item.id === node.id
@@ -13,7 +94,6 @@ function selectAsset(node) {
 }
 const filter = ref('all')
 const upload = ref(null)
-const message = ref('')
 const titles = {
   assets: '资产管理',
   history: '生成历史',
@@ -27,9 +107,65 @@ const titles = {
 }
 const media = computed(() =>
   graph.nodes.filter(
-    (node) => node.data.assetUrl && (filter.value === 'all' || node.data.kind === filter.value),
+    (node) =>
+      node.data?.assetUrl &&
+      (node.data.kind !== 'image' || imageAssetSourceUrl(node.data.assetUrl)) &&
+      (filter.value === 'all' || node.data.kind === filter.value),
   ),
 )
+const assetCards = computed(() => {
+  const cards = new Map()
+  for (const node of media.value) {
+    const key = `${node.data.kind}:${node.data.assetUrl}`
+    if (!cards.has(key))
+      cards.set(key, {
+        key,
+        node,
+        kind: node.data.kind,
+        url: node.data.assetUrl,
+        posterUrl: personalAssetImageUrl(node.data.posterUrl || node.data.thumbnail) || '',
+        name: node.data.title || '未命名素材',
+        saved: null,
+      })
+  }
+  for (const saved of savedAssets.value) {
+    const kind = savedAssetMediaKind(saved)
+    if (!kind || (filter.value !== 'all' && filter.value !== kind)) continue
+    const video = videoSavedAssetInfo(saved)
+    const url = video?.url || saved.imageUrl
+    const key = `${kind}:${url}`
+    if (cards.has(key)) {
+      cards.get(key).saved = saved
+      if (video?.posterUrl) cards.get(key).posterUrl = video.posterUrl
+    } else
+      cards.set(key, {
+        key,
+        node: null,
+        kind,
+        url,
+        posterUrl: video?.posterUrl || '',
+        name: saved.name || (kind === 'video' ? '未命名视频' : '未命名图片'),
+        saved,
+      })
+  }
+  return [...cards.values()]
+})
+function savedFolder(record) {
+  const path = record?.config?.canvasAsset?.folderPath
+  return Array.isArray(path) ? path.filter((item) => typeof item === 'string').join(' / ') : ''
+}
+function savedTags(record) {
+  const tags = record?.config?.canvasAsset?.tags
+  return Array.isArray(tags) ? tags.filter((item) => typeof item === 'string').join(' · ') : ''
+}
+function openAssetCard(card) {
+  if (card.saved) emit(card.kind === 'video' ? 'preview-video' : 'preview-image', card.saved)
+  else if (card.node) selectAsset(card.node)
+}
+function importSavedAsset(record) {
+  if (videoSavedAssetInfo(record)) emit('import-saved-video', record)
+  else if (savedAssetMediaKind(record) === 'image') emit('import-saved-asset', record)
+}
 const history = computed(() =>
   graph.nodes
     .flatMap((node) =>
@@ -55,6 +191,7 @@ const keys = [
   ['切换移动工具', 'H'],
   ['多选节点', 'Shift + 单击'],
   ['复制节点', 'Ctrl + D'],
+  ['粘贴图片到画布', 'Ctrl + V'],
   ['删除选中', 'Delete'],
   ['撤销', 'Ctrl + Z'],
   ['重做', 'Ctrl + Shift + Z'],
@@ -62,37 +199,9 @@ const keys = [
   ['整理画布', 'Alt + Shift + F'],
   ['关闭面板', 'Esc'],
 ]
-async function importFile(event) {
-  const file = event.target.files?.[0]
-  if (!file) return
-  if (file.size > 1024 * 1024) {
-    message.value = '本地演示支持 1MB 以内的图片；大文件上传将在素材服务接入后开放。'
-    return
-  }
-  if (!file.type.startsWith('image/')) {
-    message.value = '请选择图片文件'
-    return
-  }
-  const totalBytes = graph.nodes.reduce(
-    (sum, node) => sum + (node.data.assetUrl?.startsWith('data:') ? node.data.assetUrl.length : 0),
-    0,
-  )
-  if (totalBytes + file.size * 1.4 > 2500000) {
-    message.value = '当前画布的本地图片存储已满，请使用较小的图片。'
-    return
-  }
-  const reader = new FileReader()
-  reader.onload = () => {
-    const node = graph.addNode('image')
-    graph.updateNodeData(node.id, {
-      title: file.name,
-      assetUrl: reader.result,
-      artifactStatus: 'ready',
-      mediaOrigin: 'upload',
-    })
-    message.value = '图片已加入画布，可以连线引用。'
-  }
-  reader.readAsDataURL(file)
+function importFile(event) {
+  const files = Array.from(event.target.files || [])
+  if (files.length) emit('import-images', files)
   event.target.value = ''
 }
 </script>
@@ -125,18 +234,84 @@ async function importFile(event) {
           上传
         </button>
       </div>
-      <input ref="upload" type="file" accept="image/*" hidden @change="importFile" />
-      <div v-if="media.length" class="cv3-asset-grid">
-        <button v-for="node in media" :key="node.id" type="button" @click="selectAsset(node)">
-          <img v-if="node.data.kind === 'image'" :src="node.data.assetUrl" :alt="node.data.title" />
-          <CanvasIcon v-else :name="node.data.kind" :size="32" />
-          <span>{{ node.data.title }}</span>
-        </button>
+      <input ref="upload" type="file" accept="image/*" multiple hidden @change="importFile" />
+      <div class="cv3-cloud-asset-status" aria-live="polite">
+        <p v-if="assetsLoading" role="status">正在加载个人资产…</p>
+        <p v-else-if="!assetAccount">
+          登录后可查看保存到个人资产库的图片与视频。
+          <button type="button" @click="loginForAssets">登录</button>
+        </p>
+        <p v-else-if="assetsError" role="alert">
+          {{ assetsError }}
+          <button type="button" @click="refreshSavedAssets">重试</button>
+        </p>
+        <p v-else>
+          个人资产与当前画布素材
+          <button type="button" aria-label="刷新个人资产" @click="refreshSavedAssets">刷新</button>
+        </p>
       </div>
-      <div v-else class="cv3-utility-empty">
+      <div v-if="assetCards.length" class="cv3-managed-asset-grid">
+        <article v-for="card in assetCards" :key="card.key" class="cv3-managed-asset-card">
+          <button
+            type="button"
+            class="cv3-managed-asset-main"
+            :aria-label="`${card.saved ? '预览资产' : '定位素材'}${card.name}`"
+            @click="openAssetCard(card)"
+          >
+            <img
+              v-if="card.kind === 'image' || card.posterUrl"
+              :src="card.kind === 'image' ? card.url : card.posterUrl"
+              :alt="card.name"
+              referrerpolicy="no-referrer"
+            />
+            <CanvasIcon v-else :name="card.kind" :size="32" />
+            <span :title="card.name">{{ card.name }}</span>
+          </button>
+          <template v-if="card.saved">
+            <p
+              v-if="savedFolder(card.saved)"
+              class="cv3-managed-asset-meta"
+              :title="savedFolder(card.saved)"
+            >
+              {{ savedFolder(card.saved) }}
+            </p>
+            <p
+              v-if="savedTags(card.saved)"
+              class="cv3-managed-asset-meta"
+              :title="savedTags(card.saved)"
+            >
+              {{ savedTags(card.saved) }}
+            </p>
+            <div class="cv3-managed-asset-actions">
+              <button
+                v-if="card.node"
+                type="button"
+                :aria-label="`定位素材${card.name}`"
+                @click="selectAsset(card.node)"
+              >
+                定位
+              </button>
+              <button
+                type="button"
+                :aria-label="`添加资产${card.saved.name}到画布`"
+                @click="importSavedAsset(card.saved)"
+              >
+                添加到画布
+              </button>
+            </div>
+          </template>
+        </article>
+      </div>
+      <div v-else-if="!assetsLoading" class="cv3-utility-empty">
         <CanvasIcon name="assets" :size="40" />
-        <strong>还没有素材</strong>
-        <p>上传图片或生成内容后，素材会显示在这里</p>
+        <strong>{{ assetAccount && !assetsError ? '还没有素材' : '当前画布暂无素材' }}</strong>
+        <p>
+          {{
+            filter === 'all'
+              ? '上传图片、生成内容或保存个人资产后，素材会显示在这里'
+              : '没有符合当前类型的素材，可切换“全部”查看'
+          }}
+        </p>
         <button type="button" @click="upload.click()">上传图片</button>
       </div>
     </template>
@@ -186,6 +361,8 @@ async function importFile(event) {
         </p>
         <h3>连接你的创意</h3>
         <p>拖动节点两侧圆点建立连线。脚本模板会自动创建文本节点和引用关系。</p>
+        <h3>导入图片</h3>
+        <p>复制图片后按 Ctrl + V 粘贴到画布，或将图片文件直接拖入画布，支持一次导入多张。</p>
         <button type="button" @click="emit('demo')">
           打开演示工作流
           <i class="ri-arrow-right-line" />
@@ -226,6 +403,100 @@ async function importFile(event) {
         </p>
       </div>
     </template>
-    <p v-if="message" class="cv3-utility-message" role="status">{{ message }}</p>
   </aside>
 </template>
+
+<style scoped>
+.cv3-cloud-asset-status {
+  color: #8a8a8a;
+  font-size: 12px;
+}
+.cv3-cloud-asset-status p {
+  margin: 12px 0 0;
+  line-height: 1.6;
+}
+.cv3-cloud-asset-status button {
+  margin-left: 8px;
+  padding: 2px 5px;
+  border: 0;
+  border-radius: 4px;
+  background: #353535;
+  color: #ddd;
+  font: inherit;
+  cursor: pointer;
+}
+.cv3-managed-asset-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding-top: 16px;
+}
+.cv3-managed-asset-card {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #3e3e3e;
+  border-radius: 8px;
+  background: #292929;
+}
+.cv3-managed-asset-main {
+  display: block;
+  width: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: none;
+  color: #ccc;
+  text-align: left;
+  cursor: pointer;
+}
+.cv3-managed-asset-main img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1.3;
+  object-fit: cover;
+}
+.cv3-managed-asset-main > svg {
+  display: block;
+  height: 100px;
+  margin: auto;
+}
+.cv3-managed-asset-main > span {
+  display: block;
+  padding: 9px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+.cv3-managed-asset-meta {
+  margin: -2px 9px 6px;
+  color: #888;
+  font-size: 11px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.cv3-managed-asset-actions {
+  display: flex;
+  gap: 4px;
+  padding: 2px 8px 8px;
+}
+.cv3-managed-asset-actions button {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 3px;
+  border: 1px solid #484848;
+  border-radius: 5px;
+  background: #353535;
+  color: #ddd;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.cv3-managed-asset-card button:focus-visible,
+.cv3-cloud-asset-status button:focus-visible {
+  outline: 1px solid #aaa;
+  outline-offset: -2px;
+}
+</style>

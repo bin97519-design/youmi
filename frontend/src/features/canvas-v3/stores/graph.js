@@ -1,7 +1,21 @@
 import { computed, ref, toRaw } from 'vue'
 import { defineStore } from 'pinia'
-import { CANVAS_V3_SCHEMA_VERSION, nodeSpec } from '../config/nodeSpecs'
+import { CANVAS_V3_SCHEMA_VERSION, NODE_SPECS, nodeSpec } from '../config/nodeSpecs'
 import { NODE_CONTROLS, nodeSize } from '../config/nodeControls'
+import { videoModelControls } from '../config/videoModelParameters.js'
+import { canvasSelectionLayout } from '../../../utils/canvasSelection.js'
+import {
+  DEFAULT_GROUP_COLOR,
+  isGroupColor,
+  normalizedGroupColor,
+  isGroupPadding,
+  normalizedGroupPadding,
+} from '../config/groupAppearance.js'
+import {
+  createNodeClipboard,
+  parseNodeClipboard,
+  serializeNodeClipboard,
+} from '../config/nodeClipboard.js'
 
 const HISTORY_LIMIT = 60
 const PROTECTED_IMAGE_TASK_STATES = new Set([
@@ -26,7 +40,7 @@ function graphSnapshot(nodes, edges) {
 }
 
 function isProtectedImageTaskNode(node) {
-  if (node?.data?.kind !== 'image') return false
+  if (!['image', 'video'].includes(node?.data?.kind)) return false
   const generation = node.data.generation
   return (
     PROTECTED_IMAGE_TASK_STATES.has(node.data.runState) ||
@@ -38,6 +52,10 @@ function isProtectedImageTaskNode(node) {
 
 function makeNode(kind, index, position) {
   const spec = nodeSpec(kind)
+  const controls =
+    kind === 'video'
+      ? { ...NODE_CONTROLS.video, ...videoModelControls(spec.model) }
+      : NODE_CONTROLS[kind]
   return {
     id: uid('node'),
     type: 'generator',
@@ -52,8 +70,8 @@ function makeNode(kind, index, position) {
       title: spec.title,
       prompt: '',
       model: spec.model,
-      mode: NODE_CONTROLS[kind]?.modes?.[0] || '',
-      params: clone(NODE_CONTROLS[kind]?.defaults || {}),
+      mode: controls?.modes?.[0] || '',
+      params: clone(controls?.defaults || {}),
       switches: {},
       summary: spec.summary,
       runState: 'idle',
@@ -110,6 +128,30 @@ export const useCanvasV3GraphStore = defineStore('canvas-v3-graph', () => {
   const activeNode = computed(() =>
     selectedNodes.value.length === 1 ? selectedNodes.value[0] : null,
   )
+  const selectionMutable = computed(
+    () => selectedNodes.value.length >= 2 && !protectedImageTaskNodes(selectedNodes.value).length,
+  )
+  const selectedGroup = computed(() => {
+    const selected = selectedNodes.value
+    const groupId = selected[0]?.data?.groupId
+    if (selected.length < 2 || !groupId || selected.some((node) => node.data.groupId !== groupId))
+      return null
+    const members = nodes.value.filter((node) => node.data?.groupId === groupId)
+    if (members.length !== selected.length) return null
+    return {
+      id: groupId,
+      name: selected[0].data.groupName || '分组',
+      type: selected[0].data.groupType || 'normal',
+    }
+  })
+  const selectedGroupAppearance = computed(() =>
+    selectedGroup.value
+      ? {
+          color: normalizedGroupColor(selectedNodes.value[0].data.groupColor),
+          padding: normalizedGroupPadding(selectedNodes.value[0].data.groupPadding),
+        }
+      : null,
+  )
   const nodeCounts = computed(() =>
     nodes.value.reduce((result, node) => {
       const kind = node.data?.kind || 'reference'
@@ -129,7 +171,7 @@ export const useCanvasV3GraphStore = defineStore('canvas-v3-graph', () => {
     for (const node of candidates)
       node.data = {
         ...node.data,
-        statusText: `图片任务仍在生成、持久化或等待确认，暂不能${action}。`,
+        statusText: `${node.data.kind === 'video' ? '视频' : '图片'}任务仍在生成、持久化或等待确认，暂不能${action}。`,
         updatedAt: Date.now(),
       }
   }
@@ -188,8 +230,45 @@ export const useCanvasV3GraphStore = defineStore('canvas-v3-graph', () => {
   function updateNodeData(nodeId, patch) {
     const node = nodes.value.find((item) => item.id === nodeId)
     if (!node) return
-    node.data = { ...node.data, ...patch, updatedAt: Date.now() }
+    const previous = { ...node.data }
+    if (
+      ['video', 'audio'].includes(previous.kind) &&
+      patch &&
+      Object.hasOwn(patch, 'assetUrl') &&
+      patch.assetUrl !== previous.assetUrl
+    ) {
+      // Actual duration belongs to this media URL, never a previous candidate
+      // or generation. A patch carrying freshly measured duration may replace it.
+      delete previous.mediaDuration
+      delete previous.durationSeconds
+    }
+    node.data = { ...previous, ...patch, updatedAt: Date.now() }
     markChanged()
+  }
+
+  function addImageAssets(assets, anchor) {
+    if (!assets.length) return []
+    remember()
+    nodes.value.forEach((node) => {
+      node.selected = false
+    })
+    edges.value.forEach((edge) => {
+      edge.selected = false
+    })
+    const created = assets.map((asset, index) => {
+      const size = nodeSize('image', asset)
+      const desired = {
+        x: anchor.x - size.width / 2 + (index % 3) * 680,
+        y: anchor.y - size.height / 2 + Math.floor(index / 3) * 410,
+      }
+      const node = makeNode('image', nodes.value.length, desired)
+      node.selected = true
+      Object.assign(node.data, asset, { mediaOrigin: 'upload', artifactStatus: 'ready' })
+      nodes.value.push(node)
+      return node
+    })
+    markChanged()
+    return created
   }
 
   function connect(connection) {
@@ -243,6 +322,72 @@ export const useCanvasV3GraphStore = defineStore('canvas-v3-graph', () => {
       type: 'default',
       data: { semantic: 'dependency' },
     })
+    markChanged()
+    return node
+  }
+
+  /** Fan out real dependency edges from the selected group's members as one history edit. */
+  function createGroupConnectedNode(kind, position, groupId) {
+    if (
+      typeof kind !== 'string' ||
+      !Object.hasOwn(NODE_SPECS, kind) ||
+      typeof groupId !== 'string' ||
+      !groupId ||
+      ![position?.x, position?.y].every(
+        (number) =>
+          typeof number === 'number' && Number.isFinite(number) && Math.abs(number) <= 1e7,
+      )
+    )
+      return false
+    const group = selectedGroup.value
+    const members = nodes.value.filter((node) => node.data.groupId === groupId)
+    if (
+      !group ||
+      group.id !== groupId ||
+      members.length < 2 ||
+      members.length !== selectedNodes.value.length
+    )
+      return false
+    const blocked = members.filter((node) => {
+      const data = node.data
+      return (
+        PROTECTED_IMAGE_TASK_STATES.has(data.runState) ||
+        Boolean(
+          data.generation?.persistPending ||
+          data.generation?.queryPending ||
+          data.generation?.unresolvedTaskIds?.length,
+        )
+      )
+    })
+    if (blocked.length) {
+      markProtectedActionBlocked(blocked, '创建下游引用')
+      markChanged()
+      return false
+    }
+    const references = members.filter((node) =>
+      ['image', 'video', 'audio', 'text'].includes(node.data.kind),
+    )
+    if (!references.length) return false
+    const node = makeNode(kind, nodes.value.length, findOpenPosition(nodes.value, position, kind))
+    if (['image', 'video', 'audio'].includes(kind)) {
+      const label = { image: '图片节点', video: '视频节点', audio: '音频节点' }[kind]
+      node.data.title = `${label} ${nodes.value.filter((item) => item.data.kind === kind).length + 1}`
+    }
+    remember()
+    for (const member of nodes.value) member.selected = false
+    for (const edge of edges.value) edge.selected = false
+    node.selected = true
+    nodes.value.push(node)
+    for (const reference of references)
+      edges.value.push({
+        id: uid('edge'),
+        source: reference.id,
+        target: node.id,
+        sourceHandle: 'output',
+        targetHandle: 'input',
+        type: 'default',
+        data: { semantic: 'dependency' },
+      })
     markChanged()
     return node
   }
@@ -439,10 +584,27 @@ export const useCanvasV3GraphStore = defineStore('canvas-v3-graph', () => {
   function removeSelected() {
     const blockedNodes = protectedImageTaskNodes(selectedNodes.value)
     const blockedNodeIds = new Set(blockedNodes.map((node) => node.id))
+    const allProtectedIds = new Set(protectedImageTaskNodes().map((node) => node.id))
     const nodeIds = new Set(
-      selectedNodes.value.filter((node) => !blockedNodeIds.has(node.id)).map((node) => node.id),
+      selectedNodes.value
+        .filter((node) => !blockedNodeIds.has(node.id))
+        // Deleting a reference node also deletes its edges. Do not indirectly cut an
+        // active task's dependencies merely because VueFlow selected an incident edge.
+        .filter(
+          (node) =>
+            !edges.value.some(
+              (edge) =>
+                (edge.source === node.id && allProtectedIds.has(edge.target)) ||
+                (edge.target === node.id && allProtectedIds.has(edge.source)),
+            ),
+        )
+        .map((node) => node.id),
     )
-    const edgeIds = new Set(selectedEdges.value.map((edge) => edge.id))
+    const edgeIds = new Set(
+      selectedEdges.value
+        .filter((edge) => !allProtectedIds.has(edge.source) && !allProtectedIds.has(edge.target))
+        .map((edge) => edge.id),
+    )
     if (!nodeIds.size && !edgeIds.size) {
       markProtectedActionBlocked(blockedNodes, '删除')
       if (blockedNodes.length) markChanged()
@@ -468,33 +630,274 @@ export const useCanvasV3GraphStore = defineStore('canvas-v3-graph', () => {
       markChanged()
       return false
     }
+    const snapshot = createNodeClipboard(clone(duplicableNodes), clone(edges.value))
+    pasteNodeClipboard(snapshot, null, { offset: 44, suffix: ' 副本' })
+    markProtectedActionBlocked(blockedNodes, '复制')
+    return true
+  }
+
+  function arrangeSelected(mode) {
+    if (selectedNodes.value.length < 2) return false
+    const blocked = protectedImageTaskNodes(selectedNodes.value)
+    if (blocked.length) {
+      markProtectedActionBlocked(blocked, '排列')
+      markChanged()
+      return false
+    }
+    const positions = canvasSelectionLayout(
+      selectedNodes.value.map((node) => ({
+        id: node.id,
+        x: node.position.x,
+        y: node.position.y,
+        ...nodeSize(node.data.kind, node.data),
+      })),
+      mode,
+    )
+    const changed = selectedNodes.value.filter((node) => {
+      const position = positions.get(node.id)
+      return position && (node.position.x !== position.x || node.position.y !== position.y)
+    })
+    if (!changed.length) return false
     remember()
-    const idMap = new Map()
-    const copies = duplicableNodes.map((node) => {
-      const nextId = uid('node')
-      idMap.set(node.id, nextId)
+    for (const node of changed) node.position = { ...positions.get(node.id) }
+    markChanged()
+    return true
+  }
+
+  /** Logical groups retain world coordinates; no VueFlow parent/child transforms. */
+  function applySelectionGroup(
+    groupId,
+    groupName,
+    groupType,
+    action,
+    groupColor = DEFAULT_GROUP_COLOR,
+    groupPadding = normalizedGroupPadding(),
+  ) {
+    if (selectedNodes.value.length < 2) return false
+    const selectedIds = new Set(selectedNodes.value.map((node) => node.id))
+    const affectedGroups = new Set(
+      selectedNodes.value.map((node) => node.data.groupId).filter(Boolean),
+    )
+    const nextGroups = new Map(
+      nodes.value.map((node) => [
+        node.id,
+        selectedIds.has(node.id) ? groupId : node.data.groupId || '',
+      ]),
+    )
+    const counts = new Map()
+    for (const id of nextGroups.values()) if (id) counts.set(id, (counts.get(id) || 0) + 1)
+    const patches = []
+    for (const node of nodes.value) {
+      let nextId = nextGroups.get(node.id)
+      if (affectedGroups.has(nextId) && counts.get(nextId) < 2) nextId = ''
+      const nextName = nextId
+        ? selectedIds.has(node.id)
+          ? groupName
+          : node.data.groupName || ''
+        : ''
+      const nextType = nextId
+        ? selectedIds.has(node.id)
+          ? groupType
+          : node.data.groupType || ''
+        : ''
+      const nextColor = nextId
+        ? selectedIds.has(node.id)
+          ? groupColor
+          : node.data.groupColor
+        : undefined
+      const nextPadding = nextId
+        ? selectedIds.has(node.id)
+          ? groupPadding
+          : node.data.groupPadding
+        : undefined
+      if (
+        (node.data.groupId || '') !== nextId ||
+        (node.data.groupName || '') !== nextName ||
+        (node.data.groupType || '') !== nextType ||
+        (node.data.groupColor || '') !== (nextColor || '') ||
+        JSON.stringify(node.data.groupPadding) !== JSON.stringify(nextPadding)
+      )
+        patches.push({
+          node,
+          groupId: nextId,
+          groupName: nextName,
+          groupType: nextType,
+          groupColor: nextColor,
+          groupPadding: nextPadding,
+        })
+    }
+    // Include any old group singleton being cleaned up, not just the explicit selection.
+    const blocked = protectedImageTaskNodes([
+      ...new Set([...selectedNodes.value, ...patches.map((patch) => patch.node)]),
+    ])
+    if (blocked.length) {
+      markProtectedActionBlocked(blocked, action)
+      markChanged()
+      return false
+    }
+    if (!patches.length) return false
+    remember()
+    for (const patch of patches) {
+      if (patch.groupId) {
+        patch.node.data.groupId = patch.groupId
+        patch.node.data.groupName = patch.groupName
+        patch.node.data.groupType = patch.groupType
+        if (patch.groupColor) patch.node.data.groupColor = patch.groupColor
+        if (patch.groupPadding) patch.node.data.groupPadding = { ...patch.groupPadding }
+      } else {
+        delete patch.node.data.groupId
+        delete patch.node.data.groupName
+        delete patch.node.data.groupType
+        delete patch.node.data.groupColor
+        delete patch.node.data.groupPadding
+      }
+    }
+    markChanged()
+    return true
+  }
+
+  function groupSelected(name, variant = 'normal') {
+    if (name != null && (typeof name !== 'string' || name.trim().length > 100))
+      throw new Error('分组名称最多100个字符')
+    if (!['normal', 'storyboard'].includes(variant)) throw new Error('分组类型无效')
+    const usedNames = new Set(nodes.value.map((node) => node.data.groupName).filter(Boolean))
+    const prefix = variant === 'storyboard' ? '分镜组' : '分组'
+    let index = 1
+    while (usedNames.has(`${prefix} ${index}`)) index += 1
+    return applySelectionGroup(uid('group'), name?.trim() || `${prefix} ${index}`, variant, '分组')
+  }
+
+  function ungroupSelected() {
+    return applySelectionGroup('', '', '', '取消分组')
+  }
+
+  /** Edits require exactly one complete group; partial selections cannot split its identity. */
+  function updateSelectedGroup(patch, action) {
+    const group = selectedGroup.value
+    if (!group) return false
+    return updateGroupMembers(selectedNodes.value, patch, action)
+  }
+
+  function updateGroupMembers(members, patch, action) {
+    if (members.length < 2) return false
+    const blocked = protectedImageTaskNodes(members)
+    if (blocked.length) {
+      markProtectedActionBlocked(blocked, action)
+      markChanged()
+      return false
+    }
+    if (
+      !members.some((node) =>
+        Object.entries(patch).some(([key, value]) =>
+          typeof value === 'object'
+            ? JSON.stringify(node.data[key]) !== JSON.stringify(value)
+            : node.data[key] !== value,
+        ),
+      )
+    )
+      return false
+    remember()
+    for (const node of members)
+      for (const [key, value] of Object.entries(patch))
+        node.data[key] = value && typeof value === 'object' ? clone(value) : value
+    markChanged()
+    return true
+  }
+
+  /** A blur commit targets the group where editing began, even if selection has changed. */
+  function renameGroup(groupId, name) {
+    if (
+      typeof name !== 'string' ||
+      !name.trim() ||
+      name.trim().length > 100 ||
+      [...name].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
+    )
+      throw new Error('分组名称须为1至100个字符')
+    if (typeof groupId !== 'string' || !groupId) return false
+    const members = nodes.value.filter((node) => node.data.groupId === groupId)
+    return updateGroupMembers(members, { groupName: name.trim() }, '重命名分组')
+  }
+
+  function renameSelectedGroup(name) {
+    return renameGroup(selectedGroup.value?.id, name)
+  }
+
+  function setSelectedGroupColor(color) {
+    if (!isGroupColor(color)) throw new Error('分组颜色无效')
+    return updateSelectedGroup({ groupColor: normalizedGroupColor(color) }, '修改分组颜色')
+  }
+
+  function setSelectedGroupPadding(padding) {
+    if (!isGroupPadding(padding)) throw new Error('分组边距无效')
+    return updateSelectedGroup({ groupPadding: normalizedGroupPadding(padding) }, '调整分组边界')
+  }
+
+  function convertSelectedGroup(type = 'storyboard') {
+    if (!['normal', 'storyboard'].includes(type)) throw new Error('分组类型无效')
+    return updateSelectedGroup({ groupType: type }, '转换分组')
+  }
+
+  function selectGroup(nodeId) {
+    const groupId = nodes.value.find((node) => node.id === nodeId)?.data?.groupId
+    if (!groupId) return false
+    const members = nodes.value.filter((node) => node.data.groupId === groupId)
+    if (members.length < 2) return false
+    for (const node of nodes.value) node.selected = node.data.groupId === groupId
+    for (const edge of edges.value) edge.selected = false
+    return true
+  }
+
+  function pasteNodeClipboard(snapshot, anchor, { offset = 44, suffix = '' } = {}) {
+    // Revalidate even internal snapshots: clipboard JSON is untrusted input.
+    const safe = parseNodeClipboard(serializeNodeClipboard(clone(snapshot)))
+    if (!safe) throw new Error('节点剪贴板数据无效')
+    const minX = Math.min(...safe.nodes.map((node) => node.position.x))
+    const minY = Math.min(...safe.nodes.map((node) => node.position.y))
+    const dx = Number.isFinite(anchor?.x) ? anchor.x - minX : offset
+    const dy = Number.isFinite(anchor?.y) ? anchor.y - minY : offset
+    const ids = new Map(safe.nodes.map((node) => [node.id, uid('node')]))
+    const groups = new Map(
+      safe.nodes
+        .filter((node) => node.data.groupId)
+        .map((node) => [node.data.groupId, uid('group')]),
+    )
+    const copies = safe.nodes.map((node) => {
+      const data = { ...node.data, createdAt: Date.now() }
+      if (data.groupId) data.groupId = groups.get(data.groupId)
+      if (suffix) data.title = `${data.title || '节点'}${suffix}`
+      if (data.sourceImageNodeId) data.sourceImageNodeId = ids.get(data.sourceImageNodeId)
+      for (const key of ['editTemplate', 'localEdit'])
+        if (data[key]?.sourceNodeId) data[key].sourceNodeId = ids.get(data[key].sourceNodeId)
       return {
-        ...clone(node),
-        id: nextId,
+        ...node,
+        id: ids.get(node.id),
         selected: true,
-        position: { x: node.position.x + 44, y: node.position.y + 44 },
-        data: { ...clone(node.data), title: `${node.data.title} 副本`, createdAt: Date.now() },
+        position: { x: node.position.x + dx, y: node.position.y + dy },
+        data,
       }
     })
-    markProtectedActionBlocked(blockedNodes, '复制')
-    nodes.value.forEach((node) => {
-      node.selected = false
-    })
-    const copiedEdges = edges.value
-      .filter((edge) => idMap.has(edge.source) && idMap.has(edge.target))
-      .map((edge) => ({
-        ...clone(edge),
-        id: uid('edge'),
-        source: idMap.get(edge.source),
-        target: idMap.get(edge.target),
-      }))
+    const copiedEdges = safe.edges.map((edge) => ({
+      ...edge,
+      id: uid('edge'),
+      source: ids.get(edge.source),
+      target: ids.get(edge.target),
+      selected: false,
+    }))
+    remember()
+    nodes.value.forEach((node) => (node.selected = false))
+    edges.value.forEach((edge) => (edge.selected = false))
     nodes.value.push(...copies)
     edges.value.push(...copiedEdges)
+    markChanged()
+    return copies
+  }
+
+  function rateNode(nodeId, rating) {
+    const node = nodes.value.find((item) => item.id === nodeId)
+    if (!node || !Number.isInteger(rating) || rating < 0 || rating > 5) return false
+    if ((node.data.rating || 0) === rating) return true
+    remember()
+    node.data.rating = rating
     markChanged()
     return true
   }
@@ -578,6 +981,9 @@ export const useCanvasV3GraphStore = defineStore('canvas-v3-graph', () => {
     selectedNodes,
     selectedEdges,
     activeNode,
+    selectionMutable,
+    selectedGroup,
+    selectedGroupAppearance,
     nodeCounts,
     canUndo,
     canRedo,
@@ -587,15 +993,28 @@ export const useCanvasV3GraphStore = defineStore('canvas-v3-graph', () => {
     markChanged,
     addNode,
     updateNodeData,
+    addImageAssets,
     connect,
     removeEdge,
     createConnectedNode,
+    createGroupConnectedNode,
     applyQuickStart,
     createImageVariation,
     createImageOutputs,
     createDemoWorkflow,
     removeSelected,
     duplicateSelected,
+    arrangeSelected,
+    groupSelected,
+    ungroupSelected,
+    renameSelectedGroup,
+    renameGroup,
+    setSelectedGroupColor,
+    setSelectedGroupPadding,
+    convertSelectedGroup,
+    selectGroup,
+    pasteNodeClipboard,
+    rateNode,
     autoLayout,
     clearGraph,
     undo,

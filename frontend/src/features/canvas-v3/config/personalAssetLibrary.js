@@ -45,7 +45,9 @@ export function personalAssetKind(record) {
     !Object.hasOwn(config, 'libraryKind')
   )
     return 'model'
-  return config.libraryKind === 'product' || config.libraryKind === 'scene'
+  return config.libraryKind === 'product' ||
+    config.libraryKind === 'scene' ||
+    config.libraryKind === 'asset'
     ? config.libraryKind
     : 'model'
 }

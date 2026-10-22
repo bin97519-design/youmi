@@ -44,7 +44,67 @@ public class ImageGenerationDtos {
       @JsonProperty("vertical_angle") Integer verticalAngle,
       Integer distance,
       Integer seed,
-      @JsonProperty("feature_code") String featureCode) {
+      @JsonProperty("feature_code") String featureCode,
+      String version,
+      String quality,
+      @JsonProperty("parameter_profile") String parameterProfile,
+      @JsonProperty("thinking_level") String thinkingLevel,
+      @JsonProperty("web_search") Boolean webSearch,
+      @JsonProperty("custom_size") String customSize) {
+    public CreateTaskRequest(String prompt, String model, String size, String ratio, String resolution,
+        Integer n, Integer count, List<String> imageUrlsSnake, List<String> imageUrls, String background,
+        String outputFormat, String moderation, String inputFidelity, Integer outputCompression,
+        String webhookUrl, String clientTaskId, Integer horizontalAngle, Integer verticalAngle,
+        Integer distance, Integer seed, String featureCode, String version, String quality,
+        String parameterProfile, String thinkingLevel, Boolean webSearch) {
+      this(prompt, model, size, ratio, resolution, n, count, imageUrlsSnake, imageUrls, background,
+          outputFormat, moderation, inputFidelity, outputCompression, webhookUrl, clientTaskId,
+          horizontalAngle, verticalAngle, distance, seed, featureCode, version, quality, parameterProfile,
+          thinkingLevel, webSearch, null);
+    }
+
+    public CreateTaskRequest(String prompt, String model, String size, String ratio, String resolution,
+        Integer n, Integer count, List<String> imageUrlsSnake, List<String> imageUrls, String background,
+        String outputFormat, String moderation, String inputFidelity, Integer outputCompression,
+        String webhookUrl, String clientTaskId, Integer horizontalAngle, Integer verticalAngle,
+        Integer distance, Integer seed, String featureCode, String version, String quality,
+        String parameterProfile) {
+      this(prompt, model, size, ratio, resolution, n, count, imageUrlsSnake, imageUrls, background,
+          outputFormat, moderation, inputFidelity, outputCompression, webhookUrl, clientTaskId,
+          horizontalAngle, verticalAngle, distance, seed, featureCode, version, quality, parameterProfile,
+          null, null);
+    }
+
+    public CreateTaskRequest(String prompt, String model, String size, String ratio, String resolution,
+        Integer n, Integer count, List<String> imageUrlsSnake, List<String> imageUrls, String background,
+        String outputFormat, String moderation, String inputFidelity, Integer outputCompression,
+        String webhookUrl, String clientTaskId, Integer horizontalAngle, Integer verticalAngle,
+        Integer distance, Integer seed, String featureCode, String version, String quality) {
+      this(prompt, model, size, ratio, resolution, n, count, imageUrlsSnake, imageUrls, background,
+          outputFormat, moderation, inputFidelity, outputCompression, webhookUrl, clientTaskId,
+          horizontalAngle, verticalAngle, distance, seed, featureCode, version, quality, null);
+    }
+
+    public CreateTaskRequest(String prompt, String model, String size, String ratio, String resolution,
+        Integer n, Integer count, List<String> imageUrlsSnake, List<String> imageUrls, String background,
+        String outputFormat, String moderation, String inputFidelity, Integer outputCompression,
+        String webhookUrl, String clientTaskId, Integer horizontalAngle, Integer verticalAngle,
+        Integer distance, Integer seed, String featureCode, String version) {
+      this(prompt, model, size, ratio, resolution, n, count, imageUrlsSnake, imageUrls, background,
+          outputFormat, moderation, inputFidelity, outputCompression, webhookUrl, clientTaskId,
+          horizontalAngle, verticalAngle, distance, seed, featureCode, version, null);
+    }
+
+    public CreateTaskRequest(String prompt, String model, String size, String ratio, String resolution,
+        Integer n, Integer count, List<String> imageUrlsSnake, List<String> imageUrls, String background,
+        String outputFormat, String moderation, String inputFidelity, Integer outputCompression,
+        String webhookUrl, String clientTaskId, Integer horizontalAngle, Integer verticalAngle,
+        Integer distance, Integer seed, String featureCode) {
+      this(prompt, model, size, ratio, resolution, n, count, imageUrlsSnake, imageUrls, background,
+          outputFormat, moderation, inputFidelity, outputCompression, webhookUrl, clientTaskId,
+          horizontalAngle, verticalAngle, distance, seed, featureCode, null);
+    }
+
     public CreateTaskRequest(
         String prompt,
         String model,

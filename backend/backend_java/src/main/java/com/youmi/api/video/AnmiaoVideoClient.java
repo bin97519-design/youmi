@@ -12,6 +12,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -27,7 +29,9 @@ public class AnmiaoVideoClient {
   public static final String MODEL = "doubao-seedance-2-0-260128";
   public static final String MODEL20_FAST = "doubao-seedance-2-0-fast-260128";
   public static final String MODEL25 = "doubao-seedance-2-5-260628";
+  public static final String CANVAS_V3_SEEDANCE25 = "canvas-v3-seedance25";
   public static final String PREFIX = "anmiao-video:";
+  public static final String CANVAS_V3_PREFIX = PREFIX + "v3-25:";
   private static final String PROVIDER = "anmiao";
   private static final Set<String> RATIOS = Set.of("adaptive", "16:9", "4:3", "1:1", "3:4", "9:16", "21:9");
   public static final Set<String> RESOLUTIONS = Set.of("480p", "720p", "1080p", "4k");
@@ -108,8 +112,21 @@ public class AnmiaoVideoClient {
     return MODEL.equals(model) || MODEL25.equals(model) || resolveConfiguredModel(model, featureCode) != null;
   }
 
+  /** Resolve the provider identity, not the editable label or opaque local route. */
+  public boolean supportsCanvasV3Seedance25(String model, String featureCode) {
+    ResolvedModelApiKey credential = resolveConfiguredModel(model, featureCode);
+    return isSeedance25ProviderModel(credential == null ? model : credential.model());
+  }
+
   public int price(VideoGenerationDtos.CreateTaskRequest request) {
     validate(request);
+    if (isCanvasV3Seedance25(request)) {
+      try {
+        return quoteCanvasV3Seedance25(request).intValueExact();
+      } catch (ArithmeticException error) {
+        throw new ApiException(400, "该按秒报价包含小数米值，请使用画布视频专用报价入口");
+      }
+    }
     int rate = isModel25(request.model())
         ? properties.miPerSecond25(resolution(request)) : properties.miPerSecond(resolution(request));
     ResolvedModelApiKey credential = resolveConfiguredModel(request.model(), request.featureCode());
@@ -123,9 +140,53 @@ public class AnmiaoVideoClient {
     return Math.multiplyExact(request.durationSeconds(), rate);
   }
 
-  public VideoGenerationDtos.CreateTaskResponse createTask(VideoGenerationDtos.CreateTaskRequest request) throws Exception {
-    price(request);
+  public BigDecimal quoteCanvasV3Seedance25(VideoGenerationDtos.CreateTaskRequest request) {
+    if (!isCanvasV3Seedance25(request)) throw new ApiException(400, "视频参数配置不匹配");
+    validateCanvasV3Seedance25(request);
     ResolvedModelApiKey credential = resolveConfiguredModel(request.model(), request.featureCode());
+    String key = credential == null ? properties.apiKeyForModel(MODEL25) : credential.apiKey();
+    if (key == null || key.isBlank()) throw new ApiException(503, "Seedance 2.5 尚未配置密钥");
+    String resolution = resolution(request);
+    BigDecimal seconds = BigDecimal.valueOf(request.durationSeconds());
+    if (request.referenceVideos().isEmpty()) {
+      int rate = properties.miPerSecond25(resolution);
+      if (rate == 0) throw new ApiException(503, "Seedance 2.5 所选清晰度尚未配置每秒米值单价");
+      return seconds.multiply(BigDecimal.valueOf(rate)).setScale(2);
+    }
+    // Different upstream lines have different video-reference charges. Both
+    // rates must be explicit; never assume MC-S's 1.5x or a free reference fee.
+    BigDecimal outputRate = properties.getMiPerSecond25WithVideoByResolution().get(resolution);
+    BigDecimal referenceRate = properties.getMiPerReferenceVideoSecond25ByResolution().get(resolution);
+    if (!validRate(outputRate, false) || !validRate(referenceRate, true))
+      throw new ApiException(503, "Seedance 2.5 参考视频线路的成片和参考视频每秒单价尚未配置");
+    BigDecimal price = seconds.multiply(outputRate);
+    if (referenceRate.signum() > 0) {
+      BigDecimal referenceSeconds = BigDecimal.ZERO;
+      for (var video : request.referenceVideos()) {
+        Double duration = video.durationSeconds();
+        if (duration == null || !Double.isFinite(duration) || duration <= 0)
+          throw new ApiException(400, "该线路计费需要有效的参考视频时长");
+        referenceSeconds = referenceSeconds.add(BigDecimal.valueOf(duration));
+      }
+      // Evaluate thirds only at final currency precision to avoid rounding the
+      // duration up to a whole second or silently undercharging short inputs.
+      BigDecimal minimum = seconds.multiply(BigDecimal.valueOf(2))
+          .divide(BigDecimal.valueOf(3), 12, RoundingMode.HALF_UP);
+      price = price.add(referenceSeconds.max(minimum).multiply(referenceRate));
+    }
+    return price.setScale(2, RoundingMode.HALF_UP);
+  }
+
+  private boolean validRate(BigDecimal rate, boolean allowZero) {
+    return rate != null && (allowZero ? rate.signum() >= 0 : rate.signum() > 0)
+        && rate.compareTo(BigDecimal.valueOf(10000)) <= 0;
+  }
+
+  public VideoGenerationDtos.CreateTaskResponse createTask(VideoGenerationDtos.CreateTaskRequest request) throws Exception {
+    if (isCanvasV3Seedance25(request)) quoteCanvasV3Seedance25(request);
+    else price(request);
+    ResolvedModelApiKey credential = resolveConfiguredModel(request.model(), request.featureCode());
+    if (isCanvasV3Seedance25(request)) return createCanvasV3Seedance25(request, credential);
     List<Object> content = new ArrayList<>();
     content.add(Map.of("type", "text", "text", request.prompt().trim()));
     List<String> references = referenceImages(request);
@@ -180,10 +241,69 @@ public class AnmiaoVideoClient {
     return result;
   }
 
+  private VideoGenerationDtos.CreateTaskResponse createCanvasV3Seedance25(
+      VideoGenerationDtos.CreateTaskRequest request, ResolvedModelApiKey credential) throws Exception {
+    // Deliberately build this protocol from an allowlist. Provider defaults may
+    // contain fields for legacy/media protocols that have no meaning here.
+    List<Object> content = new ArrayList<>();
+    String prompt = trimmed(request.prompt());
+    if (!prompt.isBlank()) content.add(Map.of("type", "text", "text", prompt));
+    var inputs = canvasV3Images(request);
+    String first = inputs.first();
+    String last = inputs.last();
+    if (!first.isBlank()) content.add(image("first_frame", first));
+    if (!last.isBlank()) content.add(image("last_frame", last));
+    for (String url : inputs.references()) content.add(image("reference_image", url.trim()));
+    for (var video : request.referenceVideos()) {
+      content.add(Map.of("type", "video_url", "role", "reference_video",
+          "video_url", Map.of("url", video.url().trim())));
+    }
+    for (String url : request.referenceAudios()) {
+      content.add(Map.of("type", "audio_url", "role", "reference_audio",
+          "audio_url", Map.of("url", url.trim())));
+    }
+    Map<String, Object> body = new LinkedHashMap<>();
+    body.put("model", MODEL25);
+    body.put("content", content);
+    body.put("resolution", resolution(request));
+    body.put("ratio", canvasV3Ratio(request));
+    body.put("duration", request.durationSeconds());
+    if (Boolean.TRUE.equals(request.webSearch())) body.put("tools", List.of(Map.of("type", "web_search")));
+    String callback = trimmed(request.webhookUrl());
+    if (!callback.isBlank()) body.put("callback_url", callback);
+    String endpoint = credential == null
+        ? properties.normalizedBaseUrl() + "/contents/generations/tasks" : credential.generationEndpoint();
+    String key = credential == null ? properties.apiKeyForModel(MODEL25) : credential.apiKey();
+    long started = System.nanoTime();
+    JsonNode root;
+    String id;
+    try {
+      root = sendUrl(key, "POST", endpoint, body);
+      id = providerTaskId(root);
+      // IDs can exceed a JavaScript safe integer and may have leading zeroes.
+      if (!id.matches("[0-9]+")) throw new ApiException(502, "Seedance 2.5 未返回有效的字符串任务编号");
+      recordCall(callFeature(request), request.model(), credential, true, started, null);
+    } catch (Exception error) {
+      recordCall(callFeature(request), request.model(), credential, false, started, error);
+      throw error;
+    }
+    var result = new VideoGenerationDtos.CreateTaskResponse();
+    result.setProvider(credential == null ? PROVIDER : credential.provider());
+    result.setModel(request.model());
+    String route = credential == null ? properties.hasDedicatedKey(MODEL25) ? "25:" : ""
+        : "key:" + credential.id() + ":";
+    result.setTaskId(CANVAS_V3_PREFIX + route + id);
+    result.setStatus("queued");
+    result.setRaw(root);
+    return result;
+  }
+
   public VideoGenerationDtos.TaskStatusResponse getTask(String taskId, Long userId) throws Exception {
-    if (taskId == null || !taskId.matches("anmiao-video:(?:(?:20|25):|key:[0-9]+:)?[A-Za-z0-9_-]+"))
+    if (taskId == null || !taskId.matches("anmiao-video:(?:v3-25:)?(?:(?:20|25):|key:[0-9]+:)?[A-Za-z0-9_-]+"))
       throw new ApiException(400, "按秒视频任务编号无效");
-    String routeAndId = taskId.substring(PREFIX.length());
+    String routeAndId = taskId.substring(taskId.startsWith(CANVAS_V3_PREFIX)
+        ? CANVAS_V3_PREFIX.length() : PREFIX.length());
+    boolean canvasV3 = taskId.startsWith(CANVAS_V3_PREFIX);
     ResolvedModelApiKey credential = null;
     String endpoint;
     String key;
@@ -194,6 +314,7 @@ public class AnmiaoVideoClient {
       credential = modelApiKeys.resolveById(credentialId, ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION);
       id = routeAndId.substring(separator + 1);
       endpoint = credential.taskEndpoint().replace("{id}", id);
+      if (canvasV3) endpoint = endpoint.replace("{task_id}", id);
       if (endpoint.equals(credential.taskEndpoint())) endpoint += "/" + id;
       key = credential.apiKey();
     } else {
@@ -252,6 +373,11 @@ public class AnmiaoVideoClient {
   }
 
   private void validate(VideoGenerationDtos.CreateTaskRequest request) {
+    if (request != null && request.parameterProfile() != null && !request.parameterProfile().isBlank()) {
+      if (!isCanvasV3Seedance25(request)) throw new ApiException(400, "不支持的视频参数配置");
+      validateCanvasV3Seedance25(request);
+      return;
+    }
     if (request == null || request.prompt() == null || request.prompt().isBlank())
       throw new ApiException(400, "视频提示词不能为空");
     if (request.prompt().length() > 2500) throw new ApiException(400, "视频提示词不能超过 2500 字");
@@ -292,6 +418,106 @@ public class AnmiaoVideoClient {
     for (String url : references) requirePublicUrl(url);
     if (!last.isBlank()) requirePublicUrl(last);
   }
+
+  private void validateCanvasV3Seedance25(VideoGenerationDtos.CreateTaskRequest request) {
+    if (!supportsCanvasV3Seedance25(request.model(), request.featureCode()))
+      throw new ApiException(400, "该参数配置仅支持已配置的 Seedance 2.5 模型");
+    ResolvedModelApiKey credential = resolveConfiguredModel(request.model(), request.featureCode());
+    if (credential != null && (!credential.generationEndpoint().endsWith("/contents/generations/tasks")
+        || !(credential.taskEndpoint().endsWith("/contents/generations/tasks/{id}")
+            || credential.taskEndpoint().endsWith("/contents/generations/tasks/{task_id}")
+            || credential.taskEndpoint().endsWith("/contents/generations/tasks"))))
+      throw new ApiException(503, "Seedance 2.5 通道需配置原生 contents/generations/tasks 创建和查询端点");
+    Integer seconds = request.durationSeconds();
+    if (seconds == null || seconds < 4 || seconds > 30)
+      throw new ApiException(400, "Seedance 2.5 时长必须是 4 至 30 的整数秒");
+    if (!RESOLUTIONS25.contains(resolution(request)))
+      throw new ApiException(400, "Seedance 2.5 清晰度仅支持 480p、720p 或 1080p");
+    if (!RATIOS.contains(canvasV3Ratio(request))) throw new ApiException(400, "Seedance 2.5 成片比例不受支持");
+    var inputs = canvasV3Images(request);
+    if (inputs.references().size() > 30)
+      throw new ApiException(400, "Seedance 2.5 最多支持 30 张参考图");
+    if (request.referenceVideos().size() > 10)
+      throw new ApiException(400, "Seedance 2.5 最多支持 10 个参考视频");
+    if (request.referenceAudios().size() > 10)
+      throw new ApiException(400, "Seedance 2.5 最多支持 10 个参考音频");
+    String first = inputs.first();
+    String last = inputs.last();
+    boolean omni = !request.referenceVideos().isEmpty() || !request.referenceAudios().isEmpty();
+    if (!omni && !inputs.references().isEmpty() && (!first.isBlank() || !last.isBlank()))
+      throw new ApiException(400, "参考图片不能与首尾帧混用，除非同时提供参考视频或音频");
+    if (!omni && !first.isBlank() && last.isBlank() && !"adaptive".equals(canvasV3Ratio(request)))
+      throw new ApiException(400, "Seedance 2.5 首帧任务的比例只能选择自适应");
+    if (!first.isBlank()) requirePublicUrl(first);
+    if (!last.isBlank()) requirePublicUrl(last);
+    for (String url : inputs.references()) requireCanvasV3Url(url);
+    for (var video : request.referenceVideos()) {
+      if (video == null) throw new ApiException(400, "参考视频地址不能为空");
+      requireCanvasV3Url(video.url());
+    }
+    for (String url : request.referenceAudios()) requireCanvasV3Url(url);
+    if (trimmed(request.prompt()).isBlank() && first.isBlank() && last.isBlank()
+        && inputs.references().isEmpty() && !omni)
+      throw new ApiException(400, "纯文生视频时提示词不能为空");
+    String callback = trimmed(request.webhookUrl());
+    if (!callback.isBlank()) requirePublicUrl(callback);
+  }
+
+  private void requireCanvasV3Url(String value) {
+    if (value == null || value.isBlank()) throw new ApiException(400, "参考素材地址不能为空");
+    requirePublicUrl(value.trim());
+  }
+
+  private record CanvasV3ImageInputs(String first, String last, List<String> references) {}
+
+  /** Only the marked V3 protocol infers unassigned image roles from actual inputs. */
+  private CanvasV3ImageInputs canvasV3Images(VideoGenerationDtos.CreateTaskRequest request) {
+    String first = trimmed(request.firstFrameUrl());
+    String last = trimmed(request.lastFrameUrl());
+    if (!last.isBlank() && first.isBlank()) throw new ApiException(400, "尾帧必须与首帧一起提供");
+    List<String> generic = request.imageUrls() == null ? List.of() : request.imageUrls();
+    List<String> references = new ArrayList<>(request.referenceImageUrls());
+    if (generic.size() > 30 || references.size() > 30)
+      throw new ApiException(400, "Seedance 2.5 最多支持 30 张参考图");
+    for (String value : generic) requireCanvasV3Url(value);
+    boolean omni = !request.referenceVideos().isEmpty() || !request.referenceAudios().isEmpty();
+    boolean explicit = !first.isBlank() || !last.isBlank() || !references.isEmpty();
+    if (!generic.isEmpty() && explicit && !omni)
+      throw new ApiException(400, "未分配角色的图片不能与显式首尾帧或参考图片字段混用");
+    if (!generic.isEmpty() && !explicit) {
+      if (omni || generic.size() > 2) references.addAll(generic);
+      else {
+        first = generic.get(0).trim();
+        if (generic.size() == 2) last = generic.get(1).trim();
+      }
+    }
+    if (omni) {
+      List<String> all = new ArrayList<>();
+      if (!first.isBlank()) all.add(first);
+      if (!last.isBlank()) all.add(last);
+      all.addAll(references);
+      if (explicit) all.addAll(generic);
+      // Preserve positional duplicate images (the same source can be both frames).
+      references = all;
+      first = "";
+      last = "";
+    }
+    return new CanvasV3ImageInputs(first, last, references);
+  }
+
+  private boolean isCanvasV3Seedance25(VideoGenerationDtos.CreateTaskRequest request) {
+    return request != null && CANVAS_V3_SEEDANCE25.equals(request.parameterProfile());
+  }
+
+  private boolean isSeedance25ProviderModel(String model) {
+    return MODEL25.equals(model) || "seedance-2.5-guanfang-anmiao".equals(model);
+  }
+
+  private String canvasV3Ratio(VideoGenerationDtos.CreateTaskRequest request) {
+    return trimmed(request.ratio()).isBlank() ? "adaptive" : request.ratio().trim();
+  }
+
+  private String trimmed(String value) { return value == null ? "" : value.trim(); }
 
   private List<String> referenceImages(VideoGenerationDtos.CreateTaskRequest request) {
     if (request.firstFrameUrl() != null && !request.firstFrameUrl().isBlank()) return List.of();
@@ -389,8 +615,10 @@ public class AnmiaoVideoClient {
 
   private ResolvedModelApiKey resolveConfiguredModel(String model, String featureCode) {
     if (modelApiKeys == null || model == null) return null;
-    return modelApiKeys.resolve(model, ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION,
-        featureCode == null || featureCode.isBlank() ? "canvas-video" : featureCode).orElse(null);
+    String feature = featureCode == null || featureCode.isBlank() ? "canvas-video" : featureCode;
+    return modelApiKeys.resolveFeatureRouteOption(model, ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, feature)
+        .or(() -> modelApiKeys.resolve(model, ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, feature))
+        .orElse(null);
   }
 
   private String callFeature(VideoGenerationDtos.CreateTaskRequest request) {

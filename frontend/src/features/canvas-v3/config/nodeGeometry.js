@@ -2,8 +2,13 @@ const IMAGE_NODE_MAX_WIDTH = 624
 const IMAGE_NODE_MAX_HEIGHT = 350
 
 export function nodeSize(kind, data = {}) {
-  if (kind === 'image' && data.assetUrl && data.mediaWidth > 0 && data.mediaHeight > 0) {
-    const quarterTurn = Math.abs(Number(data.rotation) || 0) % 180 === 90
+  if (
+    ['image', 'video'].includes(kind) &&
+    data.assetUrl &&
+    data.mediaWidth > 0 &&
+    data.mediaHeight > 0
+  ) {
+    const quarterTurn = kind === 'image' && Math.abs(Number(data.rotation) || 0) % 180 === 90
     const mediaWidth = quarterTurn ? data.mediaHeight : data.mediaWidth
     const mediaHeight = quarterTurn ? data.mediaWidth : data.mediaHeight
     const scale = Math.min(IMAGE_NODE_MAX_WIDTH / mediaWidth, IMAGE_NODE_MAX_HEIGHT / mediaHeight)

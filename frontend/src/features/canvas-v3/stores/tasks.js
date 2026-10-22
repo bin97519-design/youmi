@@ -13,6 +13,23 @@ import {
   imageModelOptions,
 } from '../sync/imageTaskClient'
 import { IMAGE_TASK_ACTIVE_STATES, IMAGE_TASK_POLLABLE_STATES } from '../config/imageTaskState'
+import { imageModelParams } from '../config/imageModelParameters.js'
+import {
+  createVideoTaskClient,
+  videoTaskRequest,
+  videoTaskResult,
+} from '../sync/videoTaskClient.js'
+import {
+  isSeedance25Model,
+  isMinimaxH3Model,
+  isSeedance20AnciModel,
+} from '../config/videoModelParameters.js'
+import { deriveVideoInputMode } from '../config/videoInputMode.js'
+import { isKling30Model, klingVideoMode } from '../config/klingVideoModes.js'
+import { isKlingOmniApiModel } from '../config/klingOmniIdentity.js'
+import { resolveKlingOmniRoute } from '../config/klingOmniRoutes.js'
+import { isWanxiangModel } from '../config/wanxiangParameters.js'
+import { assertWanxiangRequestReady, resolveWanxiangRoute } from '../sync/wanxiangTaskRequest.js'
 import {
   imageGenerationTarget,
   imageReferences,
@@ -25,14 +42,18 @@ export const useCanvasV3TaskStore = defineStore('canvas-v3-tasks', () => {
   const graph = useCanvasV3GraphStore()
   const user = useUserStore()
   const imageModels = ref([])
+  const videoModels = ref([])
+  const videoModelError = ref('')
   const modelError = ref('')
   const tasks = ref({})
   const activeTasks = computed(() =>
     Object.values(tasks.value).filter((task) => ACTIVE.has(task.state)),
   )
   const client = createImageTaskClient({ path: apiPath, headers: () => user.authHeaders() })
+  const videoClient = createVideoTaskClient({ path: apiPath, headers: () => user.authHeaders() })
   const submissions = new Map()
   let modelRequest
+  let videoModelRequest
   let project = ''
   let beforeImageSubmit = null
   let timer
@@ -65,6 +86,31 @@ export const useCanvasV3TaskStore = defineStore('canvas-v3-tasks', () => {
     })()
     return modelRequest
   }
+  async function loadVideoModels(force = false) {
+    if (videoModelRequest && !force) return videoModelRequest
+    videoModelRequest = (async () => {
+      try {
+        const catalog = await videoClient.models()
+        const options = Array.isArray(catalog) ? catalog : catalog.options || []
+        videoModels.value = options.filter(
+          (option) =>
+            isSeedance25Model(option) ||
+            isMinimaxH3Model(option) ||
+            isSeedance20AnciModel(option) ||
+            isWanxiangModel(option) ||
+            isKlingOmniApiModel(option),
+        )
+        videoModelError.value = videoModels.value.length
+          ? ''
+          : '请先在模型管理中配置视频模型并绑定画布视频功能'
+      } catch (error) {
+        videoModelError.value = error.message
+      }
+      return videoModels.value
+    })()
+    return videoModelRequest
+  }
+  const transport = (node) => (node.data.kind === 'video' ? videoClient : client)
   function schedule() {
     clearTimeout(timer)
     if (
@@ -76,7 +122,12 @@ export const useCanvasV3TaskStore = defineStore('canvas-v3-tasks', () => {
           node.data.generation?.taskIds?.length,
       )
     )
-      timer = setTimeout(poll, 2500)
+      timer = setTimeout(
+        poll,
+        graph.nodes.some((node) => node.data.kind === 'image' && POLLABLE.has(node.data.runState))
+          ? 2500
+          : 5000,
+      )
   }
   async function poll() {
     if (polling || !project) return
@@ -103,7 +154,13 @@ export const useCanvasV3TaskStore = defineStore('canvas-v3-tasks', () => {
                 )
                   return previous
                 try {
-                  return { ...imageTaskResult(await client.get(id)), taskId: id }
+                  const payload = await transport(node).get(id)
+                  return {
+                    ...(node.data.kind === 'video'
+                      ? videoTaskResult(payload)
+                      : imageTaskResult(payload)),
+                    taskId: id,
+                  }
                 } catch (error) {
                   return imageTaskQueryFailure(error, id)
                 }
@@ -118,6 +175,8 @@ export const useCanvasV3TaskStore = defineStore('canvas-v3-tasks', () => {
             )
               return
             const batch = imageTaskBatchResult(results, current.data.progress)
+            if (current.data.kind === 'video' && !batch.queryMessage)
+              batch.queryMessage = results.find((result) => result.stage)?.stage || ''
             const { urls, progress } = batch
             const generation = {
               ...current.data.generation,
@@ -129,6 +188,11 @@ export const useCanvasV3TaskStore = defineStore('canvas-v3-tasks', () => {
             }
             if (batch.state === 'succeeded') {
               const candidates = [
+                ...(current.data.kind === 'video' &&
+                current.data.assetUrl &&
+                !current.data.candidates?.some((item) => item.url === current.data.assetUrl)
+                  ? [{ url: current.data.assetUrl, createdAt: Date.now() }]
+                  : []),
                 ...(current.data.candidates || []).filter(
                   (item) => item.generationId !== generationId,
                 ),
@@ -228,7 +292,19 @@ export const useCanvasV3TaskStore = defineStore('canvas-v3-tasks', () => {
     const generation = node.data.generation
     if (!generation.taskIds?.length) {
       try {
-        const result = await client.resolve(generation.clientTaskId)
+        const result = await transport(node).resolve(generation.clientTaskId)
+        if (node.data.kind === 'video' && result.exists && result.status === 'failed') {
+          patch(
+            nodeId,
+            {
+              runState: 'failed',
+              error: result.error || '视频提交已被拒绝，未创建生成任务',
+              statusText: '',
+            },
+            scope,
+          )
+          return
+        }
         const taskIds = (result.tasks || [])
           .map((task) => task.taskId || task.task_id)
           .filter(Boolean)
@@ -282,6 +358,243 @@ export const useCanvasV3TaskStore = defineStore('canvas-v3-tasks', () => {
     if (target.id !== nodeId) onTarget?.(target)
     return pending
   }
+  async function runVideo(nodeId) {
+    const node = find(nodeId)
+    if (
+      !node ||
+      node.data.kind !== 'video' ||
+      submissions.has(nodeId) ||
+      ACTIVE.has(node.data.runState)
+    )
+      return
+    if (
+      (['paused', 'uncertain'].includes(node.data.runState) ||
+        node.data.generation?.unresolvedTaskIds?.length) &&
+      node.data.generation
+    ) {
+      await resume(nodeId)
+      return
+    }
+    if (!user.requireLogin()) {
+      patch(nodeId, { error: '请先登录有米账号后生成视频' })
+      return
+    }
+    const scope = project
+    const operation = {
+      scope,
+      phase: 'preparing',
+      createAttempted: false,
+      controller: new AbortController(),
+    }
+    submissions.set(nodeId, operation)
+    const isCurrent = () =>
+      submissions.get(nodeId) === operation &&
+      !operation.controller.signal.aborted &&
+      scope === project &&
+      scope === graph.projectId &&
+      Boolean(find(nodeId))
+    try {
+      const references = imageReferences(node, graph.nodes, graph.edges).map((reference) => ({
+        ...reference,
+        data: {
+          ...reference.data,
+          generation: reference.data.generation
+            ? { ...reference.data.generation, params: { ...reference.data.generation.params } }
+            : undefined,
+        },
+      }))
+      const requestNode = {
+        data: {
+          ...node.data,
+          params: { ...node.data.params },
+          switches: { ...node.data.switches },
+        },
+      }
+      const clientTaskId = crypto.randomUUID()
+      patch(
+        nodeId,
+        {
+          runState: 'preparing',
+          progress: null,
+          error: '',
+          statusText: '正在准备视频任务，检查模型配置…',
+        },
+        scope,
+      )
+      await nextTick()
+      if (!isCurrent()) return
+      await loadVideoModels()
+      if (!isCurrent()) return
+      let option = videoModels.value.find((item) => item.value === requestNode.data.model)
+      const omni =
+        isKling30Model(requestNode.data.model) ||
+        isKlingOmniApiModel(option || requestNode.data.model)
+      const wanxiang = isWanxiangModel(option || requestNode.data.model)
+      if (wanxiang) {
+        option = resolveWanxiangRoute(requestNode.data.model, videoModels.value)
+      } else if (omni) {
+        requestNode.data.mode = klingVideoMode(requestNode.data.mode).label
+        option = resolveKlingOmniRoute(
+          requestNode.data.model,
+          requestNode.data.mode,
+          videoModels.value,
+        )
+      } else if (!option) {
+        const family = isSeedance25Model(requestNode.data.model)
+          ? isSeedance25Model
+          : isMinimaxH3Model(requestNode.data.model)
+            ? isMinimaxH3Model
+            : isSeedance20AnciModel(requestNode.data.model)
+              ? isSeedance20AnciModel
+              : null
+        const choices = family ? videoModels.value.filter(family) : []
+        if (choices.length > 1) throw new Error('该模型配置了多条线路，请在模型列表中明确选择一条')
+        option = choices[0]
+      }
+      if (!option)
+        throw new Error(videoModelError.value || '所选视频模型未接入当前画布，请检查模型配置')
+      requestNode.data.model = option.value
+      const request = videoTaskRequest(requestNode, references, clientTaskId, option)
+      const inputMode = wanxiang
+        ? { mode: '全能参考', id: 'omni' }
+        : omni
+          ? { mode: requestNode.data.mode, id: requestNode.data.mode }
+          : deriveVideoInputMode(option, references)
+      const imageSlots = [
+        ...request.reference_image_urls.map((url, index) => ({
+          url,
+          set: (value) => {
+            request.reference_image_urls[index] = value
+            if (wanxiang) request.wanxiang_params.image_url[index] = value
+          },
+        })),
+        ...['first_frame_url', 'last_frame_url']
+          .filter((key) => request[key])
+          .map((key) => ({
+            url: request[key],
+            set: (value) => {
+              request[key] = value
+            },
+          })),
+      ]
+      for (const slot of imageSlots) {
+        if (!slot.url.startsWith('data:')) continue
+        patch(nodeId, { statusText: '正在上传视频参考图片…' }, scope)
+        await nextTick()
+        if (!isCurrent()) return
+        const uploaded = await uploadBase64ImageDirect(slot.url, {
+          dir: 'youmi-canvas/uploads',
+          signal: operation.controller.signal,
+        })
+        if (!isCurrent()) return
+        const url = typeof uploaded === 'string' ? uploaded : uploaded.url
+        if (!url) throw new Error('参考图上传未返回地址')
+        slot.set(url)
+      }
+      if (wanxiang) assertWanxiangRequestReady(request)
+      if (!isCurrent()) return
+      operation.phase = 'submitting'
+      patch(
+        nodeId,
+        {
+          runState: 'submitting',
+          statusText: '正在提交视频任务…',
+          error: '',
+          generation: {
+            kind: 'video',
+            clientTaskId,
+            taskIds: [],
+            prompt: request.prompt,
+            model: request.model,
+            mode: inputMode.mode,
+            inputMode: inputMode.id,
+            parameterProfile: request.parameter_profile,
+            params: wanxiang
+              ? { ...request.wanxiang_params }
+              : omni
+                ? { ...request.omni_params }
+                : {
+                    ratio: request.ratio === 'adaptive' ? 'Auto' : request.ratio,
+                    resolution: request.resolution.toUpperCase(),
+                    duration: request.durationSeconds,
+                    ...(request.version ? { version: request.version } : {}),
+                  },
+            inputs: {
+              firstFrameUrl: request.first_frame_url || '',
+              lastFrameUrl: request.last_frame_url || '',
+              referenceImageUrls: [...request.reference_image_urls],
+              referenceVideos: request.reference_videos.map((item) => ({ ...item })),
+              referenceAudios: [...request.reference_audios],
+              ...(wanxiang
+                ? {
+                    referenceAudioMedia: request.reference_audio_media.map((item) => ({ ...item })),
+                  }
+                : {}),
+            },
+            startedAt: Date.now(),
+          },
+        },
+        scope,
+      )
+      try {
+        await nextTick()
+        if (!isCurrent()) return
+        if (
+          beforeImageSubmit &&
+          (await beforeImageSubmit({ nodeId, clientTaskId, kind: 'video' })) === false
+        )
+          throw new Error('无法安全保存视频任务标识，本次尚未提交生成任务')
+        if (!isCurrent()) return
+        operation.createAttempted = true
+        const response = await videoClient.create(request)
+        if (!isCurrent()) return
+        const taskId = response.taskId || response.task_id
+        if (typeof taskId !== 'string' || !taskId) {
+          const error = new Error('视频已提交但尚未取得任务编号，请继续查询原任务')
+          error.deliveryUnknown = true
+          throw error
+        }
+        const current = find(nodeId)
+        patch(
+          nodeId,
+          {
+            runState: current?.data.runState === 'paused' ? 'paused' : 'queued',
+            statusText:
+              current?.data.runState === 'paused'
+                ? current.data.statusText
+                : '视频任务已提交，排队中…',
+            consumedMi: response.consumedMi,
+            generation: { ...current?.data.generation, taskIds: [taskId] },
+          },
+          scope,
+        )
+        schedule()
+      } catch (error) {
+        if (!isCurrent()) return
+        patch(
+          nodeId,
+          {
+            runState: error.deliveryUnknown ? 'uncertain' : 'failed',
+            error: error.deliveryUnknown ? '' : error.message,
+            statusText: error.deliveryUnknown
+              ? '视频提交结果尚未确认，请继续查询原任务，避免重复扣费。'
+              : '',
+            ...(!operation.createAttempted ? { generation: undefined } : {}),
+          },
+          scope,
+        )
+      }
+    } catch (error) {
+      if (isCurrent())
+        patch(
+          nodeId,
+          { runState: 'failed', progress: null, statusText: '', error: error.message },
+          scope,
+        )
+    } finally {
+      if (submissions.get(nodeId) === operation) submissions.delete(nodeId)
+    }
+  }
   async function runImageTarget(nodeId, options = {}) {
     const node = find(nodeId)
     if (
@@ -318,10 +631,13 @@ export const useCanvasV3TaskStore = defineStore('canvas-v3-tasks', () => {
       scope === graph.projectId &&
       Boolean(find(nodeId))
     try {
-      const references = imageReferences(node, graph.nodes, graph.edges, { strict: true })
+      const references = imageReferences(node, graph.nodes, graph.edges, { strict: true }).map(
+        (reference) => ({ ...reference, data: { ...reference.data } }),
+      )
       const clientTaskId = options.clientTaskId || crypto.randomUUID()
-      const request = imageTaskRequest(node, references, clientTaskId)
       const params = { ...node.data.params }
+      const requestNode = { data: { ...node.data, switches: { ...node.data.switches }, params } }
+      let request = imageTaskRequest(requestNode, references, clientTaskId)
       // Feedback and duplicate-submit protection precede ALL asynchronous work.
       // Preparation is not a submitted task, so never poll previous task IDs.
       patch(
@@ -338,10 +654,18 @@ export const useCanvasV3TaskStore = defineStore('canvas-v3-tasks', () => {
       if (!isCurrent()) return
       await loadModels()
       if (!isCurrent()) return
-      if (!imageModels.value.some((option) => option.value === request.model))
+      const modelOption = imageModels.value.find((option) => option.value === request.model)
+      if (!modelOption)
         throw new Error(
           modelError.value || '请选择当前项目已接入的模型；LibTV 的专有模型不能直接调用。',
         )
+      // Resolve version from the same configured route that will receive the request.
+      // Use the captured prompt/params so edits during preparation cannot change this task.
+      request = imageTaskRequest(requestNode, references, clientTaskId, modelOption)
+      const effectiveParams = imageModelParams(modelOption, params)
+      if (request.custom_size) effectiveParams.customSize = request.custom_size
+      Object.keys(params).forEach((key) => delete params[key])
+      Object.assign(params, effectiveParams)
       const localImageCount = request.image_urls.filter((url) => url.startsWith('data:')).length
       let uploadingIndex = 0
       for (let i = 0; i < request.image_urls.length; i++) {
@@ -511,9 +835,13 @@ export const useCanvasV3TaskStore = defineStore('canvas-v3-tasks', () => {
     tasks,
     activeTasks,
     imageModels,
+    videoModels,
+    videoModelError,
     modelError,
     loadModels,
+    loadVideoModels,
     runImage,
+    runVideo,
     resume,
     stopWaiting,
     attach,

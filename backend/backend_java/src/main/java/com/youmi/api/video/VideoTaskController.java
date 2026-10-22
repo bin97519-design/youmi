@@ -33,6 +33,9 @@ public class VideoTaskController {
   private final ChatVideoJobs chatVideos;
   private final AnmiaoVideoClient anmiaoVideos;
   private final MinimaxVideoClient minimaxVideos;
+  private SeedanceAnciVideoClient seedanceAnciVideos;
+  private KlingOmniVideoClient klingOmniVideos;
+  private WanxiangVideoClient wanxiangVideos;
   private ModelApiKeyService modelApiKeys;
   private final VideoTaskHistory history;
   private VideoTaskSubmissions submissions;
@@ -55,6 +58,15 @@ public class VideoTaskController {
   void setModelApiKeys(ModelApiKeyService modelApiKeys) { this.modelApiKeys = modelApiKeys; }
 
   @org.springframework.beans.factory.annotation.Autowired
+  void setSeedanceAnciVideos(SeedanceAnciVideoClient client) { this.seedanceAnciVideos = client; }
+
+  @org.springframework.beans.factory.annotation.Autowired
+  void setKlingOmniVideos(KlingOmniVideoClient client) { this.klingOmniVideos = client; }
+
+  @org.springframework.beans.factory.annotation.Autowired
+  void setWanxiangVideos(WanxiangVideoClient client) { this.wanxiangVideos = client; }
+
+  @org.springframework.beans.factory.annotation.Autowired
   void setSubmissions(VideoTaskSubmissions submissions) { this.submissions = submissions; }
 
   @PostMapping
@@ -74,6 +86,92 @@ public class VideoTaskController {
     if (featureCode != null && !featureCode.isBlank()
         && !java.util.Set.of("canvas-video", "product-video-video").contains(featureCode))
       throw new ApiException(400, "不支持的视频生成功能映射");
+    String profile = request == null ? null : request.parameterProfile();
+    boolean seedance25Profile = AnmiaoVideoClient.CANVAS_V3_SEEDANCE25.equals(profile);
+    boolean minimaxH3Profile = "canvas-v3-minimax-h3".equals(profile);
+    boolean seedanceAnciProfile = SeedanceAnciVideoClient.PROFILE.equals(profile);
+    boolean klingOmniProfile = KlingOmniVideoClient.PROFILE.equals(profile);
+    boolean wanxiangProfile = WanxiangVideoClient.PROFILE.equals(profile);
+    boolean wanxiangRoute = request != null && wanxiangVideos != null
+        && wanxiangVideos.supports(request.model(), "canvas-video");
+    if (request != null && (WanxiangVideoClient.isModel(request.model()) || wanxiangRoute) && !wanxiangProfile)
+      throw new ApiException(400, "万相 3.0 全能必须使用对应的参数配置");
+    if (!wanxiangProfile && request != null
+        && (!request.wanxiangParams().isEmpty() || !request.referenceAudioMedia().isEmpty()))
+      throw new ApiException(400, "wanxiang_params 和 reference_audio_media 仅用于万相 3.0 全能参数配置");
+    boolean klingOmniRoute = request != null && klingOmniVideos != null
+        && klingOmniVideos.supports(request.model(), "canvas-video");
+    boolean klingOmniModel = request != null && KlingOmniVideoClient.isModel(request.model());
+    if ((klingOmniModel || klingOmniRoute) && !klingOmniProfile)
+      throw new ApiException(400, "可灵-Omni 必须使用对应的参数配置");
+    if (!klingOmniProfile && request != null && !request.omniParams().isEmpty())
+      throw new ApiException(400, "omni_params 仅用于可灵-Omni 参数配置");
+    boolean seedanceAnciRoute = request != null && seedanceAnciVideos != null
+        && seedanceAnciVideos.supports(request.model(), featureCode);
+    boolean seedanceAnciModel = request != null && request.model() != null
+        && SeedanceAnciVideoClient.MODEL.equalsIgnoreCase(request.model().trim());
+    // This model must never fall through to the similarly named native per-second adapter.
+    if ((seedanceAnciModel || seedanceAnciRoute) && !seedanceAnciProfile)
+      throw new ApiException(400, "Seedance 2.0 按次必须使用对应的按次参数配置");
+    if (profile != null && !profile.isBlank()) {
+      if (!seedance25Profile && !minimaxH3Profile && !seedanceAnciProfile && !klingOmniProfile && !wanxiangProfile)
+        throw new ApiException(400, "不支持的视频参数配置");
+      boolean supported = wanxiangProfile ? wanxiangRoute && !productVideoCall
+          : klingOmniProfile ? klingOmniRoute && !productVideoCall
+          : seedanceAnciProfile ? seedanceAnciRoute : seedance25Profile
+          ? anmiaoVideos.supportsCanvasV3Seedance25(request.model(), featureCode)
+          : minimaxVideos.supportsCanvasV3H3(request.model(), featureCode);
+      if (!supported) throw new ApiException(400, "视频模型与所选参数配置不匹配或未配置对应通道");
+    }
+    if (wanxiangProfile) {
+      wanxiangVideos.validate(request);
+      // Settlement uses this provider's final reported cost, never an invented price.
+      MiValueDtos.DeductResult deduct = miValueService.checkAndDeduct(userId, MiBizType.VIDEO, 0);
+      try {
+        var response = wanxiangVideos.createTask(request);
+        miValueService.linkTask(deduct.logId(), response.getTaskId());
+        response.setConsumedMi(deduct.price());
+        response.setBalance(miValueService.getBalance(userId));
+        history.created(userId, request, response, startedAt);
+        return ApiResponse.ok(response);
+      } catch (Exception error) {
+        miValueService.rollback(userId, deduct.logId());
+        throw error;
+      }
+    }
+    if (klingOmniProfile) {
+      klingOmniVideos.validate(request);
+      // Provider final cost is authoritative; no hardcoded mode/duration price.
+      MiValueDtos.DeductResult deduct = miValueService.checkAndDeduct(userId, MiBizType.VIDEO, 0);
+      try {
+        var response = klingOmniVideos.createTask(request);
+        miValueService.linkTask(deduct.logId(), response.getTaskId());
+        response.setConsumedMi(deduct.price());
+        response.setBalance(miValueService.getBalance(userId));
+        history.created(userId, request, response, startedAt);
+        return ApiResponse.ok(response);
+      } catch (Exception error) {
+        miValueService.rollback(userId, deduct.logId());
+        throw error;
+      }
+    }
+    if (seedanceAnciProfile) {
+      seedanceAnciVideos.validate(request);
+      // The upstream per-call price is not a duration rate. The final provider
+      // cost settles this zero hold through the same idempotent billing flow.
+      MiValueDtos.DeductResult deduct = miValueService.checkAndDeduct(userId, MiBizType.VIDEO, 0);
+      try {
+        var response = seedanceAnciVideos.createTask(request);
+        miValueService.linkTask(deduct.logId(), response.getTaskId());
+        response.setConsumedMi(deduct.price());
+        response.setBalance(miValueService.getBalance(userId));
+        history.created(userId, request, response, startedAt);
+        return ApiResponse.ok(response);
+      } catch (Exception error) {
+        miValueService.rollback(userId, deduct.logId());
+        throw error;
+      }
+    }
     boolean mappedHailuoAlias = productVideoCall && minimaxVideos.usesMappedHailuoAlias(
         request == null ? null : request.model(), featureCode);
     if (productVideoCall && !mappedHailuoAlias
@@ -82,7 +180,7 @@ public class VideoTaskController {
       throw new ApiException(400, "该视频模型未映射到主图视频分镜视频生成功能");
     if (request != null && "minimax-h3-max".equals(request.model()))
       throw new ApiException(400, "原视频模型已移除，请重新选择视频模型");
-    if (request != null && !request.normalizedReferenceVideos().isEmpty()
+    if (!seedance25Profile && !minimaxH3Profile && request != null && !request.normalizedReferenceVideos().isEmpty()
         && (!AnmiaoVideoClient.supportsVideoReferences(request.model())
             || !(productVideoCall ? anmiaoVideos.supportsModel(request.model(), featureCode)
                 : anmiaoVideos.supportsModel(request.model()))))
@@ -92,16 +190,22 @@ public class VideoTaskController {
       history.created(userId, request, response, startedAt);
       return ApiResponse.ok(response);
     }
-    boolean minimax = request != null && MinimaxVideoClient.supportsModel(request.model());
-    boolean configuredModel = request != null && !minimax && (productVideoCall
+    boolean minimax = minimaxH3Profile || request != null && MinimaxVideoClient.supportsModel(request.model());
+    boolean configuredModel = seedance25Profile || request != null && !minimax && (productVideoCall
         ? anmiaoVideos.supportsModel(request.model(), featureCode)
         : anmiaoVideos.supportsModel(request.model()));
     if (request != null && !minimax && !configuredModel
         && anmiaoVideos.isConfiguredKeyExcluded(request.model()))
       throw new ApiException(400, "所选视频模型未映射到画布视频功能");
     if (minimax || configuredModel) {
-      int price = minimax ? minimaxVideos.price(request) : anmiaoVideos.price(request);
-      MiValueDtos.DeductResult deduct = miValueService.checkAndDeduct(userId, MiBizType.VIDEO, price);
+      MiValueDtos.DeductResult deduct;
+      if (seedance25Profile) {
+        BigDecimal price = anmiaoVideos.quoteCanvasV3Seedance25(request);
+        deduct = miValueService.checkAndDeduct(userId, MiBizType.VIDEO, price);
+      } else {
+        int price = minimax ? minimaxVideos.price(request) : anmiaoVideos.price(request);
+        deduct = miValueService.checkAndDeduct(userId, MiBizType.VIDEO, price);
+      }
       try {
         VideoGenerationDtos.CreateTaskResponse response = minimax
             ? minimaxVideos.createTask(request) : anmiaoVideos.createTask(request);
@@ -150,6 +254,30 @@ public class VideoTaskController {
     return ApiResponse.ok(anmiaoVideos.configuredModels(featureCode));
   }
 
+  /** Opt-in routed model identities for Canvas V3; legacy /models is unchanged. */
+  @GetMapping("/canvas-models")
+  public ApiResponse<java.util.List<ModelApiKeyDtos.ModelOption>> canvasModels(
+      @RequestHeader(value = "Authorization", required = false) String authorization) {
+    adminAuthService.requireUserId(authorization);
+    var options = new java.util.ArrayList<ModelApiKeyDtos.ModelOption>(modelApiKeys == null ? java.util.List.of()
+        : modelApiKeys.enabledRoutedModelOptions(ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "canvas-video"));
+    boolean hasSeedance25 = options.stream().anyMatch(option ->
+        AnmiaoVideoClient.MODEL25.equals(option.model())
+            || "seedance-2.5-guanfang-anmiao".equals(option.model())
+            || AnmiaoVideoClient.MODEL25.equals(option.value())
+            || "seedance-2.5-guanfang-anmiao".equals(option.value()));
+    if (!hasSeedance25 && anmiaoVideos.available25())
+      options.add(new ModelApiKeyDtos.ModelOption(AnmiaoVideoClient.MODEL25,
+          "SD 2.5 满血版 按秒", "anmiao", AnmiaoVideoClient.MODEL25));
+    boolean hasMinimaxH3 = options.stream().anyMatch(option ->
+        MinimaxVideoClient.MODEL.equalsIgnoreCase(option.model())
+            || MinimaxVideoClient.MODEL.equalsIgnoreCase(option.value()));
+    if (!hasMinimaxH3 && minimaxVideos.availableCanvasV3H3())
+      options.add(new ModelApiKeyDtos.ModelOption(MinimaxVideoClient.MODEL,
+          "MiniMax H3", "minimax", MinimaxVideoClient.MODEL));
+    return ApiResponse.ok(java.util.List.copyOf(options));
+  }
+
   @GetMapping("/by-client-task-id")
   public ApiResponse<VideoTaskSubmissions.Lookup> byClientTaskId(
       @org.springframework.web.bind.annotation.RequestParam("client_task_id") String clientId,
@@ -173,6 +301,12 @@ public class VideoTaskController {
     }
     VideoGenerationDtos.TaskStatusResponse response = taskId.startsWith(ChatVideoJobs.PREFIX)
         ? chatVideos.get(userId, taskId)
+        : taskId.startsWith(WanxiangVideoClient.PREFIX)
+            ? wanxiangVideos.getTask(taskId, userId)
+        : taskId.startsWith(KlingOmniVideoClient.PREFIX)
+            ? klingOmniVideos.getTask(taskId, userId)
+        : taskId.startsWith(SeedanceAnciVideoClient.PREFIX)
+            ? seedanceAnciVideos.getTask(taskId, userId)
         : taskId.startsWith(AnmiaoVideoClient.PREFIX)
             ? anmiaoVideos.getTask(taskId, userId)
         : taskId.startsWith(MinimaxVideoClient.PREFIX) || taskId.startsWith(MinimaxVideoClient.CONFIGURED_PREFIX)
@@ -181,7 +315,8 @@ public class VideoTaskController {
       miValueService.rollbackByTaskId(taskId);
     } else if (isTerminalSuccess(response.getStatus())) {
       if (usesProviderReportedCostTask(taskId, response)) {
-        Optional<BigDecimal> actualCost = providerCostInMi(response.getRaw());
+        Optional<BigDecimal> actualCost = providerCostInMi(response.getRaw(),
+            taskId.startsWith(KlingOmniVideoClient.PREFIX) || taskId.startsWith(WanxiangVideoClient.PREFIX));
         if (actualCost.isPresent()) {
           miValueService.settleActualByTaskId(taskId, actualCost.get());
         } else {
@@ -196,9 +331,9 @@ public class VideoTaskController {
     return response;
   }
 
-  private Optional<BigDecimal> providerCostInMi(JsonNode raw) {
+  private Optional<BigDecimal> providerCostInMi(JsonNode raw, boolean documentedTopLevelCost) {
     if (raw == null || raw.isNull() || raw.isMissingNode()) return Optional.empty();
-    JsonNode cost = raw.findValue("cost");
+    JsonNode cost = documentedTopLevelCost ? raw.get("cost") : raw.findValue("cost");
     if (cost == null || cost.isNull() || cost.isMissingNode()) return Optional.empty();
     try {
       BigDecimal amount = cost.isNumber() ? cost.decimalValue() : new BigDecimal(cost.asText().trim());
@@ -211,6 +346,10 @@ public class VideoTaskController {
 
   private boolean usesProviderReportedCostTask(String taskId,
       VideoGenerationDtos.TaskStatusResponse response) {
+    if (taskId != null && taskId.startsWith(WanxiangVideoClient.PREFIX)) return true;
+    if (taskId != null && taskId.startsWith(KlingOmniVideoClient.PREFIX)) return true;
+    if (taskId != null && taskId.startsWith(SeedanceAnciVideoClient.PREFIX)) return true;
+    if (taskId != null && taskId.startsWith(AnmiaoVideoClient.CANVAS_V3_PREFIX)) return false;
     return (taskId != null && (taskId.startsWith(MinimaxVideoClient.CONFIGURED_PREFIX + "key:")
         || taskId.startsWith(MinimaxVideoClient.MAPPED_PREFIX)))
         || ModelApiKeyService.usesProviderReportedCost(response.getProvider());

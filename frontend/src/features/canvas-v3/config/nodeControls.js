@@ -1,4 +1,10 @@
 import { IMAGE_MODEL_CATALOG } from './modelCatalog'
+import { IMAGE_MODEL_QUALITIES } from './imageModelVersions'
+import {
+  MINIMAX_H3_MODEL,
+  SEEDANCE20_ANCI_MODEL,
+  SEEDANCE25_MODEL,
+} from './videoModelParameters.js'
 export { isStandaloneUploadedImage, nodeSize } from './nodeGeometry'
 
 export const NODE_CONTROLS = {
@@ -12,7 +18,7 @@ export const NODE_CONTROLS = {
       count: '1张',
     },
     fields: {
-      quality: ['画质', ['低画质', '标准画质', '高画质', '超高画质', '极致画质']],
+      quality: ['画质', IMAGE_MODEL_QUALITIES.map((option) => option.label)],
       resolution: ['清晰度', ['1K', '2K', '4K']],
       background: ['背景', ['自动', '保留背景', '透明背景']],
       ratio: [
@@ -38,14 +44,13 @@ export const NODE_CONTROLS = {
     switches: ['智能引用 AutoLink'],
   },
   video: {
-    models: ['2.0', 'Seedance 1.5 Pro', 'Kling 3.0', 'HappyHorse 1.0'],
+    models: [SEEDANCE20_ANCI_MODEL, SEEDANCE25_MODEL, 'Kling 3.0', MINIMAX_H3_MODEL, '万相 3.0'],
     modes: ['文生视频', '全能参考', '图生视频', '首尾帧', '图片参考'],
-    defaults: { ratio: '16:9', resolution: '720P', duration: 5, count: '1个', audio: true },
+    defaults: { ratio: '16:9', resolution: '720P', duration: 5, audio: true },
     fields: {
       ratio: ['比例', ['Auto', '16:9', '4:3', '1:1', '3:4', '9:16', '21:9']],
       resolution: ['清晰度', ['480P', '720P', '1080P', '4K']],
       duration: ['视频时长', 'number'],
-      count: ['生成数量', ['1个', '2个', '4个']],
     },
     switches: ['生成音频', '联网搜索', '自动校验素材', '智能引用 AutoLink'],
   },
@@ -84,7 +89,7 @@ export function parameterSummary(kind, params = {}) {
     params.quality,
     params.resolution,
     params.duration ? `${params.duration}s` : '',
-    params.count,
+    kind === 'video' ? '' : params.count,
   ]
     .filter(Boolean)
     .join(' · ')

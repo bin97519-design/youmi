@@ -1,5 +1,16 @@
 import { imageEditInstructions } from '../config/imageEditPresets.js'
 import { imageStyleInstructions } from '../config/styleGallery.js'
+import {
+  imageCustomSize,
+  imageModelControls,
+  imageModelParams,
+} from '../config/imageModelParameters.js'
+import {
+  IMAGE_MODEL_VERSIONS,
+  IMAGE_MODEL_QUALITIES,
+  imageModelVersion,
+  isTtImage25Model,
+} from '../config/imageModelVersions.js'
 
 const SUCCESS = new Set([
   'completed',
@@ -120,13 +131,43 @@ export function imageModelOptions(options = []) {
           : 'GPT-image2.5'
       gptIndex += 1
     }
-    seen.set(mapped, { value: mapped, label })
+    seen.set(mapped, { ...item, value: mapped, label })
   }
   return [...seen.values()]
 }
 
-export function imageTaskRequest(node, references, clientTaskId) {
-  const params = node.data.params || {}
+export function imageTaskRequest(node, references, clientTaskId, modelOption) {
+  const rawParams = node.data.params || {}
+  const model = modelOption || node.data.model
+  const profile = imageModelControls(model)
+  const params = imageModelParams(model, rawParams)
+  if (
+    isTtImage25Model(model) &&
+    rawParams.version != null &&
+    !IMAGE_MODEL_VERSIONS.some((version) => version.value === rawParams.version)
+  )
+    throw new Error('请选择有效的 TT Image 2.5 版本：标准版或增强版')
+  const version = imageModelVersion(model, params.version)
+  const isTt = isTtImage25Model(model)
+  const qualitySelection = rawParams.quality ?? '标准画质'
+  const quality =
+    IMAGE_MODEL_QUALITIES.find(
+      (option) => option.label === qualitySelection || option.value === qualitySelection,
+    )?.value || (qualitySelection === 'auto' ? 'auto' : undefined)
+  if (isTt && !quality) throw new Error('请选择有效的 image-2.5 画质')
+  const backgroundSelection = rawParams.background ?? '自动'
+  const background =
+    { 自动: 'auto', 保留背景: 'opaque', 透明背景: 'transparent' }[backgroundSelection] ||
+    (['auto', 'opaque', 'transparent'].includes(backgroundSelection)
+      ? backgroundSelection
+      : undefined)
+  if (isTt && !background) throw new Error('请选择有效的 image-2.5 背景')
+  if (
+    profile.id === 'banana-2.1' &&
+    rawParams.thinkingLevel != null &&
+    !['快速', '深度', 'minimal', 'high'].includes(rawParams.thinkingLevel)
+  )
+    throw new Error('请选择有效的 banana-2.1 思考等级')
   const texts = references.filter(
     (ref) => ['text', 'reference'].includes(ref.data.kind) && ref.data.prompt?.trim(),
   )
@@ -141,22 +182,37 @@ export function imageTaskRequest(node, references, clientTaskId) {
   if (!prompt) throw new Error('请输入提示词或连接文本节点')
   if (!node.data.model) throw new Error('请选择已接入的图片模型')
   if (prompt.length > 12000) throw new Error('提示词与引用文本合计不能超过 12000 字')
+  const imageUrls = [
+    ...new Set(
+      references
+        .filter((ref) => ref.data.kind === 'image' && ref.data.assetUrl)
+        .map((ref) => ref.data.assetUrl),
+    ),
+  ]
+  if (['banana-2.1', 'banana-pro'].includes(profile.id) && imageUrls.length > 14)
+    throw new Error(`${profile.id} 最多支持 14 张参考图，请减少引用后再生成`)
   return {
     prompt,
     model: node.data.model,
+    ...(version ? { version } : {}),
+    // Only this V3 client opts in; old canvas callers retain their protocol.
+    ...(profile.id !== 'generic' ? { parameter_profile: 'canvas-v3-image' } : {}),
+    ...(isTt
+      ? { quality, background, output_format: background === 'transparent' ? 'png' : undefined }
+      : {}),
+    ...(isTt && node.data.switches?.['自定义尺寸'] === true
+      ? { custom_size: imageCustomSize(rawParams.customSize) }
+      : {}),
+    ...(profile.id === 'banana-2.1'
+      ? {
+          thinking_level: params.thinkingLevel === '深度' ? 'high' : 'minimal',
+          web_search: node.data.switches?.['联网搜索'] !== false,
+        }
+      : {}),
     size: params.ratio === 'Auto' ? 'auto' : params.ratio || '16:9',
     resolution: params.resolution || '2K',
-    n: Math.max(1, Math.min(4, parseInt(params.count) || 1)),
-    image_urls: [
-      ...new Set(
-        references
-          .filter((ref) => ref.data.kind === 'image' && ref.data.assetUrl)
-          .map((ref) => ref.data.assetUrl),
-      ),
-    ],
-    background:
-      { 自动: 'auto', 保留背景: 'opaque', 透明背景: 'transparent' }[params.background] || 'auto',
-    output_format: params.background === '透明背景' ? 'png' : undefined,
+    n: 1,
+    image_urls: imageUrls,
     client_task_id: clientTaskId,
     feature_code: 'canvas-image',
   }

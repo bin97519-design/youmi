@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>视频节点 · 本地真实媒体交互验收</title>
+    <style>
+      body {
+        margin: 0;
+      }
+      .video-interaction-fixture-tools {
+        position: absolute;
+        z-index: 10;
+        top: 24px;
+        left: 32px;
+        right: 32px;
+        color: #d3d5d8;
+        font:
+          13px/1.6 system-ui,
+          sans-serif;
+      }
+      .video-interaction-fixture-tools h1 {
+        margin: 0 0 8px;
+        font-size: 18px;
+        font-weight: 500;
+      }
+      .video-interaction-fixture-tools p {
+        margin: 6px 0;
+        color: #9a9da3;
+      }
+      .video-interaction-fixture-tools button {
+        margin: 6px 8px 0 0;
+        padding: 6px 12px;
+        border: 1px solid #3a3d42;
+        border-radius: 8px;
+        color: #c3c7ce;
+        background: #242527;
+        cursor: pointer;
+      }
+      .video-interaction-fixture-tools button:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      .video-interaction-fixture-tools [role='status'] {
+        color: #a8ced5;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="cv3-app-shell"><div id="app" style="height: 100%"></div></main>
+    <script type="module" src="./canvasV3VideoNodeInteractions.js"></script>
+  </body>
+</html>

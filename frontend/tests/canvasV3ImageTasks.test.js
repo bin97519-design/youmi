@@ -28,9 +28,10 @@ test('builds one idempotent image request using connected image and text inputs'
   )
   assert.equal(result.prompt, '清晨\n\n创意：\n暖色阳光')
   assert.deepEqual(result.image_urls, ['https://example.com/ref.png'])
-  assert.equal(result.n, 2)
+  assert.equal(result.n, 1)
   assert.equal(result.client_task_id, 'stable-request-id')
-  assert.equal(result.output_format, 'png')
+  assert.equal(Object.hasOwn(result, 'output_format'), false)
+  assert.equal(Object.hasOwn(result, 'background'), false)
   assert.equal(result.feature_code, 'canvas-image')
 })
 

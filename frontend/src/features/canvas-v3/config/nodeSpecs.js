@@ -1,3 +1,5 @@
+import { MINIMAX_H3_MODEL } from './videoModelParameters.js'
+
 export const CANVAS_V3_SCHEMA_VERSION = 3
 
 export const NODE_SPECS = {
@@ -36,8 +38,8 @@ export const NODE_SPECS = {
     color: '#4aa8ff',
     group: '生成节点',
     promptPlaceholder: '描述想要生成的画面内容，可用 @ 引用素材…',
-    model: 'Video 2.0',
-    summary: '16:9 · 720P · 5s · 1个',
+    model: MINIMAX_H3_MODEL,
+    summary: 'Auto · 768P · 5s',
     cost: 135,
     referenceTools: ['参考', '标记', '特效', '角色', '运镜'],
     quickStarts: ['5分钟超长视频', '首尾帧生成视频', '首帧生成视频'],
