@@ -1,0 +1,13 @@
+{
+  "name": "SD 2.0 按次",
+  "model": "seedance-2.0-anci",
+  "modelType": "video_generation",
+  "provider": "lk888",
+  "baseUrl": "https://api.lk888.ai",
+  "generationPath": "/v1/media/generate",
+  "taskPath": "/v1/media/status?task_id={task_id}",
+  "apiKey": "",
+  "enabled": true,
+  "priority": 0,
+  "defaultData": []
+}

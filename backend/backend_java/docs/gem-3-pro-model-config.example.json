@@ -1,0 +1,13 @@
+{
+  "name": "GEM 3 Pro",
+  "model": "gem-3-pro",
+  "modelType": "vision_reasoning",
+  "provider": "lk888",
+  "baseUrl": "https://api.lk888.ai",
+  "generationPath": "/v1beta/models/gem-3-pro:generateContent",
+  "taskPath": "",
+  "apiKey": "",
+  "enabled": true,
+  "priority": 0,
+  "defaultData": []
+}

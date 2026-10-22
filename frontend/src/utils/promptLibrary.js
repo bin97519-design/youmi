@@ -7,6 +7,7 @@ export const PROMPT_LIBRARY_VIEWS = [
 export const PROMPT_LIBRARY_CATEGORIES = [
   { value: 'ALL', label: '全部' },
   { value: 'GENERAL', label: '通用' },
+  { value: 'VIDEO', label: '视频' },
   { value: 'MAIN_IMAGE', label: '主图' },
   { value: 'DETAIL', label: '详情页' },
   { value: 'SCENE', label: '场景图' },

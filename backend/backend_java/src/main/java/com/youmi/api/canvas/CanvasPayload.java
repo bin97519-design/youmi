@@ -24,6 +24,7 @@ public class CanvasPayload {
   public Object generationHistory;     // 生图历史数组 [{id, prompt, model, ratio, resolution, imageUrl, ...}]
   public Object chatConfig;            // 对话窗口模型参数 {model, ratio, resolution}
   public Object productVideo;
+  public Object productVideo2;         // 主图视频2独立任务，含资料、脚本版本、异步任务与视频结果
   public Object detectedElements;      // 视觉框检测结果缓存（按图层ID索引的对象）
 
   /** 画布级 UI 状态，独立于图层。 */

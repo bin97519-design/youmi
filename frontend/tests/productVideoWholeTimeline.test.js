@@ -117,6 +117,7 @@ test('incomplete, overlapping and conflicting edits remain visible but are rejec
 })
 test('state ledger and transition type reach generation; full original execution text is preserved', () => {
   const { workflow, shot } = fixture(30)
+  shot.videoInputMode = 'first_frame'
   workflow.wholeVideo30Model = 'ya-sd25-30s'
   const request = buildVideoRequest(workflow, shot, 'request')
   assert.match(request.prompt, /Open → Closed/)

@@ -146,6 +146,15 @@ public class VideoGenerationDtos {
     public CreateTaskRequest(String prompt, String model, String ratio, Integer durationSeconds,
         String resolution, List<String> imageUrls, String firstFrameUrl, String lastFrameUrl,
         String negativePrompt, Boolean generateAudio, Long seed, String webhookUrl, String clientTaskId,
+        String featureCode, List<ReferenceVideo> referenceVideos, String version) {
+      this(prompt, model, ratio, durationSeconds, resolution, imageUrls, firstFrameUrl, lastFrameUrl,
+          negativePrompt, generateAudio, seed, webhookUrl, clientTaskId, featureCode, referenceVideos,
+          null, List.of(), List.of(), null, null, version);
+    }
+
+    public CreateTaskRequest(String prompt, String model, String ratio, Integer durationSeconds,
+        String resolution, List<String> imageUrls, String firstFrameUrl, String lastFrameUrl,
+        String negativePrompt, Boolean generateAudio, Long seed, String webhookUrl, String clientTaskId,
         String featureCode) {
       this(prompt, model, ratio, durationSeconds, resolution, imageUrls, firstFrameUrl, lastFrameUrl,
           negativePrompt, generateAudio, seed, webhookUrl, clientTaskId, featureCode, List.of());

@@ -41,7 +41,7 @@ class CanvasAgentVideoReferenceTest {
     String json = mapper.writeValueAsString(java.util.Map.of("reply", "已按视频画面整理提示词",
         "generationType", "video", "durationSeconds", duration, "draftPrompts", List.of(prompt),
         "readyToGenerate", true, "referenceLayerIds", List.of("product", "video", "frame0")));
-    when(gem.complete(anyString(), anyString(), anyList(), eq(0.2), eq(true), eq(8000), isNull()))
+    when(gem.complete(anyString(), anyString(), anyList(), eq(0.2), eq(true), eq(16000), isNull()))
         .thenReturn(new AiChatDtos.CompletionResult("lk888", GemAgentClient.MODEL, json));
   }
 
@@ -57,7 +57,7 @@ class CanvasAgentVideoReferenceTest {
         argThat(prompt -> prompt.contains("\"durationSeconds\":105.0")
             && prompt.contains("\"imageNumber\":2") && prompt.contains("\"videoTimeSeconds\":104.96")),
         eq(List.of("https://assets.example/product.png", "https://assets.example/frame0.jpg",
-            "https://assets.example/frame1.jpg", "https://assets.example/frame2.jpg")), eq(0.2), eq(true), eq(8000), isNull());
+            "https://assets.example/frame1.jpg", "https://assets.example/frame2.jpg")), eq(0.2), eq(true), eq(16000), isNull());
     verifyNoInteractions(agent);
   }
 
@@ -67,7 +67,7 @@ class CanvasAgentVideoReferenceTest {
     body.put("instruction", "");
     body.putArray("referenceLayerIds");
     when(agent.isConfigured()).thenReturn(true);
-    when(agent.completeCanvasAgentVision(anyString(), anyString(), anyList(), eq(0.2), eq(8000)))
+    when(agent.completeCanvasAgentVision(anyString(), anyString(), anyList(), eq(0.2), eq(16000)))
         .thenReturn(new AiChatDtos.CompletionResult("teamorouter", "gpt-5.6-luna",
             "{\"generationType\":\"video\",\"draftPrompts\":[\"完整105秒时间轴\"],\"readyToGenerate\":true}"));
     var response = service.chat(request(body));
@@ -75,7 +75,7 @@ class CanvasAgentVideoReferenceTest {
     assertFalse(response.readyToGenerate());
     verify(agent).completeCanvasAgentVision(anyString(), contains("反推出完整中文视频提示词"),
         eq(List.of("https://assets.example/frame0.jpg", "https://assets.example/frame1.jpg", "https://assets.example/frame2.jpg")),
-        eq(0.2), eq(8000));
+        eq(0.2), eq(16000));
     verifyNoInteractions(gem);
   }
 
@@ -86,7 +86,7 @@ class CanvasAgentVideoReferenceTest {
     when(keys.resolve("gpt-5.6-luna", ModelApiKeyService.MODEL_TYPE_VISION_REASONING, "canvas-agent"))
         .thenReturn(java.util.Optional.of(credential));
     when(agent.completeConfiguredModel(eq(credential), anyString(), anyString(), anyList(), eq(0.2),
-        eq("canvas-agent"), eq("dropdown"), eq(8000)))
+        eq("canvas-agent"), eq("dropdown"), eq(16000)))
         .thenReturn(new AiChatDtos.CompletionResult("teamorouter", "gpt-5.6-luna",
             "{\"generationType\":\"video\",\"draftPrompts\":[\"完整105秒时间轴\"],\"readyToGenerate\":true}"));
     var body = body();
@@ -98,7 +98,7 @@ class CanvasAgentVideoReferenceTest {
     verify(agent).completeConfiguredModel(eq(credential), anyString(), anyString(),
         eq(List.of("https://assets.example/product.png", "https://assets.example/frame0.jpg",
             "https://assets.example/frame1.jpg", "https://assets.example/frame2.jpg")),
-        eq(0.2), eq("canvas-agent"), eq("dropdown"), eq(8000));
+        eq(0.2), eq("canvas-agent"), eq("dropdown"), eq(16000));
     verifyNoInteractions(gem);
   }
 

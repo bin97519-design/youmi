@@ -12,8 +12,10 @@ import {
   isAnmiao25VideoModel,
 } from './productVideo.js'
 import { canonicalModelApiProvider } from './modelApiKeyList.js'
+import { isSeedanceAnciModel, SEEDANCE_ANCI_RATIOS } from './seedanceAnci.js'
 
 export function isProviderReportedCostVideoModel(model, modelOptions = []) {
+  if (isSeedanceAnciModel(model)) return true
   const option = modelOptions.find((item) => item?.value === model)
   return canonicalModelApiProvider(option?.provider) === 'lingke'
 }
@@ -37,11 +39,12 @@ export const videoReferenceModeForRequest = (model, mode) =>
 export const isVideoFrameMode = (model, mode) =>
   supportsVideoFrameMode(model) && mode === videoFrameModeValue(model)
 export const supportsVideoAudioToggle = (model) =>
-  ![MINIMAX_VIDEO_MODEL, HAILUO_H3_VIDEO_MODEL].includes(model) && !isRetiredVideoModel(model)
+  !isSeedanceAnciModel(model) && ![MINIMAX_VIDEO_MODEL, HAILUO_H3_VIDEO_MODEL].includes(model) && !isRetiredVideoModel(model)
 export const videoAudioPayload = (model, enabled) =>
   supportsVideoAudioToggle(model) ? { generate_audio: enabled !== false } : {}
 
 export function videoResolutionForModel(model) {
+  if (isSeedanceAnciModel(model)) return '720p'
   if (model === MINIMAX_VIDEO_MODEL || model === HAILUO_H3_VIDEO_MODEL) return '768p'
   return isAnmiao20VideoModel(model) ||
     isAnmiao25VideoModel(model) ||
@@ -63,6 +66,7 @@ export function videoResolutionOptions(model) {
 
 export function videoDurationOptions(model) {
   if (isRetiredVideoModel(model)) return []
+  if (isSeedanceAnciModel(model)) return Array.from({ length: 12 }, (_, index) => index + 4)
   if (isAnmiao20VideoModel(model) || model === MINIMAX_VIDEO_MODEL || model === HAILUO_H3_VIDEO_MODEL)
     return Array.from({ length: 12 }, (_, index) => index + 4)
   if (isAnmiao25VideoModel(model)) return Array.from({ length: 27 }, (_, index) => index + 4)
@@ -78,6 +82,7 @@ export function validVideoDuration(model, duration) {
 }
 
 export function videoRatioForRequest(model, referenceCount, ratio, mode = '', videoCount = 0) {
+  if (isSeedanceAnciModel(model)) return SEEDANCE_ANCI_RATIOS.includes(ratio) ? ratio : '3:4'
   if (model === HAILUO_H3_VIDEO_MODEL) return 'adaptive'
   return !videoCount && isAnmiao25VideoModel(model) &&
     (referenceCount === 1 || (referenceCount > 0 && isVideoFrameMode(model, mode)))
@@ -93,6 +98,7 @@ export function estimatedVideoMiCost(
   providerReportedCost = false,
 ) {
   if (!model || isRetiredVideoModel(model)) return null
+  if (isSeedanceAnciModel(model)) return validVideoResolution(model, resolution) && validVideoDuration(model, duration) ? 0 : null
   if (providerReportedCost) {
     return validVideoResolution(model, resolution) && validVideoDuration(model, duration) ? 0 : null
   }
@@ -116,6 +122,7 @@ export function estimatedVideoMiCost(
 
 export function videoReferenceLimit(model, mode) {
   if (isRetiredVideoModel(model)) return 0
+  if (isSeedanceAnciModel(model)) return 9
   if (model === HAILUO_H3_VIDEO_MODEL) return 2
   if (isVideoFrameMode(model, mode)) return 2
   if (model === MINIMAX_VIDEO_MODEL) return 9

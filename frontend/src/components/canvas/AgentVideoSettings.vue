@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { formatMiValue } from '../../utils/miValue'
 import ThemedSelect from '../common/ThemedSelect.vue'
 import CanvasRatioPicker from './CanvasRatioPicker.vue'
+import { isSeedanceAnciModel, SEEDANCE_ANCI_RATIOS, SEEDANCE_ANCI_VERSIONS, seedanceAnciNotice } from '../../utils/seedanceAnci.js'
 import {
   MINIMAX_VIDEO_MODEL,
   HAILUO_H3_VIDEO_MODEL,
@@ -35,10 +36,13 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue', 'remove-reference'])
 const durations = computed(() => videoDurationOptions(props.modelValue.model))
 const resolutions = computed(() => videoResolutionOptions(props.modelValue.model))
-const ratioOptions = [
+const ratioOptions = computed(() => isSeedanceAnciModel(props.modelValue.model)
+  ? SEEDANCE_ANCI_RATIOS.map((value) => ({ value, label: value })) : [
   { value: 'adaptive', label: '自适应' },
   ...VIDEO_RATIOS.map((value) => ({ value, label: value })),
-]
+])
+const anci = computed(() => isSeedanceAnciModel(props.modelValue.model))
+const anciNotice = computed(() => seedanceAnciNotice(props.modelValue.model, props.modelValue.version, props.modelValue.duration))
 const resolutionOptions = computed(() =>
   resolutions.value.map((value) => ({ value, label: value.toUpperCase() })),
 )
@@ -106,6 +110,12 @@ function change(key, value) {
   const config = { ...props.modelValue, [key]: value }
   if (key === 'model') {
     config.resolution = videoResolutionForModel(value)
+    if (isSeedanceAnciModel(value)) {
+      config.version ||= '快速'
+      config.referenceMode = 'cankaosheng'
+      config.ratio = videoRatioForRequest(value, props.references.length, config.ratio)
+      config.generateAudio = true
+    }
     if (value === HAILUO_H3_VIDEO_MODEL) config.referenceMode = 'shouweizhen'
     if (props.allowSeedanceFrames && supportsVideoFrameMode(value)) {
       config.referenceMode =
@@ -127,6 +137,11 @@ function change(key, value) {
     aria-label="视频方案参数"
   >
     <template v-if="compact">
+      <section v-if="anci" class="node-video-setting">
+        <h4>速度版本</h4>
+        <ThemedSelect floating aria-label="速度版本" :model-value="modelValue.version || '快速'"
+          :options="SEEDANCE_ANCI_VERSIONS" :disabled="disabled" @update:model-value="change('version', $event)" />
+      </section>
       <section class="node-video-setting node-video-ratios">
         <h4>比例</h4>
         <CanvasRatioPicker
@@ -229,6 +244,11 @@ function change(key, value) {
           @update:model-value="change('model', $event)"
         />
       </div>
+      <div v-if="anci" class="agent-video-field">
+        <span>速度版本</span>
+        <ThemedSelect floating aria-label="速度版本" :model-value="modelValue.version || '快速'"
+          :options="SEEDANCE_ANCI_VERSIONS" :disabled="disabled" @update:model-value="change('version', $event)" />
+      </div>
       <div class="agent-video-field">
         <span>比例</span>
         <ThemedSelect
@@ -313,6 +333,7 @@ function change(key, value) {
         }}
       </output>
     </template>
+    <p v-if="anciNotice" class="agent-video-price" role="note">{{ anciNotice }}</p>
   </fieldset>
 </template>
 

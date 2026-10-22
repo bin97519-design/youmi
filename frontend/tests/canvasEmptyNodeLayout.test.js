@@ -11,6 +11,7 @@ import {
   legacyEmptyTextNodeLayout,
 } from '../src/utils/canvasEmptyNodeLayout.js'
 import { normalizeImageNodeDraft } from '../src/utils/imageNodeDraft.js'
+import { isSeedanceAnciModel } from '../src/utils/seedanceAnci.js'
 
 const require = createRequire(createRequire(import.meta.url).resolve('@vue/compiler-sfc'))
 const { parse } = require('@babel/parser')
@@ -34,6 +35,7 @@ function context(items = [], synced = true) {
     DEFAULT_VIDEO_RATIO: '3:4',
     legacyEmptyTextNodeLayout,
     normalizeImageNodeDraft,
+    isSeedanceAnciModel,
     doc: { value: { payload } },
     props: { id: 'test-layout' },
     layers: {

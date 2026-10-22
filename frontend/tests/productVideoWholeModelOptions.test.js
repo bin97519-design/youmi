@@ -46,6 +46,7 @@ function workflowWithWholeShots() {
     const shot = newShot({ productionMode, motion: '按整片时间轴连续拍摄', duration: productionMode === 'single_video' ? 15 : 30 })
     shot.images = [{ id: 'image', url: 'https://media.example/frame.jpg', status: 'completed' }]
     shot.imageId = shot.approvedImageId = 'image'
+    shot.videoInputMode = 'first_frame'
     return shot
   })
   return workflow

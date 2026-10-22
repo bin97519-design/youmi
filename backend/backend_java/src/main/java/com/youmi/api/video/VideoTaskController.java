@@ -39,6 +39,8 @@ public class VideoTaskController {
   private ModelApiKeyService modelApiKeys;
   private final VideoTaskHistory history;
   private VideoTaskSubmissions submissions;
+  /** Source-compatible setter retained for the product-video adapter tests/callers. */
+  void setAnciVideos(SeedanceAnciVideoClient client) { this.seedanceAnciVideos = client; }
 
   public VideoTaskController(
       VideoGenerationClient videoGenerationClient,
@@ -110,8 +112,10 @@ public class VideoTaskController {
         && seedanceAnciVideos.supports(request.model(), featureCode);
     boolean seedanceAnciModel = request != null && request.model() != null
         && SeedanceAnciVideoClient.MODEL.equalsIgnoreCase(request.model().trim());
+    boolean legacyAnci = seedanceAnciModel && (profile == null || profile.isBlank())
+        && (productVideoCall || featureCode == null || featureCode.isBlank());
     // This model must never fall through to the similarly named native per-second adapter.
-    if ((seedanceAnciModel || seedanceAnciRoute) && !seedanceAnciProfile)
+    if ((seedanceAnciModel || seedanceAnciRoute) && !seedanceAnciProfile && !legacyAnci)
       throw new ApiException(400, "Seedance 2.0 按次必须使用对应的按次参数配置");
     if (profile != null && !profile.isBlank()) {
       if (!seedance25Profile && !minimaxH3Profile && !seedanceAnciProfile && !klingOmniProfile && !wanxiangProfile)
@@ -191,23 +195,23 @@ public class VideoTaskController {
       return ApiResponse.ok(response);
     }
     boolean minimax = minimaxH3Profile || request != null && MinimaxVideoClient.supportsModel(request.model());
-    boolean configuredModel = seedance25Profile || request != null && !minimax && (productVideoCall
+    boolean configuredModel = seedance25Profile || request != null && !minimax && !legacyAnci && (productVideoCall
         ? anmiaoVideos.supportsModel(request.model(), featureCode)
         : anmiaoVideos.supportsModel(request.model()));
-    if (request != null && !minimax && !configuredModel
+    if (request != null && !minimax && !legacyAnci && !configuredModel
         && anmiaoVideos.isConfiguredKeyExcluded(request.model()))
       throw new ApiException(400, "所选视频模型未映射到画布视频功能");
-    if (minimax || configuredModel) {
+    if (minimax || configuredModel || legacyAnci) {
       MiValueDtos.DeductResult deduct;
       if (seedance25Profile) {
         BigDecimal price = anmiaoVideos.quoteCanvasV3Seedance25(request);
         deduct = miValueService.checkAndDeduct(userId, MiBizType.VIDEO, price);
       } else {
-        int price = minimax ? minimaxVideos.price(request) : anmiaoVideos.price(request);
+        int price = legacyAnci ? seedanceAnciVideos.price(request) : minimax ? minimaxVideos.price(request) : anmiaoVideos.price(request);
         deduct = miValueService.checkAndDeduct(userId, MiBizType.VIDEO, price);
       }
       try {
-        VideoGenerationDtos.CreateTaskResponse response = minimax
+        VideoGenerationDtos.CreateTaskResponse response = legacyAnci ? seedanceAnciVideos.createTask(request) : minimax
             ? minimaxVideos.createTask(request) : anmiaoVideos.createTask(request);
         miValueService.linkTask(deduct.logId(), response.getTaskId());
         response.setConsumedMi(deduct.price());
@@ -305,7 +309,7 @@ public class VideoTaskController {
             ? wanxiangVideos.getTask(taskId, userId)
         : taskId.startsWith(KlingOmniVideoClient.PREFIX)
             ? klingOmniVideos.getTask(taskId, userId)
-        : taskId.startsWith(SeedanceAnciVideoClient.PREFIX)
+        : SeedanceAnciVideoClient.isTaskId(taskId)
             ? seedanceAnciVideos.getTask(taskId, userId)
         : taskId.startsWith(AnmiaoVideoClient.PREFIX)
             ? anmiaoVideos.getTask(taskId, userId)
@@ -348,7 +352,7 @@ public class VideoTaskController {
       VideoGenerationDtos.TaskStatusResponse response) {
     if (taskId != null && taskId.startsWith(WanxiangVideoClient.PREFIX)) return true;
     if (taskId != null && taskId.startsWith(KlingOmniVideoClient.PREFIX)) return true;
-    if (taskId != null && taskId.startsWith(SeedanceAnciVideoClient.PREFIX)) return true;
+    if (SeedanceAnciVideoClient.isTaskId(taskId)) return true;
     if (taskId != null && taskId.startsWith(AnmiaoVideoClient.CANVAS_V3_PREFIX)) return false;
     return (taskId != null && (taskId.startsWith(MinimaxVideoClient.CONFIGURED_PREFIX + "key:")
         || taskId.startsWith(MinimaxVideoClient.MAPPED_PREFIX)))

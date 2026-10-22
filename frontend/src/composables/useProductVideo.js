@@ -2,6 +2,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useCanvasStore } from '../stores/canvas'
 import { useUserStore } from '../stores/user'
 import { apiPath } from '../utils/apiBase'
+import { isSeedanceAnciModel, SEEDANCE_ANCI_RATIOS } from '../utils/seedanceAnci.js'
 import { productVideoAssetSize, readProductVideoMediaSize } from '../utils/productVideoMedia'
 import { continuityReferenceImages } from '../utils/productVideoContinuity'
 import { generationConnectionMetadata, shotConnection, adjacentProductVideoShots,
@@ -10,6 +11,8 @@ import { buildContinuityReview, buildWholeVideoReview, wholeVideoReviewIssue, cu
 import { batchVideoState, productVideoBatchConfiguration } from '../utils/productVideoBatch'
 import { extractReferenceVideoFrame } from '../utils/referenceVideo'
 import { uploadFileDirect } from '../utils/ossUpload'
+import { ensureProductStudy, buildProductAnalysisRequest, productStudySource,
+  isProductStudyRunning, applyProductAnalysisState } from '../utils/productVideoProductAnalysis'
 import {
   buildCompositionRequest,
   buildImageRequest,
@@ -39,18 +42,22 @@ import {
   planningErrorMessage,
   taskState,
   returnedVideoTaskUrl,
+  videoGenerationPending,
+  videoTaskPollDue,
   imageSubmissionRejected,
   canGenerateVideo,
+  usesWholeReferenceImages,
   pickImage,
   uid,
 } from '../utils/productVideo'
 
-export function useProductVideo(canvasId, activeTaskId) {
+export function useProductVideo(canvasId, activeTaskId, options = {}) {
   const canvas = useCanvasStore(),
     user = useUserStore()
   const fallback = newProductVideo()
+  const storageKey = options.storageKey || 'productVideo'
   const tasks = computed(
-    () => productVideoLibrary(canvas.ensureDocument(canvasId.value).payload.productVideo).tasks,
+    () => productVideoLibrary(canvas.ensureDocument(canvasId.value).payload[storageKey]).tasks,
   )
   const workflow = computed(
     () => tasks.value.find((task) => task.id === activeTaskId.value) || fallback,
@@ -65,6 +72,8 @@ export function useProductVideo(canvasId, activeTaskId) {
       isPlanRunning(workflow.value.planJob),
   )
   const composing = computed(() => operations.value[operationKey(captureTask())] === 'compose')
+  const analyzingProduct = computed(() => operations.value[operationKey(captureTask())] === 'analysis' ||
+    isProductStudyRunning(workflow.value.productStudy))
   const taskActivity = computed(() =>
     Object.fromEntries(
       tasks.value.map((task) => [task.id, operations.value[`${canvasId.value}:${task.id}`]]),
@@ -155,7 +164,7 @@ export function useProductVideo(canvasId, activeTaskId) {
   function getTask(context = captureTask()) {
     if (context.userId != null && String(context.userId) !== String(user.profile?.id)) return null
     const doc = canvas.documents.find((item) => item.id === context.docId)
-    return productVideoLibrary(doc?.payload?.productVideo).tasks.find(
+    return productVideoLibrary(doc?.payload?.[storageKey]).tasks.find(
       (task) => task.id === context.taskId,
     )
   }
@@ -166,9 +175,10 @@ export function useProductVideo(canvasId, activeTaskId) {
     task.videoModel = availableVideoModelOption(task.videoModel)?.value || ''
     task.wholeVideo30Model =
       availableVideoModelOption(task.wholeVideo30Model, wholeVideo30ModelOptions.value)?.value || ''
+    options.configureTask?.(task, planningModelOptions.value, videoModelOptions.value)
     canvas.updateDocument(canvasId.value, (doc) => {
-      doc.payload.productVideo = productVideoLibrary(doc.payload.productVideo)
-      doc.payload.productVideo.tasks.unshift(task)
+      doc.payload[storageKey] = productVideoLibrary(doc.payload[storageKey])
+      doc.payload[storageKey].tasks.unshift(task)
       return doc
     })
     return task.id
@@ -176,8 +186,8 @@ export function useProductVideo(canvasId, activeTaskId) {
   function change(fn, context = captureTask(), touch = true) {
     if (!getTask(context)) return
     canvas.updateDocument(context.docId, (doc) => {
-      doc.payload.productVideo = productVideoLibrary(doc.payload.productVideo)
-      const task = doc.payload.productVideo.tasks.find((item) => item.id === context.taskId)
+      doc.payload[storageKey] = productVideoLibrary(doc.payload[storageKey])
+      const task = doc.payload[storageKey].tasks.find((item) => item.id === context.taskId)
       if (!task) return doc
       fn(task, doc)
       if (touch) task.updatedAt = Date.now()
@@ -268,6 +278,11 @@ export function useProductVideo(canvasId, activeTaskId) {
     if (previous === model) return
     change((data) => {
       data.videoModel = model
+      if (isSeedanceAnciModel(model)) {
+        data.videoResolution = '720p'
+        data.videoVersion ||= '快速'
+        if (!SEEDANCE_ANCI_RATIOS.includes(data.ratio)) data.ratio = '3:4'
+      }
     })
     recordModelSelection('product-video-video', previous, model)
   }
@@ -317,12 +332,14 @@ export function useProductVideo(canvasId, activeTaskId) {
     })
   }
   async function plan(count) {
-    if (planning.value || workflow.value.planJob?.status === 'unknown') return
+    if (planning.value || analyzingProduct.value || workflow.value.productStudy?.job?.status === 'unknown' || workflow.value.planJob?.status === 'unknown') return
     const context = captureTask()
     operations.value[operationKey(context)] = 'plan'
     error.value = ''
     const snapshot = copy(workflow.value)
     try {
+      if (snapshot.planner === 'main_video_2' && !capabilities.value?.mainVideo2)
+        throw new Error('主图视频2服务尚未连接，请更新后端后重新打开')
       const payload = buildPlanRequest(snapshot, count, null, capabilities.value)
       if (
         isWholeVideo(payload.productionMode) &&
@@ -388,6 +405,79 @@ export function useProductVideo(canvasId, activeTaskId) {
     } finally {
       delete operations.value[operationKey(context)]
     }
+  }
+
+  async function analyzeProduct() {
+    if (analyzingProduct.value || planning.value || workflow.value.productStudy?.job?.status === 'unknown') return
+    const context = captureTask()
+    operations.value[operationKey(context)] = 'analysis'
+    error.value = ''
+    let id = ''
+    try {
+      if (!capabilities.value?.productSellingPointAnalysis) throw new Error('当前服务尚未支持商品卖点分析，请重启后端后重新打开工作区')
+      if (planningModelUnavailable.value) throw new Error('所选策划模型不可用，请检查密钥配置或重新选择')
+      const snapshot = copy(workflow.value)
+      const payload = buildProductAnalysisRequest(snapshot)
+      id = uid()
+      change(data => { ensureProductStudy(data).job = { id, request: payload, status: 'submitting',
+        stage: '正在提交商品分析', sourceFingerprint: productStudySource(snapshot.productStudy),
+        materialSnapshot: snapshot.productStudy.materials } }, context)
+      await canvas.flushNow(context.docId)
+      const state = await request('/api/product-videos/plan-tasks', { id, request: payload }, 30000)
+      change(data => applyProductAnalysisState(data, state), context)
+      void canvas.flushNow(context.docId)
+      void poll()
+    } catch (e) {
+      change(data => {
+        const job = data.productStudy?.job
+        if (id && job?.id === id && job.status === 'submitting') Object.assign(job, {
+          status: [400, 401, 403, 409, 422].includes(e.status) ? 'rejected' : 'unknown',
+          stage: '商品分析提交待确认', pollError: e.message,
+        })
+      }, context)
+      if (isCurrent(context)) error.value = e.message
+    } finally { delete operations.value[operationKey(context)] }
+  }
+
+  async function pollProductAnalysis(context, entry) {
+    const key = `product-analysis:${operationKey(context)}:${entry.id}`
+    if (pending.has(key)) return
+    pending.add(key)
+    try {
+      const state = await request(`/api/product-videos/plan-tasks/${encodeURIComponent(entry.id)}`, undefined, 30000)
+      if (disposed) return
+      const current = getTask(context)?.productStudy?.job
+      if (!current || current.id !== entry.id ||
+        (current.updatedAt === state.updatedAt && current.status === state.status && !current.pollError)) return
+      change(data => applyProductAnalysisState(data, state), context, false)
+      if (['completed', 'failed'].includes(state.status)) void canvas.flushNow(context.docId)
+    } catch (e) {
+      if (!disposed) change(data => {
+        const job = data.productStudy?.job
+        if (job?.id === entry.id) Object.assign(job, { pollError: `进度查询中断：${e.message}`,
+          ...(e.status === 404 ? { status: 'unknown' } : {}) })
+      }, context, false)
+    } finally { pending.delete(key) }
+  }
+
+  async function retryProductAnalysis() {
+    const context = captureTask(), entry = copy(workflow.value.productStudy?.job || null)
+    if (!entry || analyzingProduct.value || planning.value) return
+    operations.value[operationKey(context)] = 'analysis'
+    error.value = ''
+    try {
+      let state
+      try { state = await request(`/api/product-videos/plan-tasks/${encodeURIComponent(entry.id)}`, undefined, 30000) }
+      catch (e) {
+        if (e.status !== 404 || entry.status !== 'unknown') throw e
+        // Resubmit the same id and original request only after an explicit user retry.
+        state = await request('/api/product-videos/plan-tasks', { id: entry.id, request: entry.request }, 30000)
+      }
+      if (state.status === 'failed') state = await request(`/api/product-videos/plan-tasks/${encodeURIComponent(entry.id)}/retry`, {}, 30000)
+      change(data => applyProductAnalysisState(data, state), context)
+      void canvas.flushNow(context.docId)
+    } catch (e) { if (isCurrent(context)) error.value = e.message }
+    finally { delete operations.value[operationKey(context)] }
   }
 
   async function pollPlan(context, entry) {
@@ -495,9 +585,8 @@ export function useProductVideo(canvasId, activeTaskId) {
     if (batchId && (task?.batchVideoJob?.id !== batchId || !['running', 'waiting_confirmation'].includes(task.batchVideoJob.status))) return
     if (
       !shot ||
-      shot[kind === 'image' ? 'images' : 'videos'].some((item) =>
-        ['submitting', 'processing', 'unknown'].includes(item.status),
-      )
+      (kind === 'video' ? shot.videos.some(videoGenerationPending)
+        : shot.images.some((item) => ['submitting', 'processing', 'unknown'].includes(item.status)))
     )
       return
     const itemId = uid(),
@@ -576,7 +665,8 @@ export function useProductVideo(canvasId, activeTaskId) {
           request: payload,
           ...(kind === 'video' ? { submissionTracked: capabilities.value?.videoSubmissionRecovery === true } : {}),
           ...(batchId ? { batchId } : {}),
-          sourceImageId: kind === 'video' ? current.imageId : '',
+          sourceImageId: kind === 'video' && !usesWholeReferenceImages(task, current) ? current.imageId : '',
+          ...(kind === 'video' && usesWholeReferenceImages(task, current) ? { sourceReferenceUrls: [...payload.image_urls] } : {}),
           ...generationConnectionMetadata(task, current, kind),
           ratio: task.ratio,
           createdAt: Date.now(),
@@ -621,7 +711,7 @@ export function useProductVideo(canvasId, activeTaskId) {
       const rejected =
         (kind === 'image' && imageSubmissionRejected(e)) ||
         (kind === 'video' &&
-          (payload.model === WHOLE_VIDEO_30_MODEL || isPerSecondVideoModel(payload.model)) &&
+          (payload.model === WHOLE_VIDEO_30_MODEL || isPerSecondVideoModel(payload.model) || isSeedanceAnciModel(payload.model)) &&
           [400, 401, 403, 429].includes(e.status))
       shotChange(
         shotId,
@@ -856,6 +946,8 @@ export function useProductVideo(canvasId, activeTaskId) {
     if (disposed) return
     for (const task of tasks.value) {
       const context = { docId: canvasId.value, taskId: task.id, userId: user.profile?.id }
+      if (task.productStudy?.job?.id && (isProductStudyRunning(task.productStudy) || task.productStudy.job.status === 'unknown'))
+        void pollProductAnalysis(context, copy(task.productStudy.job))
       if (task.continuityReview?.id && reviewRunning(task.continuityReview)) void pollReview(context, copy(task.continuityReview))
       if (task.planJob?.id && (isPlanRunning(task.planJob) || task.planJob.status === 'unknown'))
         void pollPlan(context, copy(task.planJob))
@@ -864,7 +956,7 @@ export function useProductVideo(canvasId, activeTaskId) {
         if (shot.motionObservation?.id && reviewRunning(shot.motionObservation)) void pollReview(context, copy(shot.motionObservation), shot.id)
         for (const kind of ['image', 'video']) {
           for (const entry of shot[kind === 'image' ? 'images' : 'videos']) {
-            if (entry.taskId && entry.status === 'processing')
+            if (kind === 'video' ? videoTaskPollDue(entry) : entry.taskId && entry.status === 'processing')
               void pollEntry(context, shot.id, kind, copy(entry))
             else if (kind === 'video' && entry.status === 'unknown' && !entry.taskId)
               void recoverVideoSubmission(context, shot.id, entry.id)
@@ -942,7 +1034,7 @@ export function useProductVideo(canvasId, activeTaskId) {
         update({ status: 'completed', stage: '批量生成已完成', error: '' }); return
       }
       const inFlight = task.shots.reduce((count, shot) => count + shot.videos.filter(
-        entry => ['submitting', 'processing'].includes(entry.status)).length, 0)
+        entry => entry.status !== 'unknown' && videoGenerationPending(entry)).length, 0)
       let slots = Math.max(0, 2 - inFlight)
       const submissions = []
       let waiting = ''
@@ -959,7 +1051,7 @@ export function useProductVideo(canvasId, activeTaskId) {
             if (!await prepareBatchConnection(context, shot.id, job.id)) { waiting = '前镜已改变，等待更新'; continue }
           }
         }
-        if (!canGenerateVideo(shot)) { waiting = `「${shot.title}」待确认首帧`; continue }
+        if (!canGenerateVideo(shot, task)) { waiting = `「${shot.title}」${usesWholeReferenceImages(task, shot) ? '待选择参考图' : '待确认首帧'}`; continue }
         if (capabilities.value?.continuityReview && motionObservationRequired(task, shot) && !usableMotionObservation(task, shot)) {
           waiting = `「${shot.title}」待确认实际动作`; continue
         }
@@ -1187,6 +1279,9 @@ export function useProductVideo(canvasId, activeTaskId) {
     error,
     notice,
     planning,
+    analyzingProduct,
+    analyzeProduct,
+    retryProductAnalysis,
     composing,
     capabilities,
     capabilitiesLoading,

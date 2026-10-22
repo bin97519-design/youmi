@@ -5,6 +5,7 @@ import com.youmi.api.admin.AdminAuthService;
 import com.youmi.api.common.ApiException;
 import com.youmi.api.common.ApiResponse;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
@@ -14,6 +15,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
@@ -37,6 +40,12 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 public class CanvasAgentController {
   private static final Logger log = LoggerFactory.getLogger(CanvasAgentController.class);
   private static final ObjectMapper STREAM_JSON = new ObjectMapper();
+  private static final java.util.concurrent.ScheduledExecutorService STREAM_HEARTBEATS =
+      Executors.newSingleThreadScheduledExecutor(task -> {
+        Thread thread = new Thread(task, "agent-stream-heartbeat");
+        thread.setDaemon(true);
+        return thread;
+      });
 
   private final CanvasAgentService canvasAgentService;
   private final CanvasAgentRepository canvasAgentRepository;
@@ -101,7 +110,8 @@ public class CanvasAgentController {
     Long userId = adminAuthService.requireUserId(authorization);
     long startedAt = System.currentTimeMillis();
     try {
-      CanvasAgentDtos.ChatResponse response = canvasAgentService.chat(request);
+      CanvasAgentDtos.ChatResponse response = canvasAgentService.chat(
+          canvasAgentService.prepareContext(userId, request, null));
       int outputChars = length(response.reply())
           + response.draftPrompts().stream().mapToInt(this::length).sum();
       recordUsage(
@@ -136,8 +146,13 @@ public class CanvasAgentController {
   public StreamingResponseBody chatStream(
       @RequestHeader(value = "Authorization", required = false) String authorization,
       @RequestBody CanvasAgentDtos.ChatRequest request,
-      HttpServletRequest servletRequest) {
+      HttpServletRequest servletRequest,
+      HttpServletResponse httpResponse) {
     Long userId = adminAuthService.requireUserId(authorization);
+    httpResponse.setContentType(MediaType.APPLICATION_NDJSON_VALUE);
+    httpResponse.setCharacterEncoding(StandardCharsets.UTF_8.name());
+    httpResponse.setHeader("Cache-Control", "no-cache");
+    httpResponse.setHeader("X-Accel-Buffering", "no");
     long startedAt = System.currentTimeMillis();
     AtomicBoolean outcomeRecorded = new AtomicBoolean(false);
     // Observe the Servlet deadline as well as write failures. A committed NDJSON response
@@ -161,6 +176,13 @@ public class CanvasAgentController {
         });
     return output -> {
       AtomicBoolean replyStarted = new AtomicBoolean(false);
+      AtomicBoolean streamDisconnected = new AtomicBoolean(false);
+      var heartbeat = STREAM_HEARTBEATS.scheduleAtFixedRate(() -> {
+        if (streamDisconnected.get()) return;
+        try { writeStreamEvent(output, Map.of("type", "heartbeat", "elapsedSeconds",
+            Math.max(0, (System.currentTimeMillis() - startedAt) / 1000))); }
+        catch (UncheckedIOException error) { streamDisconnected.set(true); }
+      }, 15, 15, TimeUnit.SECONDS);
       try {
         int layerCount = request == null || request.layers() == null ? 0 : request.layers().size();
         int selectedCount = request == null || request.selectedLayerIds() == null
@@ -181,8 +203,13 @@ public class CanvasAgentController {
             "label", "正在判断对话关系、任务目标与下一步分支",
             "state", "active"));
 
-        CanvasAgentDtos.ChatResponse response = canvasAgentService.chatStream(
-            request,
+        var prepared = canvasAgentService.prepareContext(userId, request, state -> {
+          writeStreamEvent(output, Map.of("type", "context_memory", "data", state));
+          writeStreamEvent(output, Map.of("type", "thinking", "id", "memory",
+              "label", state.message(), "state", state.compacted() ? "complete" : "active"));
+        });
+        CanvasAgentDtos.ChatResponse response = canvasAgentService.chatStreamWithUsage(
+            prepared,
             delta -> writeStreamEvent(output, Map.of("type", "thinking_delta", "delta", delta)),
             delta -> {
               if (replyStarted.compareAndSet(false, true)) {
@@ -194,7 +221,7 @@ public class CanvasAgentController {
                     "label", "正在整理本轮答复与下一步", "state", "active"));
               }
               writeStreamEvent(output, Map.of("type", "reply_delta", "delta", delta));
-            });
+            }, usage -> writeStreamEvent(output, Map.of("type", "context_usage", "data", usage)));
         if (!replyStarted.get()) {
           writeStreamEvent(output, Map.of(
               "type", "thinking", "id", "model",
@@ -230,6 +257,7 @@ public class CanvasAgentController {
         try {
           writeStreamEvent(output, Map.of(
               "type", "error",
+              "code", error instanceof AgentReplyIntegrity.BlockedReply ? "PROVIDER_CONTENT_BLOCKED" : "AGENT_REPLY_FAILED",
               "message", clean(error.getMessage(), 1000).isBlank()
                   ? "TV Director 暂时无法回复，请稍后重试"
                   : clean(error.getMessage(), 1000)));
@@ -246,6 +274,8 @@ public class CanvasAgentController {
             startedAt,
             request == null ? "" : request.instruction(),
             error);
+      } finally {
+        heartbeat.cancel(false);
       }
     };
   }
@@ -266,9 +296,11 @@ public class CanvasAgentController {
 
   private void writeStreamEvent(OutputStream output, Map<String, ?> event) {
     try {
-      output.write(STREAM_JSON.writeValueAsString(event).getBytes(StandardCharsets.UTF_8));
-      output.write('\n');
-      output.flush();
+      synchronized (output) {
+        output.write(STREAM_JSON.writeValueAsString(event).getBytes(StandardCharsets.UTF_8));
+        output.write('\n');
+        output.flush();
+      }
     } catch (IOException error) {
       throw new UncheckedIOException(error);
     }
@@ -354,7 +386,7 @@ public class CanvasAgentController {
     if (title.isBlank()) title = "新对话";
     List<Map<String, Object>> messages = request == null || request.messages() == null
         ? List.of()
-        : request.messages().stream().filter(Objects::nonNull).limit(200).toList();
+        : request.messages().stream().filter(Objects::nonNull).toList();
     return ApiResponse.ok(canvasAgentRepository.saveConversation(
         cleanConversationId,
         userId,

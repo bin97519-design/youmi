@@ -303,6 +303,43 @@ class MinimaxVideoClientTest {
     assertEquals("completed", client.getTask(created.getTaskId(), 7L).getStatus());
   }
 
+  @Test void productVideoReferenceGenerationPreservesAllOriginalImagesAndItsMappedCredential() throws Exception {
+    var images = java.util.stream.IntStream.range(1, 6)
+        .mapToObj(index -> "https://assets.example/original-" + index + ".png").toList();
+    var request = new VideoGenerationDtos.CreateTaskRequest("Full 15-second storyboard",
+        MinimaxVideoClient.MODEL, "3:4", 15, "768p", images, null, null,
+        null, null, null, null, "references-test", "product-video-video");
+    properties.setMiPerSecondByResolution(Map.of());
+    assertEquals(0, client.price(request));
+    var created = client.createTask(request);
+    assertEquals("minimax-h3:key:10:123456", created.getTaskId());
+    assertEquals(MinimaxVideoClient.MODEL, submitted.get().path("model").asText());
+    var params = submitted.get().path("params");
+    assertEquals("cankaosheng", params.path("mode").asText());
+    assertEquals("3:4", params.path("aspect_ratio").asText());
+    assertEquals("15", params.path("duration").asText());
+    assertEquals(mapper.valueToTree(images), params.path("image_url"));
+    assertFalse(params.has("images"));
+    assertEquals(1, calls.get());
+    var credential = modelApiKeys.resolve(MinimaxVideoClient.MODEL,
+        ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "product-video-video").orElseThrow();
+    when(modelApiKeys.resolveById(10L, ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION)).thenReturn(credential);
+    properties.setPersistGeneratedVideos(false);
+    response.set("{\"state\":\"success\",\"is_final\":true,\"result_url\":\"https://assets.example/out.mp4\"}");
+    assertEquals("completed", client.getTask(created.getTaskId(), 7L).getStatus());
+  }
+
+  @Test void productVideoReferenceModeDoesNotFallBackToOtherFeatureCredentials() {
+    when(modelApiKeys.resolve(MinimaxVideoClient.MODEL, ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION,
+        "product-video-video")).thenReturn(Optional.empty());
+    when(modelApiKeys.isFeatureMappingConfigured("product-video-video")).thenReturn(true);
+    var request = new VideoGenerationDtos.CreateTaskRequest("whole video", MinimaxVideoClient.MODEL, "3:4", 15,
+        "768p", List.of("https://assets.example/1.png", "https://assets.example/2.png"), null, null,
+        null, null, null, null, "scoped-test", "product-video-video");
+    assertThrows(ApiException.class, () -> client.createTask(request));
+    assertEquals(0, calls.get());
+  }
+
   @Test void legacyProductVideoModelUsesMappedMiniH3AndReportedCost() throws Exception {
     var request = new VideoGenerationDtos.CreateTaskRequest("slow camera move",
         MinimaxVideoClient.MODEL, "adaptive", 5, "768p",

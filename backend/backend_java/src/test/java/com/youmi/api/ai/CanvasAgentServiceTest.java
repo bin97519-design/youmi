@@ -17,6 +17,99 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class CanvasAgentServiceTest {
+  @Test void blockedRepliesStopBeforeFormatRepairAndNeverBecomeVideoPrompts() throws Exception {
+    String notice = "The prompt could not be submitted. The prompt contains sensitive words that violate Google's policy.";
+    var mapper = new ObjectMapper();
+    for (String response : List.of(notice, mapper.writeValueAsString(java.util.Map.of(
+        "generationType", "video", "draftPrompts", List.of(notice), "readyToGenerate", true)))) {
+      var client = mock(AgentChatClient.class);
+      when(client.isConfigured()).thenReturn(true);
+      when(client.completeCanvasAgent(anyList(), anyDouble()))
+          .thenReturn(new AiChatDtos.CompletionResult("test", "gem-3-pro", response));
+      var service = new CanvasAgentService(mapper, client);
+      org.junit.jupiter.api.Assertions.assertThrows(AgentReplyIntegrity.BlockedReply.class, () -> service.chat(
+          new CanvasAgentDtos.ChatRequest("canvas", "分析视频", List.of(), List.of(), List.of(), List.of(),
+              "banana2", "3:4", "2K", 1)));
+      verify(client, times(1)).completeCanvasAgent(anyList(), anyDouble());
+    }
+  }
+
+  @Test void aBlockedFormatRepairIsPropagatedInsteadOfConvertedIntoAClarification() throws Exception {
+    var client = mock(AgentChatClient.class);
+    when(client.isConfigured()).thenReturn(true);
+    when(client.completeCanvasAgent(anyList(), anyDouble())).thenReturn(
+        new AiChatDtos.CompletionResult("test", "gem-3-pro", "invalid"),
+        new AiChatDtos.CompletionResult("test", "gem-3-pro",
+            "The prompt could not be submitted. The prompt contains sensitive words that violate Google's policy."));
+    var service = new CanvasAgentService(new ObjectMapper(), client);
+    org.junit.jupiter.api.Assertions.assertThrows(AgentReplyIntegrity.BlockedReply.class, () -> service.chat(
+        new CanvasAgentDtos.ChatRequest("canvas", "分析视频", List.of(), List.of(), List.of(), List.of(),
+            "banana2", "3:4", "2K", 1)));
+    verify(client, times(2)).completeCanvasAgent(anyList(), anyDouble());
+  }
+
+  @Test void incompleteSourceVideoRepliesAreRegeneratedWithTheOriginalFramesInsteadOfFormatPatched() throws Exception {
+    var mapper = new ObjectMapper();
+    String partial = "分镜1（0秒-9秒）：身穿粉色碎花睡衣的小女孩揉";
+    String complete = "分镜1（0秒-9秒）：夜间卧室。\n分镜2（9秒-25.3秒）：连续动作。\n分镜3（25.3秒-58秒）：收尾。";
+    String completeJson = mapper.writeValueAsString(java.util.Map.of("reply", "已完成", "generationType", "video",
+        "durationSeconds", 58, "draftPrompts", List.of(complete), "readyToGenerate", false));
+    var video = new CanvasAgentDtos.ReferenceVideo("https://media.test/source.mp4", "原片", 57.68, 720, 1280, "",
+        List.of(new CanvasAgentDtos.VideoFrame("https://media.test/frame-0.png", 0),
+            new CanvasAgentDtos.VideoFrame("https://media.test/frame-57.png", 57)));
+    for (String broken : List.of("{\"draftPrompt\":\"" + partial,
+        mapper.writeValueAsString(java.util.Map.of("reply", "已完成", "generationType", "video",
+            "durationSeconds", 58, "draftPrompts", List.of(partial))))) {
+      var client = mock(AgentChatClient.class);
+      when(client.isConfigured()).thenReturn(true);
+      when(client.completeCanvasAgentVision(anyString(), anyString(), anyList(), anyDouble(), org.mockito.ArgumentMatchers.eq(16000)))
+          .thenReturn(new AiChatDtos.CompletionResult("test", "test", broken),
+              new AiChatDtos.CompletionResult("test", "test", completeJson));
+      var response = new CanvasAgentService(mapper, client).chat(new CanvasAgentDtos.ChatRequest(
+          "canvas", "分析这个视频", List.of(), List.of(), List.of(), List.of(), "banana2", "3:4", "2K", 1,
+          List.of("banana2"), "conversation", null, null, video));
+      assertEquals(complete, response.draftPrompts().get(0));
+      assertFalse(response.readyToGenerate());
+      var prompts = org.mockito.ArgumentCaptor.forClass(String.class);
+      var images = org.mockito.ArgumentCaptor.forClass(List.class);
+      verify(client, times(2)).completeCanvasAgentVision(anyString(), prompts.capture(), images.capture(), anyDouble(),
+          org.mockito.ArgumentMatchers.eq(16000));
+      assertTrue(prompts.getAllValues().get(1).contains("从头写完全部提示词"));
+      assertTrue(prompts.getAllValues().get(1).contains("57.68"));
+      assertEquals(images.getAllValues().get(0), images.getAllValues().get(1));
+      assertEquals(List.of("https://media.test/frame-0.png", "https://media.test/frame-57.png"), images.getValue());
+      verify(client, never()).completeCanvasAgent(anyList(), anyDouble());
+    }
+  }
+
+  @Test void repeatedlyIncompleteRepliesStopAfterOneRecoveryAndNeverReturnAHalfDraft() throws Exception {
+    var client = mock(AgentChatClient.class);
+    when(client.isConfigured()).thenReturn(true);
+    when(client.completeCanvasAgent(anyList(), anyDouble())).thenReturn(new AiChatDtos.CompletionResult(
+        "test", "test", "{\"draftPrompt\":\"未完的正文"));
+    var service = new CanvasAgentService(new ObjectMapper(), client);
+    var error = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, () -> service.chat(
+        new CanvasAgentDtos.ChatRequest("canvas", "整理脚本", List.of(), List.of(), List.of(), List.of(),
+            "banana2", "3:4", "2K", 1)));
+    assertTrue(error.getMessage().contains("两次"));
+    verify(client, times(2)).completeCanvasAgent(anyList(), anyDouble());
+  }
+
+  @Test void historyPreparedForCompactionIsNotCutBackToTheOldTwelveMessageWindow() throws Exception {
+    var client = mock(AgentChatClient.class);
+    when(client.isConfigured()).thenReturn(true);
+    when(client.completeCanvasAgent(anyList(), anyDouble())).thenReturn(
+        new AiChatDtos.CompletionResult("test", "test", "{\"reply\":\"已收到\",\"readyToGenerate\":false}"));
+    var history = new java.util.ArrayList<CanvasAgentDtos.ChatMessage>();
+    for (int i = 0; i < 18; i++) history.add(new CanvasAgentDtos.ChatMessage("user", "历史事实编号" + i + "完"));
+    new CanvasAgentService(new ObjectMapper(), client).chat(new CanvasAgentDtos.ChatRequest("canvas", "继续",
+        history, List.of(), List.of(), List.of(), "banana2", "3:4", "1K", 1));
+    var capture = org.mockito.ArgumentCaptor.forClass(List.class);
+    verify(client).completeCanvasAgent(capture.capture(), anyDouble());
+    assertTrue(capture.getValue().toString().contains("历史事实编号0完"));
+    assertTrue(capture.getValue().toString().contains("历史事实编号17完"));
+  }
+
   @Test
   void returnsOneStableWelcomeForGreetingWithoutCallingThePaidModel() throws Exception {
     AgentChatClient client = mock(AgentChatClient.class);
@@ -65,7 +158,7 @@ class CanvasAgentServiceTest {
         + "分镜1：具体生活事件、产品细节及连续动作。".repeat(500)
         + "\n口播设计：\n口播1（对应分镜1，时间：0秒-6秒）：贴地好清理。";
     String response = new ObjectMapper().writeValueAsString(java.util.Map.of(
-        "reply", "脚本已整理", "generationType", "video", "durationSeconds", 15,
+        "reply", "脚本已整理".repeat(1000), "generationType", "video", "durationSeconds", 15,
         "draftPrompts", List.of(script), "readyToGenerate", true));
     when(client.completeCanvasAgent(anyList(), anyDouble())).thenReturn(
         new AiChatDtos.CompletionResult("test", "test", response));
@@ -82,6 +175,9 @@ class CanvasAgentServiceTest {
     assertTrue(sent.contains(HomeCommerceAgentProfile.CONTEXT));
     assertTrue(sent.contains(HomeCommerceAgentProfile.CHAT_GUIDANCE));
     assertTrue(sent.contains("口播设计"));
+    assertTrue(sent.contains("本轮用户的明确修改要求 > 本会话用户先前给定且仍有效的脚本规格"));
+    assertTrue(sent.contains("不能用默认模板重新定义或覆盖"));
+    assertTrue(sent.contains("不代表必须输出同名小标题"));
     assertTrue(sent.contains("每秒3至4字"));
     assertTrue(sent.contains("分镜1（0秒-4秒）："));
     assertTrue(sent.contains("最后一镜结束秒数必须等于durationSeconds"));
@@ -98,8 +194,8 @@ class CanvasAgentServiceTest {
     assertTrue(sent.contains("返回前在内部执行一次成稿复核"));
     assertTrue(sent.contains("任一项缺失就直接在本次答案中补写或改写对应镜头"));
     assertEquals(script, result.draftPrompts().get(0));
-    // Planning may exceed the provider's submission limit without silently losing text.
-    assertFalse(result.readyToGenerate());
+    assertEquals("脚本已整理".repeat(1000), result.reply());
+    assertTrue(result.readyToGenerate());
   }
 
   @Test

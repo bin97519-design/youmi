@@ -42,7 +42,7 @@ test('video drafts validate model, script, duration, references and configured p
   assert.equal(agentVideoDraftError(config, [], 'script', null), '')
   assert.ok(agentVideoDraftError({ ...config, duration: 30 }, [], 'script', null))
   assert.ok(agentVideoDraftError({ ...config, model: 'minimax-h3-max' }, [], 'script', null))
-  assert.ok(agentVideoDraftError(config, [], 'x'.repeat(2501), null))
+  assert.equal(agentVideoDraftError(config, [], 'x'.repeat(25001), null), '')
   assert.ok(agentVideoDraftError(config, [], '', null))
   const h3 = { ...config, model: 'minimax-h3', resolution: '768p' }
   assert.ok(agentVideoDraftError(h3, [], 'script', null))

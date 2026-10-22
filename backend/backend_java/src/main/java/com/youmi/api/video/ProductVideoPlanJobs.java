@@ -33,7 +33,12 @@ public class ProductVideoPlanJobs {
 
   public record CreateRequest(String id, ProductVideoDtos.PlanRequest request) {}
   public record State(String id, String status, String stage, int count, String error,
-      ProductVideoDtos.PlanResponse result, long updatedAt) {}
+      ProductVideoDtos.PlanResponse result, long updatedAt, ProductVideoDtos.ProductAnalysis analysis) {
+    public State(String id, String status, String stage, int count, String error,
+        ProductVideoDtos.PlanResponse result, long updatedAt) {
+      this(id, status, stage, count, error, result, updatedAt, null);
+    }
+  }
   record Saved(State state, ProductVideoDtos.PlanRequest request, JsonNode outline, Map<String, String> responses) {}
 
   public ProductVideoPlanJobs(ProductVideoPlanService plans, ObjectMapper mapper,
@@ -55,16 +60,34 @@ public class ProductVideoPlanJobs {
       if (!existing.request().equals(input.request())) throw new ApiException(409, "任务编号已用于其他策划");
       return get(userId, input.id());
     }
-    var state = new State(input.id(), "queued", "等待策划", input.request().count(), "",
+    var state = new State(input.id(), "queued", ProductVideoPlanService.isProductAnalysis(input.request()) ? "等待商品分析" : "等待策划", input.request().count(), "",
         new ProductVideoDtos.PlanResponse(GemAgentClient.MODEL.equals(input.request().planningModel()) ? "lk888" : "teamorouter",
             List.of(), null), System.currentTimeMillis());
-    return schedule(userId, new Saved(state, input.request(), null, Map.of()));
+    return schedule(userId, new Saved(state, input.request(), null, inheritedVideo2Analysis(userId, input.request())));
+  }
+
+  private Map<String, String> inheritedVideo2Analysis(Long userId, ProductVideoDtos.PlanRequest request) throws Exception {
+    if (!ProductVideo2Planner.handles(request) || request.referenceVideo() == null) return Map.of();
+    String previousId = mapper.readTree(request.brief()).path("sourceAnalysisJobId").asText("");
+    if (previousId.isBlank()) return Map.of();
+    Saved previous;
+    try { previous = read(userId, previousId); }
+    catch (ApiException error) { if (error.getCode() == 404) return Map.of(); throw error; }
+    var reference = request.referenceVideo(); var oldReference = previous.request().referenceVideo();
+    if (!ProductVideo2Planner.handles(previous.request()) || oldReference == null
+        || !java.util.Objects.equals(reference.url(), oldReference.url())
+        || Double.compare(reference.duration(), oldReference.duration()) != 0 || previous.responses() == null) return Map.of();
+    var cached = new java.util.LinkedHashMap<String, String>();
+    previous.responses().forEach((stage, content) -> { if (stage.matches("video2-analysis-[0-9]+")) cached.put(stage, content); });
+    return cached;
   }
 
   public synchronized State get(Long userId, String id) throws Exception {
     Saved saved = read(userId, id);
     if (running(saved.state()) && !active.contains(new JobKey(userId, id))) {
-      saved = withStatus(saved, "failed", "策划服务已重启，已完成部分已保留，请继续未完成分镜");
+      saved = withStatus(saved, "failed", ProductVideoPlanService.isProductAnalysis(saved.request())
+          ? "服务已重启，已保存的分析结果会继续复用，请继续商品分析"
+          : "策划服务已重启，已完成部分已保留，请继续未完成分镜");
       write(userId, saved);
     }
     return saved.state();
@@ -121,8 +144,7 @@ public class ProductVideoPlanJobs {
   private void run(Long userId, Saved initial) {
     String id = initial.state().id();
     try {
-      var result = plans.plan(initial.request(), initial.outline(), initial.state().result().shots(),
-          new ProductVideoPlanService.ProgressListener() {
+      var progress = new ProductVideoPlanService.ProgressListener() {
           @Override public void save(String stage, JsonNode outline, List<ProductVideoDtos.ShotPlan> shots, String provider) throws Exception {
             var summary = outline == null ? null : new ProductVideoDtos.PlanSummary(
                 outline.path("analysis").asText(), outline.path("concept").asText());
@@ -140,7 +162,17 @@ public class ProductVideoPlanJobs {
           @Override public String previousResponse(String stage) {
             return initial.responses() == null ? null : initial.responses().get(stage);
           }
-          });
+          };
+      if (ProductVideoPlanService.isProductAnalysis(initial.request())) {
+        progress.save("正在分析商品信息与卖点", null, List.of(), "");
+        var analysis = plans.analyzeProduct(initial.request(), id, progress);
+        Saved latestAnalysis = read(userId, id);
+        finish(userId, new Saved(new State(id, "completed", "商品卖点分析已完成", initial.request().count(), "",
+            new ProductVideoDtos.PlanResponse(analysis.provider(), List.of(), null), System.currentTimeMillis(), analysis),
+            initial.request(), null, latestAnalysis.responses()));
+        return;
+      }
+      var result = plans.plan(initial.request(), initial.outline(), initial.state().result().shots(), progress);
       Saved latest = read(userId, id);
       finish(userId, new Saved(new State(id, "completed", ProductVideoPlanService.isWholeVideo(initial.request().productionMode())
           ? "整片策划已完成" : "分镜策划已完成", initial.request().count(), "",
@@ -148,7 +180,8 @@ public class ProductVideoPlanJobs {
       log.info("Product video plan job {} delivered {} shots", id, result.shots().size());
     } catch (Exception error) {
       log.warn("Product video plan job {} failed ({})", id, error.getClass().getSimpleName());
-      String message = error instanceof ApiException ? error.getMessage() : "分镜响应未能完整解析，已完成部分已保留，可稍后继续";
+      String message = error instanceof ApiException ? error.getMessage() : ProductVideoPlanService.isProductAnalysis(initial.request())
+          ? "商品分析未能完成，资料与已有结果已保留，可继续分析" : "分镜响应未能完整解析，已完成部分已保留，可稍后继续";
       try { finish(userId, withStatus(read(userId, id), "failed", message)); }
       catch (Exception storageError) {
         active.remove(new JobKey(userId, id));
@@ -165,7 +198,7 @@ public class ProductVideoPlanJobs {
   private Saved withStatus(Saved saved, String status, String error) {
     var old = saved.state();
     return new Saved(new State(old.id(), status, old.stage(), old.count(), error, old.result(),
-        System.currentTimeMillis()), saved.request(), saved.outline(), saved.responses());
+        System.currentTimeMillis(), old.analysis()), saved.request(), saved.outline(), saved.responses());
   }
 
   private boolean running(State state) { return List.of("queued", "processing").contains(state.status()); }

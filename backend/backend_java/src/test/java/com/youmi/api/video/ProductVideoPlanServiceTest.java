@@ -94,7 +94,7 @@ class ProductVideoPlanServiceTest {
         6, "gemini-3.8-flash", "configured-provider", "http://127.0.0.1/v1",
         "/chat/completions", "", "local-test-only", java.util.Map.of());
     when(keys.resolve("gemini-3.8-flash", ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
-        "product-video-planning")).thenReturn(java.util.Optional.of(credential));
+        "canvas-agent")).thenReturn(java.util.Optional.of(credential));
     when(client.completeConfiguredModel(eq(credential), anyString(), anyString(), anyList(), eq(0.35),
         eq("product-video-planning"), eq("dropdown"), anyInt(), eq(Duration.ofSeconds(300))))
         .thenReturn(new AiChatDtos.CompletionResult("configured-provider", credential.model(),
@@ -123,7 +123,7 @@ class ProductVideoPlanServiceTest {
         6, "gemini-3.8-flash", "configured-provider", "http://127.0.0.1/v1",
         "/chat/completions", "", "local-test-only", java.util.Map.of());
     when(keys.resolve(credential.model(), ModelApiKeyService.MODEL_TYPE_VISION_REASONING,
-        "product-video-planning")).thenReturn(java.util.Optional.of(credential));
+        "canvas-agent")).thenReturn(java.util.Optional.of(credential));
     when(client.completeConfiguredModel(eq(credential), anyString(), anyString(), anyList(), anyDouble(),
         eq("product-video-planning"), eq("dropdown"), anyInt(), eq(Duration.ofSeconds(300))))
         .thenThrow(new HttpTimeoutException("test timeout"));
@@ -150,6 +150,16 @@ class ProductVideoPlanServiceTest {
     var options = new ProductVideoPlanService(client, mapper, 180, gem).models();
 
     assertEquals(List.of(new CanvasAgentDtos.AgentModelOption("default", "默认策划模型", true)), options);
+  }
+
+  @Test void planningModelsUseCanvasAgentMappingWithoutLegacyDuplicates() {
+    var keys = mock(ModelApiKeyService.class);
+    when(keys.preferredEnabledModel("vision_reasoning", "canvas-agent"))
+        .thenReturn(java.util.Optional.empty());
+    when(keys.enabledModelOptions("vision_reasoning", "canvas-agent"))
+        .thenReturn(List.of(new com.youmi.api.image.ModelApiKeyDtos.ModelOption("gem-3-pro", "GEM 3 Pro", "lk888")));
+    var planner = new ProductVideoPlanService(client, mapper, 300, mock(GemAgentClient.class), keys);
+    assertEquals(List.of("default", "gem-3-pro"), planner.models().stream().map(CanvasAgentDtos.AgentModelOption::value).toList());
   }
 
   @Test void canvasReverseReusesReferenceAnalysisWithoutProductPlanningOrGeneration() throws Exception {
@@ -811,13 +821,42 @@ class ProductVideoPlanServiceTest {
     assertEquals(productImages, images.getAllValues().get(2));
     assertTrue(systems.getAllValues().get(0).contains("不要自由创作新镜头"));
     assertTrue(systems.getAllValues().get(1).contains("本次是参考视频反推"));
-    assertTrue(systems.getAllValues().get(2).contains("只把原商品替换"));
+    assertTrue(systems.getAllValues().get(2).contains("商品以用户商品参考图为准"));
     assertEquals(2, mapper.readTree(inputs.getAllValues().get(1)).path("referenceVideoAnalysis").path("shots").size());
     assertEquals("替换为白色窗帘", mapper.readTree(inputs.getAllValues().get(1)).path("source").path("brief").asText());
     assertThrows(ApiException.class, () -> service.validate(new ProductVideoDtos.PlanRequest("商品",
         productImages, 2, "9:16", null, null, "storyboard", null, false,
         new ProductVideoDtos.ReferenceVideo("https://assets.example/long.mp4", "long.mp4", 31,
             1080, 1920, "", frames))));
+  }
+
+  @Test void referenceRecreationPreferencesReachOutlineAndDetailsWithoutChangingSourceAnalysis() throws Exception {
+    var reference = canvasReverseRequest("default", 12).referenceVideo();
+    var images = List.of("https://assets.example/product.png", "https://assets.example/new-person.png",
+        "https://assets.example/new-room.png");
+    String settings = "人物：替换为图2的人物。场景：使用图3的新卧室。声音：重新配音，不克隆原片声线。";
+    when(client.isConfigured()).thenReturn(true);
+    when(client.completeVision(anyString(), anyString(), anyList(), anyDouble(), anyInt(), any(Duration.class)))
+        .thenReturn(new AiChatDtos.CompletionResult("mock", "test", referenceAnalysis(2).toString()),
+            new AiChatDtos.CompletionResult("mock", "test", outline("person", "none").toString()),
+            new AiChatDtos.CompletionResult("mock", "test", details("person", "none").toString()));
+    var request = new ProductVideoDtos.PlanRequest("白色窗帘", images, 2, "3:4", null, null,
+        "storyboard", null, true, reference, "default", settings);
+    assertEquals(2, service.plan(request).shots().size());
+    var systems = ArgumentCaptor.forClass(String.class);
+    var inputs = ArgumentCaptor.forClass(String.class);
+    var actualImages = ArgumentCaptor.forClass(List.class);
+    verify(client, times(3)).completeVision(systems.capture(), inputs.capture(), actualImages.capture(),
+        anyDouble(), anyInt(), any(Duration.class));
+    assertEquals(reference.frames().stream().map(ProductVideoDtos.ReferenceFrame::url).toList(), actualImages.getAllValues().get(0));
+    assertFalse(systems.getAllValues().get(0).contains("复刻替换设定"));
+    for (int index : new int[]{1, 2}) {
+      assertEquals(images, actualImages.getAllValues().get(index));
+      assertEquals(settings, mapper.readTree(inputs.getAllValues().get(index)).path("source").path("continuity").asText());
+      assertTrue(systems.getAllValues().get(index).contains("用户确认的复刻替换设定"));
+      assertTrue(systems.getAllValues().get(index).contains("不克隆原片声线"));
+      assertFalse(systems.getAllValues().get(index).contains("第一个镜头建立房间与商品的中景或全景"));
+    }
   }
 
   private ObjectNode outline(String... modes) {

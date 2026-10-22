@@ -1,10 +1,17 @@
 import { MAX_REFERENCE_SHOTS } from './referenceVideo.js'
+import { SEEDANCE_ANCI_MODEL, isSeedanceAnciModel, videoVersionPayload } from './seedanceAnci.js'
+import { MAIN_VIDEO_2, buildMainVideo2Request } from './productVideo2.js'
+import { videoReferencePayload, videoReferenceLimit, videoRatioForRequest } from './chatVideoSettings.js'
+import { newProductStudy, creativePlanningBrief, isProductStudyRunning } from './productVideoProductAnalysis.js'
+import { usesReferenceVideoGeneration, referenceGenerationIssue, recreationMaterialIssue,
+  recreationPrompt, recreationVideoPayload } from './productVideoRecreation.js'
 import { setWholeMotion, wholeTimelineIssue, wholeTimeline, wholeStatePrompt } from './productVideoWholeTimeline.js'
 import {
   continuityEnabled,
   planningContinuityReferences,
   productReferenceUrls,
   imageContinuityReferences,
+  continuityReferenceImages,
 } from './productVideoContinuity.js'
 import {
   shotConnectionPrompt,
@@ -19,6 +26,7 @@ import {
 } from './productVideoShotConnections.js'
 
 export const productVideoShotLimit = (workflow) =>
+  workflow.planner === MAIN_VIDEO_2 ? Infinity :
   (workflow.referenceStrategy !== 'highlights' &&
     Number(workflow.referenceVideo?.duration) > 30.5) ||
   workflow.shots?.some((shot) => shot.referenceRange)
@@ -33,6 +41,7 @@ export const VIDEO_MODELS = [
   { value: 'doubao-seedance-2-0-260128', label: 'SD2 满血按秒' },
   { value: 'doubao-seedance-2-5-260628', label: 'SD2.5 满血按秒' },
   { value: 'minimax-h3', label: 'MiniMax H3' },
+  { value: SEEDANCE_ANCI_MODEL, label: 'SD 2.0 按次' },
 ]
 export const VIDEO_RATIOS = ['16:9', '9:16', '1:1', '3:4', '4:3', '21:9']
 export const DEFAULT_VIDEO_RATIO = '3:4'
@@ -75,6 +84,9 @@ export function mappedVideoModelOption(model, options = [], hailuoH3Available = 
   )
 }
 export const isRetiredVideoModel = (model) => model === 'minimax-h3-max'
+export const supportsVideoAudioToggle = (model) => Boolean(model) &&
+  ![MINIMAX_VIDEO_MODEL, HAILUO_H3_VIDEO_MODEL, WHOLE_VIDEO_30_MODEL, SEEDANCE_ANCI_MODEL].includes(model) &&
+  !isRetiredVideoModel(model)
 export const isAnmiao20FastVideoModel = (model) =>
   String(model || '')
     .toLowerCase()
@@ -145,7 +157,7 @@ export function videoPromptDuration(value) {
 }
 export const generationDuration = (shot, workflow) => {
   if (shot.productionMode === 'single_video_30') return 30
-  if (!isWholeVideo(shot.productionMode) && isPerSecondVideoModel(workflow?.videoModel)) {
+  if (!isWholeVideo(shot.productionMode) && (isPerSecondVideoModel(workflow?.videoModel) || isSeedanceAnciModel(workflow?.videoModel))) {
     const planned = Number(shot.referenceRange ? shot.duration : shot.scriptDuration ?? shot.duration)
     const seconds =
       (!shot.referenceRange && videoPromptDuration(shot.motion)) ||
@@ -216,9 +228,12 @@ export function newProductVideo() {
     continuity: { enabled: true, scene: '', person: '', product: '', images: {}, anchor: null },
     referenceVideo: null,
     referenceStrategy: 'faithful',
+    referenceRecreation: { generationMode: 'script', personMode: 'new', sceneMode: 'source', audioMode: 'new',
+      person: '', scene: '', images: {} },
     productionMode: 'storyboard',
     timelineCount: 4,
     generateAudio: false,
+    videoVersion: '快速',
     keepOriginalAudio: false,
     smoothAudio: false,
     brief: '',
@@ -264,6 +279,7 @@ export function productVideoLibrary(value) {
 export function newProductVideoTask(title = '未命名任务') {
   return {
     ...newProductVideo(),
+    productStudy: newProductStudy(),
     id: uid(),
     title: title.trim().slice(0, 80) || '未命名任务',
     createdAt: Date.now(),
@@ -272,25 +288,28 @@ export function newProductVideoTask(title = '未命名任务') {
 }
 
 export function productVideoTaskState(task, activity = '') {
-  if (activity === 'plan' || isPlanRunning(task.planJob)) return 'planning'
+  if (activity === 'plan' || activity === 'analysis' || isPlanRunning(task.planJob) || isProductStudyRunning(task.productStudy)) return 'planning'
   if (activity === 'compose' || ['queued', 'processing'].includes(task.composition?.status))
     return 'generating'
-  const latest = task.shots
-    .flatMap((shot) => [shot.images.at(-1), shot.videos.at(-1)])
-    .filter(Boolean)
-  if (latest.some((item) => ['submitting', 'processing'].includes(item.status))) return 'generating'
-  if (task.planJob?.status === 'unknown' || latest.some((item) => item.status === 'unknown'))
+  const latestImages = task.shots.map((shot) => shot.images.at(-1)).filter(Boolean)
+  const latestVideos = task.shots.map((shot) => shot.videos.at(-1)).filter(Boolean)
+  const latest = [...latestImages, ...latestVideos]
+  if (latestImages.some((item) => ['submitting', 'processing'].includes(item.status)) ||
+      latestVideos.some((item) => item.status !== 'unknown' && videoGenerationPending(item))) return 'generating'
+  if (task.productStudy?.job?.status === 'unknown' || task.planJob?.status === 'unknown' ||
+      latestImages.some((item) => item.status === 'unknown') || latestVideos.some((item) => item.status === 'unknown' && videoGenerationPending(item)))
     return 'unknown'
   if (
-    task.planJob?.status === 'failed' ||
+    task.productStudy?.job?.status === 'failed' || task.planJob?.status === 'failed' ||
     task.composition?.status === 'failed' ||
     latest.some((item) => item.status === 'failed')
   )
     return 'failed'
   if (
-    task.composition?.status === 'completed' &&
+    (task.planner === MAIN_VIDEO_2 && task.shots.some((shot) => selectedVideo(shot))) ||
+    (task.composition?.status === 'completed' &&
     task.composition.fingerprint &&
-    task.composition.fingerprint === compositionFingerprint(task)
+    task.composition.fingerprint === compositionFingerprint(task))
   )
     return 'completed'
   return task.shots.length ? 'editing' : 'draft'
@@ -408,6 +427,9 @@ export function planningErrorMessage(error) {
 }
 
 export function buildPlanRequest(workflow, count, shot, features = {}) {
+  if (workflow.planner === MAIN_VIDEO_2 && !shot) return buildMainVideo2Request(workflow)
+  const materialIssue = recreationMaterialIssue(workflow)
+  if (materialIssue) throw new Error(materialIssue)
   const mode = shot ? shot.productionMode : workflow.productionMode
   const singleVideo = isWholeVideo(mode)
   const highlights =
@@ -456,7 +478,7 @@ export function buildPlanRequest(workflow, count, shot, features = {}) {
   const previousId = adjacentProductVideoShots(workflow, shot).previous?.id
   const observedMotion = usableMotionObservation(workflow, shot)?.results[0]
   return {
-    brief: workflow.brief,
+    brief: creativePlanningBrief(workflow),
     ...(shared.instruction ? { continuity: shared.instruction } : {}),
     planningModel: workflow.planningModel || 'default',
     images: shared.urls,
@@ -552,7 +574,38 @@ export function removeVideo(shot, id) {
   if (next && !shot.referenceRange) shot.duration = Math.min(shot.duration, next.duration || 15)
 }
 
-export function canGenerateVideo(shot) {
+export const usesWholeReferenceImages = (workflow, shot) =>
+  Boolean(workflow && isWholeVideo(shot?.productionMode) && shot.videoInputMode !== 'first_frame')
+
+export function wholeVideoReferenceInputs(workflow, shot) {
+  const shared = planningContinuityReferences(workflow, shot)
+  const firstFrame = workflow.planner === MAIN_VIDEO_2 ? workflow.video2?.firstFrame?.url : ''
+  if (firstFrame && !shared.urls.includes(firstFrame)) shared.urls.push(firstFrame)
+  const roles = { primary_product: '商品主参考，商品外观以此图为准',
+    person: '人物参考，只采用人物外观与服装', scene: '场景参考，只采用空间布局、家具与光线' }
+  return { urls: shared.urls, instruction: shared.urls.map((url, index) => {
+    const role = shared.imageRoles.find(item => item.imageIndex === index + 1 && item.role !== 'product')?.role
+    return `图${index + 1}：${firstFrame === url ? '用户可选首帧参考，承接开场构图与氛围，产品外观仍以产品图为准' : roles[role] || '视频参考图，按脚本引用其商品、材质、人物或场景'}。`
+  }).join('\n') }
+}
+
+export function wholeReferenceGenerationIssue(workflow, shot, model) {
+  if (!usesWholeReferenceImages(workflow, shot)) return ''
+  if (isRetiredVideoModel(model)) return '原视频模型已移除，请重新选择视频模型'
+  if (model === HAILUO_H3_VIDEO_MODEL) return '当前模型只支持首尾帧，请改选支持参考图生成的模型，或切换为首帧生成'
+  try {
+    const { urls } = wholeVideoReferenceInputs(workflow, shot)
+    if (!urls.length) return '请至少选择一张视频参考图'
+    if (urls.length > videoReferenceLimit(model, 'cankaosheng')) return '视频参考图数量超过当前模型上限，请调整参考图或更换模型'
+    return referenceGenerationIssue(workflow, model, shot)
+  } catch (e) { return e.message }
+}
+
+export function canGenerateVideo(shot, workflow) {
+  if (usesWholeReferenceImages(workflow, shot)) {
+    const model = shot.productionMode === 'single_video_30' ? workflow.wholeVideo30Model : workflow.videoModel
+    return Boolean(shot.motion?.trim() && !wholeReferenceGenerationIssue(workflow, shot, model))
+  }
   return Boolean(selectedImage(shot) && shot.approvedImageId === shot.imageId && shot.motion.trim())
 }
 
@@ -561,6 +614,8 @@ function productAppearanceConstraint(reference) {
 }
 
 export function buildImageRequest(workflow, shot, clientId) {
+  const materialIssue = recreationMaterialIssue(workflow)
+  if (materialIssue) throw new Error(materialIssue)
   const refs = productReferenceUrls(workflow, shot)
   if (!refs.length) throw new Error('请为这个分镜选择商品参考图或上传固定商品图')
   if (!shot.imagePrompt.trim()) throw new Error('请填写首帧画面')
@@ -589,25 +644,36 @@ export function buildImageRequest(workflow, shot, clientId) {
 }
 
 export function buildVideoRequest(workflow, shot, clientId) {
-  if (!canGenerateVideo(shot)) throw new Error('请先确认当前分镜图片')
+  const materialIssue = recreationMaterialIssue(workflow)
+  if (materialIssue) throw new Error(materialIssue)
+  const directReferences = usesWholeReferenceImages(workflow, shot)
+  const model = shot.productionMode === 'single_video_30' ? (workflow.wholeVideo30Model ?? WHOLE_VIDEO_30_MODEL) : workflow.videoModel
+  const directIssue = wholeReferenceGenerationIssue(workflow, shot, model)
+  if (directIssue) throw new Error(directIssue)
+  if (!canGenerateVideo(shot, workflow)) throw new Error(directReferences ? '请选择视频参考图并填写整片脚本' : '请先确认当前分镜图片')
   validateShotConnectionVideo(workflow, shot)
   const image = selectedImage(shot)
   const singleVideo = isWholeVideo(shot.productionMode)
-  const timelineIssue = wholeTimelineIssue(shot)
+  const timelineIssue = workflow.planner === MAIN_VIDEO_2 ? '' : wholeTimelineIssue(shot)
   if (timelineIssue) throw new Error(timelineIssue)
   const whole30 = shot.productionMode === 'single_video_30'
   const duration = generationDuration(shot, workflow)
   const executionShot = { ...shot, duration: executionDuration(shot, workflow) }
-  const model = whole30 ? (workflow.wholeVideo30Model ?? WHOLE_VIDEO_30_MODEL) : workflow.videoModel
+  const useReferenceVideo = usesReferenceVideoGeneration(workflow)
+  const referenceIssue = referenceGenerationIssue(workflow, model, shot)
+  if (referenceIssue) throw new Error(referenceIssue)
   if (isRetiredVideoModel(model)) throw new Error('原视频模型已移除，请重新选择视频模型')
   const anmiaoVideo = isPerSecondVideoModel(model)
+  const anciVideo = isSeedanceAnciModel(model)
+  if (anciVideo && (!Number.isInteger(duration) || duration < 4 || duration > 15))
+    throw new Error('SD 2.0 按次时长需为 4 至 15 的整数秒')
   const minimax = model === MINIMAX_VIDEO_MODEL || model === HAILUO_H3_VIDEO_MODEL
   const anmiao25Video = isAnmiao25VideoModel(model)
   let lastFrame = null
-  if (minimax && shot.lastFrameImageId === NEXT_SHOT_FIRST_FRAME) {
+  if (!directReferences && minimax && shot.lastFrameImageId === NEXT_SHOT_FIRST_FRAME) {
     const nextShot = workflow.shots?.[workflow.shots.findIndex((item) => item.id === shot.id) + 1]
     lastFrame = nextShot && selectedImage(nextShot)
-  } else if (minimax) {
+  } else if (!directReferences && minimax) {
     lastFrame = workflow.references?.find((item) => item.id === shot.lastFrameImageId && item.url)
   }
   const anmiao20Fast = isAnmiao20FastVideoModel(model)
@@ -638,9 +704,12 @@ export function buildVideoRequest(workflow, shot, clientId) {
             ? 'Seedance 2.0 快速版画质需选择 480p 或 720p'
             : '按秒视频画质需选择 480p、720p、1080p 或 4K',
     )
-  const timelineCount = Number(shot.timelineCount ?? shot.timeline?.length)
+  const timelineCount = workflow.planner === MAIN_VIDEO_2
+    ? [...String(shot.motion || '').matchAll(/^\s*分镜\d+\s*(?:[（(][^）)\r\n]+[）)]\s*)?[：:]/gm)].length
+    : Number(shot.timelineCount ?? shot.timeline?.length)
   const countDirection =
-    singleVideo && Number.isInteger(timelineCount) && timelineCount >= 1 && timelineCount <= 8
+    singleVideo && Number.isInteger(timelineCount) && timelineCount >= 1 &&
+    (workflow.planner === MAIN_VIDEO_2 || timelineCount <= 8)
       ? timelineCount === 1
         ? '全片只用一个连续镜头，不切镜、不换场，在同一镜头内完成全部动作。'
         : `全片共 ${timelineCount} 个分镜，严格按时间轴依次呈现，不额外增加、删减或重复分镜。`
@@ -650,31 +719,58 @@ export function buildVideoRequest(workflow, shot, clientId) {
     : shot.referenceRange
       ? `本片段对应参考视频第 ${shot.referenceRange.start} 至 ${shot.referenceRange.end} 秒，成片使用 ${shot.duration} 秒。复现本段的动作阶段和原有转场，不补整套操作或人为停留；超出成片范围时自然延续已有运动，不新增剧情。`
       : '本镜内部连续拍摄，不换场、不跳切、不突然变焦。'
-  const continuity = singleVideo
+  const continuity = directReferences || anciVideo
+    ? `参考图共同约束商品、人物和场景外观，按脚本指定的图号和用途使用，不要求把某一张图复刻为第0秒。整片按时间轴完成连续动作与镜头切换，不做静态图片轮播。同一角色再次出镜时保持身份与服装；${continuityEnabled(workflow, shot) ? '固定场景人物已开启，保持房间和人物设定' : '按脚本安排场景与人物'}。`
+    : useReferenceVideo
+    ? '图1是已确认的开场参考图，用于固定新人物、商品和场景外观；原视频只提供动作、运镜与镜头节奏，替换设定始终优先，不从原视频带回旧商品或被替换的人物。'
+    : singleVideo
     ? `首帧只定义第 0 秒开场，后续按时间轴切换机位和景别，不锁定首帧构图。同一角色再次出镜时保持身份与服装；${continuityEnabled(workflow, shot) ? '固定场景人物已开启，全片不得换房间、换人换装' : '允许按脚本切换场景或角色，不强制同一房间或同一人物'}。商品始终不变。第一段从首帧已有状态开始，不凭空变出或替换人物、商品。`
     : '沿用首帧中的同一人物、服装、商品、场景和光线。动作从首帧已有的姿势和手部位置自然开始，不要凭空增加人物或道具。'
+  const audioEnabled = anciVideo || (workflow.planner === MAIN_VIDEO_2
+    ? !supportsVideoAudioToggle(model) || workflow.generateAudio !== false
+    : workflow.generateAudio === true)
   const audio =
-    workflow.generateAudio === true
+    audioEnabled
       ? '\n声音要求：生成与画面同步的音轨，按策划时间轴安排环境声和动作音效，接触、摩擦等声音与实际动作同时发生。仅在策划明确安排说话时生成对白并对齐口型，不额外添加旁白、广告语或背景音乐。'
-      : ''
+      : workflow.planner === MAIN_VIDEO_2
+        ? '\n声音要求：仅生成无声画面，不生成口播、对白、旁白、背景音乐、环境音或音效。脚本中的声音设计不执行，画面动作与镜头安排保持。'
+        : ''
   const opening = `以提供的首帧图片作为第 0 秒画面。首帧与已确认的实际动作衔接优先于旧稿起点，不回退或重演。${lastFrame ? '\n以尾帧图片作为结束画面，并在首尾帧之间自然完成动作与镜头变化。' : ''}\n${productAppearanceConstraint('已确认首帧')}`
-  const statePrompt = wholeStatePrompt(shot)
+  const directInputs = directReferences ? wholeVideoReferenceInputs(workflow, shot) : null
+  const recreationImages = useReferenceVideo && !directReferences ? [...new Set([image.url,
+    ...productReferenceUrls(workflow, shot), ...continuityReferenceImages(workflow, shot).map(item => item.url)])] : []
+  const recreationOpening = useReferenceVideo ? recreationImages.map((url, index) => {
+    const role = continuityReferenceImages(workflow, shot).find(item => item.url === url)?.role
+    return `图${index + 1}：${index === 0 ? '已确认的开场参考图，决定新商品、人物与场景外观；属于参考图，不是严格首帧参数'
+      : role === 'person' ? '指定人物图，只参考人物身份与服装'
+        : role === 'scene' ? '新场景图，只参考空间布局与环境'
+          : '商品细节图，只参考商品本身，不照搬其他人物与背景'}。`
+  }).join('\n') + '\n原参考视频用于动作、运镜、剪辑与节奏参考，按以下脚本执行替换。' : ''
+  const statePrompt = workflow.planner === MAIN_VIDEO_2 ? '' : wholeStatePrompt(shot)
   const action = `${singleVideo ? '整片时间轴与镜头安排' : '当前镜头动作与运镜'}：\n${normalizeVideoPrompt(shot).trim()}${statePrompt ? `\n${statePrompt}` : ''}`
   const requirements = `连续性要求：${continuity}商品结构、数量和品牌不变，避免肢体畸变、商品变形和穿模。${direction}${countDirection}${shotMotionHandoffPrompt(workflow, executionShot)}不要额外添加字幕、水印或营销文案。${audio}`
-  const baseLength = [opening, action, requirements].join('\n\n').length
-  const connectionBudget = Math.max(0, 2400 - baseLength - 2)
+  const appliedOpening = directReferences
+    ? `直接使用以下原始参考图与整片脚本生成视频。图号对应实际附图顺序。\n${directInputs.instruction}\n${productAppearanceConstraint('商品参考图')}\n${useReferenceVideo ? '原参考视频用于动作、运镜、剪辑与节奏参考，按脚本执行商品、人物与场景替换。' : ''}`
+    : anciVideo ? '使用所附原始图片作为商品、人物、场景与构图参考，按完整脚本生成视频。图片是外观参考，不作为严格首尾帧。'
+    : useReferenceVideo ? recreationOpening : opening
+  const recreation = recreationPrompt(workflow)
+  const baseLength = [appliedOpening, action, requirements, recreation].join('\n\n').length
+  const connectionBudget = directReferences || workflow.planningSource === 'reference' ? Infinity : Math.max(0, 2400 - baseLength - 2)
   const observation = usableMotionObservation(workflow, shot)?.results[0]
   if (observation && connectionBudget < String(observation.previousState || '').length + String(observation.motion || '').length + 160)
     throw new Error('视频提示词过长，无法保留实际动作衔接，请精简本镜动作描述')
   const connection = shotConnectionPrompt(workflow, executionShot, connectionBudget)
-  const prompt = [opening, connection, action, requirements].filter(Boolean).join('\n\n')
-  if (prompt.length > 2400) throw new Error('视频提示词过长，请精简当前镜头动作与运镜')
+  const prompt = [appliedOpening, connection, action, requirements, recreation].filter(Boolean).join('\n\n')
+  if (!directReferences && workflow.planningSource !== 'reference' && prompt.length > 2400)
+    throw new Error('视频提示词过长，请精简当前镜头动作与运镜')
   return {
     prompt,
     model,
-    ratio: anmiao25Video || model === HAILUO_H3_VIDEO_MODEL ? 'adaptive' : workflow.ratio,
+    ratio: anciVideo ? videoRatioForRequest(model, 0, workflow.ratio) : directReferences
+      ? videoRatioForRequest(model, directInputs.urls.length, workflow.ratio, 'cankaosheng', useReferenceVideo ? 1 : 0)
+      : useReferenceVideo ? workflow.ratio : anmiao25Video || model === HAILUO_H3_VIDEO_MODEL ? 'adaptive' : workflow.ratio,
     resolution:
-      whole30 && !anmiao25Video
+      anciVideo || (whole30 && !anmiao25Video)
         ? '720p'
         : anmiaoVideo
           ? anmiaoResolution
@@ -682,10 +778,18 @@ export function buildVideoRequest(workflow, shot, clientId) {
             ? '720p'
             : '480p',
     durationSeconds: duration,
-    ...(whole30 || anmiaoVideo ? {} : { generate_audio: workflow.generateAudio === true }),
-    first_frame_url: image.url,
-    ...(lastFrame ? { last_frame_url: lastFrame.url } : {}),
-    image_urls: [image.url],
+    ...videoVersionPayload(model, workflow.videoVersion),
+    ...(workflow.planner === MAIN_VIDEO_2
+      ? supportsVideoAudioToggle(model) ? { generate_audio: audioEnabled } : {}
+      : whole30 || anmiaoVideo || anciVideo ? {} : { generate_audio: workflow.generateAudio === true }),
+    ...(directReferences
+      ? useReferenceVideo
+        ? recreationVideoPayload(workflow, model, directInputs.urls, shot)
+        : videoReferencePayload(model, 'cankaosheng', directInputs.urls)
+      : useReferenceVideo
+      ? recreationVideoPayload(workflow, model, recreationImages, shot)
+      : anciVideo ? { image_urls: [image.url] }
+      : { first_frame_url: image.url, ...(lastFrame ? { last_frame_url: lastFrame.url } : {}), image_urls: [image.url] }),
     client_task_id: clientId,
   }
 }
@@ -791,6 +895,17 @@ export function returnedVideoTaskUrl(task) {
   return String(url || task?.videoUrl || task?.video_url || task?.url || '').trim()
 }
 
+export function videoGenerationPending(entry) {
+  return ['submitting', 'processing', 'unknown'].includes(entry?.status) && !returnedVideoTaskUrl(entry)
+}
+
+export function videoTaskPollDue(entry, now = Date.now()) {
+  if (!entry?.taskId || entry.status !== 'processing') return false
+  if (!returnedVideoTaskUrl(entry)) return true
+  const lastSynced = Number(entry.lastSyncedAt)
+  return !Number.isFinite(lastSynced) || lastSynced <= 0 || now < lastSynced || now - lastSynced >= 30000
+}
+
 export function videoTaskStatusText(task, progress) {
   if (taskState(task?.status) === 'completed') return '视频生成完成'
   const stage = String(task?.stage || '').trim()
@@ -823,6 +938,11 @@ export function imageSubmissionRejected(error) {
 
 export function videoGenerationStatus(entry) {
   if (entry.status === 'failed') return entry.error || '视频生成失败'
+  if (returnedVideoTaskUrl(entry)) {
+    const text = entry.status === 'completed' ? '视频已完成'
+      : /费用|结算/.test(entry.stage || '') ? '视频已完成 · 费用待结算' : '视频已生成，正在核对最终状态'
+    return entry.pollError && entry.status !== 'completed' ? `${text} · ${entry.pollError}` : text
+  }
   if (entry.status === 'unknown') return entry.error || '提交结果待确认'
   if (entry.status === 'submitting') return '正在提交到中转站'
   if (entry.status === 'completed') return '视频已完成'

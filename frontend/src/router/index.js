@@ -5,7 +5,6 @@ import { createId } from '../utils/id'
 const HomePage = () => import('../pages/HomePage.vue')
 const CanvasListPage = () => import('../pages/CanvasListPage.vue')
 const CanvasEditorPage = () => import('../pages/CanvasEditorPage.vue')
-const CanvasV2Page = () => import('../pages/CanvasV2Page.vue')
 const CanvasV3Page = () => import('../pages/CanvasV3Page.vue')
 const CanvasSharePage = () => import('../pages/CanvasSharePage.vue')
 const EcommerceSetPage = () => import('../pages/EcommerceSetPage.vue')
@@ -37,29 +36,7 @@ const routes = [
     meta: { public: true },
   },
   { path: '/canvas', name: 'canvas-list', component: CanvasListPage, meta: { public: true } },
-  {
-    path: '/canvas-v2',
-    redirect: () => {
-      let id
-      try {
-        id = localStorage.getItem('youmi_canvas_v2_last_document')
-      } catch {
-        /* storage unavailable */
-      }
-      return `/canvas-v2/${/^v2-[a-zA-Z0-9-]+$/.test(id || '') ? id : `v2-${createId()}`}`
-    },
-  },
-  {
-    path: '/canvas-v2/:id',
-    name: 'canvas-v2',
-    component: CanvasV2Page,
-    props: (route) => ({
-      id: String(route.params.id).startsWith('v2-')
-        ? String(route.params.id)
-        : `v2-${route.params.id}`,
-    }),
-    meta: { public: true },
-  },
+  { path: '/canvas-v2/:pathMatch(.*)*', redirect: '/canvas' },
   {
     path: '/canvas-v3',
     redirect: () => {

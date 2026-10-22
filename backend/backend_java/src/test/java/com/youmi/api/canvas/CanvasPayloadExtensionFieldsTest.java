@@ -12,6 +12,24 @@ class CanvasPayloadExtensionFieldsTest {
   private final ObjectMapper objectMapper = new ObjectMapper();
 
   @Test
+  void preservesMainVideo2SeparatelyWithFullScriptsMaterialsAndPendingJobs() throws Exception {
+    String script = "根据以下分镜描述生成：图1【日式窗帘】【情景种草】真实短视频，不生成任何字幕\n分镜设计：\n完整动态过程。\n口播设计：\n无口播。".repeat(300);
+    var original = objectMapper.createObjectNode();
+    original.putObject("productVideo").putArray("tasks").addObject().put("id", "original-task").put("motion", "原版脚本");
+    var task = original.putObject("productVideo2").putArray("tasks").addObject();
+    task.put("id", "video2-task").put("planner", "main_video_2");
+    task.putObject("video2").put("sellingPoints", "用户已确认卖点").putObject("firstFrame").put("url", "original-frame.png");
+    task.putArray("references").addObject().put("url", "original-product.png");
+    task.putObject("planJob").put("id", "durable-job").put("status", "processing");
+    task.putArray("shots").addObject().put("motion", script).putArray("videos").addObject().put("taskId", "remote-task").put("status", "processing");
+    var decoded = objectMapper.readValue(original.toString(), CanvasPayload.class);
+    var restored = objectMapper.valueToTree(decoded);
+    assertEquals(original.path("productVideo"), restored.path("productVideo"));
+    assertEquals(original.path("productVideo2"), restored.path("productVideo2"));
+    assertEquals(script, restored.path("productVideo2").path("tasks").path(0).path("shots").path(0).path("motion").asText());
+  }
+
+  @Test
   void preservesMultipleVideoTasksAndTheirIndependentAssets() throws Exception {
     String json = """
         {"productVideo":{"version":2,"tasks":[

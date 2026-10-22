@@ -13,6 +13,10 @@ public class AgentChatProperties {
   private int maxTokens = 4000;
   private double temperature = 0.2;
   private int timeoutSeconds = 90;
+  private int contextBudgetTokens = 100000;
+
+  public int getContextBudgetTokens() { return contextBudgetTokens; }
+  public void setContextBudgetTokens(int value) { contextBudgetTokens = value; }
 
   public String getBaseUrl() {
     return baseUrl;

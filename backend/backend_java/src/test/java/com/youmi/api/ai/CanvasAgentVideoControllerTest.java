@@ -33,7 +33,8 @@ class CanvasAgentVideoControllerTest {
       }}
       """;
 
-  @BeforeEach void setup() {
+  @BeforeEach void setup() throws Exception {
+    when(agent.prepareContext(any(), any(), any())).thenAnswer(call -> call.getArgument(1));
     mvc = MockMvcBuilders.standaloneSetup(new CanvasAgentController(agent, repository, auth))
         .setControllerAdvice(new GlobalExceptionHandler()).build();
   }

@@ -27,27 +27,42 @@ public class SeedanceAnciVideoClient {
   public static final String MODEL = "seedance-2.0-anci";
   public static final String PROFILE = "canvas-v3-seedance20-anci";
   public static final String PREFIX = "seedance-2.0-anci:key:";
+  public static final String LEGACY_PREFIX = "seedance-anci:key:";
   private static final Set<String> RATIOS = Set.of("16:9", "9:16", "1:1", "4:3", "3:4");
   private static final Set<String> VERSIONS = Set.of("快速", "标准");
   private final ModelApiKeyService keys;
   private final VideoGenerationClient media;
   private final ObjectMapper mapper;
+  private final AnmiaoVideoProperties properties;
   private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15))
       .followRedirects(HttpClient.Redirect.NEVER).build();
   private AiCallLogService callLog;
 
   public SeedanceAnciVideoClient(ModelApiKeyService keys, VideoGenerationClient media, ObjectMapper mapper) {
+    this(keys, media, null, mapper, null);
+  }
+
+  /** Preserve the product-video adapter's constructor and persistence configuration. */
+  @Autowired
+  public SeedanceAnciVideoClient(ModelApiKeyService keys, VideoGenerationClient media,
+      AnmiaoVideoProperties properties, ObjectMapper mapper, AiCallLogService logs) {
     this.keys = keys;
     this.media = media;
     this.mapper = mapper;
+    this.properties = properties;
+    this.callLog = logs;
   }
 
   @Autowired(required = false)
   void setAiCallLogService(AiCallLogService callLog) { this.callLog = callLog; }
 
   public boolean supports(String model, String featureCode) {
-    return "canvas-video".equals(feature(featureCode)) && credential(model).filter(this::nativeModel).isPresent();
+    String feature = feature(featureCode);
+    return Set.of("canvas-video", "product-video-video").contains(feature)
+        && credential(model, feature).filter(this::nativeModel).isPresent();
   }
+
+  public int price(VideoGenerationDtos.CreateTaskRequest request) { prepare(request); return 0; }
 
   /** Called before billing. Model-managed per-call tasks settle the provider's real final cost. */
   public void validate(VideoGenerationDtos.CreateTaskRequest request) { prepare(request); }
@@ -55,12 +70,9 @@ public class SeedanceAnciVideoClient {
   private record Prepared(ResolvedModelApiKey credential, Map<String, Object> body) {}
 
   private Prepared prepare(VideoGenerationDtos.CreateTaskRequest request) {
-    if (request == null || !PROFILE.equals(request.parameterProfile())
-        || !"canvas-video".equals(feature(request.featureCode())))
+    if (request == null || !Set.of("canvas-video", "product-video-video").contains(feature(request.featureCode()))
+        || !(PROFILE.equals(request.parameterProfile()) || legacyRequest(request)))
       throw new ApiException(400, "Seedance 2.0 按次仅支持画布视频参数配置");
-    var credential = credential(request.model()).filter(this::nativeModel)
-        .orElseThrow(() -> new ApiException(503, "Seedance 2.0 按次尚未配置模型密钥或绑定画布视频功能"));
-    validateEndpoints(credential);
     if (request.prompt() == null || request.prompt().isBlank())
       throw new ApiException(400, "Seedance 2.0 按次提示词不能为空");
     if (request.durationSeconds() == null || request.durationSeconds() < 4 || request.durationSeconds() > 15)
@@ -76,7 +88,8 @@ public class SeedanceAnciVideoClient {
     if (hasText(request.firstFrameUrl()) || hasText(request.lastFrameUrl())
         || !request.referenceVideos().isEmpty() || !request.referenceAudios().isEmpty())
       throw new ApiException(400, "Seedance 2.0 按次仅支持 0 至 9 张参考图片，不支持首尾帧、参考视频或音频");
-    if (request.webSearch() != null || request.generateAudio() != null || request.seed() != null
+    boolean invalidAudio = legacyRequest(request) ? Boolean.FALSE.equals(request.generateAudio()) : request.generateAudio() != null;
+    if (request.webSearch() != null || invalidAudio || request.seed() != null
         || hasText(request.negativePrompt()))
       throw new ApiException(400, "Seedance 2.0 按次不支持联网搜索、音频开关、随机种子或负面提示词参数");
     List<String> images = new ArrayList<>();
@@ -106,6 +119,9 @@ public class SeedanceAnciVideoClient {
       requirePublicUrl(callback, "回调");
       body.put("notify_url", callback);
     }
+    var credential = credential(request.model(), feature(request.featureCode())).filter(this::nativeModel)
+        .orElseThrow(() -> new ApiException(503, "Seedance 2.0 按次尚未配置模型密钥或绑定当前视频功能"));
+    validateEndpoints(credential);
     return new Prepared(credential, body);
   }
 
@@ -113,32 +129,36 @@ public class SeedanceAnciVideoClient {
       throws Exception {
     Prepared prepared = prepare(request);
     var credential = prepared.credential();
-    JsonNode root = send(credential, "POST", credential.generationEndpoint(), prepared.body());
+    JsonNode root = send(credential, "POST", credential.generationEndpoint(), prepared.body(), feature(request.featureCode()));
     String id = text(root.path("data"), "task_id");
     if (!id.matches("[0-9]+")) throw new ApiException(502, "Seedance 2.0 按次未返回有效任务编号，请核对原任务后再重试");
     var result = new VideoGenerationDtos.CreateTaskResponse();
     result.setProvider(credential.provider());
     result.setModel(request.model());
-    result.setTaskId(PREFIX + credential.id() + ":" + id);
+    result.setTaskId((legacyRequest(request) || "product-video-video".equals(request.featureCode()) ? LEGACY_PREFIX : PREFIX)
+        + credential.id() + ":" + id);
     result.setStatus("queued");
     result.setRaw(root);
     return result;
   }
 
   public VideoGenerationDtos.TaskStatusResponse getTask(String taskId, Long userId) throws Exception {
-    if (taskId == null || !taskId.matches("seedance-2\\.0-anci:key:[1-9][0-9]*:[0-9]+"))
+    if (taskId == null || !taskId.matches("(?:seedance-2\\.0-anci|seedance-anci):key:[1-9][0-9]*:[0-9]+"))
       throw new ApiException(400, "Seedance 2.0 按次任务编号无效");
-    int split = taskId.indexOf(':', PREFIX.length());
+    boolean legacy = taskId.startsWith(LEGACY_PREFIX);
+    String prefix = legacy ? LEGACY_PREFIX : PREFIX;
+    int split = taskId.indexOf(':', prefix.length());
     ResolvedModelApiKey credential;
     try {
-      credential = keys.resolveById(Long.parseLong(taskId.substring(PREFIX.length(), split)),
+      credential = keys.resolveById(Long.parseLong(taskId.substring(prefix.length(), split)),
           ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION);
     } catch (NumberFormatException error) { throw new ApiException(400, "Seedance 2.0 按次任务编号无效"); }
     if (credential == null || !nativeModel(credential))
       throw new ApiException(503, "Seedance 2.0 按次原任务线路不可用，请检查原模型配置");
     validateEndpoints(credential);
     String id = taskId.substring(split + 1);
-    JsonNode root = send(credential, "GET", taskEndpoint(credential, id), null);
+    JsonNode response = send(credential, "GET", taskEndpoint(credential, id), null, legacy ? "product-video-video" : "canvas-video");
+    JsonNode root = response.has("state") ? response : response.path("data");
     if (root.hasNonNull("task_id") && !id.equals(text(root, "task_id")))
       throw new ApiException(502, "Seedance 2.0 按次返回了其他任务的状态，请继续查询原任务");
     String state = text(root, "state");
@@ -170,7 +190,9 @@ public class SeedanceAnciVideoClient {
       String type = text(root, "result_type");
       if (!type.isBlank() && !type.equals("video"))
         throw new ApiException(502, "Seedance 2.0 按次返回的结果不是视频，请继续查询原任务");
-      try {
+      if (legacy && properties != null && !properties.isPersistGeneratedVideos()) {
+        result.setVideoUrls(List.of(url));
+      } else try {
         result.setVideoUrls(List.of(media.persistVideoAsync(taskId, id, url, userId)));
       } catch (Exception error) {
         result.setStatus("persisting");
@@ -181,12 +203,21 @@ public class SeedanceAnciVideoClient {
     return result;
   }
 
-  private Optional<ResolvedModelApiKey> credential(String model) {
+  private Optional<ResolvedModelApiKey> credential(String model, String feature) {
     if (model == null || model.isBlank()) return Optional.empty();
-    var route = keys.resolveFeatureRouteOption(model, ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "canvas-video");
+    var route = keys.resolveFeatureRouteOption(model, ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, feature);
     if (route.isPresent() || model.startsWith(ModelApiKeyService.FEATURE_ROUTE_OPTION_PREFIX)) return route;
     if (!MODEL.equalsIgnoreCase(model.trim())) return Optional.empty();
-    return keys.resolve(model.trim(), ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, "canvas-video");
+    return keys.resolve(model.trim(), ModelApiKeyService.MODEL_TYPE_VIDEO_GENERATION, feature);
+  }
+
+  private boolean legacyRequest(VideoGenerationDtos.CreateTaskRequest request) {
+    return request != null && !hasText(request.parameterProfile()) && MODEL.equals(request.model())
+        && (!hasText(request.featureCode()) || "product-video-video".equals(request.featureCode()));
+  }
+
+  public static boolean isTaskId(String taskId) {
+    return taskId != null && (taskId.startsWith(PREFIX) || taskId.startsWith(LEGACY_PREFIX));
   }
 
   private boolean nativeModel(ResolvedModelApiKey credential) {
@@ -256,7 +287,7 @@ public class SeedanceAnciVideoClient {
     throw new ApiException(400, "Seedance 2.0 按次" + label + "必须使用公网 HTTP(S) 地址");
   }
 
-  private JsonNode send(ResolvedModelApiKey credential, String method, String endpoint, Object body) throws Exception {
+  private JsonNode send(ResolvedModelApiKey credential, String method, String endpoint, Object body, String feature) throws Exception {
     long started = System.nanoTime();
     try {
       var request = HttpRequest.newBuilder(URI.create(endpoint)).timeout(Duration.ofSeconds(120))
@@ -270,22 +301,22 @@ public class SeedanceAnciVideoClient {
       catch (Exception error) { throw new ApiException(502, "Seedance 2.0 按次返回无法解析的响应，请核对原任务"); }
       if (root == null || !root.isObject()) throw new ApiException(502, "Seedance 2.0 按次返回空响应");
       if (response.statusCode() < 200 || response.statusCode() >= 300
-          || root.has("code") && root.path("code").asInt(-1) != 200) {
+          || root.has("code") && !Set.of(0, 200).contains(root.path("code").asInt(-1))) {
         int code = response.statusCode() >= 400 && response.statusCode() < 500 ? response.statusCode() : 502;
         String reason = first(text(root, "msg"), text(root, "error"), text(root.path("error"), "message"), "上游服务拒绝请求")
             .replace(credential.apiKey().trim(), "[redacted]").replaceAll("sk-[A-Za-z0-9_-]+", "[redacted]");
         throw new ApiException(code, "Seedance 2.0 按次接口请求失败（HTTP " + response.statusCode() + "）：" + reason);
       }
-      log(credential, method, true, started, null);
+      log(credential, method, feature, true, started, null);
       return root;
     } catch (Exception error) {
-      log(credential, method, false, started, error);
+      log(credential, method, feature, false, started, error);
       throw error;
     }
   }
 
-  private void log(ResolvedModelApiKey credential, String method, boolean success, long started, Exception error) {
-    if (callLog != null) callLog.record("canvas-video", "POST".equals(method) ? "video_generate" : "video_query",
+  private void log(ResolvedModelApiKey credential, String method, String feature, boolean success, long started, Exception error) {
+    if (callLog != null) callLog.record(feature, "POST".equals(method) ? "video_generate" : "video_query",
         credential.provider(), MODEL, credential.id(), "dropdown", success,
         error instanceof ApiException api ? api.getCode() : null,
         (System.nanoTime() - started) / 1_000_000L, error == null ? null : error.getClass().getSimpleName());

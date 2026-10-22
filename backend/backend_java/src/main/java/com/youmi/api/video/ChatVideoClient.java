@@ -41,8 +41,8 @@ public class ChatVideoClient {
     if (input == null || !MODEL.equals(input.model()) || input.durationSeconds() == null
         || input.durationSeconds() != 30 || !"720p".equals(input.resolution()))
       throw new ApiException(400, "ya-sd25-30s 需使用 30 秒、720p");
-    if (input.prompt() == null || input.prompt().isBlank() || input.prompt().length() > 2500)
-      throw new ApiException(400, "请填写 2500 字以内的视频提示词");
+    if (input.prompt() == null || input.prompt().isBlank())
+      throw new ApiException(400, "请填写视频提示词");
     VideoCompositionService.dimensions(input.ratio());
     if (input.lastFrameUrl() != null && !input.lastFrameUrl().isBlank())
       throw new ApiException(400, "30 秒模型尚未确认尾帧参数，暂不支持指定尾帧");

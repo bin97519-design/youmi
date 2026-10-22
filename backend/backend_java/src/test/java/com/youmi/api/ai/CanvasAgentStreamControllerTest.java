@@ -25,6 +25,7 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockAsyncContext;
 import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
@@ -51,7 +52,7 @@ class CanvasAgentStreamControllerTest {
   @Test void realMvcDeadlineCoversSlowImageFirstTokenWithoutSleepingThirtySeconds() throws Exception {
     var entered = new CountDownLatch(1);
     var release = new CountDownLatch(1);
-    when(agent.chatStream(any(), any(), any())).thenAnswer(invocation -> {
+    when(agent.chatStreamWithUsage(any(), any(), any(), any())).thenAnswer(invocation -> {
       entered.countDown();
       assertTrue(release.await(5, TimeUnit.SECONDS));
       invocation.<Consumer<String>>getArgument(2).accept("图片方案已整理");
@@ -63,7 +64,7 @@ class CanvasAgentStreamControllerTest {
       assertTrue(entered.await(2, TimeUnit.SECONDS));
       // This is the real MVC/Servlet async timeout, not a mocked upstream timer.
       // The old unconfigured Tomcat deadline was 30,000 ms even while awaiting a first token.
-      assertEquals(600_000L, result.getRequest().getAsyncContext().getTimeout());
+      assertEquals(1_860_000L, result.getRequest().getAsyncContext().getTimeout());
       assertTrue(result.getRequest().getAsyncContext().getTimeout() > 30_000L);
       assertFalse(result.getResponse().getContentAsString().contains("\"type\":\"result\""));
     } finally {
@@ -84,7 +85,7 @@ class CanvasAgentStreamControllerTest {
     var entered = new CountDownLatch(1);
     var release = new CountDownLatch(1);
     var finished = new CountDownLatch(1);
-    when(agent.chatStream(any(), any(), any())).thenAnswer(invocation -> {
+    when(agent.chatStreamWithUsage(any(), any(), any(), any())).thenAnswer(invocation -> {
       entered.countDown();
       // Ignore cancellation only in this fixture to exercise a provider completing after timeout.
       try {
@@ -126,7 +127,8 @@ class CanvasAgentStreamControllerTest {
   @Test void disconnectedOutputIsVisibleAsOneFailureWithoutCallingTheModel() throws Exception {
     var requestBody = new com.fasterxml.jackson.databind.ObjectMapper()
         .readValue(REQUEST, CanvasAgentDtos.ChatRequest.class);
-    var stream = controller.chatStream("Bearer test-token", requestBody, new MockHttpServletRequest());
+    var stream = controller.chatStream("Bearer test-token", requestBody,
+        new MockHttpServletRequest(), new MockHttpServletResponse());
     stream.writeTo(new OutputStream() {
       @Override public void write(int value) throws IOException {
         throw new IOException("test client disconnected");
@@ -143,6 +145,23 @@ class CanvasAgentStreamControllerTest {
             .header("Authorization", "Bearer test-token")
             .contentType(MediaType.APPLICATION_JSON).content(REQUEST))
         .andExpect(request().asyncStarted()).andReturn();
+  }
+
+  @Test void streamExplicitlyDeclaresNdjsonEvenWhenReturningAnErrorEvent() throws Exception {
+    when(agent.chatStreamWithUsage(any(), any(), any(), any()))
+        .thenThrow(new IllegalArgumentException("请输入要求"));
+    var pending = startStream();
+    pending.getAsyncResult(5_000);
+    var result = mvc.perform(asyncDispatch(pending)).andExpect(status().isOk())
+        .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.content()
+            .contentTypeCompatibleWith("application/x-ndjson"))
+        .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header()
+            .string("X-Accel-Buffering", "no")).andReturn();
+    String body = result.getResponse().getContentAsString(StandardCharsets.UTF_8);
+    assertTrue(body.contains("\"type\":\"thinking\""));
+    assertTrue(body.contains("\"type\":\"error\""));
+    assertTrue(body.contains("请输入要求"));
+    verifyUsage("FAILED");
   }
 
   private void verifyUsage(String status) {

@@ -1,4 +1,5 @@
 import { VIDEO_MODELS } from './productVideo.js'
+import { agentProviderRejection } from './agentProviderError.js'
 import {
   estimatedVideoMiCost,
   validVideoDuration,
@@ -12,12 +13,14 @@ export function canCreateAgentDraft(response, prompts) {
     response?.readyToGenerate === true &&
     [undefined, 'image', 'video'].includes(response.generationType) &&
     Array.isArray(prompts) &&
-    prompts.length > 0
+    prompts.length > 0 &&
+    !agentProviderRejection({ ...response, draftPrompts: prompts })
   )
 }
 
 export function canDisplayAgentVideoDraft(response, prompts) {
   return response?.generationType === 'video' && Array.isArray(prompts) &&
+    !agentProviderRejection({ ...response, draftPrompts: prompts }) &&
     prompts.some((prompt) => typeof prompt === 'string' && prompt.trim())
 }
 
@@ -31,7 +34,6 @@ export function agentVideoDraftError(config, references, prompt, capabilities, m
   if (!config || !models.some((option) => option.value === config.model))
     return '请选择视频模型'
   if (!String(prompt || '').trim()) return '视频脚本不能为空'
-  if (String(prompt).length > 2500) return '视频脚本超过 2500 字，请先让 Agent 精简'
   if (!validVideoDuration(config.model, Number(config.duration)))
     return `所选模型不支持 ${config.duration} 秒，请调整模型或时长`
   if (!validVideoResolution(config.model, config.resolution)) return '所选模型不支持这个清晰度'

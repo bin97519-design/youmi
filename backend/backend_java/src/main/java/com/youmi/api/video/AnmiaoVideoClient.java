@@ -380,7 +380,6 @@ public class AnmiaoVideoClient {
     }
     if (request == null || request.prompt() == null || request.prompt().isBlank())
       throw new ApiException(400, "视频提示词不能为空");
-    if (request.prompt().length() > 2500) throw new ApiException(400, "视频提示词不能超过 2500 字");
     boolean model25 = isModel25(request.model());
     boolean fastModel = isModel20Fast(request.model());
     boolean configured = resolveConfiguredModel(request.model(), request.featureCode()) != null;

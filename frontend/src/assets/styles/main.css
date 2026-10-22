@@ -14018,6 +14018,12 @@ body:has(.image-node-composer, .video-node-composer, .text-node-composer, .uc-gr
   user-select: none;
 }
 
+.uc-chat-msg-time {
+  line-height: 1.4;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 .uc-chat-msg--user .uc-chat-msg-bubble {
   color: var(--color-text-1);
   background: linear-gradient(135deg, var(--color-bg-0), var(--color-bg-2));
@@ -14517,6 +14523,22 @@ body:has(.image-node-composer, .video-node-composer, .text-node-composer, .uc-gr
   grid-column: 3 / 5;
 }
 
+.uc-video-generate-options > label.uc-video-version-field {
+  grid-column: 1 / -1;
+}
+
+.uc-video-generate-options > .uc-video-model-notice {
+  grid-column: 1 / -1;
+  min-width: 0;
+  margin: 0;
+  padding: 0 2px;
+  color: var(--color-text-3);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
 .uc-video-generate-options > label:nth-child(-n + 4) .uc-custom-select-trigger {
   height: 42px;
   padding: 4px 24px 4px 8px;
@@ -14596,7 +14618,7 @@ body:has(.image-node-composer, .video-node-composer, .text-node-composer, .uc-gr
   min-width: 0;
 }
 
-.uc-chat-generate-options span {
+.uc-chat-generate-options label > span {
   color: var(--color-text-3);
   font-size: 11px;
   font-weight: 500;

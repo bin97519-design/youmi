@@ -104,7 +104,10 @@ class VideoGenerationClientTest {
     });
     String referenceUrl = baseUrl() + "/reference.png";
 
-    VideoGenerationDtos.CreateTaskResponse response = client().createTask(request(List.of(referenceUrl)));
+    String longPrompt = "让产品缓慢旋转并自然推进镜头".repeat(1000) + "完整结尾标记";
+    VideoGenerationDtos.CreateTaskResponse response = client().createTask(
+        new VideoGenerationDtos.CreateTaskRequest(longPrompt, "seedance-2.0-0826-720p", "3:4", 15, "720p",
+            List.of(referenceUrl), null, null, null, true, null, null, null));
 
     assertEquals("application/json", contentType.get());
     JsonNode reference = body.get().path("references").path(0);
@@ -113,6 +116,7 @@ class VideoGenerationClientTest {
     assertTrue(reference.path("source").asText().startsWith("data:image/png;base64,"));
     assertTrue(body.get().path("prompt").asText().startsWith("必须以参考图中的主体为视频核心"));
     assertTrue(body.get().path("prompt").asText().contains("让产品缓慢旋转并自然推进镜头"));
+    assertTrue(body.get().path("prompt").asText().endsWith(longPrompt));
     assertEquals("thq-video:video-ref", response.getTaskId());
   }
 

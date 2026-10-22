@@ -12,6 +12,36 @@ import com.youmi.api.image.ModelApiKeyService;
 import org.junit.jupiter.api.Test;
 
 class VideoTaskControllerTest {
+  @Test void perVideoSeedanceUsesItsOwnRouteAndSettlesOneReportedCharge() throws Exception {
+    var anci = mock(SeedanceAnciVideoClient.class);
+    controller.setAnciVideos(anci);
+    when(auth.requireUserId("token")).thenReturn(7L);
+    var request = new ObjectMapper().readValue("""
+        {"prompt":"商品展示","model":"seedance-2.0-anci","ratio":"3:4","resolution":"720p",
+         "durationSeconds":15,"version":"标准"}
+        """, VideoGenerationDtos.CreateTaskRequest.class);
+    var created = new VideoGenerationDtos.CreateTaskResponse();
+    String taskId = "seedance-anci:key:43:123456";
+    created.setTaskId(taskId);
+    when(anci.price(request)).thenReturn(0);
+    when(anci.createTask(request)).thenReturn(created);
+    when(billing.checkAndDeduct(7L, MiBizType.VIDEO, 0))
+        .thenReturn(new MiValueDtos.DeductResult(12L, 0, 0, 0, MiBizType.VIDEO));
+    assertEquals(taskId, controller.create("token", request).data().getTaskId());
+    verify(billing).linkTask(12L, taskId);
+    var result = new VideoGenerationDtos.TaskStatusResponse();
+    result.setProvider("custom-provider-label"); result.setStatus("completed");
+    result.setRaw(new ObjectMapper().readTree("{\"cost\":0.23}"));
+    when(billing.isTaskOwnedByUser(7L, taskId, MiBizType.VIDEO)).thenReturn(true);
+    when(anci.getTask(taskId, 7L)).thenReturn(result);
+    controller.get(taskId, "token");
+    verify(billing).settleActualByTaskId(taskId, new java.math.BigDecimal("23.00"));
+    verify(billing, never()).commit(anyLong());
+    verifyNoInteractions(legacy, anmiao, minimax, chat);
+    result.setStatus("failed");
+    controller.get(taskId, "token");
+    verify(billing).rollbackByTaskId(taskId);
+  }
   final VideoGenerationClient legacy = mock(VideoGenerationClient.class);
   final ChatVideoJobs chat = mock(ChatVideoJobs.class);
   final AnmiaoVideoClient anmiao = mock(AnmiaoVideoClient.class);

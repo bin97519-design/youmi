@@ -21,6 +21,87 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 class AgentChatClientTest {
+  @Test void http200PolicyNoticesAreLoggedAsFailedAndAreNotRetried() throws Exception {
+    var mapper = new ObjectMapper();
+    String notice = "The prompt could not be submitted. The prompt contains sensitive words that violate Google's policy.";
+    for (String body : List.of("{\"promptFeedback\":{\"blockReason\":\"SAFETY\"}}",
+        mapper.writeValueAsString(java.util.Map.of("candidates", List.of(java.util.Map.of(
+            "finishReason", "STOP", "content", java.util.Map.of("parts", List.of(java.util.Map.of("text", notice))))))))) {
+      var client = new AgentChatClient(mapper, new AgentChatProperties());
+      var logs = mock(AiCallLogService.class);
+      client.setAiCallLogService(logs);
+      var http = mock(HttpClient.class);
+      HttpResponse<String> response = mock(HttpResponse.class);
+      when(response.statusCode()).thenReturn(200);
+      when(response.body()).thenReturn(body);
+      when(http.send(any(), org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<String>>any())).thenReturn(response);
+      ReflectionTestUtils.setField(client, "httpClient", http);
+      var key = new ModelApiKeyService.ResolvedModelApiKey(1L, "gem-3-pro", "test", "https://example.com", "/chat", "", "local-test");
+      assertThrows(AgentReplyIntegrity.BlockedReply.class, () -> client.completeConfiguredModel(
+          key, "rules", "分析视频", List.of(), .2, "canvas-agent", "dropdown", 16000));
+      verify(http, times(1)).send(any(), org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<String>>any());
+      verify(logs).record(anyString(), anyString(), anyString(), anyString(), any(), anyString(),
+          eq(false), eq(200), anyLong(), eq("BlockedReply"));
+      verify(logs, never()).record(anyString(), anyString(), anyString(), anyString(), any(), anyString(),
+          eq(true), any(), anyLong(), any());
+    }
+  }
+
+  @Test void splitStreamingPolicyNoticesCannotBecomeSuccessfulCompletions() throws Exception {
+    var mapper = new ObjectMapper();
+    var client = new AgentChatClient(mapper, new AgentChatProperties());
+    var http = mock(HttpClient.class);
+    HttpResponse<java.io.InputStream> response = mock(HttpResponse.class);
+    when(response.statusCode()).thenReturn(200);
+    StringBuilder stream = new StringBuilder();
+    for (String text : List.of("The prompt could not be submitted. ", "The prompt contains sensitive words that violate Google's policy."))
+      stream.append("data: ").append(mapper.writeValueAsString(java.util.Map.of("choices", List.of(
+          java.util.Map.of("delta", java.util.Map.of("content", text)))))).append("\n\n");
+    stream.append("data: [DONE]\n\n");
+    when(response.body()).thenReturn(new java.io.ByteArrayInputStream(stream.toString().getBytes(StandardCharsets.UTF_8)));
+    when(http.send(any(), org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<java.io.InputStream>>any())).thenReturn(response);
+    ReflectionTestUtils.setField(client, "httpClient", http);
+    var key = new ModelApiKeyService.ResolvedModelApiKey(1L, "gpt-5.6-luna", "test", "https://example.com", "/chat", "", "local-test");
+    assertThrows(AgentReplyIntegrity.BlockedReply.class, () -> client.completeConfiguredModelStream(
+        key, "rules", "分析视频", List.of(), .2, "canvas-agent", "dropdown", 16000, ignored -> {}));
+  }
+
+  @Test void streamingLengthLimitedTextCannotReturnAsASuccessfulPartialCompletion() throws Exception {
+    var mapper = new ObjectMapper();
+    for (String payload : List.of(
+        "{\"choices\":[{\"delta\":{\"content\":\"半截提示词\"},\"finish_reason\":\"length\"}]}",
+        "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"半截提示词\"}]},\"finishReason\":\"MAX_TOKENS\"}]}")) {
+      var client = new AgentChatClient(mapper, new AgentChatProperties());
+      var http = mock(HttpClient.class);
+      HttpResponse<java.io.InputStream> response = mock(HttpResponse.class);
+      when(response.statusCode()).thenReturn(200);
+      when(response.body()).thenReturn(new java.io.ByteArrayInputStream(("data: " + payload + "\n\n")
+          .getBytes(StandardCharsets.UTF_8)));
+      when(http.send(any(), org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<java.io.InputStream>>any()))
+          .thenReturn(response);
+      ReflectionTestUtils.setField(client, "httpClient", http);
+      var key = new ModelApiKeyService.ResolvedModelApiKey(1L, "gem-3-pro", "test", "https://example.com", "/chat", "", "local-test");
+      assertThrows(AgentReplyIntegrity.IncompleteReply.class, () -> client.completeConfiguredModelStream(
+          key, "rules", "完整脚本", List.of(), .2, "canvas-agent", "dropdown", 16000, ignored -> {}));
+    }
+  }
+
+  @Test void canvasPlanningUsesLongerTimeoutWithoutChangingOtherCalls() throws Exception {
+    var client = new AgentChatClient(new ObjectMapper(), new AgentChatProperties());
+    var http = mock(HttpClient.class);
+    HttpResponse<String> response = mock(HttpResponse.class);
+    when(response.statusCode()).thenReturn(200);
+    when(response.body()).thenReturn("{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}");
+    when(http.send(any(), org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<String>>any())).thenReturn(response);
+    ReflectionTestUtils.setField(client, "httpClient", http);
+    var key = new ModelApiKeyService.ResolvedModelApiKey(5L, "gpt-5.6-luna", "test", "https://example.com", "/chat", "", "test");
+    client.completeConfiguredModel(key, "system", "script", List.of(), 0.2, "canvas-agent", "dropdown", null);
+    client.completeConfiguredModel(key, "system", "other", List.of(), 0.2, "reverse-prompt", "fixed_model", null);
+    var requests = ArgumentCaptor.forClass(HttpRequest.class);
+    verify(http, times(2)).send(requests.capture(), org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<String>>any());
+    assertEquals(Duration.ofSeconds(1800), requests.getAllValues().get(0).timeout().orElseThrow());
+    assertEquals(Duration.ofSeconds(90), requests.getAllValues().get(1).timeout().orElseThrow());
+  }
   @Test void configuredModelStreamsSseDeltasAndSendsStreamFlag() throws Exception {
     var mapper = new ObjectMapper();
     List<JsonNode> bodies = new ArrayList<>();
@@ -40,6 +121,8 @@ class AgentChatClientTest {
       exchange.getResponseBody().write(first.getBytes(StandardCharsets.UTF_8));
       exchange.getResponseBody().flush();
       exchange.getResponseBody().write(second.getBytes(StandardCharsets.UTF_8));
+      exchange.getResponseBody().write(("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":123,\"completion_tokens\":7}}\n\n")
+          .getBytes(StandardCharsets.UTF_8));
       exchange.getResponseBody().write("data: [DONE]\n\n".getBytes(StandardCharsets.UTF_8));
       exchange.close();
     });
@@ -53,12 +136,20 @@ class AgentChatClientTest {
           "http://127.0.0.1:" + server.getAddress().getPort() + "/v1",
           "/chat/completions", "", "local-test-only", java.util.Map.of());
       List<String> deltas = new ArrayList<>();
+      List<AgentContextUsage> usages = new ArrayList<>();
 
-      var result = client.completeConfiguredModelStream(
+      var result = client.withContextUsage(usages::add, () -> client.completeConfiguredModelStream(
           credential, "system", "Hello", List.of(), 0.2,
-          "canvas-agent", "dropdown", null, deltas::add);
+          "canvas-agent", "dropdown", null, deltas::add));
 
       assertTrue(bodies.get(0).path("stream").asBoolean());
+      assertEquals(16000, bodies.get(0).path("max_tokens").asInt());
+      assertTrue(bodies.get(0).path("stream_options").path("include_usage").asBoolean());
+      assertTrue(usages.get(0).estimated());
+      assertFalse(usages.get(usages.size() - 1).estimated());
+      assertEquals(123, usages.get(usages.size() - 1).inputTokens());
+      assertEquals(7, usages.get(usages.size() - 1).outputTokens());
+      assertEquals(100000, usages.get(usages.size() - 1).budgetTokens());
       assertEquals("text/event-stream", acceptHeaders.get(0));
       assertEquals(List.of("{\"reply\":\"你", "好\"}"), deltas);
       assertEquals("{\"reply\":\"你好\"}", result.content());
@@ -81,7 +172,7 @@ class AgentChatClientTest {
     when(http.send(any(), org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<String>>any())).thenReturn(empty, completed);
     ReflectionTestUtils.setField(client, "httpClient", http);
     var key = new ModelApiKeyService.ResolvedModelApiKey(5L,"gpt-5.6-luna","test","https://example.com","/chat","","test-key");
-    var result = client.completeConfiguredModel(key,"system","脚本",List.of(),0.2);
+    var result = client.completeConfiguredModel(key,"system","脚本",List.of(),0.2,"test","test",4000);
     assertEquals("完整脚本", result.content());
     verify(http,times(2)).send(any(), org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<String>>any());
   }
@@ -95,7 +186,7 @@ class AgentChatClientTest {
     when(http.send(any(), org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<String>>any())).thenReturn(empty);
     ReflectionTestUtils.setField(client, "httpClient", http);
     var key = new ModelApiKeyService.ResolvedModelApiKey(5L,"gpt-5.6-luna","test","https://example.com","/chat","","test-key");
-    var error = assertThrows(IllegalStateException.class, () -> client.completeConfiguredModel(key,"system","脚本",List.of(),0.2));
+    var error = assertThrows(IllegalStateException.class, () -> client.completeConfiguredModel(key,"system","脚本",List.of(),0.2,"test","test",4000));
     assertTrue(error.getMessage().contains("额度"));
     assertFalse(error.getMessage().contains("private reasoning"));
     verify(http,times(2)).send(any(), org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<String>>any());
@@ -135,12 +226,12 @@ class AgentChatClientTest {
       assertEquals("ok", result.content());
       assertEquals("gpt-5.6-luna", bodies.get(0).path("model").asText());
       assertEquals("fast", bodies.get(0).path("service_tier").asText());
-      assertEquals(1111, bodies.get(0).path("max_tokens").asInt());
+      assertEquals(16000, bodies.get(0).path("max_tokens").asInt());
       client.completeConfiguredModel(credential, "system", "video frames", List.of(), 0.2,
           "canvas-agent", "dropdown", 8000);
       client.completeConfiguredModel(credential, "system", "regular chat", List.of(), 0.2);
       assertEquals(8000, bodies.get(1).path("max_tokens").asInt());
-      assertEquals(1111, bodies.get(2).path("max_tokens").asInt());
+      assertEquals(16000, bodies.get(2).path("max_tokens").asInt());
       client.completeConfiguredModel(credential, "system", "storyboard", List.of(), 0.35,
           "product-video-planning", "dropdown", 5500, Duration.ofSeconds(300));
       assertEquals(5500, bodies.get(3).path("max_tokens").asInt());
@@ -174,8 +265,8 @@ class AgentChatClientTest {
     var requests = ArgumentCaptor.forClass(HttpRequest.class);
     verify(http, times(3)).send(requests.capture(), org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<String>>any());
     assertEquals(Duration.ofSeconds(300), requests.getAllValues().get(0).timeout().orElseThrow());
-    assertEquals(Duration.ofSeconds(90), requests.getAllValues().get(1).timeout().orElseThrow());
-    assertEquals(Duration.ofSeconds(90), requests.getAllValues().get(2).timeout().orElseThrow());
+    assertEquals(Duration.ofSeconds(1800), requests.getAllValues().get(1).timeout().orElseThrow());
+    assertEquals(Duration.ofSeconds(1800), requests.getAllValues().get(2).timeout().orElseThrow());
     assertEquals(90, properties.getTimeoutSeconds());
   }
 

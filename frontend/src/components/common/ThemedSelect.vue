@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 const props = defineProps({
   modelValue: {
-    type: [String, Number],
+    type: [String, Number, Array],
     default: '',
   },
   options: {
@@ -15,6 +15,7 @@ const props = defineProps({
     default: '选择选项',
   },
   disabled: Boolean,
+  multiple: Boolean,
   floating: Boolean,
   menuMinWidth: { type: Number, default: 0 },
 })
@@ -28,12 +29,25 @@ const open = ref(false)
 const activeIndex = ref(-1)
 const menuStyle = ref({})
 
+function isSelected(value) {
+  return props.multiple
+    ? Array.isArray(props.modelValue) && props.modelValue.some((item) => String(item) === String(value))
+    : String(value) === String(props.modelValue)
+}
+
 const selectedIndex = computed(() =>
-  props.options.findIndex((option) => String(option.value) === String(props.modelValue)),
+  props.options.findIndex((option) => isSelected(option.value)),
 )
-const selectedLabel = computed(
-  () => props.options[selectedIndex.value]?.label || props.options[0]?.label || '请选择',
-)
+const selectedLabel = computed(() => {
+  if (!props.multiple) return props.options[selectedIndex.value]?.label || props.options[0]?.label || '请选择'
+  const selected = props.options.filter((option) => isSelected(option.value))
+  return selected.length > 1
+    ? `${selected[0].label} +${selected.length - 1}`
+    : selected[0]?.label || '请选择'
+})
+const selectedTitle = computed(() => props.multiple
+  ? props.options.filter((option) => isSelected(option.value)).map((option) => option.label).join('、')
+  : selectedLabel.value)
 
 function focusOption(index, direction = 1) {
   if (!props.options.length) return
@@ -90,6 +104,16 @@ function toggleMenu() {
 
 function selectOption(option) {
   if (props.disabled || option.disabled) return
+  if (props.multiple) {
+    const current = Array.isArray(props.modelValue) ? props.modelValue : []
+    if (isSelected(option.value) && current.length <= 1) return
+    const next = isSelected(option.value)
+      ? current.filter((value) => String(value) !== String(option.value))
+      : [...current, option.value]
+    emit('update:modelValue', next)
+    emit('change', next)
+    return
+  }
   emit('update:modelValue', option.value)
   emit('change', option.value)
   closeMenu({ restoreFocus: true })
@@ -156,6 +180,7 @@ onBeforeUnmount(() => {
       class="themed-select-trigger"
       :disabled="disabled"
       :aria-label="ariaLabel"
+      :title="selectedTitle"
       aria-haspopup="listbox"
       :aria-expanded="open"
       @click="toggleMenu"
@@ -174,6 +199,7 @@ onBeforeUnmount(() => {
           :style="floating ? menuStyle : null"
           role="listbox"
           :aria-label="ariaLabel"
+          :aria-multiselectable="multiple || undefined"
           @pointerdown.stop
           @click.stop
           @dblclick.stop
@@ -188,15 +214,18 @@ onBeforeUnmount(() => {
             :disabled="disabled || option.disabled"
             tabindex="-1"
             class="themed-select-option"
-            :class="{ active: String(option.value) === String(modelValue) }"
+            :class="{ active: isSelected(option.value) }"
             role="option"
-            :aria-selected="String(option.value) === String(modelValue)"
+            :aria-selected="isSelected(option.value)"
             @click="selectOption(option)"
             @keydown="onOptionKeydown($event, index)"
           >
+            <span v-if="multiple" class="themed-select-check" aria-hidden="true">
+              <i :class="isSelected(option.value) ? 'ri-checkbox-line' : 'ri-checkbox-blank-line'"></i>
+            </span>
             <span>{{ option.label }}</span>
             <i
-              v-if="String(option.value) === String(modelValue)"
+              v-if="!multiple && isSelected(option.value)"
               class="ri-check-line"
               aria-hidden="true"
             ></i>
@@ -323,6 +352,17 @@ onBeforeUnmount(() => {
 .themed-select-option i {
   color: var(--canvas-accent);
   font-size: 15px;
+}
+.themed-select-check {
+  display: grid;
+  place-items: center;
+  flex: 0 0 16px;
+}
+.themed-select-check + span {
+  flex: 1;
+}
+.themed-select-option:not(.active) .themed-select-check i {
+  color: var(--canvas-text-subtle);
 }
 
 .themed-select-menu-enter-active,

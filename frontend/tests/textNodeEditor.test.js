@@ -161,6 +161,7 @@ test('connected video inputs are rejected explicitly rather than silently ignore
 
 test('text editor selection remains node anchored and never changes the canvas camera', () => {
   const context = vm.createContext({
+    conversationWindowsVisible: { value: true },
     selectedLayerId: { value: 'node' },
     selectedLayerIds: { value: ['node'] },
     canvas: { updateDocument: () => assert.fail('Selection must not move the camera') },

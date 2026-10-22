@@ -1,3 +1,5 @@
+import { videoVersionPayload } from './seedanceAnci.js'
+
 export function agentVideoContext(message) {
   if (!message?.videoUrl || message.failed || message.generating) return null
   const request = message.videoRequest || {}
@@ -13,6 +15,7 @@ export function agentVideoContext(message) {
       duration: Number(request.duration || message.duration) || 15,
       referenceMode: request.referenceMode || 'shouweizhen',
       generateAudio: request.generateAudio !== false,
+      ...videoVersionPayload(request.model || message.model, request.version),
     },
     referenceImages: (request.referenceImages || []).filter((reference) => reference?.url),
   }

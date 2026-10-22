@@ -180,7 +180,12 @@ public final class CanvasAgentDtos {
 
   public record VideoDraftSettings(
       String model, String ratio, String resolution, Integer duration,
-      Boolean generateAudio, String referenceMode) {}
+      Boolean generateAudio, String referenceMode, String version) {
+    public VideoDraftSettings(String model, String ratio, String resolution, Integer duration,
+        Boolean generateAudio, String referenceMode) {
+      this(model, ratio, resolution, duration, generateAudio, referenceMode, null);
+    }
+  }
 
   public record ReferenceVideo(
       String url, String name, double duration, Integer width, Integer height,
@@ -281,7 +286,11 @@ public final class CanvasAgentDtos {
     }
   }
 
-  public record AgentModelOption(String value, String label, boolean configured) {}
+  public record AgentModelOption(String value, String label, boolean configured, Long contextBudgetTokens) {
+    public AgentModelOption(String value, String label, boolean configured) {
+      this(value, label, configured, null);
+    }
+  }
 
   public record ConversationSyncRequest(
       String canvasId,

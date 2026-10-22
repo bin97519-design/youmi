@@ -49,6 +49,10 @@ public final class ProductVideoDtos {
     }
   }
   public record ReferenceImageRole(int imageIndex, String role) {}
+  public record SellingPoint(String id, String title, String description, String evidence,
+      List<Integer> imageIndices) {}
+  public record ProductAnalysis(String provider, String model, String productName, String summary,
+      List<SellingPoint> sellingPoints, List<String> questions) {}
   public record ReferenceVideo(String url, String name, double duration, Integer width, Integer height,
       String audioSummary, List<ReferenceFrame> frames, List<ReferenceSegment> segments, String strategy) {
     public ReferenceVideo(String url, String name, double duration, Integer width, Integer height,
